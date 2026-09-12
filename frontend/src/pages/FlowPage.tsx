@@ -182,6 +182,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const [seriesDraft, setSeriesDraft] = useState<FlowSeriesSceneContext | null>(null);
   const [accounts, setAccounts] = useState<FlowAccount[]>(readAccounts);
   const [syncingAccountIds, setSyncingAccountIds] = useState<Set<string>>(new Set());
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [editingAccount, setEditingAccount] = useState<string | "new" | null>(
     null,
   );
@@ -1016,14 +1017,36 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       })
       .finally(() => setSyncingAccountIds((s) => { const next = new Set(s); next.delete(account.id); return next; }));
   };
-  const syncAllAccounts = () => {
+  const syncAllAccounts = async () => {
     const online = accounts.filter((a) => a.status === "online" && a.projectId);
-    if (!online.length) return;
+    if (!online.length || isSyncingAll) return;
+    setIsSyncingAll(true);
     setSyncingAccountIds(new Set(online.map((a) => a.id)));
-    void flowRequest<{ accounts: FlowAccount[] }>("/api/flow/accounts/sync", { method: "POST" })
-      .then((data) => { if (data.accounts) setAccounts(normalizeFlowAccounts(data.accounts)); })
-      .catch((error) => toast.error(t("Đồng bộ thất bại", "Sync failed") + ": " + (error instanceof Error ? error.message : String(error))))
-      .finally(() => setSyncingAccountIds(new Set()));
+    toast.info(t("Đang đồng bộ credits tất cả tài khoản...", "Syncing credits for all accounts..."));
+    try {
+      const results = await Promise.allSettled(
+        online.map(async (account) => {
+          try {
+            const updated = await flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/sync`, { method: "POST" });
+            setAccounts((current) => current.map((item) => item.id === updated.id ? updated : item));
+            return updated;
+          } finally {
+            setSyncingAccountIds((s) => { const next = new Set(s); next.delete(account.id); return next; });
+          }
+        })
+      );
+      const succeeded = results.filter((r) => r.status === "fulfilled").length;
+      if (succeeded > 0) {
+        toast.success(t(`Đã đồng bộ xong ${succeeded}/${online.length} tài khoản`, `Successfully synced ${succeeded}/${online.length} accounts`));
+      } else {
+        toast.error(t("Đồng bộ thất bại, vui lòng kiểm tra kết nối", "Sync failed, please check connection"));
+      }
+    } catch (error) {
+      toast.error(t("Đồng bộ thất bại", "Sync failed") + ": " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setIsSyncingAll(false);
+      setSyncingAccountIds(new Set());
+    }
   };
   const revealOutput = (jobId: string, outputIndex: number) =>
     void flowRequest(`/api/flow/jobs/${jobId}/outputs/${outputIndex}/reveal`, {
@@ -1263,12 +1286,19 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   type="button"
                   className="flow-account-add is-ghost"
                   title={t("Đồng bộ credits tất cả tài khoản", "Sync credits for all accounts")}
-                  onClick={syncAllAccounts}
-                  disabled={!accounts.some((a) => a.status === "online" && a.projectId)}
-                  style={{ display: "flex", alignItems: "center", gap: "5px" }}
+                  onClick={() => void syncAllAccounts()}
+                  disabled={isSyncingAll || !accounts.some((a) => a.status === "online" && a.projectId)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px" }}
                 >
-                  <IconRefresh size={14} />
-                  {t("Đồng bộ tất cả", "Sync all")}
+                  <IconRefresh
+                    size={14}
+                    style={{
+                      animation: isSyncingAll ? "spin 0.8s linear infinite" : "none",
+                    }}
+                  />
+                  {isSyncingAll
+                    ? t("Đang đồng bộ...", "Syncing...")
+                    : t("Đồng bộ tất cả", "Sync all")}
                 </button>
                 <button
                   type="button"
@@ -1402,16 +1432,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <p>{account.email}</p>
 
                   <div className="flow-account-credits">
-                    <strong>
-                      {account.credits != null
-                        ? account.credits.toLocaleString()
-                        : "—"}
-                    </strong>
-                    <span>
-                      {account.credits != null
-                        ? t("credits còn lại", "credits left")
-                        : t("Chưa đồng bộ credits", "Credits not synced")}
-                    </span>
+                    <div className="flow-account-credits-head">
+                      <strong>
+                        {account.credits != null
+                          ? account.credits.toLocaleString()
+                          : "—"}
+                      </strong>
+                      <span>
+                        {account.credits != null
+                          ? t("credits còn lại", "credits left")
+                          : t("Chưa đồng bộ credits", "Credits not synced")}
+                      </span>
+                    </div>
                     {account.credits != null && account.used > 0 && (
                       <>
                         <i>

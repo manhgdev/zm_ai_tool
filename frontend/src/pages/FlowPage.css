@@ -71,22 +71,31 @@
   margin-top: 4px;
 }
 .flow-rail-credit {
+  display: none;
+}
+.flow-rail.is-open .flow-rail-credit {
   margin-top: auto;
-  display: grid;
-  min-width: 180px;
-  gap: 2px;
-  padding: 11px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+  gap: 3px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--background);
 }
 .flow-rail-credit strong {
   color: var(--primary);
-  font-size: 1rem;
+  font-size: 1.05rem;
+  font-weight: 750;
+  line-height: 1.25;
 }
 .flow-rail-credit span {
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   color: var(--muted-foreground);
+  line-height: 1.25;
+  white-space: nowrap;
 }
 .flow-workspace {
   overflow: auto;
@@ -1608,26 +1617,37 @@
   font-size: 0.73rem;
 }
 .flow-account-credits {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: baseline;
-  gap: 2px 7px;
-  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
   border-radius: 8px;
   background: var(--background);
 }
-.flow-account-credits strong {
-  font-size: 1rem;
+.flow-account-credits-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.flow-account-credits strong,
+.flow-account-credits-head strong {
+  font-size: 1.12rem;
+  font-weight: 800;
   color: var(--primary);
+  line-height: 1.25;
 }
 .flow-account-credits span,
-.flow-account-credits small {
-  font-size: 0.67rem;
+.flow-account-credits-head span {
+  font-size: 0.72rem;
+  font-weight: 500;
   color: var(--muted-foreground);
+  line-height: 1.25;
+  white-space: nowrap;
 }
 .flow-account-credits i {
-  grid-column: 1/-1;
   display: block;
+  width: 100%;
   height: 5px;
   overflow: hidden;
   border-radius: 99px;
@@ -1640,7 +1660,8 @@
   background: var(--primary);
 }
 .flow-account-credits small {
-  grid-column: 1/-1;
+  font-size: 0.67rem;
+  color: var(--muted-foreground);
 }
 .flow-account-grid footer {
   display: flex;
