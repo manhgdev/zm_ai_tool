@@ -101,6 +101,10 @@ def _detect_plan(credit_info: Any) -> str | None:
         return "Ultra"
     if "pro" in combined or "tier_one" in combined or "tier_1" in combined:
         return "Pro"
+    if "tier_0" in combined or "free" in combined or "standard" in combined:
+        return "Free"
+    if hasattr(credit_info, "credits") and credit_info.credits is not None:
+        return "Free"
     return None
 
 
@@ -128,6 +132,12 @@ def _match_model_choice(requested: str, text: str) -> bool:
         return "fast" in t
     if req == "veo 3.1 - quality":
         return "quality" in t
+    if "pro" in req:
+        return "pro" in t
+    if "lite" in req:
+        return "lite" in t
+    if "2" in req:
+        return ("2" in t or "banana 2" in t) and "lite" not in t and "pro" not in t
     if "nano banana" in req:
         return "nano" in t or "banana" in t or "imagen" in t
     return False
@@ -416,7 +426,7 @@ class FlowService:
             "id": account_id or uuid.uuid4().hex[:12],
             "label": str(payload.get("label") or existing.get("label") or "Flow account").strip(),
             "email": str(payload.get("email") or existing.get("email") or "").strip(),
-            "plan": str(payload.get("plan") or existing.get("plan") or "Pro"),
+            "plan": str(payload.get("plan") or existing.get("plan") or "Free"),
             "projectId": str(payload.get("projectId") or existing.get("projectId") or "").strip(),
             "status": existing.get("status", "reconnect"),
             "credits": existing.get("credits"),
@@ -577,7 +587,11 @@ class FlowService:
                 "credits": int(credit_info.credits),
                 "creditsSyncedAt": time.time(),
                 "updatedAt": time.time(),
+                "status": "online",
+                "error": None,
             }
+            if getattr(credit_info, "email", ""):
+                patch["email"] = credit_info.email
             detected_plan = _detect_plan(credit_info)
             if detected_plan:
                 patch["plan"] = detected_plan
@@ -707,7 +721,7 @@ class FlowService:
             captured_project_id = project_id
             _log.info("_login: project_id captured=%s for account=%s", project_id, account_id)
 
-            email = await page.evaluate("() => window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''")
+            email = await page.evaluate("() => window.WIZ_global_data?.oPEP7c || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''")
             credits = None
             credits_synced_at = None
             detected_plan = None
@@ -721,6 +735,8 @@ class FlowService:
                 credits = int(credit_info.credits)
                 credits_synced_at = time.time()
                 detected_plan = _detect_plan(credit_info)
+                if getattr(credit_info, "email", ""):
+                    email = credit_info.email or email
                 _log.info("Plan detected on connect: %s (tier=%s sku=%s)",
                           detected_plan, getattr(credit_info, 'tier', ''), getattr(credit_info, 'sku', ''))
             except Exception as credits_exc:
@@ -793,20 +809,29 @@ class FlowService:
             browser = BrowserManager(headless=True, profile_dir=store.profile_dir(account_id))
             await browser.start()
             page = await browser.page()
-            await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=6_000)
+            target_url = (
+                f"https://flow.google.com/project/{project_id}"
+                if project_id
+                else FLOW_BASE_URL
+            )
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=15_000)
 
             # Try wait_for_url first (most reliable when session is valid).
             confirmed_id = ""
-            try:
-                await page.wait_for_url(
-                    lambda url: bool(_PROJECT_RE.search(url)),
-                    timeout=5_000,
-                )
-                match = _PROJECT_RE.search(page.url)
-                if match:
-                    confirmed_id = match.group(1)
-            except Exception:
-                pass
+            match = _PROJECT_RE.search(page.url)
+            if match:
+                confirmed_id = match.group(1)
+            else:
+                try:
+                    await page.wait_for_url(
+                        lambda url: bool(_PROJECT_RE.search(url)),
+                        timeout=5_000,
+                    )
+                    match = _PROJECT_RE.search(page.url)
+                    if match:
+                        confirmed_id = match.group(1)
+                except Exception:
+                    pass
 
             if not confirmed_id:
                 # Fallback: give Google a few more seconds then try the lobby link.
@@ -826,7 +851,7 @@ class FlowService:
 
             if not confirmed_id:
                 return False
-            email = await page.evaluate("() => window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''")
+            email = await page.evaluate("() => window.WIZ_global_data?.oPEP7c || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''")
             credits = None
             credits_synced_at = None
             detected_plan = None
@@ -836,6 +861,8 @@ class FlowService:
                 credits = int(credit_info.credits)
                 credits_synced_at = time.time()
                 detected_plan = _detect_plan(credit_info)
+                if getattr(credit_info, "email", ""):
+                    email = credit_info.email or email
             except Exception:
                 pass
             account = store.get_row("accounts", account_id) or {}
@@ -879,6 +906,13 @@ class FlowService:
             input_type = "prompt"
         source_files = list(payload.get("sourceFiles") or [])
         series_context = dict(payload.get("seriesContext") or {})
+        account = store.get_row("accounts", account_id) or {}
+        if account.get("plan") == "Free":
+            if kind == "video":
+                raise ValueError("Tài khoản gói thường chỉ hỗ trợ tạo ảnh (Free accounts only support image generation)")
+            if settings.get("model") == "Nano Banana Pro":
+                settings["model"] = "Nano Banana 2"
+
         if kind == "image":
             if str(settings.get("model") or "Nano Banana 2") not in _IMAGE_UI_MODELS:
                 raise ValueError(f"Unsupported Flow image model: {settings.get('model')}")
@@ -1153,7 +1187,7 @@ class FlowService:
 
         async def _model_pill_matches(target_model: str) -> bool:
             """True when the visible model pill already shows the desired model."""
-            loc = page.locator('button[aria-haspopup="menu"]').filter(has_text=family)
+            loc = page.locator('.settings-trigger-button, .settings-summary, button[aria-haspopup="menu"]').filter(has_text=family)
             for index in range(await loc.count()):
                 candidate = loc.nth(index)
                 if await candidate.is_visible():
@@ -1322,6 +1356,17 @@ class FlowService:
             return None
 
         ratio_label = ratio if ratio in {"16:9", "9:16", "1:1", "4:3", "3:4"} else "16:9"
+        # Fast path: if the trigger button pill already shows this ratio, skip clicking
+        pill_loc = page.locator(".settings-trigger-button, .settings-summary")
+        for i in range(await pill_loc.count()):
+            candidate = pill_loc.nth(i)
+            if await candidate.is_visible():
+                text = await candidate.inner_text()
+                safe_ratio = ratio_label.replace(":", "_")
+                if ratio_label in text or f"crop_{safe_ratio}" in text:
+                    if duration is None:
+                        _log.info("_prepare_ui_format: ratio %s already selected on pill", ratio_label)
+                        return
         ratio_tab = None
         for attempt in range(4):
             ratio_tab = await visible_tab(ratio_label)
@@ -1425,6 +1470,15 @@ class FlowService:
     async def _set_flow_count(self, page, count: int) -> None:
         """Select the generation count in either the old tab or new radio UI."""
         desired = max(1, min(4, int(count or 1)))
+        # Fast path: check if visible settings pill already shows desired count
+        pill_loc = page.locator(".settings-trigger-button, .settings-summary")
+        for i in range(await pill_loc.count()):
+            candidate = pill_loc.nth(i)
+            if await candidate.is_visible():
+                text = await candidate.inner_text()
+                if f"x{desired}" in text:
+                    _log.info("_set_flow_count: count x%d already selected on pill", desired)
+                    return
         target = page.locator(_FLOW_CONTROL_SELECTOR).filter(
             has_text=re.compile(rf"^\s*x{desired}\s*$", re.IGNORECASE),
         )
@@ -1437,6 +1491,9 @@ class FlowService:
                 await asyncio.sleep(0.25)
             if await _flow_control_is_selected(candidate):
                 return
+        if desired == 1:
+            _log.info("_set_flow_count: x1 is default, proceeding")
+            return
         raise RuntimeError(f"FLOW_UI_CHANGED: generation count x{desired} was not found")
 
     async def _project_media_elements(self, page) -> list[dict[str, Any]]:

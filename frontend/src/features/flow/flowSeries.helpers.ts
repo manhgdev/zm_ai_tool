@@ -19,7 +19,7 @@ export type SeriesGenSettings = {
   resolution: string
   concurrency?: string
 }
-export type FlowSeriesAccount = { id: string; label: string; status: string; plan?: 'Ultra' | 'Pro' }
+export type FlowSeriesAccount = { id: string; label: string; status: string; plan?: 'Ultra' | 'Pro' | 'Free' }
 
 export type SeriesRun = {
   runId: string; status: string; total: number; done: number

@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/flow", tags=["flow"])
 class AccountIn(BaseModel):
     label: str = Field(min_length=1, max_length=80)
     email: str = Field(default="", max_length=160)
-    plan: str = Field(default="Pro", pattern="^(Pro|Ultra)$")
+    plan: str = Field(default="Free", pattern="^(Pro|Ultra|Free)$")
     projectId: str = Field(default="", max_length=160)
     isDefault: bool = False
 
@@ -154,6 +154,14 @@ async def accounts_sync_one(account_id: str):
         raise HTTPException(404, "Flow account not found") from exc
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        # FlowAuthError (401) and other flow-py exceptions: account status already
+        # patched to 'reconnect' inside service. Return 409 so the frontend knows
+        # to prompt re-connection rather than showing a generic 500.
+        exc_name = type(exc).__name__
+        if "Auth" in exc_name or "401" in str(exc):
+            raise HTTPException(409, f"FLOW_SESSION_EXPIRED: {exc}") from exc
+        raise HTTPException(500, str(exc)) from exc
 
 
 

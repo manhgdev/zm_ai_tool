@@ -185,9 +185,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const [editingAccount, setEditingAccount] = useState<string | "new" | null>(
     null,
   );
-  const [accountDraft, setAccountDraft] = useState({
+  const [accountDraft, setAccountDraft] = useState<{
+    label: string;
+    email: string;
+    plan: "Ultra" | "Pro" | "Free";
+  }>({
     label: "",
     email: "",
+    plan: "Free",
   });
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(sessionStorage.getItem(COLLAPSED_FOLDERS_KEY) || "{}"); } catch { return {}; }
@@ -637,6 +642,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       toast.info(message);
       return;
     }
+    if (createKind === "video" && account.plan === "Free") {
+      const message = t(
+        "Tài khoản gói thường chỉ hỗ trợ tạo ảnh. Vui lòng chuyển sang loại 'Ảnh' hoặc chọn tài khoản Pro/Ultra.",
+        "Free accounts only support image generation. Please switch to 'Image' or select a Pro/Ultra account.",
+      );
+      setApiError(message);
+      toast.warning(message);
+      return;
+    }
     try {
       if (!isDesktopApp && settings.autoDownload && !webOutputRootRef.current) {
         try {
@@ -658,9 +672,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           // Fallback to standard download if permission is denied
         }
       }
-      const effectiveSettings = settings.outputDir.trim()
+      let effectiveSettings = settings.outputDir.trim()
         ? settings
         : { ...settings, outputDir: defaultFlowOutputFolder() };
+
+      if (createKind === "image" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
+        effectiveSettings = { ...effectiveSettings, model: "Nano Banana 2", imageModel: "Nano Banana 2" };
+      }
 
       if (effectiveSettings !== settings) {
         setSettings(effectiveSettings);
@@ -729,13 +747,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   };
   const addAccount = () => {
-    setAccountDraft({ label: "", email: "" });
+    setAccountDraft({ label: "", email: "", plan: "Free" });
     setEditingAccount("new");
   };
   const editAccount = (account: FlowAccount) => {
     setAccountDraft({
       label: account.label,
       email: account.email,
+      plan: account.plan || "Free",
     });
     setEditingAccount(account.id);
   };
@@ -983,7 +1002,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setSyncingAccountIds((s) => new Set(s).add(account.id));
     void flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/sync`, { method: "POST" })
       .then((updated) => setAccounts((current) => current.map((item) => item.id === updated.id ? updated : item)))
-      .catch((error) => toast.error(t("Đồng bộ thất bại", "Sync failed") + ": " + (error instanceof Error ? error.message : String(error))))
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        // Refresh accounts so the UI picks up any status change (e.g. reconnect)
+        // that the backend wrote to JSON before raising the error.
+        void flowRequest<{ accounts: FlowAccount[] }>("/api/flow/accounts")
+          .then((data) => { if (data.accounts) setAccounts(normalizeFlowAccounts(data.accounts)); });
+        if (msg.includes("SESSION_EXPIRED") || msg.includes("401")) {
+          toast.error(t("Phiên đã hết hạn, vui lòng kết nối lại tài khoản", "Session expired — please reconnect the account"));
+        } else {
+          toast.error(t("Đồng bộ thất bại", "Sync failed") + ": " + msg);
+        }
+      })
       .finally(() => setSyncingAccountIds((s) => { const next = new Set(s); next.delete(account.id); return next; }));
   };
   const syncAllAccounts = () => {
@@ -1298,6 +1328,22 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     placeholder="name@gmail.com"
                   />
                 </label>
+                <label>
+                  <span>{t("Gói tài khoản", "Account plan")}</span>
+                  <select
+                    value={accountDraft.plan}
+                    onChange={(event) =>
+                      setAccountDraft((current) => ({
+                        ...current,
+                        plan: event.target.value as "Ultra" | "Pro" | "Free",
+                      }))
+                    }
+                  >
+                    <option value="Free">{t("Gói thường (Free)", "Free / Standard")}</option>
+                    <option value="Pro">Pro</option>
+                    <option value="Ultra">Ultra</option>
+                  </select>
+                </label>
                 <footer>
                   <button type="button" onClick={() => setEditingAccount(null)}>
                     {t("Hủy", "Cancel")}
@@ -1320,7 +1366,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   className={account.isDefault ? "is-default" : ""}
                 >
                   <div className="flow-account-head">
-                    <span>{account.plan}</span>
+                    <span>{account.plan === "Free" ? t("Gói thường", "Free") : account.plan}</span>
                     <mark className={account.status}>
                       {account.status === "online"
                         ? t("Online", "Online")
@@ -1698,6 +1744,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     : t("Nâng cao", "Advanced")}
                 </button>
               </div>
+              {createKind === "video" && selectedFlowAccount(accounts, settings.account)?.plan === "Free" && (
+                <div style={{ padding: "8px 12px", background: "rgba(234, 179, 8, 0.12)", borderRadius: "6px", color: "var(--color-warning, #eab308)", fontSize: "12px", marginBottom: "8px" }}>
+                  ⚠️ {t("Tài khoản gói thường chỉ hỗ trợ tạo ảnh (Nano Banana 2). Để tạo video cần gói Pro hoặc Ultra.", "Free accounts only support image generation (Nano Banana 2). Video requires a Pro or Ultra plan.")}
+                </div>
+              )}
               <div className="flow-settings-grid">
                 <FlowSelect
                   label={t("Model", "Model")}
@@ -1712,7 +1763,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             m !== "Veo 3.1 - Lite [Lower Priority]" ||
                             selectedFlowAccount(accounts, settings.account)?.plan === "Ultra",
                         )
-                      : [...FLOW_IMAGE_MODELS]
+                      : selectedFlowAccount(accounts, settings.account)?.plan === "Free"
+                        ? FLOW_IMAGE_MODELS.filter((m) => m !== "Nano Banana Pro")
+                        : [...FLOW_IMAGE_MODELS]
                   }
                 />
                 <FlowSelect

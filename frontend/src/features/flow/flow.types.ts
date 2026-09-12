@@ -37,7 +37,7 @@ export type FlowJob = {
 export type FlowAccount = {
   id: string;
   label: string;
-  plan: "Ultra" | "Pro";
+  plan: "Ultra" | "Pro" | "Free";
   email: string;
   status: "online" | "reconnect" | "connecting";
   credits: number | null;
