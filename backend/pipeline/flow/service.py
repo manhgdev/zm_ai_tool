@@ -22,7 +22,8 @@ from pipeline.core.config import PUBLIC_DATA
 from pipeline.core.output_paths import safe_output_part, selected_or_default
 from . import store
 
-_PROJECT_RE = re.compile(r"/flow/project/([^/?#]+)")
+# Match both legacy labs.google/fx/tools/flow/project/<id> and new flow.google.com/project/<id>
+_PROJECT_RE = re.compile(r"(?:/flow)?/project/([^/?#]+)")
 _TERMINAL = {"done", "failed", "cancelled", "action_required"}
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 3
 _MAX_CONCURRENT_JOBS_PER_ACCOUNT = 6
@@ -260,6 +261,7 @@ class FlowService:
     def __init__(self) -> None:
         self._account_active: dict[str, int] = {}
         self._connecting_accounts: set[str] = set()
+        self._syncing_accounts: set[str] = set()  # guard concurrent credit syncs
         self._claimed_media_ids: set[str] = set()
         self._cancelled: set[str] = set()
         self._guard = threading.RLock()
@@ -537,13 +539,40 @@ class FlowService:
         project_id = str(account.get("projectId") or "")
         if account.get("status") != "online" or not project_id:
             raise RuntimeError("FLOW_LOGIN_REQUIRED: account must be connected before syncing credits")
+        # Guard: skip if Chrome is already open for this account (connect in progress)
+        with self._guard:
+            if account_id in self._connecting_accounts:
+                _log.info("sync_credits_for_account: skip %s — connect in progress", account_id)
+                return account
+            if account_id in self._syncing_accounts:
+                _log.info("sync_credits_for_account: skip %s — already syncing", account_id)
+                return account
+            self._syncing_accounts.add(account_id)
         from flow._api import FlowAPI
+        from flow._exceptions import AuthError as FlowAuthError
         from .browser import BrowserManager
         browser = BrowserManager(headless=True, profile_dir=store.profile_dir(account_id))
         try:
-            await browser.start()
+            try:
+                await browser.start()
+            except Exception as start_exc:
+                # SingletonLock: previous Chrome left a stale lock file. Clean it
+                # and retry once — only safe when the original process is gone.
+                if "ProcessSingleton" in str(start_exc) or "SingletonLock" in str(start_exc):
+                    singleton_lock = store.profile_dir(account_id) / "SingletonLock"
+                    if singleton_lock.exists():
+                        _log.warning("sync: removing stale SingletonLock for %s", account_id)
+                        try:
+                            singleton_lock.unlink()
+                        except OSError:
+                            pass
+                    browser = BrowserManager(headless=True, profile_dir=store.profile_dir(account_id))
+                    await browser.start()  # raises if still fails
+                else:
+                    raise
             api = FlowAPI(browser, project_id=project_id)
-            credit_info = await api.get_credits()
+            _log.info("sync_credits_for_account: fetching credits project=%s account=%s", project_id, account_id)
+            credit_info = await asyncio.wait_for(api.get_credits(), timeout=30.0)
             patch: dict[str, Any] = {
                 "credits": int(credit_info.credits),
                 "creditsSyncedAt": time.time(),
@@ -553,7 +582,18 @@ class FlowService:
             if detected_plan:
                 patch["plan"] = detected_plan
             store.patch_row("accounts", account_id, patch)
+        except FlowAuthError as auth_exc:
+            # Token expired or cookies invalid — mark as needing reconnect.
+            _log.warning("sync_credits_for_account: auth error for %s: %s", account_id, auth_exc)
+            store.patch_row("accounts", account_id, {
+                "status": "reconnect",
+                "error": "FLOW_SESSION_EXPIRED: Session expired — re-connect the account",
+                "updatedAt": time.time(),
+            })
+            raise
         finally:
+            with self._guard:
+                self._syncing_accounts.discard(account_id)
             try:
                 await browser.stop()
             except Exception:
@@ -601,7 +641,7 @@ class FlowService:
             # If we already know the project, go there directly — Flow no longer
             # auto-redirects from the lobby, so waiting for a redirect is unreliable.
             start_url = (
-                f"https://labs.google/fx/tools/flow/project/{existing_project_id}"
+                f"https://flow.google.com/project/{existing_project_id}"
                 if existing_project_id
                 else FLOW_BASE_URL
             )
@@ -639,8 +679,8 @@ class FlowService:
                         project_id = match.group(1)
                         break
                     _was_signed_in = "accounts.google.com" not in current_url
-                    if _was_signed_in and "labs.google" in current_url:
-                        links = await page.locator('a[href*="/flow/project/"]').all()
+                    if _was_signed_in and ("flow.google.com" in current_url or "labs.google" in current_url):
+                        links = await page.locator('a[href*="/project/"]').all()
                         if links:
                             href = await links[0].get_attribute("href") or ""
                             match = _PROJECT_RE.search(href)
@@ -650,7 +690,7 @@ class FlowService:
                                 # can be read from the correct page context.
                                 try:
                                     await page.goto(
-                                        f"https://labs.google/fx/tools/flow/project/{project_id}",
+                                        f"https://flow.google.com/project/{project_id}",
                                         wait_until="domcontentloaded",
                                         timeout=15_000,
                                     )
@@ -665,6 +705,7 @@ class FlowService:
             # Persist project_id immediately so a browser crash/close below
             # doesn't lose it.
             captured_project_id = project_id
+            _log.info("_login: project_id captured=%s for account=%s", project_id, account_id)
 
             email = await page.evaluate("() => window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''")
             credits = None
@@ -672,14 +713,18 @@ class FlowService:
             detected_plan = None
             try:
                 from flow._api import FlowAPI
-                credit_info = await FlowAPI(browser, project_id=project_id).get_credits()
+                _log.info("_login: fetching credits for project=%s", project_id)
+                credit_info = await asyncio.wait_for(
+                    FlowAPI(browser, project_id=project_id).get_credits(),
+                    timeout=30.0,
+                )
                 credits = int(credit_info.credits)
                 credits_synced_at = time.time()
                 detected_plan = _detect_plan(credit_info)
                 _log.info("Plan detected on connect: %s (tier=%s sku=%s)",
                           detected_plan, getattr(credit_info, 'tier', ''), getattr(credit_info, 'sku', ''))
-            except Exception:
-                pass
+            except Exception as credits_exc:
+                _log.warning("_login: get_credits failed (non-fatal): %s", credits_exc)
             patch: dict[str, Any] = {
                 "status": "online", "projectId": project_id,
                 "email": email or (store.get_row("accounts", account_id) or {}).get("email", ""),
@@ -771,8 +816,8 @@ class FlowService:
                     confirmed_id = match.group(1)
             if not confirmed_id:
                 # Try following a project link from the lobby.
-                if "accounts.google.com" not in page.url and "labs.google" in page.url:
-                    links = await page.locator('a[href*="/flow/project/"]').all()
+                if "accounts.google.com" not in page.url and ("flow.google.com" in page.url or "labs.google" in page.url):
+                    links = await page.locator('a[href*="/project/"]').all()
                     if links:
                         href = await links[0].get_attribute("href") or ""
                         m = _PROJECT_RE.search(href)

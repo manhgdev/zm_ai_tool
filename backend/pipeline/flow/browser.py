@@ -13,7 +13,7 @@ from typing import Any
 
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 
-FLOW_BASE_URL = "https://labs.google/fx/tools/flow"
+FLOW_BASE_URL = "https://flow.google.com"
 
 
 def chrome_executable() -> Path | None:
