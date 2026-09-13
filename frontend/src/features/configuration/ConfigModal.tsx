@@ -1198,6 +1198,41 @@ export default function ConfigModal({
                 </button>
               </div>
             </div>
+
+            {outputRootDefault ? (
+              <div className="cfg-output-subfolders">
+                <p className="cfg-output-subfolders-title">
+                  {t('Thư mục theo tính năng', 'Folders by feature')}
+                </p>
+                <table className="cfg-output-subfolder-table">
+                  <tbody>
+                    {([
+                      ['Video Clone',       'clone'],
+                      ['Review / Film',     'review'],
+                      ['Flow → Video',      'flow/video'],
+                      ['Flow → Ảnh',        'flow/image'],
+                      ['TTS',               'text-to-speech'],
+                      [t('Tải video', 'Download video'), 'download-video'],
+                      [t('Phụ đề xuất',  'Subtitles export'), 'subtitles/export'],
+                      [t('Phụ đề ảnh',   'Subtitles image'),  'subtitles/image-video'],
+                      ['Drawing',           'drawing'],
+                      ['Cleaner',           'cleaner'],
+                      ['Batch',             'batch'],
+                      ['Automation',        'automation'],
+                    ] as [string, string][]).map(([label, sub]) => {
+                      const sep = outputRootDefault.includes('\\') ? '\\' : '/'
+                      const fullPath = outputRootDefault.replace(/[\\/]+$/, '') + sep + sub.replace(/\//g, sep)
+                      return (
+                        <tr key={sub}>
+                          <td className="cfg-subfolder-label">{label}</td>
+                          <td className="cfg-subfolder-path" title={fullPath}>{fullPath}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
           </div>
         ) : section === 'license' ? (
           licenseStatus && onLicenseStatusChange ? <LicensePage status={licenseStatus} embedded onStatusChange={onLicenseStatusChange} /> : null

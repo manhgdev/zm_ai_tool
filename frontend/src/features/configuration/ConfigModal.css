@@ -1104,3 +1104,51 @@
   margin-top: 0.6rem;
   flex-wrap: wrap;
 }
+/* ── Output subfolder listing ───────────────────────────── */
+.cfg-output-subfolders {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.cfg-output-subfolders-title {
+  margin: 0;
+  padding: 0.55rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted, #888);
+  background: var(--surface-alt, rgba(255,255,255,0.03));
+  border-bottom: 1px solid var(--line);
+}
+
+.cfg-output-subfolder-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.cfg-output-subfolder-table tr {
+  border-bottom: 1px solid var(--line);
+}
+
+.cfg-output-subfolder-table tr:last-child {
+  border-bottom: none;
+}
+
+.cfg-subfolder-label {
+  padding: 0.35rem 1rem;
+  color: var(--ink-muted, #888);
+  white-space: nowrap;
+  width: 1%;
+}
+
+.cfg-subfolder-path {
+  padding: 0.35rem 1rem 0.35rem 0;
+  font-family: monospace;
+  color: var(--ink);
+  word-break: break-all;
+  user-select: all;
+}
+
