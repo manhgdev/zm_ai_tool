@@ -216,6 +216,13 @@ export const api = {
       body: JSON.stringify({ locale }),
     }, 5_000),
 
+  saveOutputRoot: (outputRoot: string) =>
+    fetchJson<{ outputRoot: string | null }>(`${base}/ui-preferences`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ outputRoot }),
+    }, 5_000),
+
   saveConfig: (body: {
     cloud?: Record<
       string,

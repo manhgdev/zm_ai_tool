@@ -101,6 +101,9 @@ export default function ConfigModal({
    *  succeeds but the underlying check item remains !ok (e.g. native lib missing). */
   const autoAttempted = useRef<Set<string>>(new Set())
   const restartRequested = useRef(false)
+  const [outputRoot, setOutputRoot] = useState('')
+  const [outputRootSaving, setOutputRootSaving] = useState(false)
+  const [outputRootMsg, setOutputRootMsg] = useState('')
 
   const checkForUpdate = async () => {
     setUpdateChecking(true)
@@ -224,6 +227,11 @@ export default function ConfigModal({
   useEffect(() => {
     if (!open) return
     setSection(initialSection)
+    // Load current outputRoot from /api/ui-preferences
+    api.getLocalePreference().then((p) => {
+      // ponytail: reuse getLocalePreference — backend returns full prefs including outputRoot
+      setOutputRoot((p as unknown as { outputRoot?: string | null }).outputRoot || '')
+    }).catch(() => {})
   }, [open, initialSection])
 
   useEffect(() => {
@@ -884,6 +892,49 @@ export default function ConfigModal({
                 Backend tăng tốc và hướng dẫn cài được chọn theo thiết bị và runtime thực tế.
               </p>
             </details>
+            <div className="cfg-output-root">
+              <label className="cfg-output-root-label">
+                {t('Thư mục đầu ra', 'Output folder')}
+              </label>
+              <div className="cfg-output-root-row">
+                <input
+                  id="cfg-output-root-input"
+                  className="cfg-output-root-input"
+                  type="text"
+                  value={outputRoot}
+                  placeholder={t(
+                    'Để trống = dùng mặc định theo nền tảng',
+                    'Empty = use platform default',
+                  )}
+                  onChange={(e) => { setOutputRoot(e.target.value); setOutputRootMsg('') }}
+                />
+                <button
+                  id="cfg-output-root-save"
+                  type="button"
+                  className="cfg-primary"
+                  disabled={outputRootSaving}
+                  onClick={async () => {
+                    const raw = outputRoot.trim()
+                    if (raw && !raw.match(/^([A-Za-z]:[/\\]|\/)/)) {
+                      setOutputRootMsg(t('Phải là đường dẫn tuyệt đối', 'Must be an absolute path'))
+                      return
+                    }
+                    setOutputRootSaving(true)
+                    try {
+                      await api.saveOutputRoot(raw)
+                      setOutputRootMsg(t('Đã lưu — áp dụng từ lần xuất tiếp theo', 'Saved — applies from next export'))
+                    } catch {
+                      setOutputRootMsg(t('Lỗi lưu thư mục đầu ra', 'Failed to save output folder'))
+                    } finally {
+                      setOutputRootSaving(false)
+                    }
+                  }}
+                >
+                  {outputRootSaving ? '…' : t('Lưu', 'Save')}
+                </button>
+              </div>
+              {outputRootMsg ? <p className="cfg-output-root-msg">{outputRootMsg}</p> : null}
+            </div>
           </div>
         ) : section === 'cloud' ? (
           <div className="cfg-body">

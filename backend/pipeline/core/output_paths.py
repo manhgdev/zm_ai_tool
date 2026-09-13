@@ -1,6 +1,7 @@
 """Stable user-visible output folders, grouped by application tab."""
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -54,7 +55,23 @@ def item_output_folder(root: Path, item_id: object, *, create: bool = True) -> P
 
 
 def app_output_root() -> Path:
-    """Return the single APP output root shared by every feature."""
+    """User-visible output root, resolved in priority order:
+
+    1. outputRoot saved in ui_preferences.json (user picked once via Settings)
+    2. VIDEO_CLONE_OUTPUT_ROOT env var (set by launcher per platform:
+       Windows = APP_ROOT/output, macOS = ~/Downloads/ZM_AIO_TOOL)
+    3. Hard fallback: ~/Downloads/ZM_AIO_TOOL
+    """
+    from .ui_preferences import load_output_root  # ponytail: lazy to avoid circular at import
+    saved = load_output_root()
+    if saved:
+        saved.mkdir(parents=True, exist_ok=True)
+        return saved
+    env = os.environ.get("VIDEO_CLONE_OUTPUT_ROOT", "").strip()
+    if env:
+        folder = Path(env)
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
     folder = Path.home() / "Downloads" / APP_OUTPUT_ROOT_NAME
     folder.mkdir(parents=True, exist_ok=True)
     return folder

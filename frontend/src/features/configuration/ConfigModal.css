@@ -929,3 +929,50 @@
   background: var(--surface);
   color: var(--ink);
 }
+
+/* Output root field in setup section */
+.cfg-output-root {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.cfg-output-root-label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-muted, #888);
+  margin-bottom: 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cfg-output-root-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.cfg-output-root-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.875rem;
+  font-family: monospace;
+}
+
+.cfg-output-root-input:focus {
+  outline: none;
+  border-color: var(--accent, #6c6fff);
+}
+
+.cfg-output-root-msg {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: var(--ink-muted, #888);
+}
+

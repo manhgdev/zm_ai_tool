@@ -200,6 +200,7 @@ class AppConfigIn(BaseModel):
 class UiPreferencesIn(BaseModel):
     locale: Literal["vi", "en"] | None = None
     storage: dict[str, str] | None = None
+    outputRoot: str | None = None  # absolute path; empty string = reset to default
 
 
 class PreviewTtsIn(BaseModel):

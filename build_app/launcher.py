@@ -98,13 +98,19 @@ def prepare_pythonnet(root: Path) -> None:
 
 
 def app_home() -> Path:
+    """Return the root directory where app data lives.
+
+    Windows (portable): APP_ROOT = folder containing the .exe — moves with
+    the app to any drive the user places it on.
+    macOS: ~/Library/Application Support/ZM_AIO_TOOL (standard convention).
+    """
     if sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "VideoClone"
+        # Portable layout: data lives next to the executable, not in LOCALAPPDATA.
+        # sys.executable is the .exe inside the onedir bundle root.
+        return Path(sys.executable).resolve().parent
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "ZM_AIO_TOOL"
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "ZM_AIO_TOOL"
 
 
 home = app_home()
@@ -131,9 +137,17 @@ configure_stable_temp_directory(home)
 os.environ["VIDEO_CLONE_DESKTOP"] = "1"
 os.environ.setdefault("VIDEO_CLONE_HOME", str(home))
 os.environ.setdefault("VIDEO_CLONE_DATA", str(home / "data"))
-os.environ.setdefault("VIDEO_CLONE_PUBLIC_DATA", str(home / "public_data"))
-os.environ.setdefault("CAPCUT_DEVICE_JSON", str(home / "capcut_device.json"))
-os.environ.setdefault("UV_PYTHON_INSTALL_DIR", str(home / ".python-runtime"))
+# PUBLIC_DATA (project temp files) sits inside data/ — one tree, easy backup.
+os.environ.setdefault("VIDEO_CLONE_PUBLIC_DATA", str(home / "data" / "public"))
+os.environ.setdefault("CAPCUT_DEVICE_JSON", str(home / "data" / "capcut_device.json"))
+os.environ.setdefault("UV_PYTHON_INSTALL_DIR", str(home / "data" / ".python-runtime"))
+# OUTPUT_ROOT: Windows portable defaults to APP_ROOT/output; macOS to ~/Downloads/ZM_AIO_TOOL.
+# ui_preferences.json can override this once via /api/config/output-root.
+_default_output = (
+    str(home / "output") if sys.platform == "win32"
+    else str(Path.home() / "Downloads" / "ZM_AIO_TOOL")
+)
+os.environ.setdefault("VIDEO_CLONE_OUTPUT_ROOT", _default_output)
 # httpx parse NO_PROXY IPv6 trần ``::1`` thành port ``:1`` → Whisper/HF crash.
 _broken_np = {"::1", "::1/128", "[::1]", "[::1]/128"}
 for _np in ("NO_PROXY", "no_proxy"):

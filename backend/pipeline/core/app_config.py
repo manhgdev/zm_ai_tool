@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DATA
+from .output_paths import app_output_root
 
 _CONFIG_PATH = DATA / "app_config.json"
 
@@ -256,9 +257,9 @@ def public_app_config() -> dict[str, Any]:
         },
         # Bản đóng gói / launcher — file đã trên máy, không cần «Tải xuống»
         "desktop": is_desktop,
-        # Luôn trả về đường dẫn thực trên máy — cả Web App và Desktop App cùng
-        # máy với backend, đều ghi vào ~/Downloads/ZM_AIO_TOOL/.
-        "desktopOutputRoot": str(Path.home() / "Downloads" / "ZM_AIO_TOOL"),
+        # Dynamic: reflects user-chosen root or platform default.
+        # Windows portable: APP_ROOT/output | macOS: ~/Downloads/ZM_AIO_TOOL
+        "desktopOutputRoot": str(app_output_root()),
     }
 
 

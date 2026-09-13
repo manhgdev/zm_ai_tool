@@ -657,9 +657,18 @@ def api_get_ui_preferences():
 
 @router.put("/api/ui-preferences")
 def api_save_ui_preferences(body: UiPreferencesIn):
+    from pathlib import Path as _Path
+
     from pipeline.core.ui_preferences import save_ui_preferences
 
-    return save_ui_preferences(locale=body.locale, storage=body.storage)
+    output_root = None
+    if body.outputRoot is not None:
+        raw = body.outputRoot.strip()
+        if raw and not _Path(raw).is_absolute():
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="outputRoot must be an absolute path")
+        output_root = raw  # empty string = reset
+    return save_ui_preferences(locale=body.locale, storage=body.storage, output_root=output_root)
 
 
 @router.get("/api/system/checks")
