@@ -976,3 +976,43 @@
   color: var(--ink-muted, #888);
 }
 
+/* ── Output section tab ─────────────────────────────────── */
+.cfg-output-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.cfg-output-current {
+  background: var(--surface-alt, rgba(255,255,255,0.04));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.cfg-output-current-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted, #888);
+}
+
+.cfg-output-current-path {
+  font-size: 0.85rem;
+  font-family: monospace;
+  word-break: break-all;
+  color: var(--ink);
+  user-select: all;
+}
+
+.cfg-output-root-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  flex-wrap: wrap;
+}
+
