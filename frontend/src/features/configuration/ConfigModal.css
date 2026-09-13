@@ -76,7 +76,9 @@
   font-weight: 700;
 }
 
-.cfg-update:disabled { opacity: .55; }
+.cfg-update:disabled {
+  opacity: .55;
+}
 
 .cfg-update-layer {
   position: absolute;
@@ -109,24 +111,104 @@
   background: color-mix(in srgb, var(--primary) 12%, var(--card));
 }
 
-.cfg-update-status span { width: 10px; height: 10px; border: 2px solid var(--primary); border-radius: 50%; }
-.cfg-update-dialog.is-error .cfg-update-status span { border-color: var(--danger, #d23b3b); }
-.cfg-update-dialog.is-downloading .cfg-update-status span { border-right-color: transparent; animation: cfg-update-spin .75s linear infinite; }
-.cfg-update-copy h3 { margin: 0; font-size: 1rem; font-weight: 800; }
-.cfg-update-copy p { margin: 6px 0 0; color: var(--muted-foreground); font-size: .82rem; line-height: 1.45; }
-.cfg-update-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-.cfg-update-actions button { min-height: 34px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--foreground); font-size: .78rem; font-weight: 750; }
-.cfg-update-actions button.primary { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
-.cfg-update-progress-label { display: flex; justify-content: space-between; align-items: baseline; margin-top: 16px; color: var(--muted-foreground); font-size: .75rem; font-weight: 650; }
-.cfg-update-progress-label strong { color: var(--foreground); font-variant-numeric: tabular-nums; }
-.cfg-update-progress { height: 7px; margin-top: 6px; overflow: hidden; border-radius: 999px; background: var(--line); }
-.cfg-update-progress span { display: block; height: 100%; border-radius: inherit; background: var(--primary); transition: width .2s ease; }
+.cfg-update-status span {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--primary);
+  border-radius: 50%;
+}
 
-@keyframes cfg-update-spin { to { transform: rotate(360deg); } }
+.cfg-update-dialog.is-error .cfg-update-status span {
+  border-color: var(--danger, #d23b3b);
+}
+
+.cfg-update-dialog.is-downloading .cfg-update-status span {
+  border-right-color: transparent;
+  animation: cfg-update-spin .75s linear infinite;
+}
+
+.cfg-update-copy h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.cfg-update-copy p {
+  margin: 6px 0 0;
+  color: var(--muted-foreground);
+  font-size: .82rem;
+  line-height: 1.45;
+}
+
+.cfg-update-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.cfg-update-actions button {
+  min-height: 34px;
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: .78rem;
+  font-weight: 750;
+}
+
+.cfg-update-actions button.primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.cfg-update-progress-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 16px;
+  color: var(--muted-foreground);
+  font-size: .75rem;
+  font-weight: 650;
+}
+
+.cfg-update-progress-label strong {
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.cfg-update-progress {
+  height: 7px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.cfg-update-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width .2s ease;
+}
+
+@keyframes cfg-update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .cfg-update-dialog.is-downloading .cfg-update-status span { animation: none; }
-  .cfg-update-progress span { transition: none; }
+  .cfg-update-dialog.is-downloading .cfg-update-status span {
+    animation: none;
+  }
+
+  .cfg-update-progress span {
+    transition: none;
+  }
 }
 
 .cfg-section-tabs {
@@ -663,8 +745,15 @@
   min-width: 0;
 }
 
-.cfg-el-key-row input { min-width: 0; width: 100%; }
-.cfg-el-key-row .cfg-el-remove { grid-column: 2; grid-row: 1; }
+.cfg-el-key-row input {
+  min-width: 0;
+  width: 100%;
+}
+
+.cfg-el-key-row .cfg-el-remove {
+  grid-column: 2;
+  grid-row: 1;
+}
 
 .cfg-el-row {
   display: grid;
@@ -931,128 +1020,87 @@
 }
 
 /* Output root field in setup section */
-/* ── Output section tab ─────────────────────────────────── */
-.cfg-output-section {
-  display: flex;
-  flex-direction: column;
+.cfg-output-root {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
 }
 
-.cfg-output-card {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.cfg-output-card-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.9rem 1rem;
-  background: var(--surface-alt, rgba(255,255,255,0.03));
-  border-bottom: 1px solid var(--line);
-}
-
-.cfg-output-card-header > svg {
-  flex-shrink: 0;
-  width: 1.25rem;
-  height: 1.25rem;
-  color: var(--accent, #6c6fff);
-  opacity: 0.85;
-}
-
-.cfg-output-card-header > div {
-  flex: 1;
-  min-width: 0;
-}
-
-.cfg-output-card-header strong {
+.cfg-output-root-label {
   display: block;
-  font-size: 0.9rem;
+  font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--ink);
-}
-
-.cfg-output-card-header p {
-  margin: 0.1rem 0 0;
-  font-size: 0.78rem;
   color: var(--ink-muted, #888);
-}
-
-.cfg-output-badge {
-  flex-shrink: 0;
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 0.2em 0.55em;
-  border-radius: 99px;
-  background: var(--accent-muted, rgba(108,111,255,0.12));
-  color: var(--accent, #6c6fff);
+  margin-bottom: 0.4rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
 }
 
-.cfg-output-path-row {
+.cfg-output-root-row {
   display: flex;
-  align-items: stretch;
-  border-bottom: 1px solid var(--line);
+  gap: 0.5rem;
+  align-items: center;
 }
 
 .cfg-output-root-input {
   flex: 1;
   min-width: 0;
-  padding: 0.65rem 0.85rem;
-  border: none;
-  background: transparent;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
   color: var(--ink);
-  font-size: 0.85rem;
+  font-size: 0.875rem;
   font-family: monospace;
-  outline: none;
-}
-
-.cfg-output-root-input::placeholder {
-  color: var(--ink-muted, #888);
-  opacity: 0.7;
 }
 
 .cfg-output-root-input:focus {
-  background: var(--surface-focus, rgba(108,111,255,0.04));
+  outline: none;
+  border-color: var(--accent, #6c6fff);
 }
 
-.cfg-output-pick-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0 0.9rem;
-  border: none;
-  border-left: 1px solid var(--line);
-  border-radius: 0;
-  background: var(--surface-alt, rgba(255,255,255,0.03));
-  color: var(--ink);
-  font-size: 0.82rem;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s;
-}
-
-.cfg-output-pick-btn:hover {
-  background: var(--surface-hover, rgba(255,255,255,0.07));
-}
-
-.cfg-output-pick-btn svg {
-  width: 0.95em;
-  height: 0.95em;
-  flex-shrink: 0;
-}
-
-.cfg-output-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.7rem 1rem;
-  flex-wrap: wrap;
-}
-
-.cfg-output-msg {
+.cfg-output-root-msg {
+  margin: 0.35rem 0 0;
   font-size: 0.8rem;
   color: var(--ink-muted, #888);
-  margin-left: auto;
+}
+
+/* ── Output section tab ─────────────────────────────────── */
+.cfg-output-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.cfg-output-current {
+  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.cfg-output-current-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted, #888);
+}
+
+.cfg-output-current-path {
+  font-size: 0.85rem;
+  font-family: monospace;
+  word-break: break-all;
+  color: var(--ink);
+  user-select: all;
+}
+
+.cfg-output-root-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  flex-wrap: wrap;
 }

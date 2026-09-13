@@ -231,10 +231,10 @@ export default function ConfigModal({
     // Load current outputRoot from /api/ui-preferences and resolved default from /api/config
     api.getLocalePreference().then((p) => {
       setOutputRoot((p as unknown as { outputRoot?: string | null }).outputRoot || '')
-    }).catch(() => {})
+    }).catch(() => { })
     api.getConfig().then((cfg) => {
       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
-    }).catch(() => {})
+    }).catch(() => { })
   }, [open, initialSection])
 
   useEffect(() => {
@@ -369,10 +369,10 @@ export default function ConfigModal({
       await new Promise((r) => window.setTimeout(r, 1500))
     } catch (e) {
       const message = e instanceof Error
-          ? e.message
-          : kind === 'ai_runtime'
-            ? 'Cài gói AI thất bại'
-            : kind === 'ocr_cuda'
+        ? e.message
+        : kind === 'ai_runtime'
+          ? 'Cài gói AI thất bại'
+          : kind === 'ocr_cuda'
             ? 'Cài GPU OCR thất bại'
             : kind === 'demucs_cuda'
               ? 'Cài Demucs thất bại'
@@ -774,33 +774,33 @@ export default function ConfigModal({
               <div className="cfg-setup-actions">
                 {(checks?.device?.install?.actions?.length ?? 0) > 0
                   ? checks?.device?.install?.actions!.map((a) => {
-                      const done = (checks?.items || []).some(
-                        (it) =>
-                          it.ok &&
-                          (it.install === a.id ||
-                            (a.id === 'demucs_cuda' && it.id === 'demucs') ||
-                            (a.id === 'ocr_cuda' && it.id === 'ocr_cuda')),
-                      )
-                      return done ? (
-                        <span key={a.id} className="cfg-check-installed cfg-setup-chip">
-                          {a.label} ✓
-                        </span>
-                      ) : (
-                        <button
-                          key={a.id}
-                          type="button"
-                          className="cfg-check-install cfg-check-install-sm"
-                          disabled={!!installing}
-                          onClick={() => {
-                            autoSetupLock.current = false
-                            autoAttempted.current.clear()
-                            void installAction(a.id as 'ocr_cuda' | 'demucs_cuda')
-                          }}
-                        >
-                          {installing === a.id ? '…' : a.label}
-                        </button>
-                      )
-                    })
+                    const done = (checks?.items || []).some(
+                      (it) =>
+                        it.ok &&
+                        (it.install === a.id ||
+                          (a.id === 'demucs_cuda' && it.id === 'demucs') ||
+                          (a.id === 'ocr_cuda' && it.id === 'ocr_cuda')),
+                    )
+                    return done ? (
+                      <span key={a.id} className="cfg-check-installed cfg-setup-chip">
+                        {a.label} ✓
+                      </span>
+                    ) : (
+                      <button
+                        key={a.id}
+                        type="button"
+                        className="cfg-check-install cfg-check-install-sm"
+                        disabled={!!installing}
+                        onClick={() => {
+                          autoSetupLock.current = false
+                          autoAttempted.current.clear()
+                          void installAction(a.id as 'ocr_cuda' | 'demucs_cuda')
+                        }}
+                      >
+                        {installing === a.id ? '…' : a.label}
+                      </button>
+                    )
+                  })
                   : null}
                 <button
                   type="button"
@@ -865,9 +865,9 @@ export default function ConfigModal({
                           {installing === it.install || (it.install.startsWith('ai_runtime') && installing === 'ai_runtime')
                             ? 'Đang cài…'
                             : it.installLabel ||
-                              (it.install.startsWith('ai_runtime')
-                                ? t('Cài gói AI', 'Install AI packages')
-                                : it.install === 'demucs_cuda'
+                            (it.install.startsWith('ai_runtime')
+                              ? t('Cài gói AI', 'Install AI packages')
+                              : it.install === 'demucs_cuda'
                                 ? checks?.device?.install?.demucsLabel || t('Cài Demucs GPU', 'Install Demucs (GPU)')
                                 : checks?.device?.install?.ocrLabel || t('Cài OCR CUDA', 'Install OCR (CUDA)'))}
                         </button>
@@ -906,8 +906,8 @@ export default function ConfigModal({
                 const displayValue = slot.edited
                   ? slot.value
                   : slot.visible && isSaved
-                  ? rawKey
-                  : slot.value
+                    ? rawKey
+                    : slot.value
                 const placeholder = isSaved && !slot.visible
                   ? t('••••••••  — nhập để thay', '•••••••• — enter to replace')
                   : providerKeyPlaceholder(tab)
@@ -1042,8 +1042,8 @@ export default function ConfigModal({
                 const displayValue = slot.edited
                   ? slot.value
                   : slot.visible && isSaved
-                  ? rawKey
-                  : slot.value
+                    ? rawKey
+                    : slot.value
                 const placeholder = isSaved && !slot.visible
                   ? t('••••••••  — nhập để thay', '•••••••• — enter to replace')
                   : 'sk_…'
@@ -1104,17 +1104,23 @@ export default function ConfigModal({
           </div>
         ) : section === 'output' ? (
           <div className="cfg-body cfg-output-section">
-            <div className="cfg-output-card">
-              <div className="cfg-output-card-header">
-                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
-                <div>
-                  <strong>{t('Thu mục đầu ra', 'Output folder')}</strong>
-                  <p>{t('Tất cả tính năng xuất file sẽ lưu vào đây theo cấu trúc con.', 'All exports save here in subfolders.')}</p>
-                </div>
-                {!outputRoot && <span className="cfg-output-badge">{t('mặc định', 'default')}</span>}
-              </div>
-
-              <div className="cfg-output-path-row">
+            <p className="cfg-hint">
+              {t(
+                'Tất cả tính năng xuất file sẽ lưu vào thư mục này theo cấu trúc con. Để trống = dùng mặc định theo nền tảng.',
+                'All export features save files here in subfolders. Leave empty to use the platform default.',
+              )}
+            </p>
+            <div className="cfg-output-current">
+              <span className="cfg-output-current-label">{t('Hiện tại', 'Current path')}</span>
+              <code className="cfg-output-current-path" title={outputRootDefault}>
+                {outputRootDefault || t('Đang tải…', 'Loading…')}
+              </code>
+            </div>
+            <div className="cfg-output-root">
+              <label className="cfg-output-root-label" htmlFor="cfg-output-root-input">
+                {t('Thư mục đầu ra', 'Output folder')}
+              </label>
+              <div className="cfg-output-root-row">
                 <input
                   id="cfg-output-root-input"
                   className="cfg-output-root-input"
@@ -1127,23 +1133,25 @@ export default function ConfigModal({
                 <button
                   id="cfg-output-root-pick"
                   type="button"
-                  className="cfg-output-pick-btn"
+                  className="cfg-secondary"
                   title={t('Chọn thư mục bằng hộp thoại', 'Browse for folder')}
                   onClick={async () => {
                     try {
                       const res = await fetch('/api/system/pick-folder', { method: 'POST' })
                       if (!res.ok) return
                       const data = await res.json() as { ok: boolean; path: string }
-                      if (data.ok && data.path) { setOutputRoot(data.path); setOutputRootMsg('') }
+                      if (data.ok && data.path) {
+                        setOutputRoot(data.path)
+                        setOutputRootMsg('')
+                      }
                     } catch { /* dialog cancelled */ }
                   }}
                 >
-                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
-                  {t('Chọn', 'Browse')}
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: '1em', height: '1em', verticalAlign: '-0.15em' }}><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
+                  {' '}{t('Chọn', 'Browse')}
                 </button>
               </div>
-
-              <div className="cfg-output-actions">
+              <div className="cfg-output-root-actions">
                 <button
                   id="cfg-output-root-save"
                   type="button"
@@ -1158,11 +1166,12 @@ export default function ConfigModal({
                     setOutputRootSaving(true)
                     try {
                       await api.saveOutputRoot(raw)
+                      // Refresh displayed current path
                       const cfg = await api.getConfig()
                       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
-                      setOutputRootMsg(t('Đã lưu ✓', 'Saved ✓'))
+                      setOutputRootMsg(t('Đã lưu — áp dụng từ lần xuất tiếp theo', 'Saved — applies from next export'))
                     } catch {
-                      setOutputRootMsg(t('Lỗi lưu thư mục đầu ra', 'Failed to save'))
+                      setOutputRootMsg(t('Lỗi lưu thư mục đầu ra', 'Failed to save output folder'))
                     } finally {
                       setOutputRootSaving(false)
                     }
@@ -1170,31 +1179,29 @@ export default function ConfigModal({
                 >
                   {outputRootSaving ? '…' : t('Lưu', 'Save')}
                 </button>
-                {outputRoot ? (
-                  <button
-                    type="button"
-                    className="cfg-secondary"
-                    disabled={outputRootSaving}
-                    onClick={async () => {
-                      setOutputRootSaving(true)
-                      try {
-                        await api.saveOutputRoot('')
-                        setOutputRoot('')
-                        const cfg = await api.getConfig()
-                        setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
-                        setOutputRootMsg(t('Đã đặt lại ✓', 'Reset ✓'))
-                      } catch {
-                        setOutputRootMsg(t('Lỗi', 'Error'))
-                      } finally {
-                        setOutputRootSaving(false)
-                      }
-                    }}
-                  >
-                    {t('Đặt lại mặc định', 'Reset to default')}
-                  </button>
-                ) : null}
-                {outputRootMsg ? <span className="cfg-output-msg">{outputRootMsg}</span> : null}
+                <button
+                  type="button"
+                  className="cfg-secondary"
+                  disabled={outputRootSaving || !outputRoot}
+                  onClick={async () => {
+                    setOutputRootSaving(true)
+                    try {
+                      await api.saveOutputRoot('')
+                      setOutputRoot('')
+                      const cfg = await api.getConfig()
+                      setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
+                      setOutputRootMsg(t('Đã đặt lại về mặc định', 'Reset to default'))
+                    } catch {
+                      setOutputRootMsg(t('Lỗi', 'Error'))
+                    } finally {
+                      setOutputRootSaving(false)
+                    }
+                  }}
+                >
+                  {t('Đặt lại mặc định', 'Reset to default')}
+                </button>
               </div>
+              {outputRootMsg ? <p className="cfg-output-root-msg">{outputRootMsg}</p> : null}
             </div>
           </div>
         ) : section === 'license' ? (
@@ -1289,9 +1296,9 @@ export default function ConfigModal({
                 {checks?.ok ? t('Bắt đầu', 'Start') : checksLoading ? t('Đang chuẩn bị…', 'Preparing…') : t('Thử lại', 'Retry')}
               </button>
             </>
-          ) : section === 'logs' || section === 'license' ? (
+          ) : section === 'logs' || section === 'license' || section === 'output' ? (
             <button type="button" className="cfg-secondary" onClick={tryClose} disabled={!canClose}>
-              Đóng
+              {t('Đóng', 'Close')}
             </button>
           ) : (
             <>
