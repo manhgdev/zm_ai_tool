@@ -931,88 +931,128 @@
 }
 
 /* Output root field in setup section */
-.cfg-output-root {
-  margin-top: 1.25rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--line);
-}
-
-.cfg-output-root-label {
-  display: block;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--ink-muted, #888);
-  margin-bottom: 0.4rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.cfg-output-root-row {
+/* ── Output section tab ─────────────────────────────────── */
+.cfg-output-section {
   display: flex;
-  gap: 0.5rem;
+  flex-direction: column;
+}
+
+.cfg-output-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.cfg-output-card-header {
+  display: flex;
   align-items: center;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem;
+  background: var(--surface-alt, rgba(255,255,255,0.03));
+  border-bottom: 1px solid var(--line);
+}
+
+.cfg-output-card-header > svg {
+  flex-shrink: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--accent, #6c6fff);
+  opacity: 0.85;
+}
+
+.cfg-output-card-header > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.cfg-output-card-header strong {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.cfg-output-card-header p {
+  margin: 0.1rem 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-muted, #888);
+}
+
+.cfg-output-badge {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.2em 0.55em;
+  border-radius: 99px;
+  background: var(--accent-muted, rgba(108,111,255,0.12));
+  color: var(--accent, #6c6fff);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cfg-output-path-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--line);
 }
 
 .cfg-output-root-input {
   flex: 1;
   min-width: 0;
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
+  padding: 0.65rem 0.85rem;
+  border: none;
+  background: transparent;
   color: var(--ink);
-  font-size: 0.875rem;
+  font-size: 0.85rem;
   font-family: monospace;
+  outline: none;
+}
+
+.cfg-output-root-input::placeholder {
+  color: var(--ink-muted, #888);
+  opacity: 0.7;
 }
 
 .cfg-output-root-input:focus {
-  outline: none;
-  border-color: var(--accent, #6c6fff);
+  background: var(--surface-focus, rgba(108,111,255,0.04));
 }
 
-.cfg-output-root-msg {
-  margin: 0.35rem 0 0;
-  font-size: 0.8rem;
-  color: var(--ink-muted, #888);
-}
-
-/* ── Output section tab ─────────────────────────────────── */
-.cfg-output-section {
+.cfg-output-pick-btn {
   display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-}
-
-.cfg-output-current {
-  background: var(--surface-alt, rgba(255,255,255,0.04));
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.cfg-output-current-label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-muted, #888);
-}
-
-.cfg-output-current-path {
-  font-size: 0.85rem;
-  font-family: monospace;
-  word-break: break-all;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.9rem;
+  border: none;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface-alt, rgba(255,255,255,0.03));
   color: var(--ink);
-  user-select: all;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
 }
 
-.cfg-output-root-actions {
+.cfg-output-pick-btn:hover {
+  background: var(--surface-hover, rgba(255,255,255,0.07));
+}
+
+.cfg-output-pick-btn svg {
+  width: 0.95em;
+  height: 0.95em;
+  flex-shrink: 0;
+}
+
+.cfg-output-actions {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
-  margin-top: 0.6rem;
+  padding: 0.7rem 1rem;
   flex-wrap: wrap;
 }
 
+.cfg-output-msg {
+  font-size: 0.8rem;
+  color: var(--ink-muted, #888);
+  margin-left: auto;
+}

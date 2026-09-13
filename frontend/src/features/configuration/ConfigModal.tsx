@@ -1104,23 +1104,17 @@ export default function ConfigModal({
           </div>
         ) : section === 'output' ? (
           <div className="cfg-body cfg-output-section">
-            <p className="cfg-hint">
-              {t(
-                'Tất cả tính năng xuất file sẽ lưu vào thư mục này theo cấu trúc con. Để trống = dùng mặc định theo nền tảng.',
-                'All export features save files here in subfolders. Leave empty to use the platform default.',
-              )}
-            </p>
-            <div className="cfg-output-current">
-              <span className="cfg-output-current-label">{t('Hiện tại', 'Current path')}</span>
-              <code className="cfg-output-current-path" title={outputRootDefault}>
-                {outputRootDefault || t('Đang tải…', 'Loading…')}
-              </code>
-            </div>
-            <div className="cfg-output-root">
-              <label className="cfg-output-root-label" htmlFor="cfg-output-root-input">
-                {t('Thư mục đầu ra', 'Output folder')}
-              </label>
-              <div className="cfg-output-root-row">
+            <div className="cfg-output-card">
+              <div className="cfg-output-card-header">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
+                <div>
+                  <strong>{t('Thu mục đầu ra', 'Output folder')}</strong>
+                  <p>{t('Tất cả tính năng xuất file sẽ lưu vào đây theo cấu trúc con.', 'All exports save here in subfolders.')}</p>
+                </div>
+                {!outputRoot && <span className="cfg-output-badge">{t('mặc định', 'default')}</span>}
+              </div>
+
+              <div className="cfg-output-path-row">
                 <input
                   id="cfg-output-root-input"
                   className="cfg-output-root-input"
@@ -1133,25 +1127,23 @@ export default function ConfigModal({
                 <button
                   id="cfg-output-root-pick"
                   type="button"
-                  className="cfg-secondary"
+                  className="cfg-output-pick-btn"
                   title={t('Chọn thư mục bằng hộp thoại', 'Browse for folder')}
                   onClick={async () => {
                     try {
                       const res = await fetch('/api/system/pick-folder', { method: 'POST' })
                       if (!res.ok) return
                       const data = await res.json() as { ok: boolean; path: string }
-                      if (data.ok && data.path) {
-                        setOutputRoot(data.path)
-                        setOutputRootMsg('')
-                      }
+                      if (data.ok && data.path) { setOutputRoot(data.path); setOutputRootMsg('') }
                     } catch { /* dialog cancelled */ }
                   }}
                 >
-                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{width:'1em',height:'1em',verticalAlign:'-0.15em'}}><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
-                  {' '}{t('Chọn', 'Browse')}
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
+                  {t('Chọn', 'Browse')}
                 </button>
               </div>
-              <div className="cfg-output-root-actions">
+
+              <div className="cfg-output-actions">
                 <button
                   id="cfg-output-root-save"
                   type="button"
@@ -1166,12 +1158,11 @@ export default function ConfigModal({
                     setOutputRootSaving(true)
                     try {
                       await api.saveOutputRoot(raw)
-                      // Refresh displayed current path
                       const cfg = await api.getConfig()
                       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
-                      setOutputRootMsg(t('Đã lưu — áp dụng từ lần xuất tiếp theo', 'Saved — applies from next export'))
+                      setOutputRootMsg(t('Đã lưu ✓', 'Saved ✓'))
                     } catch {
-                      setOutputRootMsg(t('Lỗi lưu thư mục đầu ra', 'Failed to save output folder'))
+                      setOutputRootMsg(t('Lỗi lưu thư mục đầu ra', 'Failed to save'))
                     } finally {
                       setOutputRootSaving(false)
                     }
@@ -1179,29 +1170,31 @@ export default function ConfigModal({
                 >
                   {outputRootSaving ? '…' : t('Lưu', 'Save')}
                 </button>
-                <button
-                  type="button"
-                  className="cfg-secondary"
-                  disabled={outputRootSaving || !outputRoot}
-                  onClick={async () => {
-                    setOutputRootSaving(true)
-                    try {
-                      await api.saveOutputRoot('')
-                      setOutputRoot('')
-                      const cfg = await api.getConfig()
-                      setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
-                      setOutputRootMsg(t('Đã đặt lại về mặc định', 'Reset to default'))
-                    } catch {
-                      setOutputRootMsg(t('Lỗi', 'Error'))
-                    } finally {
-                      setOutputRootSaving(false)
-                    }
-                  }}
-                >
-                  {t('Đặt lại mặc định', 'Reset to default')}
-                </button>
+                {outputRoot ? (
+                  <button
+                    type="button"
+                    className="cfg-secondary"
+                    disabled={outputRootSaving}
+                    onClick={async () => {
+                      setOutputRootSaving(true)
+                      try {
+                        await api.saveOutputRoot('')
+                        setOutputRoot('')
+                        const cfg = await api.getConfig()
+                        setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
+                        setOutputRootMsg(t('Đã đặt lại ✓', 'Reset ✓'))
+                      } catch {
+                        setOutputRootMsg(t('Lỗi', 'Error'))
+                      } finally {
+                        setOutputRootSaving(false)
+                      }
+                    }}
+                  >
+                    {t('Đặt lại mặc định', 'Reset to default')}
+                  </button>
+                ) : null}
+                {outputRootMsg ? <span className="cfg-output-msg">{outputRootMsg}</span> : null}
               </div>
-              {outputRootMsg ? <p className="cfg-output-root-msg">{outputRootMsg}</p> : null}
             </div>
           </div>
         ) : section === 'license' ? (
