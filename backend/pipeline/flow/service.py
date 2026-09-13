@@ -1629,7 +1629,11 @@ class FlowService:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             self._check_cancel(job_id)
-            data = await api.get_project_data()
+            try:
+                data = await api.get_project_data()
+            except Exception as e:
+                _log.debug("_wait_for_project_videos: get_project_data error: %s", e)
+                data = {}
             completed: list[tuple[str, str]] = []
             for media in data.get("projectContents", {}).get("media", []):
                 media_id = str(media.get("name") or "")
@@ -1645,6 +1649,16 @@ class FlowService:
                     "MEDIA_GENERATION_STATUS_SUCCESSFUL",
                 }:
                     completed.append((str(metadata.get("createTime") or ""), media_id))
+            if not completed and hasattr(api, "_bm"):
+                try:
+                    page = await api._bm.page()
+                    items = await self._project_media_elements(page)
+                    for item in items:
+                        mid = str(item.get("id") or "")
+                        if mid and mid not in baseline_ids and str(item.get("src") or "").startswith("http"):
+                            completed.append(("", mid))
+                except Exception:
+                    pass
             if completed:
                 completed.sort()
                 claimed = self._claim_media_ids(
@@ -1706,12 +1720,18 @@ class FlowService:
                 await client._ensure_project_page(page)
                 await self._prepare_ui_model(page, "video", model, ui=client._ui)
                 await self._prepare_ui_format(page, ratio, str(settings.get("duration") or "8"))
-                project_data = await api.get_project_data()
-                baseline_ids = {
-                    str(media.get("name"))
-                    for media in project_data.get("projectContents", {}).get("media", [])
-                    if media.get("name")
-                }
+                baseline_media = await self._project_media_elements(page)
+                baseline_ids = {str(item.get("id")) for item in baseline_media if item.get("id")}
+                if not baseline_ids:
+                    try:
+                        project_data = await api.get_project_data()
+                        baseline_ids = {
+                            str(media.get("name"))
+                            for media in project_data.get("projectContents", {}).get("media", [])
+                            if media.get("name")
+                        }
+                    except Exception:
+                        baseline_ids = set()
                 # If we have a start image, switch to FRAME_TO_VIDEO NOW while the
                 # settings panel is still open from _prepare_ui_model above.
                 # switch_mode.open_settings_panel will see the panel as already open
@@ -1730,7 +1750,10 @@ class FlowService:
                 media_items: list[dict[str, Any]] = []
                 if extend_from and (extend_from.get("mediaIds") or []):
                     media_id = str(extend_from["mediaIds"][0])
-                    project_data = await api.get_project_data()
+                    try:
+                        project_data = await api.get_project_data()
+                    except Exception:
+                        project_data = {}
                     media = next((item for item in project_data.get("projectContents", {}).get("media", []) if str(item.get("name") or "") == media_id), {})
                     workflow_id = str(media.get("workflowId") or "")
                     if not workflow_id:
@@ -1749,9 +1772,13 @@ class FlowService:
                         if not await client._ui.fill_prompt(page, job["prompt"]):
                             raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
                         await self._click_flow_submit(page)
-                        media_items = await self._wait_for_project_media(
-                            page, baseline_ids, "video", count, job_id,
-                        )
+                        try:
+                            media_items = await self._wait_for_project_media(
+                                page, baseline_ids, "video", count, job_id,
+                            )
+                        except Exception as exc:
+                            _log.info("_wait_for_project_media finished with: %s; falling back to project video watcher", exc)
+                            media_items = []
                 media_ids = [item.media_name for item in remote]
                 if media_items:
                     media_ids = [str(item["id"]) for item in media_items]
@@ -1780,8 +1807,17 @@ class FlowService:
                         status.fife_url
                         if status is not None and status.fife_url
                         else str((media_by_id.get(media_id) or {}).get("src") or "")
-                        or f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}"
                     )
+                    if not media_url:
+                        try:
+                            for item in await self._project_media_elements(page):
+                                if str(item.get("id")) == media_id and str(item.get("src") or "").startswith("http"):
+                                    media_url = str(item["src"])
+                                    break
+                        except Exception:
+                            pass
+                    if not media_url:
+                        media_url = f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}"
                     await api.download(media_url, output)
                     outputs.append(str(output))
                     self._log("success", "output_downloaded", job_id=job_id, account_id=account["id"], details={"outputIndex": output_index, "path": str(output)})

@@ -178,9 +178,8 @@ _VIENEU_PACKAGE = "vieneu>=3.2.0"
 _TORCH_CUDA_INDEX = "https://download.pytorch.org/whl/cu124"
 _TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 _TORCH_ROCM_INDEX = "https://download.pytorch.org/whl/rocm6.2"
-# onnxruntime-gpu cho CUDA 12.x (torch cu124) — bản 1.27+ yêu cầu CUDA 13
-_ORT_GPU_CUDA12_INDEX = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
-_ORT_GPU_PKG = "onnxruntime-gpu==1.20.1"  # CUDA 12/cuDNN 9; meets VieNeu's >=1.20 floor
+# onnxruntime-gpu cho CUDA 12.x (torch cu124) — PyPI chính thức có sẵn wheel CUDA 12 cho 1.20.x
+_ORT_GPU_PKG = "onnxruntime-gpu>=1.20.0,<1.21.0"  # CUDA 12/cuDNN 9; meets VieNeu's >=1.20 floor (1.20.0, 1.20.2)
 _ORT_DIRECTML_PKG = "onnxruntime-directml"
 _SHERPA_CUDA_SPEC = "sherpa-onnx==1.13.5+cuda12.cudnn9"
 _SHERPA_CUDA_INDEX = "https://k2-fsa.github.io/sherpa/onnx/cuda.html"
@@ -699,10 +698,14 @@ def install_ai_runtime() -> dict[str, Any]:
             ]
         ort_accel = _runtime_ort_accel()
         if ort_accel == "cuda":
-            packages += [_ORT_GPU_PKG, "--extra-index-url", _ORT_GPU_CUDA12_INDEX]
+            packages.append(_ORT_GPU_PKG)
         elif ort_accel == "directml":
             packages.append(_ORT_DIRECTML_PKG)
-        base_cmd = [uv, "pip", "install", "--python", str(py), "--upgrade", *packages] if packages else []
+        base_cmd = [
+            uv, "pip", "install", "--python", str(py), "--upgrade",
+            "--index-strategy", "unsafe-best-match",
+            *packages,
+        ] if packages else []
         vieneu_cmd = [
             uv, "pip", "install", "--python", str(py), "--upgrade", "--no-deps", _VIENEU_PACKAGE
         ]
@@ -769,7 +772,7 @@ def install_ai_runtime() -> dict[str, Any]:
             if _install_log_fn:
                 _install_log_fn("\n=== OCR GPU (onnxruntime-gpu) ===\n")
             _pip_stream([sys.executable, "-m", "pip", "uninstall", "-y", "onnxruntime"])
-            proc_gpu = _pip_stream([sys.executable, "-m", "pip", "install", _ORT_GPU_PKG, "--index-url", _ORT_GPU_CUDA12_INDEX])
+            proc_gpu = _pip_stream([sys.executable, "-m", "pip", "install", _ORT_GPU_PKG])
             if proc_gpu.returncode:
                 raise RuntimeError("[OCR GPU] " + (proc_gpu.stderr or proc_gpu.stdout)[-2000:])
         elif ort_accel == "directml":
@@ -823,12 +826,11 @@ def install_ai_runtime() -> dict[str, Any]:
                 if removed.returncode:
                     raise RuntimeError((removed.stderr or removed.stdout)[-2000:])
                 provider_pkg = _ORT_GPU_PKG if ort_accel == "cuda" else _ORT_DIRECTML_PKG
-                provider_cmd = [uv, "pip", "install", "--python", str(py), "--force-reinstall", provider_pkg]
-                if ort_accel == "cuda":
-                    provider_cmd += [
-                        "--extra-index-url", _ORT_GPU_CUDA12_INDEX,
-                        "--index-strategy", "unsafe-best-match",
-                    ]
+                provider_cmd = [
+                    uv, "pip", "install", "--python", str(py), "--force-reinstall",
+                    "--index-strategy", "unsafe-best-match",
+                    provider_pkg,
+                ]
                 proc_provider = _pip_stream(provider_cmd)
                 if proc_provider.returncode:
                     raise RuntimeError((proc_provider.stderr or proc_provider.stdout)[-3000:])
@@ -893,9 +895,9 @@ def install_ocr_cuda() -> dict[str, Any]:
                 "install",
                 "--python",
                 str(py),
+                "--index-strategy",
+                "unsafe-best-match",
                 _ORT_GPU_PKG,
-                "--index-url",
-                _ORT_GPU_CUDA12_INDEX,
             ],
             capture_output=True,
             text=True,
@@ -929,8 +931,6 @@ def install_ocr_cuda() -> dict[str, Any]:
                 "--progress-bar",
                 "off",
                 _ORT_GPU_PKG,
-                "--index-url",
-                _ORT_GPU_CUDA12_INDEX,
             ],
             capture_output=True,
             text=True,

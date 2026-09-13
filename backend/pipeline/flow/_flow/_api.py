@@ -693,17 +693,22 @@ class FlowAPI:
 
     async def _trpc_get(self, proc: str, inp: dict) -> dict:
         from urllib.parse import quote
+        # tRPC was used on labs.google/fx/api/trpc; on flow.google.com it returns SPA index.html
         url  = f"{FLOW_BASE}/api/trpc/{proc}?input={quote(json.dumps({'json': inp}))}"
-        resp = await self._bm.context.request.get(url)
-        if resp.status >= 400:
-            text = await resp.text()
-            raise GenerationError(f"tRPC {proc} HTTP {resp.status}: {text[:200]}")
         try:
+            resp = await self._bm.context.request.get(url)
+            if resp.status >= 400:
+                log.debug("tRPC %s HTTP %d", proc, resp.status)
+                return {}
+            content_type = (resp.headers.get("content-type") or "").lower()
+            if "json" not in content_type:
+                log.debug("tRPC %s returned non-JSON content-type: %s", proc, content_type)
+                return {}
             raw = await resp.json()
-        except Exception:
-            text = await resp.text()
-            raise GenerationError(f"tRPC {proc}: response không phải JSON: {text[:200]!r}")
-        return raw.get("result", {}).get("data", {}).get("json", raw)
+            return raw.get("result", {}).get("data", {}).get("json", raw)
+        except Exception as exc:
+            log.debug("tRPC %s request failed: %s", proc, exc)
+            return {}
 
     # ── Credits ───────────────────────────────────────────────────────────────
 
@@ -838,10 +843,80 @@ class FlowAPI:
 
     # ── Project data ──────────────────────────────────────────────────────────
 
+    async def _get_project_data_from_page(self, page: Any) -> dict:
+        """Extract media records from the active flow.google.com project DOM."""
+        try:
+            items = await page.evaluate(r"""() => {
+                const results = [];
+                const els = document.querySelectorAll('[data-media-id], img[data-id], video[data-id]');
+                for (const el of els) {
+                    const mid = el.getAttribute('data-media-id') || el.getAttribute('data-id') || '';
+                    if (!mid) continue;
+                    const tag = el.tagName.toLowerCase();
+                    const isVideo = tag === 'video' || el.classList.contains('video');
+                    const src = el.currentSrc || el.src || '';
+                    const card = el.closest('[role="listitem"], mat-card, .container, div') || el.parentElement;
+                    const text = (card ? card.innerText : '').trim();
+                    const prompt = text.replace(/^(image|video)\s*/i, '').trim();
+                    results.push({
+                        id: mid,
+                        isVideo,
+                        src,
+                        prompt,
+                    });
+                }
+                return results;
+            }""")
+            media_list = []
+            for item in (items or []):
+                mid = str(item.get("id") or "")
+                if not mid:
+                    continue
+                is_video = bool(item.get("isVideo"))
+                prompt_text = str(item.get("prompt") or "")
+                rec = {
+                    "name": mid,
+                    "mediaMetadata": {
+                        "mediaStatus": {
+                            "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SUCCESS",
+                        },
+                        "createTime": "",
+                        "requestData": {
+                            "promptInputs": [{"textInput": prompt_text}],
+                        },
+                    },
+                }
+                if is_video:
+                    rec["video"] = {}
+                else:
+                    rec["image"] = {}
+                media_list.append(rec)
+            return {"projectContents": {"media": media_list, "workflows": []}}
+        except Exception as exc:
+            log.debug("_get_project_data_from_page failed: %s", exc)
+            return {"projectContents": {"media": [], "workflows": []}}
+
     async def get_project_data(self) -> dict:
-        return await self._trpc_get(
-            "flow.projectInitialData", {"projectId": self.project_id}
-        )
+        try:
+            data = await self._trpc_get(
+                "flow.projectInitialData", {"projectId": self.project_id}
+            )
+            if data and isinstance(data, dict) and data.get("projectContents"):
+                return data
+        except Exception:
+            pass
+
+        # Fallback: extract media from active page DOM on flow.google.com
+        try:
+            page = await self._bm.page()
+            if page:
+                dom_data = await self._get_project_data_from_page(page)
+                if dom_data.get("projectContents", {}).get("media"):
+                    return dom_data
+        except Exception as exc:
+            log.debug("get_project_data DOM fallback failed: %s", exc)
+
+        return {"projectContents": {"media": [], "workflows": []}}
 
     async def list_workflows(self) -> list[Workflow]:
         data = await self.get_project_data()
