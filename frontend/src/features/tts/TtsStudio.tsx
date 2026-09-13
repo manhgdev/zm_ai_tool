@@ -1416,7 +1416,7 @@ export default function TtsStudio({
           </div>
           {!vieneu?.installed && (
             <p className="tts-engine-hint">
-              {vieneu?.installHint || 'pip install vieneu onnxruntime soundfile soxr sea-g2p perth'}
+              {vieneu?.installHint || 'pip install vieneu onnxruntime soundfile soxr sea-g2p'}
             </p>
           )}
           <button type="button" className="tts-link" onClick={() => void loadStatus()}>

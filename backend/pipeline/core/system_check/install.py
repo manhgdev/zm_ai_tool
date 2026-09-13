@@ -75,6 +75,17 @@ def _clean_corrupted_dists(site: Path | None = None) -> None:
                 shutil.rmtree(p, ignore_errors=True)
             except Exception:
                 pass
+    # Dọn dummy package 'perth' (threading helper bị cài nhầm thay vì resemble-perth, gây lỗi warning watermarker ở VieNeu)
+    for name in ("perth", "perth-1.0.0.dist-info"):
+        target = site / name
+        if target.exists():
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                else:
+                    target.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _pip_stream(cmd: list[str], *, timeout: float = 1800) -> subprocess.CompletedProcess:
@@ -142,7 +153,6 @@ _AI_RUNTIME_PACKAGES = (
     "pillow",
     "opencv-python-headless",
     "huggingface-hub>=0.34",   # bỏ <1.0 — hub 1.x đang có, không cần downgrade
-    "perth",
     "pyyaml",
     "sea-g2p",
     "soundfile",
@@ -161,7 +171,7 @@ _PKG_DIARIZATION = ("sherpa-onnx>=1.12.0", "sherpa-onnx-bin>=1.12.0", "soundfile
 _PKG_OCR     = ("rapidocr-onnxruntime>=1.3.20", "pillow", "opencv-python-headless<5.0")
 _PKG_VIENEU  = (
     "huggingface-hub>=0.34", "httpx", "pyyaml",
-    "perth", "sea-g2p",
+    "sea-g2p",
     # transformers cài riêng --no-deps (conflict tokenizers)
 )
 _VIENEU_PACKAGE = "vieneu>=3.2.0"
@@ -192,7 +202,6 @@ _FROZEN_PACKAGE_MODULES: dict[str, tuple[str, ...]] = {
     "sherpa-onnx-bin>=1.12.0": ("sherpa_onnx",),
     "httpx": ("vieneu",),
     "pyyaml": ("vieneu",),
-    "perth": ("vieneu",),
     "sea-g2p": ("vieneu",),
     "soxr": ("vieneu",),
 }
@@ -324,27 +333,60 @@ def _find_uv() -> str | None:
 
 
 def _ensure_frozen_runtime_venv(uv: str, venv: Path) -> Path:
-
     """Provision APP-owned Python; the destination machine needs no system Python."""
     py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     if py.is_file():
-        return py
+        try:
+            probe = subprocess.run(
+                [str(py), "-I", "-c", "import sys; print(sys.version_info[:2])"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=_runtime_subprocess_env(),
+            )
+            if probe.returncode == 0:
+                return py
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    backup: Path | None = None
+    if venv.exists():
+        backup = venv.with_name(f"{venv.name}.repair-{time.time_ns()}")
+        venv.replace(backup)
     version = f"{sys.version_info.major}.{sys.version_info.minor}"
-    managed = _pip_stream([uv, "python", "install", version], timeout=1800)
-    if managed.returncode:
-        raise RuntimeError(
-            "Không tải được Python runtime. Kiểm tra Internet rồi thử lại.\n"
-            + (managed.stdout or managed.stderr)[-2000:]
+    try:
+        managed = _pip_stream([uv, "python", "install", version], timeout=1800)
+        if managed.returncode:
+            raise RuntimeError(
+                "Không tải được Python runtime. Kiểm tra Internet rồi thử lại.\n"
+                + (managed.stdout or managed.stderr)[-2000:]
+            )
+        help_result = subprocess.run(
+            [uv, "venv", "--help"], capture_output=True, text=True, timeout=30,
+            env=_runtime_subprocess_env(),
         )
-    created = _pip_stream(
-        [uv, "venv", "--python", version, "--seed", str(venv)],
-        timeout=900,
-    )
-    if created.returncode or not py.is_file():
-        raise RuntimeError(
-            "Không tạo được Python runtime riêng cho APP.\n"
-            + (created.stdout or created.stderr)[-2000:]
-        )
+        command = [uv, "venv", "--python", version, "--seed"]
+        if "--relocatable" in (help_result.stdout or ""):
+            command.append("--relocatable")
+        created = _pip_stream([*command, str(venv)], timeout=900)
+        if created.returncode or not py.is_file():
+            raise RuntimeError(
+                "Không tạo được Python runtime riêng cho APP.\n"
+                + (created.stdout or created.stderr)[-2000:]
+            )
+    except Exception:
+        if venv.exists():
+            shutil.rmtree(venv, ignore_errors=True)
+        if backup is not None and backup.exists():
+            backup.replace(venv)
+        raise
+    if backup is not None:
+        shutil.rmtree(backup, ignore_errors=True)
+        if _install_log_fn:
+            _install_log_fn(
+                "Đã tự sửa Python runtime bị hỏng sau khi di chuyển thư mục. / "
+                "Repaired the Python runtime after the Portable folder moved.\n"
+            )
     return py
 
 
@@ -685,7 +727,6 @@ def install_ai_runtime() -> dict[str, Any]:
             "huggingface-hub": "huggingface_hub",
             "httpx": "httpx",
             "pyyaml": "yaml",
-            "perth": "perth",
             "sea-g2p": "sea_g2p",
             "transformers": "transformers",
             "vieneu": "vieneu",

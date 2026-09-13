@@ -16,7 +16,7 @@ _hooks_installed = False
 
 
 def log_path() -> Path:
-    """Desktop: %LOCALAPPDATA%/VideoClone/app.log; dev: backend/data/app.log."""
+    """Desktop: VIDEO_CLONE_HOME/app.log; dev: backend/data/app.log."""
     home = os.environ.get("VIDEO_CLONE_HOME")
     if home:
         return Path(home) / "app.log"

@@ -37,6 +37,10 @@ jobs:
             choco install ffmpeg -y --no-progress
             'C:\ProgramData\chocolatey\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           }
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+            'C:\Program Files (x86)\Inno Setup 6' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
 
       - name: Write version from tag
         shell: pwsh
@@ -50,12 +54,19 @@ jobs:
           Set-Content -Path build_app/VERSION -Value $version.Trim()
           Write-Host "Building version: $version"
 
+      - name: Test Portable state migration
+        shell: pwsh
+        run: backend/.venv/Scripts/python.exe tests/test_portable_layout.py
 
       - name: Build EXE
         shell: pwsh
-        run: npm run build:app
+        run: |
+          npm run build:app
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Content build_app/VERSION -Raw).Trim()
+          node build_app/check_build.mjs $version
 
-      - name: Smoke test packaged Python standard library
+      - name: Smoke test packaged Python and GUI bridge
         shell: pwsh
         run: |
           $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AIO_TOOL_v*' |
@@ -70,6 +81,33 @@ jobs:
           $result = Get-Content $report -Raw | ConvertFrom-Json
           if ($process.ExitCode -ne 0 -or -not $result.ok) { throw 'Frozen standard library imports failed' }
 
+      - name: Smoke test Portable GUI startup
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AIO_TOOL_v*' |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $package) { throw 'Built app not found' }
+          $exe = Join-Path $package.FullName 'ZM AIO TOOL.exe'
+          $updates = Join-Path $package.FullName 'updates'
+          New-Item -ItemType Directory -Path $updates -Force | Out-Null
+          $ready = Join-Path $updates 'update-ready-ci.txt'
+          $env:VIDEO_CLONE_UPDATE_READY_FILE = $ready
+          $process = Start-Process -FilePath $exe -WorkingDirectory $package.FullName -PassThru
+          $deadline = (Get-Date).AddSeconds(90)
+          while ((Get-Date) -lt $deadline -and -not (Test-Path $ready)) {
+            if ($process.HasExited) { throw "Portable GUI exited early: $($process.ExitCode)" }
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not (Test-Path $ready)) { throw 'Portable GUI did not initialize in 90 seconds' }
+          Get-Content $ready
+          taskkill.exe /PID $process.Id /T /F 2>$null
+          if ($LASTEXITCODE -ne 0 -and -not $process.HasExited) { throw 'Could not stop Portable GUI smoke process' }
+          $env:VIDEO_CLONE_UPDATE_READY_FILE = $null
+          foreach ($name in @('data', 'output', 'tmp', 'resources', 'updates', '.venv-runtime', '.venv-ocr', 'app.log', 'last_crash.txt')) {
+            Remove-Item -LiteralPath (Join-Path $package.FullName $name) -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          exit 0
+
       - name: Smoke test isolated Windows AI imports (no model downloads)
         shell: pwsh
         run: |
@@ -79,7 +117,7 @@ jobs:
           $py = Join-Path $runtime 'Scripts/python.exe'
           & $py -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $py -m pip install 'transformers==4.57.6' 'librosa>=0.11.0' 'sea-g2p==0.8.4' 'perth>=0.2.0' 'onnxruntime>=1.20' soundfile soxr pyyaml httpx
+          & $py -m pip install 'transformers==4.57.6' 'librosa>=0.11.0' 'sea-g2p==0.8.4' 'onnxruntime>=1.20' soundfile soxr pyyaml httpx
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $py -m pip install --no-deps 'vieneu>=3.2.0'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -98,12 +136,21 @@ jobs:
           if (-not $package) { throw 'Không tìm thấy thư mục bản build.' }
           $exe = Join-Path $package.FullName 'ZM AIO TOOL.exe'
           if (-not (Test-Path $exe)) { throw "Không tìm thấy EXE: $exe" }
-          $zip = Join-Path (Split-Path $package.FullName) "$($package.Name)-windows-x64.zip"
-          if (-not (Test-Path $zip)) {
-            Compress-Archive -Path "$($package.FullName)\*" -DestinationPath $zip -CompressionLevel Optimal
+
+          # 1. Bản Portable (.zip)
+          $portableZip = Join-Path (Split-Path $package.FullName) "$($package.Name)-windows-x64-Portable.zip"
+          if (-not (Test-Path $portableZip)) {
+            Compress-Archive -Path "$($package.FullName)\*" -DestinationPath $portableZip -CompressionLevel Optimal
           }
+
+          # 2. Bản Cài đặt Inno Setup (.exe)
+          node build_app/build_installer.mjs
+          $setupExe = Join-Path (Split-Path $package.FullName) "$($package.Name)-windows-x64-Setup.exe"
+          if (-not (Test-Path $setupExe)) { throw "Không tìm thấy file Setup: $setupExe" }
+
           "directory=$($package.FullName)" >> $env:GITHUB_OUTPUT
-          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "zip=$portableZip" >> $env:GITHUB_OUTPUT
+          "installer=$setupExe" >> $env:GITHUB_OUTPUT
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/action/')
@@ -111,6 +158,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           ZIP: ${{ steps.package.outputs.zip }}
+          INSTALLER: ${{ steps.package.outputs.installer }}
         shell: bash
         run: |
           set -euo pipefail
@@ -129,10 +177,14 @@ jobs:
             | awk '{print "- " $0}' \
             || echo '- Cải tiến và sửa lỗi')
 
-          BODY=$(printf '## Thay đổi trong %s\n\n%s' "$TAG" "$NOTES")
+          INSTALLER_BASE=$(basename "$INSTALLER")
+          ZIP_BASE=$(basename "$ZIP")
+
+          BODY=$(printf '## Tải về ZM AIO TOOL %s\n\n- 📦 **Bản Cài đặt (Khuyên dùng):** `%s` (Trình cài đặt Wizard, tự tạo shortcut Desktop & Start Menu, hỗ trợ gỡ cài đặt)\n- 💼 **Bản Portable (Chạy ngay):** `%s` (Giải nén và chạy trực tiếp ZM AIO TOOL.exe, không cần cài đặt)\n\n## Thay đổi trong %s\n\n%s' \
+            "$TAG" "$INSTALLER_BASE" "$ZIP_BASE" "$TAG" "$NOTES")
 
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$ZIP" --clobber
+            gh release upload "$TAG" "$INSTALLER" "$ZIP" --clobber
           else
-            gh release create "$TAG" "$ZIP" --title "ZM AIO TOOL $TAG" --notes "$BODY"
+            gh release create "$TAG" "$INSTALLER" "$ZIP" --title "ZM AIO TOOL $TAG" --notes "$BODY"
           fi

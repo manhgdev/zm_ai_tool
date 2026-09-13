@@ -68,7 +68,6 @@ _RUNTIME_ROOTS = frozenset(
         "numpy",
         "onnxruntime",
         "PIL",
-        "perth",
         "rapidocr_onnxruntime",
         "safetensors",
         "sea_g2p",

@@ -201,6 +201,8 @@ const args = [
   '--noconfirm',
   ...(clean ? ['--clean'] : []),
   ...(oneFile ? ['--onefile'] : ['--onedir']),
+  // Portable root stays stable: updater replaces only EXE + app/, never user state.
+  ...(isWin && !oneFile ? ['--contents-directory', 'app'] : []),
   '--name', APP_EXECUTABLE_NAME,
   '--distpath', releaseDir,
   '--workpath', path.join(root, 'build_app', '.work'),
@@ -235,7 +237,7 @@ const args = [
   '--hidden-import', 'playwright.sync_api',
 ]
 
-// Các gói AI được cài vào %LOCALAPPDATA%/VideoClone/.venv-runtime ở lần mở đầu tiên.
+// Các gói AI được cài vào .venv-runtime trong thư mục Portable ở lần mở đầu tiên.
 // Exclude thêm dev-only packages để giảm kích thước bundle.
 for (const mod of [
   'faster_whisper', 'ctranslate2', 'tokenizers', 'huggingface_hub',
@@ -244,7 +246,7 @@ for (const mod of [
   'pandas', 'scipy', 'sklearn', 'tensorflow', 'soundfile', 'librosa',
   'pytest',
   'lxml', 'pyarrow', 'matplotlib', 'sympy', 'numba', 'llvmlite',
-  'vieneu', 'perth', 'sea_g2p', 'soxr',
+  'vieneu', 'sea_g2p', 'soxr',
   'webview.platforms.android', 'pycparser.lextab', 'pycparser.yacctab',
   'IPython', 'ipykernel', 'notebook', 'jupyterlab',
   'tzdata',  // zoneinfo hook requests this; Windows uses OS timezone data natively
@@ -375,7 +377,12 @@ if (isMac && packageTarget) {
 if (packageTarget && !skipArchive) {
   const { default: archiver } = await import('archiver')
   const platform = isWin ? 'windows' : isMac ? 'macos' : 'linux'
-  const archivePath = path.join(releaseDir, `${verName}-${platform}-${process.arch}.zip`)
+  const archivePath = path.join(
+    releaseDir,
+    isWin
+      ? `${verName}-windows-x64-Portable.zip`
+      : `${verName}-${platform}-${process.arch}.zip`
+  )
   if (existsSync(archivePath)) rmSync(archivePath, { force: true })
   await new Promise((resolve, reject) => {
     const output = createWriteStream(archivePath)
@@ -388,11 +395,23 @@ if (packageTarget && !skipArchive) {
     else archive.file(packageTarget, { name: path.basename(packageTarget) })
     archive.finalize()
   })
-  console.log(`Bản ZIP: ${archivePath}`)
+  console.log(`Bản ZIP Portable: ${archivePath}`)
+}
+
+if (isWin && !oneFile && process.env.BUILD_INSTALLER !== '0') {
+  try {
+    const { buildInstaller } = await import('./build_installer.mjs')
+    buildInstaller(appVersion)
+  } catch (err) {
+    console.warn(`[build] Không thể tự động chạy Inno Setup: ${err?.message || err}`)
+  }
 }
 
 console.log(`\nBuild hoàn tất: ${output}`)
 console.log(`Version: v${appVersion}`)
-if (!oneFile) {
+if (isWin && !oneFile) {
+  console.log(`- Bản Portable (không cài đặt): release/${verName}/ hoặc ${verName}-windows-x64-Portable.zip`)
+  console.log(`- Bản Cài đặt (Inno Setup): release/${verName}-windows-x64-Setup.exe (hoặc chạy: npm run build:installer)`)
+} else if (!oneFile) {
   console.log(`Chạy cả thư mục release/${verName}/ (không copy riêng .exe).`)
 }

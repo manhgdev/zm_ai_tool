@@ -155,10 +155,16 @@ def _release_asset(release: dict[str, Any]) -> dict[str, Any] | None:
     version = _release_version(tag)
     if _version_key(tag) == (0, 0, 0):
         return None
-    expected_name = f"ZM_AIO_TOOL_v{version}{suffix}"
-    for asset in release.get("assets") or []:
-        if isinstance(asset, dict) and str(asset.get("name") or "") == expected_name:
-            return asset
+    expected_names = (
+        [f"ZM_AIO_TOOL_v{version}-windows-x64-Portable.zip", f"ZM_AIO_TOOL_v{version}-windows-x64.zip"]
+        if suffix == "-windows-x64.zip"
+        else [f"ZM_AIO_TOOL_v{version}{suffix}"]
+    )
+    assets = release.get("assets") or []
+    for expected_name in expected_names:
+        for asset in assets:
+            if isinstance(asset, dict) and str(asset.get("name") or "") == expected_name:
+                return asset
     return None
 
 
@@ -186,6 +192,10 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
     # escape the dedicated update directory through a path separator.
     if Path(name).name != name or name in {".", ".."}:
         raise RuntimeError("Tên gói cập nhật không hợp lệ")
+    try:
+        expected_size = max(0, int(asset.get("size") or 0))
+    except (TypeError, ValueError):
+        expected_size = 0
     target = updates / name
     partial = target.with_suffix(target.suffix + ".part")
     _set_update_state(phase="downloading", progress=0, message="Đang tải bản cập nhật…", assetName=name, latestVersion=version)
@@ -215,11 +225,19 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
                         progress = min(99, int(received * 100 / total)) if total else 0
                         _set_update_state(progress=progress)
             partial.replace(target)
+            actual_size = target.stat().st_size
+            if expected_size and actual_size != expected_size:
+                target.unlink(missing_ok=True)
+                raise OSError(
+                    f"Gói cập nhật tải chưa đủ ({actual_size}/{expected_size} byte)"
+                )
             last_error = None
             break
         except (BrokenPipeError, ConnectionError, TimeoutError, OSError) as exc:
             last_error = exc
             if attempt < 2:
+                if expected_size and partial.is_file() and partial.stat().st_size > expected_size:
+                    partial.unlink(missing_ok=True)
                 _set_update_state(message=f"Kết nối gián đoạn, đang thử lại ({attempt + 2}/3)…")
                 time.sleep(0.5 * (attempt + 1))
             else:
@@ -229,11 +247,6 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
         raise last_error
     _set_update_state(progress=100)
     return target
-
-
-def _win_versioned_folder(exe_path: Path) -> bool:
-    """True khi EXE nằm trong folder ZM_AIO_TOOL_vX.Y.Z-windows-* (portable versioned layout)."""
-    return bool(re.match(r"ZM_AIO_TOOL_v\d", exe_path.parent.name, re.I))
 
 
 def _windows_update_script(updates: Path) -> Path:
@@ -248,27 +261,26 @@ $ErrorActionPreference = 'Stop'
 
 # Doc params tu JSON
 $paramsPath = if ($ParamsFile) { $ParamsFile } else { Join-Path $PSScriptRoot 'update-params.json' }
-$p         = Get-Content -LiteralPath $paramsPath -Raw | ConvertFrom-Json
+$p         = Get-Content -LiteralPath $paramsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $AppPid    = [int]$p.AppPid
 $Zip       = [string]$p.Zip
 $Target    = [string]$p.Target
 $Exe       = [string]$p.Exe
-$OldTarget = [string]$p.OldTarget
+$ReadyFile = [string]$p.ReadyFile
 
 $LogFile = Join-Path (Split-Path $Zip -Parent) 'update.log'
-$Mode = if ($OldTarget -and $OldTarget -ne $Target) { 'versioned' } else { 'overwrite' }
 
 function Log($msg) {
     $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "[$time] $msg" | Out-File -FilePath $LogFile -Append -Encoding utf8
 }
 
-Log "=== Bat dau cap nhat ZM AIO TOOL (mode=$Mode) ==="
+Log "=== Bat dau cap nhat ZM AIO TOOL portable ==="
 Log "AppPid:    $AppPid"
 Log "Zip:       $Zip"
 Log "Target:    $Target"
-Log "OldTarget: $OldTarget"
 Log "Exe:       $Exe"
+Log "ReadyFile: $ReadyFile"
 
 try {
     # 1. Cho process goi cap nhat thoat
@@ -278,13 +290,13 @@ try {
     }
 
     # 2. Dong cac process dang chay tu thu muc cu
-    $killDir = if ($Mode -eq 'versioned') { $OldTarget } else { $Target }
+    $killDir = $Target
     $exeName  = [System.IO.Path]::GetFileName($Exe)
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($Exe)
     Log "Dong process $baseName trong $killDir..."
     for ($i = 0; $i -lt 10; $i++) {
         $procs = Get-Process -Name "$baseName" -ErrorAction SilentlyContinue | Where-Object {
-            try { $_.Path -and $_.Path.StartsWith($killDir, [System.StringComparison]::OrdinalIgnoreCase) } catch { $true }
+            try { $_.Path -and $_.Path.StartsWith($killDir, [System.StringComparison]::OrdinalIgnoreCase) } catch { $false }
         }
         if (-not $procs) { break }
         Log "Dang dong $($procs.Count) process..."
@@ -300,12 +312,19 @@ try {
     Log "Giai nen vao temp: $tmpDir"
     if (Test-Path $tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue }
     Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
     try {
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($Zip, $tmpDir)
-    } catch {
-        Log "ExtractToDirectory fallback: $_"
-        Expand-Archive -LiteralPath $Zip -DestinationPath $tmpDir -Force
+        $extractRoot = [System.IO.Path]::GetFullPath($tmpDir + [System.IO.Path]::DirectorySeparatorChar)
+        foreach ($entry in $archive.Entries) {
+            $entryPath = [System.IO.Path]::GetFullPath((Join-Path $tmpDir $entry.FullName))
+            if (-not $entryPath.StartsWith($extractRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Goi cap nhat chua duong dan khong an toan: $($entry.FullName)"
+            }
+        }
+    } finally {
+        $archive.Dispose()
     }
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($Zip, $tmpDir)
 
     # Tim thu muc goc chua EXE (zip phang hoac zip co subfolder)
     $sourceDir = $tmpDir
@@ -323,93 +342,120 @@ try {
     }
     Log "Da go Zone.Identifier."
 
-    # 4. Chuyen file vao $Target
-    $replaced = $false
+    # 4. Chi thay payload bat bien. data/output/runtime/resources/logs luon duoc giu nguyen.
     $backup = Join-Path $updateDir ('backup-' + $stamp)
+    $payloadNames = @($exeName, 'app', '_internal')
+    $newPayloadNames = @($exeName)
+    foreach ($name in @('app', '_internal')) {
+        if (Test-Path -LiteralPath (Join-Path $sourceDir $name)) { $newPayloadNames += $name }
+    }
+    $installedNames = New-Object System.Collections.Generic.List[string]
+    $committed = $false
 
-    if ($Mode -eq 'versioned') {
-        # Versioned: $Target la folder moi chua ton tai — Move truc tiep
-        if (Test-Path $Target) { Remove-Item -LiteralPath $Target -Recurse -Force -ErrorAction SilentlyContinue }
-        for ($attempt = 1; $attempt -le 5; $attempt++) {
-            try {
-                Move-Item -LiteralPath $sourceDir -Destination $Target -Force -ErrorAction Stop
-                $replaced = $true
-                Log "Move-Item versioned thanh cong o lan $attempt: $Target"
-                break
-            } catch {
-                Log "Move-Item versioned lan $attempt: $_"
-                Start-Sleep -Milliseconds 600
-            }
-        }
-    } else {
-        # Overwrite: staged swap. Backup is kept until the new EXE launches.
+    function Move-WithRetry([string]$Source, [string]$Destination) {
         for ($attempt = 1; $attempt -le 10; $attempt++) {
             try {
-                if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction Stop }
-                if (Test-Path $Target) { Move-Item -LiteralPath $Target -Destination $backup -Force -ErrorAction Stop }
-                Move-Item -LiteralPath $sourceDir -Destination $Target -Force -ErrorAction Stop
-                $replaced = $true
-                Log "Move-Item overwrite thanh cong o lan $attempt."
-                break
+                Move-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+                return
             } catch {
-                Log "Move-Item overwrite lan $attempt: $_"
-                if ((Test-Path $backup) -and (-not (Test-Path $Target))) {
-                    Move-Item -LiteralPath $backup -Destination $Target -Force -ErrorAction SilentlyContinue
-                }
+                Log "Move lan $attempt ($Source -> $Destination): $_"
                 Start-Sleep -Milliseconds 600
+            }
+        }
+        throw "Khong the di chuyen $Source vao $Destination."
+    }
+
+    function Restore-Backup() {
+        foreach ($name in $installedNames) {
+            $current = Join-Path $Target $name
+            if (Test-Path -LiteralPath $current) {
+                Remove-Item -LiteralPath $current -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        foreach ($name in $payloadNames) {
+            $saved = Join-Path $backup $name
+            if (Test-Path -LiteralPath $saved) {
+                Move-WithRetry $saved (Join-Path $Target $name)
             }
         }
     }
 
-    if (-not $replaced) { throw "Khong the cap nhat vao $Target." }
-
-    # Unblock file trong Target
-    Get-ChildItem -LiteralPath $Target -Recurse -File | ForEach-Object {
-        Unblock-File -LiteralPath $_.FullName -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $backup -Force | Out-Null
+    foreach ($name in $payloadNames) {
+        $old = Join-Path $Target $name
+        if (Test-Path -LiteralPath $old) {
+            Move-WithRetry $old (Join-Path $backup $name)
+        }
+    }
+    foreach ($name in $newPayloadNames) {
+        $source = Join-Path $sourceDir $name
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "Goi cap nhat thieu payload: $name"
+        }
+        Move-WithRetry $source (Join-Path $Target $name)
+        $installedNames.Add($name)
     }
 
-    # Don dep temp
-    if (Test-Path $tmpDir) { Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue }
-
-    # 5. Khoi dong lai ung dung tu Target moi
+    # 5. Khoi dong va giu backup den khi app moi song qua giai doan bootstrap.
     $newExe = Join-Path $Target $exeName
-    if (-not (Test-Path -LiteralPath $newExe -PathType Leaf)) {
-        $fallbackExe = Get-ChildItem -LiteralPath $Target -Filter '*.exe' -File | Select-Object -First 1
-        if ($fallbackExe) { $newExe = $fallbackExe.FullName; Log "Fallback EXE: $newExe" }
-        else {
-            Log "CANH BAO: Khong tim thay EXE, mo thu muc $Target"
-            Start-Process explorer.exe -ArgumentList "`"$Target`""
-            Log "=== Da cap nhat (can chay thu cong) ==="
+    Log "Launch: $newExe"
+    Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
+    $env:VIDEO_CLONE_UPDATE_READY_FILE = $ReadyFile
+    $env:VIDEO_CLONE_SUPERVISOR_CHILD = $null
+    $newProcess = Start-Process -FilePath $newExe -WorkingDirectory $Target -PassThru
+    $deadline = (Get-Date).AddSeconds(90)
+    while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
+        if ($newProcess.HasExited) {
+            throw "Ban moi thoat som voi ma $($newProcess.ExitCode); se khoi phuc ban cu."
         }
+        Start-Sleep -Milliseconds 500
     }
-    if (Test-Path -LiteralPath $newExe -PathType Leaf) {
-        Log "Launch: $newExe"
-        Start-Sleep -Seconds 1
-        Start-Process -FilePath "$newExe"
-        Log "=== Cap nhat thanh cong! ==="
-        if ($Mode -eq 'overwrite' -and (Test-Path $backup)) {
-            Start-Sleep -Seconds 2
-            Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-        }
+    if (-not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
+        Stop-Process -Id $newProcess.Id -Force -ErrorAction SilentlyContinue
+        throw "Ban moi khong bao san sang sau 90 giay; se khoi phuc ban cu."
     }
-
-    # 6. Versioned: xoa folder cu sau khi da launch thanh cong
-    if ($Mode -eq 'versioned' -and $OldTarget -and (Test-Path $OldTarget)) {
-        Start-Sleep -Seconds 2
-        Remove-Item -LiteralPath $OldTarget -Recurse -Force -ErrorAction SilentlyContinue
-        Log "Da xoa folder cu: $OldTarget"
+    Start-Sleep -Seconds 3
+    if ($newProcess.HasExited) {
+        throw "Ban moi thoat sau khi khoi dong voi ma $($newProcess.ExitCode); se khoi phuc ban cu."
     }
+    $env:VIDEO_CLONE_UPDATE_READY_FILE = $null
+    Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
+    $committed = $true
+    Log "=== Cap nhat thanh cong; du lieu portable duoc giu nguyen. ==="
+    Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $Zip -Force -ErrorAction SilentlyContinue
 
 } catch {
     $err = $_.Exception.Message
     Log "LOI CAP NHAT: $err"
+    $env:VIDEO_CLONE_UPDATE_READY_FILE = $null
+    if ($ReadyFile) { Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue }
+    if (-not $committed -and $backup -and (Test-Path -LiteralPath $backup)) {
+        try {
+            Get-Process -Name "$baseName" -ErrorAction SilentlyContinue | Where-Object {
+                try { $_.Path -and $_.Path.StartsWith($Target, [System.StringComparison]::OrdinalIgnoreCase) } catch { $false }
+            } | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 800
+            Restore-Backup
+            $oldExe = Join-Path $Target $exeName
+            if (Test-Path -LiteralPath $oldExe -PathType Leaf) {
+                Start-Process -FilePath $oldExe -WorkingDirectory $Target
+                Log "Da khoi phuc va mo lai ban cu."
+            }
+        } catch {
+            Log "LOI KHOI PHUC: $_"
+        }
+    } elseif (Test-Path -LiteralPath (Join-Path $Target $exeName) -PathType Leaf) {
+        Start-Process -FilePath (Join-Path $Target $exeName) -WorkingDirectory $Target -ErrorAction SilentlyContinue
+    }
     try {
         Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show("Cap nhat that bai:`n$err`n`nLog: $LogFile", "Loi cap nhat ZM AIO TOOL", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        [System.Windows.Forms.MessageBox]::Show("Cap nhat that bai / Update failed:`n$err`n`nLog: $LogFile", "Loi cap nhat / Update error - ZM AIO TOOL", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     } catch {}
 }
 """,
-        encoding="utf-8",
+        encoding="utf-8-sig",
     )
     return script
 
@@ -659,6 +705,7 @@ def api_get_ui_preferences():
 def api_save_ui_preferences(body: UiPreferencesIn):
     from pathlib import Path as _Path
 
+    from pipeline.core.output_paths import ensure_writable_output_root
     from pipeline.core.ui_preferences import save_ui_preferences
 
     output_root = None
@@ -667,6 +714,17 @@ def api_save_ui_preferences(body: UiPreferencesIn):
         if raw and not _Path(raw).is_absolute():
             from fastapi import HTTPException
             raise HTTPException(status_code=422, detail="outputRoot must be an absolute path")
+        if raw:
+            try:
+                raw = str(ensure_writable_output_root(_Path(raw)))
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Không thể ghi vào thư mục đầu ra đã chọn. / "
+                        f"The selected output folder is not writable: {exc}"
+                    ),
+                ) from exc
         output_root = raw  # empty string = reset
     return save_ui_preferences(locale=body.locale, storage=body.storage, output_root=output_root)
 
@@ -897,15 +955,24 @@ def api_update_install():
             if not asset or _version_key(tag) <= _version_key(_desktop_version()):
                 _set_update_state(phase="complete", progress=100, message="Đã là phiên bản mới nhất")
                 return
-            # Detect versioned-folder layout: EXE nằm trong ZM_AIO_TOOL_vX.Y.Z-windows-* ?
-            # Versioned: tải zip vào thư mục cha (grandparent của EXE)
-            # Flat: tải vào _update/ cạnh EXE
             if sys.platform == "win32" and getattr(sys, "frozen", False):
                 exe_dir = Path(sys.executable).resolve().parent
-                if _win_versioned_folder(Path(sys.executable)):
-                    updates = exe_dir.parent  # D:\tool\
-                else:
-                    updates = Path(os.environ.get("VIDEO_CLONE_HOME") or DATA) / "updates"
+                probe = exe_dir / f".zmaio-update-write-{uuid.uuid4().hex}.tmp"
+                try:
+                    probe.open("x").close()
+                    probe.unlink()
+                except OSError as exc:
+                    try:
+                        probe.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise RuntimeError(
+                        "Thư mục ứng dụng không cho phép cập nhật. Hãy chuyển toàn bộ thư mục "
+                        "Portable sang nơi có quyền ghi (ví dụ C:\\ZM_AIO_TOOL) rồi thử lại. / "
+                        "The app folder is not writable. Move the complete Portable folder to a "
+                        "writable location (for example C:\\ZM_AIO_TOOL) and retry."
+                    ) from exc
+                updates = Path(os.environ.get("VIDEO_CLONE_HOME") or DATA) / "updates"
             else:
                 updates = Path(os.environ.get("VIDEO_CLONE_HOME") or DATA) / "updates"
             updates.mkdir(parents=True, exist_ok=True)
@@ -929,9 +996,11 @@ def _launch_windows_updater(package: Path) -> None:
     """Start the detached staged updater; it waits for this app before swapping."""
     exe = Path(sys.executable).resolve()
     old_target = exe.parent
-    target = package.parent / package.stem if _win_versioned_folder(exe) else old_target
+    target = old_target
     script = _windows_update_script(package.parent)
     params = package.parent / "update-params.json"
+    ready = package.parent / f"update-ready-{uuid.uuid4().hex}.txt"
+    ready.unlink(missing_ok=True)
     params.write_text(
         json.dumps(
             {
@@ -939,7 +1008,7 @@ def _launch_windows_updater(package: Path) -> None:
                 "Zip": str(package.resolve()),
                 "Target": str(target.resolve()),
                 "Exe": exe.name,
-                "OldTarget": str(old_target.resolve()),
+                "ReadyFile": str(ready.resolve()),
             },
             ensure_ascii=False,
         ),

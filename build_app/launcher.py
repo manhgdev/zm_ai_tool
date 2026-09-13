@@ -1,6 +1,7 @@
 """Packaged ZM AIO TOOL desktop window: local API + built web UI."""
 from __future__ import annotations
 
+import html
 import multiprocessing
 import os
 import shutil
@@ -13,22 +14,7 @@ import urllib.request
 from pathlib import Path
 
 APP_DISPLAY_NAME = "ZM AIO TOOL"
-
-
-if len(sys.argv) == 3 and sys.argv[1] == "--runtime-import-check":
-    # Test the *packaged* stdlib before GUI/AI startup. No browser, models or
-    # user profiles are needed; windowed EXEs report through the given file.
-    import importlib
-    import json
-
-    failures = {}
-    for module in ("pdb", "bdb", "cmd", "code", "codeop", "multiprocessing.pool"):
-        try:
-            importlib.import_module(module)
-        except Exception as exc:
-            failures[module] = f"{type(exc).__name__}: {exc}"
-    Path(sys.argv[2]).write_text(json.dumps({"ok": not failures, "errors": failures}), encoding="utf-8")
-    raise SystemExit(1 if failures else 0)
+_SUPERVISOR_ENV = "VIDEO_CLONE_SUPERVISOR_CHILD"
 
 
 def _unblock_zone_identifier(path: Path) -> bool:
@@ -84,8 +70,10 @@ def prepare_pythonnet(root: Path) -> None:
     unblock_windows_motw(root)
     py_dll = next((p for p in (root / "python312.dll", root / "python3.dll") if p.is_file()), None)
     if py_dll is not None:
-        os.environ.setdefault("PYTHONNET_PYDLL", str(py_dll))
-    os.environ.setdefault("PYTHONNET_RUNTIME", "netfx")
+        os.environ["PYTHONNET_PYDLL"] = str(py_dll)
+    else:
+        os.environ.pop("PYTHONNET_PYDLL", None)
+    os.environ["PYTHONNET_RUNTIME"] = "netfx"
     try:
         import pythonnet
 
@@ -97,24 +85,156 @@ def prepare_pythonnet(root: Path) -> None:
         pass
 
 
+def packaged_runtime_import_check(report: Path) -> int:
+    """Verify the frozen stdlib and Windows GUI bridge without opening a window."""
+    import importlib
+    import json
+
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    if sys.platform == "win32":
+        prepare_pythonnet(root)
+    modules = ["pdb", "bdb", "cmd", "code", "codeop", "multiprocessing.pool", "webview"]
+    if sys.platform == "win32":
+        modules += ["clr", "webview.platforms.edgechromium"]
+    failures = {}
+    for module in modules:
+        try:
+            importlib.import_module(module)
+        except Exception as exc:
+            failures[module] = f"{type(exc).__name__}: {exc}"
+    report.write_text(
+        json.dumps({"ok": not failures, "errors": failures}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return 1 if failures else 0
+
+
+def packaged_ytdlp_version_check(report: Path) -> int:
+    """Write the embedded yt-dlp version even when the Windows EXE has no console."""
+    try:
+        from yt_dlp.version import __version__
+
+        report.write_text(str(__version__), encoding="utf-8")
+        return 0
+    except Exception as exc:
+        report.write_text(f"{type(exc).__name__}: {exc}", encoding="utf-8")
+        return 1
+
+
+if len(sys.argv) == 3 and sys.argv[1] == "--runtime-import-check":
+    raise SystemExit(packaged_runtime_import_check(Path(sys.argv[2])))
+if len(sys.argv) == 3 and sys.argv[1] == "--yt-dlp-version-check":
+    raise SystemExit(packaged_ytdlp_version_check(Path(sys.argv[2])))
+if sys.argv[1:] == ["--yt-dlp-cli", "--version"]:
+    from yt_dlp import main as _ytdlp_version_main
+
+    raise SystemExit(_ytdlp_version_main(["--version"]) or 0)
+
+
+_single_instance_handle = None
+
+
+def _activate_existing_window() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def visit(hwnd, _lparam):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length:
+                title = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, title, length + 1)
+                if title.value.startswith(f"{APP_DISPLAY_NAME} v"):
+                    user32.ShowWindow(hwnd, 9)
+                    user32.SetForegroundWindow(hwnd)
+                    return False
+            return True
+
+        user32.EnumWindows(callback_type(visit), 0)
+    except Exception:
+        pass
+
+
+def acquire_single_instance() -> bool:
+    """Only one desktop window; a second launch focuses the existing instance."""
+    global _single_instance_handle
+    if sys.platform != "win32" or _single_instance_handle is not None:
+        return True
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.CreateMutexW(None, False, "Local\\ZMAIOTool.Desktop")
+    if not handle:
+        return True
+    if kernel32.GetLastError() == 183:
+        kernel32.CloseHandle(handle)
+        _activate_existing_window()
+        return False
+    _single_instance_handle = handle
+    return True
+
+
+_portable_ui_child = (
+    sys.platform == "win32"
+    and __name__ == "__main__"
+    and not sys.argv[1:]
+    and os.environ.get(_SUPERVISOR_ENV) == "1"
+)
+if _portable_ui_child and not acquire_single_instance():
+    raise SystemExit(0)
+
+
 def app_home() -> Path:
     """Return the root directory where app data lives.
 
-    Windows (portable): APP_ROOT = folder containing the .exe — moves with
-    the app to any drive the user places it on.
+    Windows portable: use the folder containing the EXE when writable. A
+    read-only install falls back to LocalAppData so the app can still start.
     macOS: ~/Library/Application Support/ZM_AIO_TOOL (standard convention).
     """
     if sys.platform == "win32":
-        # Portable layout: data lives next to the executable, not in LOCALAPPDATA.
-        # sys.executable is the .exe inside the onedir bundle root.
-        return Path(sys.executable).resolve().parent
+        from portable_layout import windows_portable_home
+
+        return windows_portable_home(Path(sys.executable))[0]
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "ZM_AIO_TOOL"
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "ZM_AIO_TOOL"
 
 
-home = app_home()
-home.mkdir(parents=True, exist_ok=True)
+_portable_root = Path(sys.executable).absolute().parent if sys.platform == "win32" else None
+_portable_fallback_from: Path | None = None
+_migration_lines: list[str] = []
+_migration_errors: list[str] = []
+_previous_homes: list[Path] = []
+if sys.platform == "win32":
+    from portable_layout import (
+        migrate_windows_state,
+        sync_windows_portable_root,
+        windows_portable_home,
+    )
+
+    home, _portable_fallback_from = windows_portable_home(Path(sys.executable))
+    if getattr(sys, "frozen", False) and _portable_ui_child:
+        _migrated_from, _migration_lines, _migration_errors = migrate_windows_state(
+            home, Path(sys.executable)
+        )
+        _previous_homes = sync_windows_portable_root(home, _migrated_from)
+        if _migration_lines or _migration_errors:
+            try:
+                with (home / "app.log").open("a", encoding="utf-8") as _bootstrap_log:
+                    for _line in _migration_lines:
+                        _bootstrap_log.write(f"[portable] migrated: {_line}\n")
+                    for _line in _migration_errors:
+                        _bootstrap_log.write(f"[portable] migration failed: {_line}\n")
+            except OSError:
+                pass
+else:
+    home = app_home()
+    home.mkdir(parents=True, exist_ok=True)
 
 
 def configure_stable_temp_directory(app_data: Path) -> Path:
@@ -134,20 +254,47 @@ def configure_stable_temp_directory(app_data: Path) -> Path:
 
 
 configure_stable_temp_directory(home)
+
+
+def set_desktop_path(name: str, value: Path | str) -> None:
+    """Windows updaters inherit stale paths; other platforms retain explicit overrides."""
+    if sys.platform == "win32":
+        os.environ[name] = str(value)
+    else:
+        os.environ.setdefault(name, str(value))
+
+
 os.environ["VIDEO_CLONE_DESKTOP"] = "1"
-os.environ.setdefault("VIDEO_CLONE_HOME", str(home))
-os.environ.setdefault("VIDEO_CLONE_DATA", str(home / "data"))
+set_desktop_path("VIDEO_CLONE_HOME", home)
+if _portable_root is not None:
+    os.environ["VIDEO_CLONE_PORTABLE_ROOT"] = str(_portable_root)
+else:
+    os.environ.pop("VIDEO_CLONE_PORTABLE_ROOT", None)
+if _portable_fallback_from is not None:
+    os.environ["VIDEO_CLONE_PORTABLE_FALLBACK_FROM"] = str(_portable_fallback_from)
+else:
+    os.environ.pop("VIDEO_CLONE_PORTABLE_FALLBACK_FROM", None)
+if _previous_homes:
+    os.environ["VIDEO_CLONE_PREVIOUS_HOME"] = os.pathsep.join(map(str, _previous_homes))
+else:
+    os.environ.pop("VIDEO_CLONE_PREVIOUS_HOME", None)
+set_desktop_path("VIDEO_CLONE_DATA", home / "data")
 # PUBLIC_DATA (project temp files) sits inside data/ — one tree, easy backup.
-os.environ.setdefault("VIDEO_CLONE_PUBLIC_DATA", str(home / "data" / "public"))
-os.environ.setdefault("CAPCUT_DEVICE_JSON", str(home / "data" / "capcut_device.json"))
-os.environ.setdefault("UV_PYTHON_INSTALL_DIR", str(home / "data" / ".python-runtime"))
-# OUTPUT_ROOT: Windows portable defaults to APP_ROOT/output; macOS to ~/Downloads/ZM_AIO_TOOL.
+set_desktop_path("VIDEO_CLONE_PUBLIC_DATA", home / "data" / "public")
+set_desktop_path("CAPCUT_DEVICE_JSON", home / "data" / "capcut_device.json")
+set_desktop_path("UV_PYTHON_INSTALL_DIR", home / "data" / ".python-runtime")
+if sys.platform == "win32":
+    # Keep large installers/models on the same portable drive and across app updates.
+    os.environ["UV_CACHE_DIR"] = str(home / "data" / "cache" / "uv")
+    os.environ["HF_HOME"] = str(home / "data" / "cache" / "hf")
+    os.environ["TORCH_HOME"] = str(home / "data" / "cache" / "torch")
+# OUTPUT_ROOT: Windows portable defaults to PORTABLE_ROOT/output; macOS to ~/Downloads/ZM_AIO_TOOL.
 # ui_preferences.json can override this once via /api/config/output-root.
 _default_output = (
     str(home / "output") if sys.platform == "win32"
     else str(Path.home() / "Downloads" / "ZM_AIO_TOOL")
 )
-os.environ.setdefault("VIDEO_CLONE_OUTPUT_ROOT", _default_output)
+set_desktop_path("VIDEO_CLONE_OUTPUT_ROOT", _default_output)
 # httpx parse NO_PROXY IPv6 trần ``::1`` thành port ``:1`` → Whisper/HF crash.
 _broken_np = {"::1", "::1/128", "[::1]", "[::1]/128"}
 for _np in ("NO_PROXY", "no_proxy"):
@@ -172,11 +319,6 @@ os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "threads;1")
 if sys.platform == "win32":
     os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_MSMF", "0")
     os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_FFMPEG", "100")
-
-# Process giám sát: nạp CUDA/cv2 chỉ trong process con. Native crash (0xC0000409)
-# giết con — cha hiện popup + log để copy, không im lặng tắt.
-_SUPERVISOR_ENV = "VIDEO_CLONE_SUPERVISOR_CHILD"
-
 
 def _unsigned_exit(code: int) -> int:
     return code & 0xFFFFFFFF if code < 0 else int(code)
@@ -310,6 +452,11 @@ runtime_site = (
 if getattr(sys, "frozen", False):
     _log_path = home / "app.log"
     _runtime_log = _log_path.open("a", encoding="utf-8", buffering=1)
+    if _portable_fallback_from is not None:
+        _runtime_log.write(
+            f"[portable] Thư mục ứng dụng chỉ đọc; dùng dữ liệu dự phòng / "
+            f"App folder is read-only; using fallback data: {home}\n"
+        )
     if sys.stdout is None:
         sys.stdout = _runtime_log
     if sys.stderr is None:
@@ -384,7 +531,7 @@ if ocr_site.is_dir():
             sys.path[:] = [p for p in sys.path if _path_ok(p)]
 
 bundle = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
-os.environ.setdefault("VIDEO_CLONE_BUNDLE", str(bundle))
+set_desktop_path("VIDEO_CLONE_BUNDLE", bundle)
 try:
     from pipeline.core.runtime_site import prepend_windows_path, sanitize_process_environment
 
@@ -532,7 +679,7 @@ def app_version() -> str:
 
 
 APP_VERSION = app_version()
-os.environ.setdefault("VIDEO_CLONE_VERSION", APP_VERSION)
+set_desktop_path("VIDEO_CLONE_VERSION", APP_VERSION)
 
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from main import app  # noqa: E402
@@ -633,52 +780,19 @@ def centered_xy(width: int, height: int) -> tuple[int, int]:
     return x, y
 
 
-_single_instance_handle = None
-
-
-def _activate_existing_window() -> None:
-    if sys.platform != "win32":
+def mark_update_ready(*_args: object) -> None:
+    """Tell the detached updater that API + native webview initialization succeeded."""
+    raw = os.environ.get("VIDEO_CLONE_UPDATE_READY_FILE", "").strip()
+    if not raw:
         return
+    candidate = Path(raw)
     try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.windll.user32
-        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-
-        def visit(hwnd, _lparam):
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length:
-                title = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, title, length + 1)
-                if title.value.startswith(f"{APP_DISPLAY_NAME} v"):
-                    user32.ShowWindow(hwnd, 9)
-                    user32.SetForegroundWindow(hwnd)
-                    return False
-            return True
-
-        user32.EnumWindows(callback_type(visit), 0)
-    except Exception:
-        pass
-
-
-def acquire_single_instance() -> bool:
-    """Only one desktop window; a second launch focuses the existing instance."""
-    global _single_instance_handle
-    if sys.platform != "win32":
-        return True
-    import ctypes
-
-    kernel32 = ctypes.windll.kernel32
-    handle = kernel32.CreateMutexW(None, False, "Local\\ZMAIOTool.Desktop")
-    if not handle:
-        return True
-    if kernel32.GetLastError() == 183:
-        kernel32.CloseHandle(handle)
-        _activate_existing_window()
-        return False
-    _single_instance_handle = handle
-    return True
+        updates = (home / "updates").resolve()
+        if candidate.resolve().parent != updates or not candidate.name.startswith("update-ready-"):
+            return
+        candidate.write_text(APP_VERSION, encoding="utf-8")
+    except OSError:
+        traceback.print_exc()
 
 
 def run_desktop() -> int:
@@ -720,8 +834,8 @@ def run_desktop() -> int:
                     f"{APP_DISPLAY_NAME} v{APP_VERSION}",
                     html=(
                         "<html><body style='font-family:sans-serif;padding:2rem'>"
-                        f"<h2>Không mở được API</h2><p>{base}</p>"
-                        "<p>Xem log: %LOCALAPPDATA%\\VideoClone\\app.log</p>"
+                        f"<h2>Không mở được API / API failed to start</h2><p>{base}</p>"
+                        f"<p>Log: {html.escape(str(home / 'app.log'))}</p>"
                         "</body></html>"
                     ),
                     width=520,
@@ -768,16 +882,18 @@ def run_desktop() -> int:
             )
         # webview.start() chặn đến khi user đóng cửa sổ — không thoát vì lỗi job nền
         try:
-            webview.start(gui="edgechromium", debug=False)
+            webview.start(mark_update_ready, gui="edgechromium", debug=False)
         except Exception:
             try:
-                webview.start(debug=False)
+                webview.start(mark_update_ready, debug=False)
             except Exception:
                 traceback.print_exc()
                 msg = (
-                    "webview.start failed: Python.Runtime.dll bị Windows chặn (MOTW) "
-                    "hoặc thiếu .NET/WebView2. Copy thư mục app ra ngoài Downloads, "
-                    "hoặc Properties → Unblock trên Python.Runtime.dll."
+                    "Không mở được cửa sổ: Windows đang chặn file tải xuống (MOTW) "
+                    "hoặc thiếu .NET/WebView2. Hãy giải nén toàn bộ ZIP vào thư mục có quyền ghi "
+                    "và chọn Properties → Unblock cho file ZIP. / Window startup failed: Windows "
+                    "blocked downloaded files (MOTW), or .NET/WebView2 is missing. Extract the full "
+                    "ZIP to a writable folder and select Properties → Unblock on the ZIP file."
                 )
                 print(f"[desktop] {msg}", flush=True)
                 try:

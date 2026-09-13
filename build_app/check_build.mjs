@@ -2,7 +2,7 @@
  * check_build.mjs — Kiểm tra build output sau khi PyInstaller xong.
  * Chạy: node build_app/check_build.mjs [version]
  */
-import { existsSync, readdirSync, statSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, statSync, readFileSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -64,7 +64,18 @@ check(`${APP_EXECUTABLE_NAME}${isWin ? '.exe' : ''}`, existsSync(exePath), size(
 // 3. dist/index.html (frontend build đã được pack)
 const internalDir = isMac
   ? resourceDir
-  : existsSync(path.join(distDir, '_internal')) ? path.join(distDir, '_internal') : distDir
+  : existsSync(path.join(distDir, 'app'))
+    ? path.join(distDir, 'app')
+    : existsSync(path.join(distDir, '_internal')) ? path.join(distDir, '_internal') : distDir
+
+if (isWin) {
+  check('portable app/ payload', existsSync(path.join(distDir, 'app')))
+  check(
+    'portable package excludes mutable state',
+    !['data', 'output', 'tmp', '.venv-runtime', '.venv-ocr', 'resources', 'updates', '.env', 'app.log', 'last_crash.txt']
+      .some((name) => existsSync(path.join(distDir, name))),
+  )
+}
 
 // 3. dist/index.html (frontend build đã được pack)
 const distIndex = path.join(internalDir, 'dist', 'index.html')
@@ -93,8 +104,14 @@ checkTool('ffprobe', path.join(isMac ? frameworkDir : internalDir, isWin ? 'ffpr
 // 6. uv
 const uv = path.join(isMac ? frameworkDir : internalDir, isWin ? 'uv.exe' : 'uv')
 check('uv bundled', existsSync(uv), size(uv))
-const ytdlp = spawnSync(exePath, ['--yt-dlp-cli', '--version'], { encoding: 'utf8', timeout: 8000 })
-const ytdlpOutput = `${ytdlp.stdout || ''}${ytdlp.stderr || ''}`.trim()
+const ytdlpReport = path.join(releaseDir, `.yt-dlp-version-${process.pid}.txt`)
+const ytdlp = isWin
+  ? spawnSync(exePath, ['--yt-dlp-version-check', ytdlpReport], { encoding: 'utf8', timeout: 8000 })
+  : spawnSync(exePath, ['--yt-dlp-cli', '--version'], { encoding: 'utf8', timeout: 8000 })
+const ytdlpOutput = isWin && existsSync(ytdlpReport)
+  ? readFileSync(ytdlpReport, 'utf8').trim()
+  : `${ytdlp.stdout || ''}${ytdlp.stderr || ''}`.trim()
+if (existsSync(ytdlpReport)) rmSync(ytdlpReport, { force: true })
 check('yt-dlp embedded CLI', ytdlp.status === 0 && /^\d{4}\.\d{1,2}\.\d{1,2}/m.test(ytdlpOutput), ytdlpOutput.split(/\r?\n/)[0] || `exit ${ytdlp.status}`)
 check(
   'embedded Python runtime DLL',
@@ -126,10 +143,20 @@ const versionFile = path.join(internalDir, 'VERSION')
 check('VERSION file', existsSync(versionFile),
   existsSync(versionFile) ? readFileSync(versionFile, 'utf8').trim() : '')
 
-// 10. ZIP archive
+// 10. ZIP archive (Portable)
 const platform = isWin ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
-const zipPath = path.join(releaseDir, `${verName}-${platform}-${process.arch}.zip`)
-check('ZIP archive', existsSync(zipPath), size(zipPath))
+const portableZip = path.join(releaseDir, `${verName}-windows-x64-Portable.zip`)
+const legacyZip = path.join(releaseDir, `${verName}-${platform}-${process.arch}.zip`)
+const zipPath = isWin && existsSync(portableZip) ? portableZip : legacyZip
+check(isWin ? 'ZIP archive (Portable)' : 'ZIP archive', existsSync(zipPath), size(zipPath))
+
+// 11. Inno Setup installer (Windows optional / CI)
+if (isWin) {
+  const setupExe = path.join(releaseDir, `${verName}-windows-x64-Setup.exe`)
+  if (existsSync(setupExe)) {
+    check('Inno Setup installer (.exe)', true, size(setupExe))
+  }
+}
 
 // Summary
 console.log(`\nTổng kích thước: ${dirSize(distDir)}`)

@@ -334,7 +334,7 @@ def get_client() -> Any:
         return None  # synthesize() uses subprocess on frozen builds
     if not available():
         raise RuntimeError(
-            "Chưa cài VieNeu-TTS. Trong backend/.venv chạy: pip install vieneu onnxruntime soundfile soxr sea-g2p perth"
+            "Chưa cài VieNeu-TTS. Trong backend/.venv chạy: pip install vieneu onnxruntime soundfile soxr sea-g2p"
         )
     with _lock:
         if _client is not None:
@@ -439,7 +439,7 @@ def status() -> dict[str, Any]:
         "message": "",
         "presetCount": len(presets),
         "installHint": (
-            "pip install vieneu onnxruntime soundfile soxr sea-g2p perth && "
+            "pip install vieneu onnxruntime soundfile soxr sea-g2p && "
             "pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124 && "
             "pip install transformers"
         ),

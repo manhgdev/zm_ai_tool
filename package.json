@@ -9,6 +9,7 @@
     "build": "tsc -b frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
     "test:i18n": "node --test tests/i18n.catalog.test.mjs",
     "build:app": "node build_app/build.mjs",
+    "build:installer": "node build_app/build_installer.mjs",
     "check:build": "node build_app/check_build.mjs",
     "preview": "vite preview --config frontend/vite.config.ts",
     "server": "cd backend && .venv/Scripts/python.exe -m uvicorn main:app --reload --reload-dir api --reload-dir pipeline --port 8787",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -908,12 +909,9 @@ def publish_job_outputs(job_id: str, output_dir: str = "", output_format: str = 
 def published_job_output_dir(job_id: str) -> Path:
     """Return the persisted user-selected output folder, publishing legacy jobs once.
 
-    If the saved publishedDir is on a different drive than the current output root
-    (portable Windows: user moved app to another drive), treat it as stale and
-    re-publish to the correct location.
+    If portable state moved, treat an internal old path as stale and publish it
+    under the current output root instead of recreating the old app directory.
     """
-    from pipeline.core.output_paths import app_output_root
-
     job_dir = _job_dir(job_id)
     meta_path = job_dir / "meta.json"
     if meta_path.is_file():
@@ -922,13 +920,15 @@ def published_job_output_dir(job_id: str) -> Path:
             saved = str(meta.get("publishedDir") or "").strip()
             if saved:
                 target = Path(saved).expanduser()
-                current_root = app_output_root()
-                # Stale check: on Windows portable, if saved path is on a different
-                # drive than current output root, it's a leftover from old location.
                 try:
-                    saved_drive = target.anchor   # e.g. "C:\\" or "/"
-                    root_drive  = current_root.anchor
-                    is_stale = (saved_drive != root_drive)
+                    is_stale = False
+                    for old in filter(None, os.environ.get("VIDEO_CLONE_PREVIOUS_HOME", "").split(os.pathsep)):
+                        try:
+                            target.resolve().relative_to((Path(old) / "output").resolve())
+                            is_stale = True
+                            break
+                        except ValueError:
+                            pass
                 except (ValueError, OSError):
                     is_stale = False
                 if not is_stale:

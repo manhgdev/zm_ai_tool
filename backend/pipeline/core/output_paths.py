@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from pathlib import Path
 
 
 APP_OUTPUT_ROOT_NAME = "ZM_AIO_TOOL"
+_WRITABLE_OUTPUT_ROOTS: set[str] = set()
 _OUTPUT_SUBFOLDERS: dict[str, tuple[str, ...]] = {
     "video-clone": ("clone",),
     "clone": ("clone",),
@@ -54,27 +56,41 @@ def item_output_folder(root: Path, item_id: object, *, create: bool = True) -> P
     return folder
 
 
+def ensure_writable_output_root(folder: Path) -> Path:
+    """Create an output root and verify real write access before it is selected."""
+    folder = folder.expanduser()
+    folder.mkdir(parents=True, exist_ok=True)
+    key = os.path.normcase(os.path.abspath(str(folder)))
+    if key not in _WRITABLE_OUTPUT_ROOTS:
+        with tempfile.NamedTemporaryFile(prefix=".zmaio-write-", dir=folder):
+            pass
+        _WRITABLE_OUTPUT_ROOTS.add(key)
+    return folder
+
+
 def app_output_root() -> Path:
     """User-visible output root, resolved in priority order:
 
     1. outputRoot saved in ui_preferences.json (user picked once via Settings)
     2. VIDEO_CLONE_OUTPUT_ROOT env var (set by launcher per platform:
-       Windows = APP_ROOT/output, macOS = ~/Downloads/ZM_AIO_TOOL)
+       Windows = portable state root/output, macOS = ~/Downloads/ZM_AIO_TOOL)
     3. Hard fallback: ~/Downloads/ZM_AIO_TOOL
     """
     from .ui_preferences import load_output_root  # ponytail: lazy to avoid circular at import
     saved = load_output_root()
     if saved:
-        saved.mkdir(parents=True, exist_ok=True)
-        return saved
+        try:
+            return ensure_writable_output_root(saved)
+        except OSError:
+            pass
     env = os.environ.get("VIDEO_CLONE_OUTPUT_ROOT", "").strip()
     if env:
-        folder = Path(env)
-        folder.mkdir(parents=True, exist_ok=True)
-        return folder
+        try:
+            return ensure_writable_output_root(Path(env))
+        except OSError:
+            pass
     folder = Path.home() / "Downloads" / APP_OUTPUT_ROOT_NAME
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
+    return ensure_writable_output_root(folder)
 
 
 def downloads_folder(tab: str) -> Path:
