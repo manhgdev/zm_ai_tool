@@ -1101,85 +1101,81 @@ export default function ConfigModal({
           </div>
         ) : section === 'output' ? (
           <div className="cfg-body cfg-output-section">
-            <div className="cfg-output-card">
-              <div className="cfg-output-path-row">
-                <input
-                  id="cfg-output-root-input"
-                  className="cfg-output-root-input"
-                  type="text"
-                  value={outputRoot}
-                  placeholder={outputRootDefault || t('Đường dẫn tuyệt đối…', 'Absolute path…')}
-                  onChange={(e) => { setOutputRoot(e.target.value) }}
-                  spellCheck={false}
-                />
+            <div className="cfg-output-field-row">
+              <input
+                id="cfg-output-root-input"
+                className="cfg-output-field-input"
+                type="text"
+                value={outputRoot}
+                placeholder={outputRootDefault || t('Đường dẫn tuyệt đối…', 'Absolute path…')}
+                onChange={(e) => { setOutputRoot(e.target.value) }}
+                spellCheck={false}
+              />
+              <button
+                id="cfg-output-root-pick"
+                type="button"
+                className="cfg-secondary"
+                title={t('Chọn thư mục', 'Browse')}
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/api/system/pick-folder', { method: 'POST' })
+                    if (!res.ok) return
+                    const data = await res.json() as { ok: boolean; path: string }
+                    if (data.ok && data.path) setOutputRoot(data.path)
+                  } catch { /* cancelled */ }
+                }}
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{width:'1em',height:'1em',verticalAlign:'-0.1em',marginRight:'0.25em'}}><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
+                {t('Chọn', 'Browse')}
+              </button>
+              <button
+                id="cfg-output-root-save"
+                type="button"
+                className="cfg-primary"
+                disabled={outputRootSaving}
+                onClick={async () => {
+                  const raw = outputRoot.trim()
+                  if (raw && !raw.match(/^([A-Za-z]:[/\\]|\/)/)) {
+                    toast.error(t('Phải là đường dẫn tuyệt đối', 'Must be an absolute path'))
+                    return
+                  }
+                  setOutputRootSaving(true)
+                  try {
+                    await api.saveOutputRoot(raw)
+                    const cfg = await api.getConfig()
+                    setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
+                    toast.success(t('Đã lưu', 'Saved'))
+                  } catch {
+                    toast.error(t('Lỗi lưu thư mục đầu ra', 'Failed to save'))
+                  } finally {
+                    setOutputRootSaving(false)
+                  }
+                }}
+              >
+                {outputRootSaving ? '…' : t('Lưu', 'Save')}
+              </button>
+              {outputRoot ? (
                 <button
-                  id="cfg-output-root-pick"
                   type="button"
-                  className="cfg-output-pick-btn"
-                  title={t('Chọn thư mục', 'Browse')}
-                  onClick={async () => {
-                    try {
-                      const res = await fetch('/api/system/pick-folder', { method: 'POST' })
-                      if (!res.ok) return
-                      const data = await res.json() as { ok: boolean; path: string }
-                      if (data.ok && data.path) setOutputRoot(data.path)
-                    } catch { /* cancelled */ }
-                  }}
-                >
-                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
-                  {t('Chọn', 'Browse')}
-                </button>
-                <button
-                  id="cfg-output-root-save"
-                  type="button"
-                  className="cfg-output-save-btn"
+                  className="cfg-secondary"
                   disabled={outputRootSaving}
+                  title={t('Đặt lại mặc định', 'Reset to default')}
                   onClick={async () => {
-                    const raw = outputRoot.trim()
-                    if (raw && !raw.match(/^([A-Za-z]:[/\\]|\/)/)) {
-                      toast.error(t('Phải là đường dẫn tuyệt đối', 'Must be an absolute path'))
-                      return
-                    }
                     setOutputRootSaving(true)
                     try {
-                      await api.saveOutputRoot(raw)
+                      await api.saveOutputRoot('')
+                      setOutputRoot('')
                       const cfg = await api.getConfig()
                       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
-                      toast.success(t('Đã lưu', 'Saved'))
+                      toast.success(t('Đã đặt lại mặc định', 'Reset to default'))
                     } catch {
-                      toast.error(t('Lỗi lưu thư mục đầu ra', 'Failed to save'))
+                      toast.error(t('Lỗi', 'Error'))
                     } finally {
                       setOutputRootSaving(false)
                     }
                   }}
-                >
-                  {outputRootSaving ? '…' : t('Lưu', 'Save')}
-                </button>
-                {outputRoot ? (
-                  <button
-                    type="button"
-                    className="cfg-output-pick-btn"
-                    disabled={outputRootSaving}
-                    title={t('Đặt lại mặc định', 'Reset to default')}
-                    onClick={async () => {
-                      setOutputRootSaving(true)
-                      try {
-                        await api.saveOutputRoot('')
-                        setOutputRoot('')
-                        const cfg = await api.getConfig()
-                        setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
-                        toast.success(t('Đã đặt lại mặc định', 'Reset to default'))
-                      } catch {
-                        toast.error(t('Lỗi', 'Error'))
-                      } finally {
-                        setOutputRootSaving(false)
-                      }
-                    }}
-                  >
-                    ↺
-                  </button>
-                ) : null}
-              </div>
+                >↺</button>
+              ) : null}
             </div>
 
             {outputRootDefault ? (() => {

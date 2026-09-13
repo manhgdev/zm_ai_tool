@@ -1020,95 +1020,43 @@
 }
 
 /* Output root field in setup section */
-/* ── Output section tab ────────────────────────────────────── */
+/* ── Output section tab ─────────────────────────────── */
 .cfg-output-section {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
-.cfg-output-card {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-/* Input + Browse button in one row */
-.cfg-output-path-row {
-  display: flex;
-  align-items: stretch;
-}
-
-.cfg-output-root-input {
-  flex: 1;
-  min-width: 0;
-  padding: 0.6rem 0.75rem;
-  border: none;
-  background: transparent;
-  color: var(--ink);
-  font-size: 0.85rem;
-  font-family: monospace;
-  outline: none;
-}
-
-.cfg-output-root-input::placeholder {
-  color: var(--ink-muted, #888);
-  opacity: 0.65;
-}
-
-.cfg-output-root-input:focus {
-  background: var(--surface-focus, rgba(108,111,255,0.04));
-}
-
-.cfg-output-pick-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.1rem;
-  padding: 0.4rem 0.85rem;
-  border: none;
-  border-left: 1px solid var(--line);
-  background: var(--surface-alt, rgba(255,255,255,0.03));
-  color: var(--ink);
-  font-size: 0.7rem;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s;
-  min-width: 52px;
-}
-
-.cfg-output-pick-btn:hover {
-  background: var(--surface-hover, rgba(255,255,255,0.07));
-}
-
-.cfg-output-pick-btn svg {
-  width: 1.1em;
-  height: 1.1em;
-}
-
-/* Save + Reset + hint row */
-.cfg-output-actions {
+.cfg-output-field-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.5rem 0.65rem;
-  border-top: 1px solid var(--line);
-  background: var(--surface-alt, rgba(255,255,255,0.02));
 }
 
-.cfg-output-hint {
-  font-size: 0.72rem;
+.cfg-output-field-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.84rem;
   font-family: monospace;
-  color: var(--ink-muted, #888);
-  margin-left: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 55%;
+  outline: none;
+  transition: border-color 0.15s;
 }
 
-/* ── Subfolder grid ─────────────────────────────────────────── */
+.cfg-output-field-input::placeholder {
+  color: var(--ink-muted, #888);
+  opacity: 0.7;
+}
+
+.cfg-output-field-input:focus {
+  border-color: var(--accent, #6c6fff);
+}
+
+/* ── Subfolder grid ─────────────────────────────────── */
 .cfg-output-subfolders {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1158,20 +1106,3 @@
   user-select: all;
   line-height: 1.3;
 }
-
-
-.cfg-output-save-btn {
-  padding: 0 1rem;
-  border: none;
-  border-left: 1px solid var(--line);
-  background: var(--accent, #6c6fff);
-  color: #fff;
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: opacity 0.15s;
-}
-
-.cfg-output-save-btn:hover { opacity: 0.88; }
-.cfg-output-save-btn:disabled { opacity: 0.5; cursor: default; }
