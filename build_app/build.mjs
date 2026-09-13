@@ -217,6 +217,7 @@ const args = [
   '--add-data', `${versionFilePath}${dataSep}.`,
   '--collect-all', 'webview',
   '--collect-all', 'yt_dlp',
+  '--collect-all', 'playwright',
   // Hidden imports: stdlib + third-party hay bị PyInstaller miss
   '--hidden-import', 'timeit',
   '--hidden-import', 'pickletools',
@@ -229,6 +230,9 @@ const args = [
   '--hidden-import', 'email.encoders',
   '--hidden-import', 'httpx',
   '--hidden-import', 'setuptools',
+  '--hidden-import', 'playwright',
+  '--hidden-import', 'playwright.async_api',
+  '--hidden-import', 'playwright.sync_api',
 ]
 
 // Các gói AI được cài vào %LOCALAPPDATA%/VideoClone/.venv-runtime ở lần mở đầu tiên.
