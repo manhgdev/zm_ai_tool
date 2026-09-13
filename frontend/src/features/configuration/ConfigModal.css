@@ -1020,92 +1020,95 @@
 }
 
 /* Output root field in setup section */
-.cfg-output-root {
-  margin-top: 1.25rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--line);
-}
-
-.cfg-output-root-label {
-  display: block;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--ink-muted, #888);
-  margin-bottom: 0.4rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.cfg-output-root-row {
+/* ── Output section tab ────────────────────────────────────── */
+.cfg-output-section {
   display: flex;
-  gap: 0.5rem;
-  align-items: center;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.cfg-output-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* Input + Browse button in one row */
+.cfg-output-path-row {
+  display: flex;
+  align-items: stretch;
 }
 
 .cfg-output-root-input {
   flex: 1;
   min-width: 0;
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
+  padding: 0.6rem 0.75rem;
+  border: none;
+  background: transparent;
   color: var(--ink);
-  font-size: 0.875rem;
+  font-size: 0.85rem;
   font-family: monospace;
+  outline: none;
+}
+
+.cfg-output-root-input::placeholder {
+  color: var(--ink-muted, #888);
+  opacity: 0.65;
 }
 
 .cfg-output-root-input:focus {
-  outline: none;
-  border-color: var(--accent, #6c6fff);
+  background: var(--surface-focus, rgba(108,111,255,0.04));
 }
 
-.cfg-output-root-msg {
-  margin: 0.35rem 0 0;
-  font-size: 0.8rem;
-  color: var(--ink-muted, #888);
-}
-
-/* ── Output section tab ─────────────────────────────────── */
-.cfg-output-section {
+.cfg-output-pick-btn {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
-}
-
-.cfg-output-current {
-  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.cfg-output-current-label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-muted, #888);
-}
-
-.cfg-output-current-path {
-  font-size: 0.85rem;
-  font-family: monospace;
-  word-break: break-all;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
+  padding: 0.4rem 0.85rem;
+  border: none;
+  border-left: 1px solid var(--line);
+  background: var(--surface-alt, rgba(255,255,255,0.03));
   color: var(--ink);
-  user-select: all;
+  font-size: 0.7rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+  min-width: 52px;
 }
 
-.cfg-output-root-actions {
+.cfg-output-pick-btn:hover {
+  background: var(--surface-hover, rgba(255,255,255,0.07));
+}
+
+.cfg-output-pick-btn svg {
+  width: 1.1em;
+  height: 1.1em;
+}
+
+/* Save + Reset + hint row */
+.cfg-output-actions {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
-  margin-top: 0.6rem;
-  flex-wrap: wrap;
+  padding: 0.5rem 0.65rem;
+  border-top: 1px solid var(--line);
+  background: var(--surface-alt, rgba(255,255,255,0.02));
 }
 
-/* ── Output subfolder grid ───────────────────────────────── */
+.cfg-output-hint {
+  font-size: 0.72rem;
+  font-family: monospace;
+  color: var(--ink-muted, #888);
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 55%;
+}
+
+/* ── Subfolder grid ─────────────────────────────────────────── */
 .cfg-output-subfolders {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1114,8 +1117,8 @@
 
 .cfg-output-subfolders-title {
   margin: 0;
-  padding: 0.4rem 0.85rem;
-  font-size: 0.7rem;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.68rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1127,41 +1130,32 @@
 .cfg-subfolder-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  padding: 0.5rem 0.85rem;
-  gap: 0.2rem 1.5rem;
+  padding: 0.45rem 0.85rem;
+  gap: 0.15rem 1.5rem;
 }
 
 .cfg-subfolder-item {
   display: flex;
   flex-direction: column;
-  gap: 0.05rem;
   min-width: 0;
 }
 
 .cfg-subfolder-label {
-  font-size: 0.7rem;
+  font-size: 0.67rem;
   font-weight: 600;
   color: var(--ink-muted, #888);
   white-space: nowrap;
+  line-height: 1.4;
 }
 
 .cfg-subfolder-path {
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-family: monospace;
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: all;
+  line-height: 1.3;
 }
 
-.cfg-output-hint {
-  font-size: 0.75rem;
-  font-family: monospace;
-  color: var(--ink-muted, #888);
-  margin-left: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 55%;
-}
