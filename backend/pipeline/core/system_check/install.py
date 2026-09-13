@@ -784,7 +784,10 @@ def install_ai_runtime() -> dict[str, Any]:
                 provider_pkg = _ORT_GPU_PKG if ort_accel == "cuda" else _ORT_DIRECTML_PKG
                 provider_cmd = [uv, "pip", "install", "--python", str(py), "--force-reinstall", provider_pkg]
                 if ort_accel == "cuda":
-                    provider_cmd += ["--index-url", _ORT_GPU_CUDA12_INDEX]
+                    provider_cmd += [
+                        "--extra-index-url", _ORT_GPU_CUDA12_INDEX,
+                        "--index-strategy", "unsafe-best-match",
+                    ]
                 proc_provider = _pip_stream(provider_cmd)
                 if proc_provider.returncode:
                     raise RuntimeError((proc_provider.stderr or proc_provider.stdout)[-3000:])
