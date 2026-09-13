@@ -472,8 +472,7 @@ def api_reveal_output(project_id: str):
             if path.is_dir():
                 subprocess.Popen(["explorer", str(path)])
             else:
-                # /select, và path phải là 1 arg — không có space giữa
-                subprocess.Popen(["explorer", f"/select,{path}"])
+                subprocess.Popen(["explorer", "/select,", str(path)])
         else:
             target = path if path.is_dir() else path.parent
             subprocess.Popen(["xdg-open", str(target)])

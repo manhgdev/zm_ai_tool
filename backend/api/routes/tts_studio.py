@@ -235,7 +235,7 @@ def _reveal_local_file(path: Path) -> None:
         if sys.platform == "darwin":
             subprocess.Popen(["open", "-R", str(path)])
         elif sys.platform == "win32":
-            subprocess.Popen(["explorer", f"/select,{path}"])
+            subprocess.Popen(["explorer", "/select,", str(path)])
         else:
             subprocess.Popen(["xdg-open", str(path.parent)])
     except OSError as exc:
