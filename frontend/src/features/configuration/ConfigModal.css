@@ -1154,3 +1154,14 @@
   white-space: nowrap;
   user-select: all;
 }
+
+.cfg-output-hint {
+  font-size: 0.75rem;
+  font-family: monospace;
+  color: var(--ink-muted, #888);
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 55%;
+}
