@@ -1125,7 +1125,6 @@ export default function ConfigModal({
                   } catch { /* cancelled */ }
                 }}
               >
-                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{width:'1em',height:'1em',verticalAlign:'-0.1em',marginRight:'0.25em'}}><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
                 {t('Chọn', 'Browse')}
               </button>
               <button
