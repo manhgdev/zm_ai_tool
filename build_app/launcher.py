@@ -306,10 +306,37 @@ runtime_site = (
     else runtime_venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
 )
 
-if getattr(sys, "frozen", False) and sys.stdout is None:
-    runtime_log = (home / "app.log").open("a", encoding="utf-8", buffering=1)
-    sys.stdout = runtime_log
-    sys.stderr = runtime_log
+# Mở log ngay — trước mọi import nặng để crash lúc khởi động luôn được ghi.
+if getattr(sys, "frozen", False):
+    _log_path = home / "app.log"
+    _runtime_log = _log_path.open("a", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = _runtime_log
+    if sys.stderr is None:
+        sys.stderr = _runtime_log
+    # Luôn tee stderr vào log kể cả khi stdout/stderr đã có (child process)
+    import io as _io
+
+    class _Tee(_io.TextIOBase):
+        def __init__(self, *streams: object) -> None:
+            self._s = streams
+
+        def write(self, s: str) -> int:  # type: ignore[override]
+            for st in self._s:
+                try:
+                    st.write(s)  # type: ignore[union-attr]
+                except Exception:
+                    pass
+            return len(s)
+
+        def flush(self) -> None:
+            for st in self._s:
+                try:
+                    st.flush()  # type: ignore[union-attr]
+                except Exception:
+                    pass
+
+    sys.stderr = _Tee(sys.stderr, _runtime_log)  # type: ignore[assignment]
 
 if runtime_site.is_dir():
     sys.path.insert(0, str(runtime_site))
