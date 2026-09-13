@@ -45,7 +45,15 @@ def _runtime_subprocess_env() -> dict[str, str]:
     """Environment for pip/uv probes, including Windows PATH hardening."""
     from ..runtime_site import subprocess_environment
 
-    return subprocess_environment({"PYTHONUNBUFFERED": "1"})
+    return subprocess_environment({
+        "PYTHONUNBUFFERED": "1",
+        # Tăng tốc uv: 10 kết nối song song, timeout dài hơn, không compile .pyc lúc cài
+        "UV_CONCURRENT_DOWNLOADS": "10",
+        "UV_HTTP_TIMEOUT": "300",
+        "UV_COMPILE_BYTECODE": "0",
+        # Tắt progress bar Unicode (gây lỗi pipe trên Windows terminal cũ)
+        "UV_NO_PROGRESS": "0",
+    })
 
 
 def _clean_corrupted_dists(site: Path | None = None) -> None:
