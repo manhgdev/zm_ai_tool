@@ -4,6 +4,7 @@ python-multipart>=0.0.12
 # flow package inlined at backend/pipeline/flow/_flow/ — no external pip dep needed
 faster-whisper>=1.1.0
 httpx>=0.27.0
+playwright>=1.40.0
 yt-dlp>=2025.1.1
 rapidocr-onnxruntime>=1.3.20
 # Offline multi-speaker diarization (models live in data/models/pyannote).
