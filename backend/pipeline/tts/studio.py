@@ -370,6 +370,18 @@ def synth_text_job(
         else:
             max_workers = adaptive_workers(None, kind="network", cap=24, tasks=total_chunks)
 
+        # Nếu VieNeu chưa nạp model → báo rõ để người dùng không tưởng bị treo
+        if engine_type == "vieneu":
+            try:
+                from pipeline.tts.engines.vieneu import _load_state as _vn_state
+                if _vn_state in ("cold", "loading"):
+                    set_job_progress(
+                        job_id, 0, total_chunks,
+                        "Đang nạp model VieNeu vào GPU lần đầu, vui lòng chờ 30–60s…"
+                    )
+            except Exception:
+                pass
+
         part_paths: list[Path] = []
         for i in range(total_chunks):
             part_paths.append(job_dir / f"part_{i:03d}.wav")
@@ -392,6 +404,7 @@ def synth_text_job(
                 future.result()
                 completed += 1
                 set_job_progress(job_id, completed, total_chunks, f"Đã hoàn thành {completed}/{total_chunks} câu…")
+
 
         part_durs: list[float] = [ffprobe_duration(p) for p in part_paths]
         set_job_progress(job_id, total_chunks, total_chunks, "Đang ghép nối âm thanh và tạo phụ đề…")
