@@ -1101,6 +1101,12 @@ export default function ConfigModal({
           </div>
         ) : section === 'output' ? (
           <div className="cfg-body cfg-output-section">
+            <p className="cfg-hint">
+              {t(
+                'Tất cả tính năng xuất file sẽ lưu vào thư mục này theo cấu trúc con. Để trống = dùng mặc định theo nền tảng.',
+                'All export features save files here in subfolders. Leave empty to use the platform default.',
+              )}
+            </p>
             <div className="cfg-output-field-row">
               <input
                 id="cfg-output-root-input"
