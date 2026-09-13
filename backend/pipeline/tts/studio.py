@@ -893,7 +893,14 @@ def publish_job_outputs(job_id: str, output_dir: str = "", output_format: str = 
 
 
 def published_job_output_dir(job_id: str) -> Path:
-    """Return the persisted user-selected output folder, publishing legacy jobs once."""
+    """Return the persisted user-selected output folder, publishing legacy jobs once.
+
+    If the saved publishedDir is on a different drive than the current output root
+    (portable Windows: user moved app to another drive), treat it as stale and
+    re-publish to the correct location.
+    """
+    from pipeline.core.output_paths import app_output_root
+
     job_dir = _job_dir(job_id)
     meta_path = job_dir / "meta.json"
     if meta_path.is_file():
@@ -902,8 +909,18 @@ def published_job_output_dir(job_id: str) -> Path:
             saved = str(meta.get("publishedDir") or "").strip()
             if saved:
                 target = Path(saved).expanduser()
-                target.mkdir(parents=True, exist_ok=True)
-                return target
+                current_root = app_output_root()
+                # Stale check: on Windows portable, if saved path is on a different
+                # drive than current output root, it's a leftover from old location.
+                try:
+                    saved_drive = target.anchor   # e.g. "C:\\" or "/"
+                    root_drive  = current_root.anchor
+                    is_stale = (saved_drive != root_drive)
+                except (ValueError, OSError):
+                    is_stale = False
+                if not is_stale:
+                    target.mkdir(parents=True, exist_ok=True)
+                    return target
         except (OSError, ValueError, TypeError):
             pass
     return publish_job_outputs(job_id)
