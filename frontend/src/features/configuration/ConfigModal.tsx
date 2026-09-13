@@ -1129,12 +1129,10 @@ export default function ConfigModal({
                   <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
                   {t('Chọn', 'Browse')}
                 </button>
-              </div>
-              <div className="cfg-output-actions">
                 <button
                   id="cfg-output-root-save"
                   type="button"
-                  className="cfg-primary"
+                  className="cfg-output-save-btn"
                   disabled={outputRootSaving}
                   onClick={async () => {
                     const raw = outputRoot.trim()
@@ -1160,8 +1158,9 @@ export default function ConfigModal({
                 {outputRoot ? (
                   <button
                     type="button"
-                    className="cfg-secondary"
+                    className="cfg-output-pick-btn"
                     disabled={outputRootSaving}
+                    title={t('Đặt lại mặc định', 'Reset to default')}
                     onClick={async () => {
                       setOutputRootSaving(true)
                       try {
@@ -1177,10 +1176,9 @@ export default function ConfigModal({
                       }
                     }}
                   >
-                    {t('Mặc định', 'Reset')}
+                    ↺
                   </button>
                 ) : null}
-                <span className="cfg-output-hint">{outputRootDefault}</span>
               </div>
             </div>
 
