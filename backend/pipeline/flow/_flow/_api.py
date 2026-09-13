@@ -695,7 +695,14 @@ class FlowAPI:
         from urllib.parse import quote
         url  = f"{FLOW_BASE}/api/trpc/{proc}?input={quote(json.dumps({'json': inp}))}"
         resp = await self._bm.context.request.get(url)
-        raw  = await resp.json()
+        if resp.status >= 400:
+            text = await resp.text()
+            raise GenerationError(f"tRPC {proc} HTTP {resp.status}: {text[:200]}")
+        try:
+            raw = await resp.json()
+        except Exception:
+            text = await resp.text()
+            raise GenerationError(f"tRPC {proc}: response không phải JSON: {text[:200]!r}")
         return raw.get("result", {}).get("data", {}).get("json", raw)
 
     # ── Credits ───────────────────────────────────────────────────────────────
