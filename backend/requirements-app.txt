@@ -1,7 +1,7 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.12
-# flow-py is installed from backend/vendor/flow-py by setup scripts and CI (see scripts/setup.mjs and release-*.yml)
+# flow package inlined at backend/pipeline/flow/_flow/ — no external pip dep needed
 faster-whisper>=1.1.0
 httpx>=0.27.0
 yt-dlp>=2025.1.1

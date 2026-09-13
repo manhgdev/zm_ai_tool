@@ -71,7 +71,6 @@ if (!existsSync(venvPython) || !compatible(pythonVersion(venvPython))) {
 
 console.log('Cài backend dependencies...')
 run(venvPython, ['-m', 'pip', 'install', '--upgrade', 'pip'])
-run(venvPython, ['-m', 'pip', 'install', path.join(root, 'backend', 'vendor', 'flow-py')])
 run(venvPython, ['-m', 'pip', 'install', '-r', path.join(root, 'backend', 'requirements.txt')])
 
 const detectedAccel = spawnSync(venvPython, [

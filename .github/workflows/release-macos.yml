@@ -37,7 +37,6 @@ jobs:
           npm install
           python -m venv backend/.venv
           backend/.venv/bin/python -m pip install --upgrade pip
-          backend/.venv/bin/python -m pip install ./backend/vendor/flow-py
           backend/.venv/bin/python -m pip install -r backend/requirements-app.txt pyinstaller pywebview uv pytest
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           echo "/usr/local/bin" >> "$GITHUB_PATH"
