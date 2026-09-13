@@ -32,6 +32,7 @@ jobs:
           npm install
           python -m venv backend/.venv
           backend/.venv/Scripts/python.exe -m pip install --upgrade pip
+          backend/.venv/Scripts/python.exe -m pip install ./backend/vendor/flow-py
           backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-app.txt pyinstaller pywebview uv pythonnet pytest
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             choco install ffmpeg -y --no-progress
