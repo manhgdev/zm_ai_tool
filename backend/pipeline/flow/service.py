@@ -6,7 +6,7 @@ import logging
 import os
 import re
 try:
-    from flow._models import GenerationMode as _GenerationMode
+    from ._flow._models import GenerationMode as _GenerationMode
 except Exception:  # ponytail: graceful if flow lib version lacks this
     _GenerationMode = None
 import shutil
@@ -558,8 +558,8 @@ class FlowService:
                 _log.info("sync_credits_for_account: skip %s — already syncing", account_id)
                 return account
             self._syncing_accounts.add(account_id)
-        from flow._api import FlowAPI
-        from flow._exceptions import AuthError as FlowAuthError
+        from ._flow._api import FlowAPI
+        from ._flow._exceptions import AuthError as FlowAuthError
         from .browser import BrowserManager
         browser = BrowserManager(headless=True, profile_dir=store.profile_dir(account_id))
         try:
@@ -726,7 +726,7 @@ class FlowService:
             credits_synced_at = None
             detected_plan = None
             try:
-                from flow._api import FlowAPI
+                from ._flow._api import FlowAPI
                 _log.info("_login: fetching credits for project=%s", project_id)
                 credit_info = await asyncio.wait_for(
                     FlowAPI(browser, project_id=project_id).get_credits(),
@@ -856,7 +856,7 @@ class FlowService:
             credits_synced_at = None
             detected_plan = None
             try:
-                from flow._api import FlowAPI
+                from ._flow._api import FlowAPI
                 credit_info = await FlowAPI(browser, project_id=confirmed_id).get_credits()
                 credits = int(credit_info.credits)
                 credits_synced_at = time.time()
@@ -1219,7 +1219,7 @@ class FlowService:
         switched = False
         if ui is not None:
             try:
-                from flow._models import GenerationMode
+                from ._flow._models import GenerationMode
                 gen_mode = GenerationMode.IMAGE if kind == "image" else GenerationMode.VIDEO
                 switched = await ui.switch_mode(page, gen_mode)
             except Exception:
@@ -1685,9 +1685,9 @@ class FlowService:
             self._log("info", "job_started", job_id=job_id, account_id=account["id"], details={"kind": job["kind"]})
             if account.get("status") != "online" or not account.get("projectId"):
                 raise RuntimeError("FLOW_LOGIN_REQUIRED: connect the Google Flow account first")
-            from flow._api import FlowAPI
+            from ._flow._api import FlowAPI
             from .browser import BrowserManager
-            from flow._client import FlowClient
+            from ._flow._client import FlowClient
             # Generation uses the already-authenticated persistent profile in
             # background mode. Only the explicit account-connect flow opens a
             # visible Chrome window for interactive Google sign-in.
@@ -1720,7 +1720,7 @@ class FlowService:
                 # This must happen BEFORE the no-ops below so generate_video does not
                 # re-attempt the switch and inadvertently close the panel.
                 if source:
-                    from flow._models import GenerationMode
+                    from ._flow._models import GenerationMode
                     await client._ui.switch_mode(page, GenerationMode.FRAME_TO_VIDEO)
                     if not await client._ui.upload_image(page, source):
                         raise RuntimeError("FLOW_UI_CHANGED: start image upload control was not found")
