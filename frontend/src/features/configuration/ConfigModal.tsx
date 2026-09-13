@@ -97,14 +97,11 @@ export default function ConfigModal({
   const [updateChecking, setUpdateChecking] = useState(false)
   const [updateDialog, setUpdateDialog] = useState<UpdateDialog | null>(null)
   const autoSetupLock = useRef(false)
-  /** Install kinds already auto-attempted — prevents infinite retry when install
-   *  succeeds but the underlying check item remains !ok (e.g. native lib missing). */
   const autoAttempted = useRef<Set<string>>(new Set())
   const restartRequested = useRef(false)
   const [outputRoot, setOutputRoot] = useState('')
-  const [outputRootDefault, setOutputRootDefault] = useState('')  // resolved from /api/config
+  const [outputRootDefault, setOutputRootDefault] = useState('')
   const [outputRootSaving, setOutputRootSaving] = useState(false)
-  const [outputRootMsg, setOutputRootMsg] = useState('')
 
   const checkForUpdate = async () => {
     setUpdateChecking(true)
@@ -1127,7 +1124,7 @@ export default function ConfigModal({
                   type="text"
                   value={outputRoot}
                   placeholder={outputRootDefault || t('Đường dẫn tuyệt đối…', 'Absolute path…')}
-                  onChange={(e) => { setOutputRoot(e.target.value); setOutputRootMsg('') }}
+                  onChange={(e) => { setOutputRoot(e.target.value) }}
                   spellCheck={false}
                 />
                 <button
@@ -1142,7 +1139,6 @@ export default function ConfigModal({
                       const data = await res.json() as { ok: boolean; path: string }
                       if (data.ok && data.path) {
                         setOutputRoot(data.path)
-                        setOutputRootMsg('')
                       }
                     } catch { /* dialog cancelled */ }
                   }}
@@ -1160,7 +1156,7 @@ export default function ConfigModal({
                   onClick={async () => {
                     const raw = outputRoot.trim()
                     if (raw && !raw.match(/^([A-Za-z]:[/\\]|\/)/)) {
-                      setOutputRootMsg(t('Phải là đường dẫn tuyệt đối', 'Must be an absolute path'))
+                      toast.error(t('Phải là đường dẫn tuyệt đối', 'Must be an absolute path'))
                       return
                     }
                     setOutputRootSaving(true)
@@ -1169,9 +1165,9 @@ export default function ConfigModal({
                       // Refresh displayed current path
                       const cfg = await api.getConfig()
                       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
-                      setOutputRootMsg(t('Đã lưu — áp dụng từ lần xuất tiếp theo', 'Saved — applies from next export'))
+                      toast.success(t('Đã lưu — áp dụng từ lần xuất tiếp theo', 'Saved — applies from next export'))
                     } catch {
-                      setOutputRootMsg(t('Lỗi lưu thư mục đầu ra', 'Failed to save output folder'))
+                      toast.error(t('Lỗi lưu thư mục đầu ra', 'Failed to save output folder'))
                     } finally {
                       setOutputRootSaving(false)
                     }
@@ -1190,9 +1186,9 @@ export default function ConfigModal({
                       setOutputRoot('')
                       const cfg = await api.getConfig()
                       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
-                      setOutputRootMsg(t('Đã đặt lại về mặc định', 'Reset to default'))
+                      toast.success(t('Đã đặt lại về mặc định', 'Reset to default'))
                     } catch {
-                      setOutputRootMsg(t('Lỗi', 'Error'))
+                      toast.error(t('Lỗi', 'Error'))
                     } finally {
                       setOutputRootSaving(false)
                     }
@@ -1201,7 +1197,6 @@ export default function ConfigModal({
                   {t('Đặt lại mặc định', 'Reset to default')}
                 </button>
               </div>
-              {outputRootMsg ? <p className="cfg-output-root-msg">{outputRootMsg}</p> : null}
             </div>
           </div>
         ) : section === 'license' ? (
