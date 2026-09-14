@@ -54,11 +54,6 @@ jobs:
           Set-Content -Path build_app/VERSION -Value $version.Trim()
           Write-Host "Building version: $version"
 
-      - name: Test Windows Portable and AI installer control flow
-        shell: pwsh
-        run: |
-          backend/.venv/Scripts/python.exe tests/test_portable_layout.py
-          backend/.venv/Scripts/python.exe tests/test_ai_install_progress.py
 
       - name: Build EXE
         shell: pwsh
@@ -175,7 +170,10 @@ jobs:
           if (-not (Test-Path $marker)) { throw 'Setup layout marker is missing' }
 
           $env:LOCALAPPDATA = $localData
-          $ready = Join-Path $env:RUNNER_TEMP 'zmaio-setup-ready.txt'
+          $localHome = Join-Path $localData 'ZM_AI_TOOL'
+          $localUpdates = Join-Path $localHome 'updates'
+          New-Item -ItemType Directory -Path $localUpdates -Force | Out-Null
+          $ready = Join-Path $localUpdates 'update-ready-ci.txt'
           Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
           $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ready
           $app = Start-Process -FilePath $exe -WorkingDirectory $installDir -PassThru

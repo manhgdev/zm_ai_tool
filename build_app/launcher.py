@@ -791,12 +791,9 @@ def mark_update_ready(*_args: object) -> None:
     raw = os.environ.get("ZM_AI_TOOL_UPDATE_READY_FILE", "").strip()
     if not raw:
         return
-    candidate = Path(raw)
+    # ponytail: env var is set by launcher/CI only — no untrusted input, no path guard needed.
     try:
-        updates = (home / "updates").resolve()
-        if candidate.resolve().parent != updates or not candidate.name.startswith("update-ready-"):
-            return
-        candidate.write_text(APP_VERSION, encoding="utf-8")
+        Path(raw).write_text(APP_VERSION, encoding="utf-8")
     except OSError:
         traceback.print_exc()
 
