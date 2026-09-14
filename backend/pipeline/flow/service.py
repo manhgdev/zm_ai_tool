@@ -1955,9 +1955,25 @@ class FlowService:
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")
             store.patch_row("jobs", job_id, {"status": action, "stage": action, "error": str(exc), "updatedAt": time.time()})
             if needs_login:
-                # The queued job used a cloned headless profile.  Its saved Google
-                # session cannot be repaired headlessly. Keep the stable account
-                # profile and wait for an explicit user reconnect action.
+                # Thử tự refresh session headlessly trước khi yêu cầu user can thiệp.
+                project_id = str(account.get("projectId") or "")
+                auto_ok = False
+                if project_id:
+                    try:
+                        auto_ok = await self._try_headless_reconnect(account["id"], project_id)
+                    except Exception as reconnect_exc:
+                        _log.debug("auto headless reconnect failed for %s: %s", account["id"], reconnect_exc)
+                if auto_ok:
+                    # Session được refresh thành công → retry job tự động
+                    _log.info("auto reconnect OK for %s — re-queuing job %s", account["id"], job_id)
+                    store.patch_row("jobs", job_id, {"status": "queued", "stage": "queued", "error": None, "updatedAt": time.time()})
+                    threading.Thread(
+                        target=lambda: asyncio.run(self._run(job_id)),
+                        daemon=True,
+                        name=f"flow-retry-{job_id}",
+                    ).start()
+                    return
+                # Headless thất bại → cookie hết hạn thật sự, cần user đăng nhập lại
                 store.patch_row("accounts", account["id"], {"status": "reconnect", "error": str(exc), "updatedAt": time.time()})
             if job.get("seriesContext"):
                 from . import series
