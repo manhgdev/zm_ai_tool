@@ -366,6 +366,19 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     (job) => job.status === "processing" || job.status === "queued",
   );
   const hasConnectingAccounts = accounts.some((account) => account.status === "connecting");
+  // Track trạng thái trước để detect khi connecting → online/reconnect
+  const prevAccountStatusRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    accounts.forEach((account) => {
+      const prev = prevAccountStatusRef.current[account.id];
+      if (prev === "connecting" && account.status === "online") {
+        toast.success(t("Đã kết nối tài khoản thành công!", "Account connected successfully!"));
+      } else if (prev === "connecting" && account.status === "reconnect") {
+        toast.info(t("Đang mở Chrome — vui lòng đăng nhập Google.", "Chrome opened — please sign in to Google."));
+      }
+      prevAccountStatusRef.current[account.id] = account.status;
+    });
+  }, [accounts]);
   useEffect(() => {
     if (!backendReady || !hasActiveFlowJobs) return;
     let active = true;
@@ -996,7 +1009,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   };
   const connectAccount = (account: FlowAccount) => {
-    const isReconnect = account.status === "reconnect" || !!account.projectId;
+    const isReconnect = !!account.projectId;
+    // Chỉ 1 toast ngay khi nhấn — kết quả sẽ được toast bởi useEffect watch status
     toast.info(
       isReconnect
         ? t("Đang thử kết nối lại...", "Attempting to reconnect...")
@@ -1006,11 +1020,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       method: "POST",
     }).then((connected) => {
       setAccounts((current) => current.map((item) => item.id === connected.id ? normalizeFlowAccounts([connected])[0] : item));
-      if (connected.status === "online") {
-        toast.success(t("Đã kết nối tài khoản thành công", "Account connected successfully"));
-      } else {
-        toast.info(t("Đang mở Chrome để đăng nhập Google...", "Chrome opened — please sign in to Google"));
-      }
     }).catch((error) => {
       const msg = error instanceof Error ? error.message : String(error);
       toast.error(t("Kết nối thất bại", "Connection failed") + ": " + msg);
