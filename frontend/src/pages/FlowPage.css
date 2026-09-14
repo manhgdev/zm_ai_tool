@@ -1408,7 +1408,7 @@
 }
 .flow-account-form {
   display: grid;
-  grid-template-columns: minmax(190px, 1.2fr) repeat(3, minmax(140px, 1fr)) auto;
+  grid-template-columns: minmax(190px, 1.2fr) repeat(2, minmax(140px, 1fr)) auto;
   align-items: end;
   gap: 10px;
   padding: 12px;
