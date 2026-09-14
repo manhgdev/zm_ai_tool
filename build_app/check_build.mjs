@@ -73,7 +73,7 @@ if (isWin) {
   check('portable package has no Setup marker', !existsSync(path.join(distDir, '.zmaio-installed')))
   check(
     'portable package excludes mutable state',
-    !['data', 'output', 'tmp', '.venv-runtime', '.venv-ocr', 'resources', 'updates', '.env', 'app.log', 'last_crash.txt']
+    !['data', 'output', 'tmp', '.venv-runtime', '.venv-ocr', 'resources', 'updates', 'app.log', 'last_crash.txt']
       .some((name) => existsSync(path.join(distDir, name))),
   )
 }

@@ -24,7 +24,6 @@ _LEGACY_STATE: tuple[tuple[str, str], ...] = (
     (".venv-runtime", ".venv-runtime"),
     (".venv-ocr", ".venv-ocr"),
     ("resources", "resources"),
-    (".env", ".env"),
     ("app.log", "app.log"),
     ("last_crash.txt", "last_crash.txt"),
 )

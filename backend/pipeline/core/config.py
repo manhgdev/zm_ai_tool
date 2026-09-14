@@ -72,15 +72,6 @@ def export_display_path(path: Path) -> str:
     except ValueError:
         return str(resolved).replace("\\", "/")
 
-# ponytail: load backend/.env once; no python-dotenv dep
-_env_path = SERVER_ROOT / ".env"
-if _env_path.exists():
-    for _line in _env_path.read_text(encoding="utf-8").splitlines():
-        _line = _line.strip()
-        if not _line or _line.startswith("#") or "=" not in _line:
-            continue
-        _k, _, _v = _line.partition("=")
-        os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
 EL_ADAM = "pNInz6obpgDQGcFmaJgB"
 # ponytail: key thường thiếu voices_read → preset rộng; API 2s nếu được phép
