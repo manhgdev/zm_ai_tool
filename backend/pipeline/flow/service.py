@@ -662,13 +662,18 @@ class FlowService:
             page = await browser.page()
 
             existing_email = str(account.get("email") or "").strip()
+            from urllib.parse import quote
 
             if existing_project_id:
-                # Đã có session cũ → thử vào thẳng project
-                start_url = f"https://flow.google.com/project/{existing_project_id}"
+                # Tài khoản cũ: login_hint + continue về project cụ thể
+                project_url = f"https://flow.google.com/project/{existing_project_id}"
+                start_url = (
+                    f"https://accounts.google.com/ServiceLogin"
+                    f"?service=wise&continue={quote(project_url, safe='')}"
+                    f"&login_hint={quote(existing_email, safe='')}"
+                )
             else:
-                # Tài khoản mới → vào thẳng Google login với email điền sẵn
-                from urllib.parse import quote
+                # Tài khoản mới: login_hint + continue về Flow home
                 start_url = (
                     f"https://accounts.google.com/ServiceLogin"
                     f"?service=wise&continue={quote('https://flow.google.com/', safe='')}"
