@@ -132,41 +132,50 @@ def _latest_release() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _desktop_platform_asset_suffix(platform_name: str | None = None, machine: str | None = None) -> str:
-    """Return the only release asset suffix acceptable for this desktop build."""
-    import platform as _platform
-    platform_name = platform_name or sys.platform
-    if machine is None:
-        machine = _platform.machine().lower()  # works on all OS including Windows
-    else:
-        machine = machine.lower()
-    if platform_name == "win32":
-        return "-windows-x64.zip"
-    if platform_name == "darwin":
-        if machine in {"arm64", "aarch64"}:
-            return "-macos-arm64.pkg"
-        if machine in {"x86_64", "amd64"}:
-            return "-macos-x64.pkg"
-    return ""
+
+
+def _is_windows_installed_build() -> bool:
+    """True khi app được cài bởi Inno Setup (có marker .zmaio-installed bên cạnh EXE)."""
+    if not getattr(sys, "frozen", False):
+        return False
+    marker = Path(sys.executable).resolve().parent / ".zmaio-installed"
+    return marker.is_file()
 
 
 def _release_asset(release: dict[str, Any]) -> dict[str, Any] | None:
-    suffix = _desktop_platform_asset_suffix()
-    if not suffix:
-        return None
     tag = str(release.get("tag_name") or "")
     version = _release_version(tag)
     if _version_key(tag) == (0, 0, 0):
         return None
-    expected_names = (
-        [f"ZM_AI_TOOL_v{version}-windows-x64-Portable.zip", f"ZM_AI_TOOL_v{version}-windows-x64.zip"]
-        if suffix == "-windows-x64.zip"
-        else [f"ZM_AI_TOOL_v{version}{suffix}"]
-    )
     assets = release.get("assets") or []
-    for expected_name in expected_names:
+    if sys.platform == "win32":
+        # Bản Installed → ưu tiên Setup.exe; bản Portable → ưu tiên Portable.zip
+        if _is_windows_installed_build():
+            candidates = [
+                f"ZM_AI_TOOL_v{version}-windows-x64-Setup.exe",
+                f"ZM_AI_TOOL_v{version}-windows-x64-Portable.zip",
+                f"ZM_AI_TOOL_v{version}-windows-x64.zip",
+            ]
+        else:
+            candidates = [
+                f"ZM_AI_TOOL_v{version}-windows-x64-Portable.zip",
+                f"ZM_AI_TOOL_v{version}-windows-x64.zip",
+            ]
+    elif sys.platform == "darwin":
+        import platform as _platform
+        machine = _platform.machine().lower()
+        if machine in {"arm64", "aarch64"}:
+            suffix = "-macos-arm64.pkg"
+        elif machine in {"x86_64", "amd64"}:
+            suffix = "-macos-x64.pkg"
+        else:
+            return None
+        candidates = [f"ZM_AI_TOOL_v{version}{suffix}"]
+    else:
+        return None
+    for name in candidates:
         for asset in assets:
-            if isinstance(asset, dict) and str(asset.get("name") or "") == expected_name:
+            if isinstance(asset, dict) and str(asset.get("name") or "") == name:
                 return asset
     return None
 
@@ -1042,9 +1051,21 @@ def api_update_status():
 
 def _launch_windows_updater(package: Path) -> None:
     """Start the detached staged updater; it waits for this app before swapping."""
+    flags = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+    flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+
+    if package.suffix.lower() == ".exe":
+        # Bản Installed: chạy Setup silent, Inno Setup tự xử lý update rồi restart.
+        subprocess.Popen(
+            [str(package), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            creationflags=flags,
+            close_fds=True,
+        )
+        return
+
+    # Bản Portable: zip extractor script.
     exe = Path(sys.executable).resolve()
-    old_target = exe.parent
-    target = old_target
+    target = exe.parent
     script = _windows_update_script(package.parent)
     params = package.parent / "update-params.json"
     ready = package.parent / f"update-ready-{uuid.uuid4().hex}.txt"
@@ -1062,8 +1083,6 @@ def _launch_windows_updater(package: Path) -> None:
         ),
         encoding="utf-8",
     )
-    flags = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
-    flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
     subprocess.Popen(
         [
             "powershell.exe",
