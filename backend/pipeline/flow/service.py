@@ -666,16 +666,14 @@ class FlowService:
             if existing_project_id:
                 # Đã có session cũ → thử vào thẳng project
                 start_url = f"https://flow.google.com/project/{existing_project_id}"
-            elif existing_email:
-                # Tài khoản mới có email → vào thẳng Google login với email điền sẵn
+            else:
+                # Tài khoản mới → vào thẳng Google login với email điền sẵn
                 from urllib.parse import quote
                 start_url = (
                     f"https://accounts.google.com/ServiceLogin"
                     f"?service=wise&continue={quote('https://flow.google.com/', safe='')}"
                     f"&login_hint={quote(existing_email, safe='')}"
                 )
-            else:
-                start_url = FLOW_BASE_URL
             await page.goto(start_url, wait_until="domcontentloaded", timeout=30_000)
 
             async def _is_flow_authenticated() -> tuple[bool, str]:
