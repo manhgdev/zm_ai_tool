@@ -1358,22 +1358,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     placeholder="name@gmail.com"
                   />
                 </label>
-                <label>
-                  <span>{t("Gói tài khoản", "Account plan")}</span>
-                  <select
-                    value={accountDraft.plan}
-                    onChange={(event) =>
-                      setAccountDraft((current) => ({
-                        ...current,
-                        plan: event.target.value as "Ultra" | "Pro" | "Free",
-                      }))
-                    }
-                  >
-                    <option value="Free">{t("Gói thường (Free)", "Free / Standard")}</option>
-                    <option value="Pro">Pro</option>
-                    <option value="Ultra">Ultra</option>
-                  </select>
-                </label>
+
                 <footer>
                   <button type="button" onClick={() => setEditingAccount(null)}>
                     {t("Hủy", "Cancel")}
