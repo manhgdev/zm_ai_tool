@@ -8,7 +8,7 @@ export function normalizeWebOutputName(value: string, appFolder: string) {
   const trimmed = value.trim()
   if (trimmed === appFolder) return ''
   if (!/^(?:[A-Za-z]:[\\/]|[\\/])/.test(trimmed)) return value
-  // Absolute path: strip any known prefix (any user's home/Downloads/ZM_AIO_TOOL/appFolder)
+  // Absolute path: strip any known prefix (any user's home/Downloads/ZM_AI_TOOL/appFolder)
   const normalized = trimmed.replace(/\\/g, '/')
   const idx = normalized.toLowerCase().indexOf('/zm_aio_tool/')
   if (idx >= 0) {
@@ -79,14 +79,14 @@ export function OutputFolderField({
   }, [])
 
   const webPathPrefix = useMemo(
-    () => `/Downloads/ZM_AIO_TOOL/${appFolder.replace(/^[/\\]+|[/\\]+$/g, '')}/`,
+    () => `/Downloads/ZM_AI_TOOL/${appFolder.replace(/^[/\\]+|[/\\]+$/g, '')}/`,
     [appFolder],
   )
   const appPath = useMemo(() => {
     const folderSuffix = appFolder.replace(/^[/\\]+|[/\\]+$/g, '')
     const defaultRoot = desktopOutputRoot
       ? `${desktopOutputRoot.replace(/[\\/]+$/, '')}/${folderSuffix}`
-      : `Downloads/ZM_AIO_TOOL/${folderSuffix}`
+      : `Downloads/ZM_AI_TOOL/${folderSuffix}`
     const entered = value.trim()
     if (!entered || !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(entered)) return { prefix: `${defaultRoot}/`, suffix: value }
     const normalized = entered.replace(/[\\/]+$/, '')

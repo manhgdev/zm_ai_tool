@@ -91,7 +91,7 @@ _install_state: dict[str, Any] = {
 _install_lock = threading.Lock()
 _checks_warm_lock = threading.Lock()
 _checks_warming = False
-_UPDATE_REPOSITORY = "manhgdev/zm_aio_tools"
+_UPDATE_REPOSITORY = "manhgdev/zm_ai_tool"
 _UPDATE_LOCK = threading.Lock()
 _UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30 * 60
 _UPDATE_STATE: dict[str, Any] = {
@@ -159,9 +159,9 @@ def _release_asset(release: dict[str, Any]) -> dict[str, Any] | None:
     if _version_key(tag) == (0, 0, 0):
         return None
     expected_names = (
-        [f"ZM_AIO_TOOL_v{version}-windows-x64-Portable.zip", f"ZM_AIO_TOOL_v{version}-windows-x64.zip"]
+        [f"ZM_AI_TOOL_v{version}-windows-x64-Portable.zip", f"ZM_AI_TOOL_v{version}-windows-x64.zip"]
         if suffix == "-windows-x64.zip"
-        else [f"ZM_AIO_TOOL_v{version}{suffix}"]
+        else [f"ZM_AI_TOOL_v{version}{suffix}"]
     )
     assets = release.get("assets") or []
     for expected_name in expected_names:
@@ -256,7 +256,7 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
 def _windows_update_script(updates: Path) -> Path:
     script = updates / "apply-update.ps1"
     script.write_text(
-        """# ZM AIO TOOL Windows Auto-Updater (PowerShell 5.1+ compatible)
+        """# ZM AI TOOL Windows Auto-Updater (PowerShell 5.1+ compatible)
 # Params duoc doc tu update-params.json cung thu muc voi script
 # (tranh quoting issues khi truyen qua command line)
 param([string]$ParamsFile)
@@ -279,7 +279,7 @@ function Log($msg) {
     "[$time] $msg" | Out-File -FilePath $LogFile -Append -Encoding utf8
 }
 
-Log "=== Bat dau cap nhat ZM AIO TOOL portable ==="
+Log "=== Bat dau cap nhat ZM AI TOOL portable ==="
 Log "AppPid:    $AppPid"
 Log "Zip:       $Zip"
 Log "Target:    $Target"
@@ -455,7 +455,7 @@ try {
     }
     try {
         Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.MessageBox]::Show("Cap nhat that bai / Update failed:`n$err`n`nLog: $LogFile", "Loi cap nhat / Update error - ZM AIO TOOL", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        [System.Windows.Forms.MessageBox]::Show("Cap nhat that bai / Update failed:`n$err`n`nLog: $LogFile", "Loi cap nhat / Update error - ZM AI TOOL", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     } catch {}
 }
 """,
@@ -1011,9 +1011,9 @@ def api_update_install():
                         pass
                     raise RuntimeError(
                         "Thư mục ứng dụng không cho phép cập nhật. Hãy chuyển toàn bộ thư mục "
-                        "Portable sang nơi có quyền ghi (ví dụ C:\\ZM_AIO_TOOL) rồi thử lại. / "
+                        "Portable sang nơi có quyền ghi (ví dụ C:\\ZM_AI_TOOL) rồi thử lại. / "
                         "The app folder is not writable. Move the complete Portable folder to a "
-                        "writable location (for example C:\\ZM_AIO_TOOL) and retry."
+                        "writable location (for example C:\\ZM_AI_TOOL) and retry."
                     ) from exc
                 updates = Path(os.environ.get("ZM_AI_TOOL_HOME") or DATA) / "updates"
             else:
@@ -1175,14 +1175,14 @@ $owner.Width = 1
 $owner.Height = 1
 $owner.Show()
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = $env:VIDEOCLONE_DIALOG_TITLE
+$dialog.Description = $env:ZM_AIO_DIALOG_TITLE
 $dialog.ShowNewFolderButton = $true
 if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     [Console]::Write($dialog.SelectedPath)
 }
 $owner.Close()
 """,
-            {"VIDEOCLONE_DIALOG_TITLE": title},
+            {"ZM_AIO_DIALOG_TITLE": title},
         )
     if sys.platform == "darwin":
         return _macos_native_dialog(
@@ -1212,8 +1212,8 @@ $owner.Width = 1
 $owner.Height = 1
 $owner.Show()
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = $env:VIDEOCLONE_DIALOG_TITLE
-$dialog.Filter = $env:VIDEOCLONE_FILE_FILTER
+$dialog.Title = $env:ZM_AIO_DIALOG_TITLE
+$dialog.Filter = $env:ZM_AIO_FILE_FILTER
 $dialog.Multiselect = $false
 if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     [Console]::Write($dialog.FileName)
@@ -1221,8 +1221,8 @@ if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
 $owner.Close()
 """,
             {
-                "VIDEOCLONE_DIALOG_TITLE": title,
-                "VIDEOCLONE_FILE_FILTER": file_filter,
+                "ZM_AIO_DIALOG_TITLE": title,
+                "ZM_AIO_FILE_FILTER": file_filter,
             },
         )
     if sys.platform == "darwin":
@@ -1275,15 +1275,15 @@ $owner.Width = 1
 $owner.Height = 1
 $owner.Show()
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = $env:VIDEOCLONE_DIALOG_TITLE
-$dialog.Filter = $env:VIDEOCLONE_FILE_FILTER
+$dialog.Title = $env:ZM_AIO_DIALOG_TITLE
+$dialog.Filter = $env:ZM_AIO_FILE_FILTER
 $dialog.Multiselect = $true
 if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     [Console]::Write(($dialog.FileNames -join [Environment]::NewLine))
 }
 $owner.Close()
 """,
-                {"VIDEOCLONE_DIALOG_TITLE": title, "VIDEOCLONE_FILE_FILTER": filt},
+                {"ZM_AIO_DIALOG_TITLE": title, "ZM_AIO_FILE_FILTER": filt},
             )
         elif sys.platform == "darwin":
             raw = _macos_native_dialog(
@@ -1347,14 +1347,14 @@ $dialog.Title = 'Chọn nơi lưu video'
 $dialog.Filter = 'Video MP4 (*.mp4)|*.mp4|Tất cả tệp (*.*)|*.*'
 $dialog.DefaultExt = 'mp4'
 $dialog.AddExtension = $true
-$dialog.FileName = $env:VIDEOCLONE_SAVE_NAME
-$dialog.InitialDirectory = $env:VIDEOCLONE_SAVE_DIR
+$dialog.FileName = $env:ZM_AIO_SAVE_NAME
+$dialog.InitialDirectory = $env:ZM_AIO_SAVE_DIR
 if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
     [Console]::Write($dialog.FileName)
 }
 $owner.Close()
 """,
-                {"VIDEOCLONE_SAVE_NAME": initial, "VIDEOCLONE_SAVE_DIR": str(initial_dir)},
+                {"ZM_AIO_SAVE_NAME": initial, "ZM_AIO_SAVE_DIR": str(initial_dir)},
             )
         elif sys.platform == "darwin":
             path = _macos_native_dialog(

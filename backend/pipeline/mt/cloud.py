@@ -181,7 +181,7 @@ def _openai_compatible_chat(
                         "Authorization": f"Bearer {keys[key_index]}",
                         "Content-Type": "application/json",
                         "HTTP-Referer": "https://localhost/zm_ai_tool",
-                        "X-Title": "ZM AIO TOOL",
+                        "X-Title": "ZM AI TOOL",
                     },
                     json={
                         "model": model,

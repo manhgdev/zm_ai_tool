@@ -49,5 +49,5 @@ git -C "$REPO_ROOT" push origin HEAD "v$NEW"
 
 echo ""
 echo "✔ Đã push commit + tag v$NEW"
-echo "  CI build: ZM_AIO_TOOL_v${NEW}-macos-arm64.pkg + windows-x64.zip"
-echo "  Theo dõi: https://github.com/manhgdev/zm_aio_tools/actions"
+echo "  CI build: ZM_AI_TOOL_v${NEW}-macos-arm64.pkg + windows-x64.zip"
+echo "  Theo dõi: https://github.com/manhgdev/zm_ai_tool/actions"

@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 
-APP_OUTPUT_ROOT_NAME = "ZM_AIO_TOOL"
+APP_OUTPUT_ROOT_NAME = "ZM_AI_TOOL"
 _WRITABLE_OUTPUT_ROOTS: set[str] = set()
 _OUTPUT_SUBFOLDERS: dict[str, tuple[str, ...]] = {
     "video-clone": ("clone",),
@@ -73,8 +73,8 @@ def app_output_root() -> Path:
 
     1. outputRoot saved in ui_preferences.json (user picked once via Settings)
     2. ZM_AI_TOOL_OUTPUT_ROOT env var (set by launcher per platform:
-       Windows = portable state root/output, macOS = ~/Downloads/ZM_AIO_TOOL)
-    3. Hard fallback: ~/Downloads/ZM_AIO_TOOL
+       Windows = portable state root/output, macOS = ~/Downloads/ZM_AI_TOOL)
+    3. Hard fallback: ~/Downloads/ZM_AI_TOOL
     """
     from .ui_preferences import load_output_root  # ponytail: lazy to avoid circular at import
     saved = load_output_root()

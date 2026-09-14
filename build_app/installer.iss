@@ -1,18 +1,18 @@
 ; Script generated for Inno Setup 6
-; ZM AIO TOOL - Windows Installer
+; ZM AI TOOL - Windows Installer
 ; Supports English & Vietnamese
 
 #ifndef MyAppVersion
 #define MyAppVersion "7.0.1"
 #endif
 
-#define MyAppName "ZM AIO TOOL"
+#define MyAppName "ZM AI TOOL"
 #define MyAppPublisher "ZM AIO Tools"
-#define MyAppURL "https://github.com/manhgdev/zm_aio_tools"
-#define MyAppExeName "ZM AIO TOOL.exe"
+#define MyAppURL "https://github.com/manhgdev/zm_ai_tool"
+#define MyAppExeName "ZM AI TOOL.exe"
 
 #ifndef MyAppSourceDir
-#define MyAppSourceDir "release\ZM_AIO_TOOL_v" + MyAppVersion
+#define MyAppSourceDir "release\ZM_AI_TOOL_v" + MyAppVersion
 #endif
 
 #ifndef MyAppOutputDir
@@ -20,7 +20,7 @@
 #endif
 
 #ifndef MyAppOutputBaseFilename
-#define MyAppOutputBaseFilename "ZM_AIO_TOOL_v" + MyAppVersion + "-windows-x64-Setup"
+#define MyAppOutputBaseFilename "ZM_AI_TOOL_v" + MyAppVersion + "-windows-x64-Setup"
 #endif
 
 [Setup]

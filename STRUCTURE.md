@@ -80,7 +80,7 @@ scripts/
 └─ release.sh     Đồng bộ 3 chỗ rồi push: build_app/VERSION + package.json + git tag
                   Dùng: ./scripts/release.sh 4.2.0
                         ./scripts/release.sh patch|minor|major
-                  CI sẽ tự tạo asset đúng tên theo tag: ZM_AIO_TOOL_v<version>-macos-arm64.pkg
+                  CI sẽ tự tạo asset đúng tên theo tag: ZM_AI_TOOL_v<version>-macos-arm64.pkg
 ```
 
 > **Quy tắc version**: luôn dùng `release.sh` để bump. Không sửa `VERSION` / `package.json` tay rồi tạo tag riêng — sẽ gây lệch tên asset CI.
@@ -204,7 +204,7 @@ build_app/
 ├─ launcher.py       Cửa sổ ứng dụng + spawn backend API + thiết lập ZM_AI_TOOL_HOME
 ├─ build.mjs         Vite build + PyInstaller packaging
 ├─ check_build.mjs   Kiểm tra tính toàn vẹn bản build desktop
-└─ release/          ZM_AIO_TOOL_v<version>/ (chạy cả thư mục)
+└─ release/          ZM_AI_TOOL_v<version>/ (chạy cả thư mục)
 ```
 
 AI nặng cài sau vào `%LOCALAPPDATA%\ZM_AI_TOOL\.venv-runtime` (và `.venv-ocr`), không nhét full vào EXE.

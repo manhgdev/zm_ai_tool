@@ -37,7 +37,7 @@ def _system_font_dirs() -> list[Path]:
         dirs.append((repo_root / "frontend" / "dist" / "fonts").resolve())
     except IndexError:
         pass
-    env = os.environ.get("VIDEOCLONE_FONT_DIR") or os.environ.get("FONT_DIR")
+    env = os.environ.get("ZM_AIO_FONT_DIR") or os.environ.get("FONT_DIR")
     if env:
         dirs.append(Path(env))
     out: list[Path] = []

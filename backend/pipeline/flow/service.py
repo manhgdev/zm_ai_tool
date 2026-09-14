@@ -1927,7 +1927,7 @@ class FlowService:
         settings = job.get("settings") or {}
         selected = Path(str(settings.get("outputDir") or "results")).expanduser()
         kind = safe_output_part(job.get("kind") or "video", "video")
-        flow_tab = f"flow-{kind}"  # → ~/Downloads/ZM_AIO_TOOL/flow/video/ or .../flow/image/
+        flow_tab = f"flow-{kind}"  # → ~/Downloads/ZM_AI_TOOL/flow/video/ or .../flow/image/
         series_context = job.get("seriesContext") or {}
         if series_context:
             # Series artifacts share one ``flow/series/<slug>`` namespace and

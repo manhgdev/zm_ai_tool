@@ -25,9 +25,9 @@ class PortableLayoutTest(unittest.TestCase):
     def test_setup_marker_always_uses_local_app_data(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            installed = root / "Program Files" / "ZM AIO TOOL"
+            installed = root / "Program Files" / "ZM AI TOOL"
             installed.mkdir(parents=True)
-            executable = installed / "ZM AIO TOOL.exe"
+            executable = installed / "ZM AI TOOL.exe"
             executable.touch()
             (installed / ".zmaio-installed").write_text("setup\n", encoding="utf-8")
             local = root / "LocalAppData"
@@ -36,14 +36,14 @@ class PortableLayoutTest(unittest.TestCase):
                 executable, {"LOCALAPPDATA": str(local)}
             )
 
-            self.assertEqual(home, local / "ZM_AIO_TOOL")
+            self.assertEqual(home, local / "ZM_AI_TOOL")
             self.assertEqual(source, installed.absolute())
 
     def test_marker_free_build_remains_portable_when_writable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            portable = Path(raw) / "ZM_AIO_TOOL_v7.0.4"
+            portable = Path(raw) / "ZM_AI_TOOL_v7.0.4"
             portable.mkdir()
-            executable = portable / "ZM AIO TOOL.exe"
+            executable = portable / "ZM AI TOOL.exe"
             executable.touch()
 
             home, source = windows_portable_home(
@@ -131,11 +131,11 @@ class PortableLayoutTest(unittest.TestCase):
     def test_versioned_update_moves_state_and_rebases_default_output(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            old = root / "ZM_AIO_TOOL_v7.0.1-windows-x64"
-            current = root / "ZM_AIO_TOOL_v7.0.2-windows-x64"
+            old = root / "ZM_AI_TOOL_v7.0.1-windows-x64"
+            current = root / "ZM_AI_TOOL_v7.0.2-windows-x64"
             for folder in (old, current):
                 folder.mkdir()
-                (folder / "ZM AIO TOOL.exe").touch()
+                (folder / "ZM AI TOOL.exe").touch()
             (root / "update-params.json").write_text(
                 json.dumps({"Target": str(current), "OldTarget": str(old)}),
                 encoding="utf-8",
@@ -157,7 +157,7 @@ class PortableLayoutTest(unittest.TestCase):
 
             used, migrated, errors = migrate_windows_state(
                 current,
-                current / "ZM AIO TOOL.exe",
+                current / "ZM AI TOOL.exe",
                 {"LOCALAPPDATA": str(root / "unused-local")},
             )
             previous = sync_windows_portable_root(current, used)
@@ -185,10 +185,10 @@ class PortableLayoutTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             portable = root / "read-only-portable"
-            fallback = root / "local" / "ZM_AIO_TOOL" / "portable-data"
+            fallback = root / "local" / "ZM_AI_TOOL" / "portable-data"
             portable.mkdir()
             fallback.mkdir(parents=True)
-            executable = portable / "ZM AIO TOOL.exe"
+            executable = portable / "ZM AI TOOL.exe"
             executable.touch()
             (portable / "data").mkdir()
             (portable / "data" / "settings.json").touch()
@@ -205,17 +205,17 @@ class PortableLayoutTest(unittest.TestCase):
     def test_manually_extracted_sibling_does_not_steal_old_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            old = root / "ZM_AIO_TOOL_v7.0.1-windows-x64"
-            current = root / "ZM_AIO_TOOL_v7.0.2-windows-x64"
+            old = root / "ZM_AI_TOOL_v7.0.1-windows-x64"
+            current = root / "ZM_AI_TOOL_v7.0.2-windows-x64"
             for folder in (old, current):
                 folder.mkdir()
-                (folder / "ZM AIO TOOL.exe").touch()
+                (folder / "ZM AI TOOL.exe").touch()
             (old / "data").mkdir()
             (old / "data" / "settings.json").touch()
 
             _, _, errors = migrate_windows_state(
                 current,
-                current / "ZM AIO TOOL.exe",
+                current / "ZM AI TOOL.exe",
                 {"LOCALAPPDATA": str(root / "unused-local")},
             )
 
@@ -226,7 +226,7 @@ class PortableLayoutTest(unittest.TestCase):
     def test_moving_fixed_folder_rebases_saved_internal_output(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            old = root / "old" / "ZM_AIO_TOOL"
+            old = root / "old" / "ZM_AI_TOOL"
             old_data = old / "data"
             old_data.mkdir(parents=True)
             (old_data / "ui_preferences.json").write_text(
@@ -234,7 +234,7 @@ class PortableLayoutTest(unittest.TestCase):
                 encoding="utf-8",
             )
             sync_windows_portable_root(old)
-            current = root / "new" / "ZM_AIO_TOOL"
+            current = root / "new" / "ZM_AI_TOOL"
             current.parent.mkdir()
             old.rename(current)
 

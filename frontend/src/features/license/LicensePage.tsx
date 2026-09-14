@@ -73,7 +73,7 @@ export default function LicensePage({ status, gate = false, embedded = false, on
     <main className={`license-page${gate ? ' license-gate' : ''}${embedded ? ' license-embedded' : ''}`}>
       <section className="license-card">
         <div className="license-brand">
-          <strong>ZM AIO TOOL</strong>
+          <strong>ZM AI TOOL</strong>
           <span>{t('Kích hoạt bản quyền sử dụng', 'Activate your license')}</span>
         </div>
         <div className={`license-state${status.valid ? ' is-valid' : ' is-invalid'}`}>

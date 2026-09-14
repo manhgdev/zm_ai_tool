@@ -79,7 +79,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
     cached.logoSource === 'image' || cached.logoSource === 'icon' ? cached.logoSource : 'text',
   )
   const [logoText, setLogoText] = useState(String(
-    !cached.logoText || cached.logoText === 'ZM AIO TOOL' ? 'ZMTOOL' : cached.logoText,
+    !cached.logoText || cached.logoText === 'ZM AI TOOL' ? 'ZMTOOL' : cached.logoText,
   ))
   const [logoFontSize, setLogoFontSize] = useState(Number(
     cached.logoFontSize == null || cached.logoFontSize === 42 ? 10 : cached.logoFontSize,
@@ -100,7 +100,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
   const [logoSafeMargin, setLogoSafeMargin] = useState(Number(cached.logoSafeMargin ?? 4))
   const [outputName, setOutputName] = useState(String(cached.outputName ?? 'output.mp4'))
   const [outputPath, setOutputPath] = useState(String(cached.outputPath ?? ''))
-  const [defaultOutputDirectory, setDefaultOutputDirectory] = useState('ZM_AIO_TOOL/subtitles/image-video/')
+  const [defaultOutputDirectory, setDefaultOutputDirectory] = useState('ZM_AI_TOOL/subtitles/image-video/')
   const [job, setJob] = useState<Job | null>(null)
   const [sending, setSending] = useState(false)
   const [missingMedia, setMissingMedia] = useState<MissingMediaInfo | null>(null)
@@ -651,7 +651,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
                 </div>}
               </div>
               <div className="siv-logo">
-                <div className="siv-logo-head"><strong>{t('Logo / Watermark ZM AIO TOOL', 'ZM AIO TOOL logo / watermark')}</strong><label><input type="checkbox" checked={logoEnabled} onChange={(e) => setLogoEnabled(e.target.checked)} /> {t('Áp dụng', 'Apply')}</label></div>
+                <div className="siv-logo-head"><strong>{t('Logo / Watermark ZM AI TOOL', 'ZM AI TOOL logo / watermark')}</strong><label><input type="checkbox" checked={logoEnabled} onChange={(e) => setLogoEnabled(e.target.checked)} /> {t('Áp dụng', 'Apply')}</label></div>
                 <div className="siv-logo-sources">
                   {(['text', 'image', 'icon'] as const).map((source) => <button key={source} className={logoSource === source ? 'active' : ''} onClick={() => setLogoSource(source)}>{source === 'text' ? `T  ${t('Chữ', 'Text')}` : source === 'image' ? `▧  ${t('Ảnh', 'Image')}` : '★  Icon'}</button>)}
                 </div>

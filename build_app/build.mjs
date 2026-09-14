@@ -17,8 +17,8 @@ const oneFile = process.env.ONEFILE === '1' || process.env.ONEFILE === 'true'
 const clean = process.env.CLEAN === '1' || process.env.CLEAN === 'true'
 const skipArchive = process.env.SKIP_ARCHIVE === '1' || process.env.SKIP_ARCHIVE === 'true'
 const npmCommand = isWin ? process.env.ComSpec || 'cmd.exe' : 'npm'
-const APP_DISPLAY_NAME = 'ZM AIO TOOL'
-const APP_ARTIFACT_NAME = 'ZM_AIO_TOOL'
+const APP_DISPLAY_NAME = 'ZM AI TOOL'
+const APP_ARTIFACT_NAME = 'ZM_AI_TOOL'
 const APP_EXECUTABLE_NAME = APP_DISPLAY_NAME
 // Useful for a local smoke build while a previous root-owned release bundle is
 // still present. CI leaves it unset and uses the normal release folder.
@@ -50,7 +50,7 @@ function cleanFrontendDist() {
       renameSync(dist, stale)
       console.warn(`frontend/dist đang bị Windows giữ khóa — đã chuyển bản cũ sang ${path.basename(stale)}.`)
     } catch {
-      console.error('Không thể dọn frontend/dist. Hãy đóng cửa sổ ZM AIO TOOL/Preview rồi chạy build lại.')
+      console.error('Không thể dọn frontend/dist. Hãy đóng cửa sổ ZM AI TOOL/Preview rồi chạy build lại.')
       console.error(error instanceof Error ? error.message : error)
       process.exit(1)
     }

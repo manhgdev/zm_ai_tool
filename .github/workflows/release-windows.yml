@@ -71,10 +71,10 @@ jobs:
       - name: Smoke test packaged Python and GUI bridge
         shell: pwsh
         run: |
-          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AIO_TOOL_v*' |
+          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AI_TOOL_v*' |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $package) { throw 'Built app not found' }
-          $exe = Join-Path $package.FullName 'ZM AIO TOOL.exe'
+          $exe = Join-Path $package.FullName 'ZM AI TOOL.exe'
           $report = Join-Path $env:RUNNER_TEMP 'frozen-import-check.json'
           $process = Start-Process -FilePath $exe -ArgumentList @('--runtime-import-check', "`"$report`"") -PassThru
           if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'Frozen import check timed out' }
@@ -86,14 +86,14 @@ jobs:
       - name: Smoke test Portable GUI startup
         shell: pwsh
         run: |
-          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AIO_TOOL_v*' |
+          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AI_TOOL_v*' |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $package) { throw 'Built app not found' }
-          $exe = Join-Path $package.FullName 'ZM AIO TOOL.exe'
+          $exe = Join-Path $package.FullName 'ZM AI TOOL.exe'
           $updates = Join-Path $package.FullName 'updates'
           New-Item -ItemType Directory -Path $updates -Force | Out-Null
           $ready = Join-Path $updates 'update-ready-ci.txt'
-          $env:VIDEO_CLONE_UPDATE_READY_FILE = $ready
+          $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ready
           $process = Start-Process -FilePath $exe -WorkingDirectory $package.FullName -PassThru
           $deadline = (Get-Date).AddSeconds(90)
           while ((Get-Date) -lt $deadline -and -not (Test-Path $ready)) {
@@ -104,7 +104,7 @@ jobs:
           Get-Content $ready
           taskkill.exe /PID $process.Id /T /F 2>$null
           if ($LASTEXITCODE -ne 0 -and -not $process.HasExited) { throw 'Could not stop Portable GUI smoke process' }
-          $env:VIDEO_CLONE_UPDATE_READY_FILE = $null
+          $env:ZM_AI_TOOL_UPDATE_READY_FILE = $null
           foreach ($name in @('data', 'output', 'tmp', 'resources', 'updates', '.venv-runtime', '.venv-ocr', 'app.log', 'last_crash.txt')) {
             Remove-Item -LiteralPath (Join-Path $package.FullName $name) -Recurse -Force -ErrorAction SilentlyContinue
           }
@@ -132,11 +132,11 @@ jobs:
         id: package
         shell: pwsh
         run: |
-          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AIO_TOOL_v*' |
+          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AI_TOOL_v*' |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
           if (-not $package) { throw 'Không tìm thấy thư mục bản build.' }
-          $exe = Join-Path $package.FullName 'ZM AIO TOOL.exe'
+          $exe = Join-Path $package.FullName 'ZM AI TOOL.exe'
           if (-not (Test-Path $exe)) { throw "Không tìm thấy EXE: $exe" }
 
           # 1. Bản Portable (.zip)
@@ -169,7 +169,7 @@ jobs:
           ) -Wait -PassThru
           if ($setup.ExitCode -ne 0) { throw "Setup failed: exit $($setup.ExitCode)" }
 
-          $exe = Join-Path $installDir 'ZM AIO TOOL.exe'
+          $exe = Join-Path $installDir 'ZM AI TOOL.exe'
           $marker = Join-Path $installDir '.zmaio-installed'
           if (-not (Test-Path $exe)) { throw 'Installed EXE is missing' }
           if (-not (Test-Path $marker)) { throw 'Setup layout marker is missing' }
@@ -185,7 +185,7 @@ jobs:
             Start-Sleep -Milliseconds 500
           }
           if (-not (Test-Path $ready)) { throw 'Installed GUI did not initialize in 90 seconds' }
-          if (-not (Test-Path (Join-Path $localData 'ZM_AIO_TOOL'))) {
+          if (-not (Test-Path (Join-Path $localData 'ZM_AI_TOOL'))) {
             throw 'Setup build did not use LocalAppData for mutable state'
           }
           foreach ($name in @('data', 'output', 'tmp', 'resources', 'updates', '.venv-runtime', '.venv-ocr', 'app.log', 'last_crash.txt')) {
@@ -238,11 +238,11 @@ jobs:
           INSTALLER_BASE=$(basename "$INSTALLER")
           ZIP_BASE=$(basename "$ZIP")
 
-          BODY=$(printf '## Tải về ZM AIO TOOL %s\n\n- 📦 **Bản Cài đặt (Khuyên dùng):** `%s` (Trình cài đặt Wizard, tự tạo shortcut Desktop & Start Menu, hỗ trợ gỡ cài đặt)\n- 💼 **Bản Portable (Chạy ngay):** `%s` (Giải nén và chạy trực tiếp ZM AIO TOOL.exe, không cần cài đặt)\n\n## Thay đổi trong %s\n\n%s' \
+          BODY=$(printf '## Tải về ZM AI TOOL %s\n\n- 📦 **Bản Cài đặt (Khuyên dùng):** `%s` (Trình cài đặt Wizard, tự tạo shortcut Desktop & Start Menu, hỗ trợ gỡ cài đặt)\n- 💼 **Bản Portable (Chạy ngay):** `%s` (Giải nén và chạy trực tiếp ZM AI TOOL.exe, không cần cài đặt)\n\n## Thay đổi trong %s\n\n%s' \
             "$TAG" "$INSTALLER_BASE" "$ZIP_BASE" "$TAG" "$NOTES")
 
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "$INSTALLER" "$ZIP" --clobber
           else
-            gh release create "$TAG" "$INSTALLER" "$ZIP" --title "ZM AIO TOOL $TAG" --notes "$BODY"
+            gh release create "$TAG" "$INSTALLER" "$ZIP" --title "ZM AI TOOL $TAG" --notes "$BODY"
           fi

@@ -1,4 +1,4 @@
-"""Packaged ZM AIO TOOL desktop window: local API + built web UI."""
+"""Packaged ZM AI TOOL desktop window: local API + built web UI."""
 from __future__ import annotations
 
 import html
@@ -13,7 +13,7 @@ import traceback
 import urllib.request
 from pathlib import Path
 
-APP_DISPLAY_NAME = "ZM AIO TOOL"
+APP_DISPLAY_NAME = "ZM AI TOOL"
 _SUPERVISOR_ENV = "ZM_AI_TOOL_SUPERVISOR_CHILD"
 
 
@@ -195,15 +195,15 @@ def app_home() -> Path:
     Windows Setup: always use LocalAppData. Windows Portable: use the folder
     containing the EXE when writable, with a LocalAppData fallback for a
     read-only extraction location.
-    macOS: ~/Library/Application Support/ZM_AIO_TOOL (standard convention).
+    macOS: ~/Library/Application Support/ZM_AI_TOOL (standard convention).
     """
     if sys.platform == "win32":
         from portable_layout import windows_portable_home
 
         return windows_portable_home(Path(sys.executable))[0]
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "ZM_AIO_TOOL"
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "ZM_AIO_TOOL"
+        return Path.home() / "Library" / "Application Support" / "ZM_AI_TOOL"
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "ZM_AI_TOOL"
 
 
 _portable_root = Path(sys.executable).absolute().parent if sys.platform == "win32" else None
@@ -289,11 +289,11 @@ if sys.platform == "win32":
     os.environ["UV_CACHE_DIR"] = str(home / "data" / "cache" / "uv")
     os.environ["HF_HOME"] = str(home / "data" / "cache" / "hf")
     os.environ["TORCH_HOME"] = str(home / "data" / "cache" / "torch")
-# OUTPUT_ROOT: Windows portable defaults to PORTABLE_ROOT/output; macOS to ~/Downloads/ZM_AIO_TOOL.
+# OUTPUT_ROOT: Windows portable defaults to PORTABLE_ROOT/output; macOS to ~/Downloads/ZM_AI_TOOL.
 # ui_preferences.json can override this once via /api/config/output-root.
 _default_output = (
     str(home / "output") if sys.platform == "win32"
-    else str(Path.home() / "Downloads" / "ZM_AIO_TOOL")
+    else str(Path.home() / "Downloads" / "ZM_AI_TOOL")
 )
 set_desktop_path("ZM_AI_TOOL_OUTPUT_ROOT", _default_output)
 # httpx parse NO_PROXY IPv6 trần ``::1`` thành port ``:1`` → Whisper/HF crash.
@@ -493,7 +493,7 @@ if getattr(sys, "frozen", False):
 
 if runtime_site.is_dir():
     sys.path.insert(0, str(runtime_site))
-    # Không nhét nvidia/torch CUDA vào PATH của ZM AIO TOOL.exe (WebView2).
+    # Không nhét nvidia/torch CUDA vào PATH của ZM AI TOOL.exe (WebView2).
     # GPU chạy trong worker .venv-runtime — python.exe đó tự load CUDA DLL.
     if getattr(sys, "frozen", False):
         try:

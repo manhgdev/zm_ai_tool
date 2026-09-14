@@ -48,9 +48,9 @@ export function buildInstaller(customVersion) {
     '1.0.0'
   ).replace(/^v/, '').trim()
 
-  const verName = `ZM_AIO_TOOL_v${version}`
+  const verName = `ZM_AI_TOOL_v${version}`
   const sourceDir = path.join(releaseDir, verName)
-  const mainExe = path.join(sourceDir, 'ZM AIO TOOL.exe')
+  const mainExe = path.join(sourceDir, 'ZM AI TOOL.exe')
 
   if (!existsSync(mainExe)) {
     console.error(`\n[Inno Setup] Chưa có thư mục build: ${sourceDir}`)

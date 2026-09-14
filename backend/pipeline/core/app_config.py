@@ -258,7 +258,7 @@ def public_app_config() -> dict[str, Any]:
         # Bản đóng gói / launcher — file đã trên máy, không cần «Tải xuống»
         "desktop": is_desktop,
         # Dynamic: reflects user-chosen root or platform default.
-        # Windows portable: writable state root/output | macOS: ~/Downloads/ZM_AIO_TOOL
+        # Windows portable: writable state root/output | macOS: ~/Downloads/ZM_AI_TOOL
         "desktopOutputRoot": str(app_output_root()),
     }
 

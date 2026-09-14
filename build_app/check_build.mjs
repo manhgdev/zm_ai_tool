@@ -14,8 +14,8 @@ const releaseDir = path.join(root, 'build_app', 'release')
 
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
 const version = process.argv[2] || pkg.version?.match(/^\d+\.\d+\.\d+/)?.[0] || '0.0.0'
-const APP_ARTIFACT_NAME = 'ZM_AIO_TOOL'
-const APP_EXECUTABLE_NAME = 'ZM AIO TOOL'
+const APP_ARTIFACT_NAME = 'ZM_AI_TOOL'
+const APP_EXECUTABLE_NAME = 'ZM AI TOOL'
 const verName = `${APP_ARTIFACT_NAME}_v${version}`
 // PyInstaller on macOS emits one .app bundle rather than the Windows/Linux
 // onedir folder. Keep all later checks pointed at the equivalent bundle paths.
@@ -52,7 +52,7 @@ function dirSize(dir) {
   return `${(total / 1024 / 1024).toFixed(1)} MB`
 }
 
-console.log(`\nZM AIO TOOL Build Check — v${version}`)
+console.log(`\nZM AI TOOL Build Check — v${version}`)
 console.log(`Release: ${distDir}\n`)
 
 // 1. Thư mục release tồn tại

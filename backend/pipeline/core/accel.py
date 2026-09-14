@@ -109,7 +109,7 @@ def preferred_torch_device(*, refresh: bool = False) -> TorchDevice:
             return _cache["torch_device"]  # type: ignore[return-value]
 
     # Env override (debug / force)
-    env = (os.environ.get("VIDEOCLONE_TORCH_DEVICE") or os.environ.get("TORCH_DEVICE") or "").strip().lower()
+    env = (os.environ.get("ZM_AIO_TORCH_DEVICE") or os.environ.get("TORCH_DEVICE") or "").strip().lower()
     if env in ("cuda", "mps", "cpu"):
         with _lock:
             _cache["torch_device"] = env

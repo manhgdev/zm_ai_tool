@@ -25,7 +25,7 @@ AUTHORIZE_URL = f"{ISSUER}/oauth/authorize"
 REDIRECT_URI = "http://localhost:1455/auth/callback"
 # Legacy constants kept only for one-time Keychain migration (can be removed
 # once all existing installs have migrated).
-_LEGACY_KEYRING_SERVICE = "ZM AIO TOOL ChatGPT"
+_LEGACY_KEYRING_SERVICE = "ZM AI TOOL ChatGPT"
 _LEGACY_KEYRING_USER = "chatgpt-account"
 
 

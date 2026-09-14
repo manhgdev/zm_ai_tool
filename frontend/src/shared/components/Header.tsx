@@ -143,7 +143,7 @@ export default function Header({
             <IconLogo />
           </span>
           <span className="brand-text">
-            <strong>ZM AIO TOOL</strong>
+            <strong>ZM AI TOOL</strong>
             <span>{t('brand.tagline')}</span>
           </span>
         </button>

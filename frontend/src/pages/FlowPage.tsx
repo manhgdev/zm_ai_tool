@@ -1111,7 +1111,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         `Đã cấp quyền lưu tự động vào thư mục máy tính: ${handle.name}`,
         `Auto-save authorized for computer folder: ${handle.name}`,
       ));
-      return `/${handle.name}/ZM_AIO_TOOL/flow/${createKind}/`;
+      return `/${handle.name}/ZM_AI_TOOL/flow/${createKind}/`;
     } catch (error) {
       if (error && typeof error === "object" && "name" in error && error.name === "AbortError") return;
       setApiError(error instanceof Error ? error.message : String(error));

@@ -13,7 +13,7 @@ from pathlib import Path
 _VERSIONED_APP = re.compile(
     r"^ZM[_ ]AIO[_ ]TOOL[_ ]?v(\d+)\.(\d+)\.(\d+)(?:-|$)", re.IGNORECASE
 )
-_APP_EXECUTABLES = ("ZM AIO TOOL.exe",)
+_APP_EXECUTABLES = ("ZM AI TOOL.exe",)
 _INSTALLED_MARKER = ".zmaio-installed"
 _LEGACY_STATE: tuple[tuple[str, str], ...] = (
     ("data", "data"),
@@ -62,12 +62,12 @@ def windows_portable_home(
         or (Path.home() / "AppData" / "Local")
     )
     if (portable_root / _INSTALLED_MARKER).is_file():
-        installed_home = local / "ZM_AIO_TOOL"
+        installed_home = local / "ZM_AI_TOOL"
         return ensure_writable_directory(installed_home), portable_root
     try:
         return ensure_writable_directory(portable_root), None
     except OSError:
-        fallback = local / "ZM_AIO_TOOL" / "portable-data"
+        fallback = local / "ZM_AI_TOOL" / "portable-data"
         return ensure_writable_directory(fallback), portable_root
 
 
@@ -79,7 +79,7 @@ def _version_key(folder: Path) -> tuple[int, int, int]:
 def _legacy_homes(
     executable: Path, home: Path, environ: Mapping[str, str]
 ) -> list[tuple[Path, bool]]:
-    """Return the current read-only root and older ZM AIO TOOL siblings."""
+    """Return the current read-only root and older ZM AI TOOL siblings."""
     executable_dir = executable.absolute().parent
     confirmed_old_target: Path | None = None
     for params in (

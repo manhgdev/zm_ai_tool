@@ -73,7 +73,7 @@ export function flowConfiguredOutputFolder(value: string, kind: CreateKind) {
   const outputDir = normalizeLegacyFlowOutputDir(value);
   if (!outputDir) return "";
   if (/^(?:[A-Za-z]:[\/]|[\/])/.test(outputDir)) return `${outputDir}/${kind}`;
-  return `ZM_AIO_TOOL/flow/${kind}/${outputDir.replace(/^[\/]+/, "")}`;
+  return `ZM_AI_TOOL/flow/${kind}/${outputDir.replace(/^[\/]+/, "")}`;
 }
 
 export function flowOutputFolderName(value: string) {
@@ -281,7 +281,7 @@ export async function flowOutputDirectory(root: BrowserDirectoryHandle, kind: Cr
       Promise.resolve(root),
     );
   }
-  const appRoot = root.name === "ZM_AIO_TOOL" ? root : await root.getDirectoryHandle("ZM_AIO_TOOL", { create });
+  const appRoot = root.name === "ZM_AI_TOOL" ? root : await root.getDirectoryHandle("ZM_AI_TOOL", { create });
   const flowRoot = root.name === "flow" ? root : await appRoot.getDirectoryHandle("flow", { create });
   const kindRoot = await flowRoot.getDirectoryHandle(kind, { create });
   return flowOutputFolderParts(outputFolder).reduce(

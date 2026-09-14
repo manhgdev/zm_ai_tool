@@ -1,4 +1,4 @@
-# Contributing to zm_aio_tools (ZM AIO TOOL)
+# Contributing to zm_ai_tool (ZM AI TOOL)
 
 Thank you for your interest in contributing! We welcome bug reports, feature suggestions, and pull requests.
 
@@ -16,8 +16,8 @@ Thank you for your interest in contributing! We welcome bug reports, feature sug
 
 1. **Fork and clone the repository**:
    ```bash
-   git clone https://github.com/<your-username>/zm_aio_tools.git
-   cd zm_aio_tools
+   git clone https://github.com/<your-username>/zm_ai_tool.git
+   cd zm_ai_tool
    ```
 
 2. **Initialize dependencies**:

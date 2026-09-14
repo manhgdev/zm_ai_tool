@@ -71,17 +71,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          app="$(find build_app/release -maxdepth 1 -type d -name 'ZM_AIO_TOOL_v*.app' -print -quit)"
-          test -n "$app" || { echo 'Không tìm thấy ZM AIO TOOL.app'; exit 1; }
+          app="$(find build_app/release -maxdepth 1 -type d -name 'ZM_AI_TOOL_v*.app' -print -quit)"
+          test -n "$app" || { echo 'Không tìm thấy ZM AI TOOL.app'; exit 1; }
           icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")"
           test -n "$icon_name" || { echo 'Info.plist thiếu CFBundleIconFile'; exit 1; }
           test -f "$app/Contents/Resources/$icon_name" || {
             echo "Không tìm thấy app icon: $app/Contents/Resources/$icon_name"
             exit 1
           }
-          version="$(basename "$app" | sed -E 's/^ZM_AIO_TOOL_v|\.app$//g')"
+          version="$(basename "$app" | sed -E 's/^ZM_AI_TOOL_v|\.app$//g')"
           stage="build_app/release/pkg-stage"
-          payload="$stage/ZM AIO TOOL.app"
+          payload="$stage/ZM AI TOOL.app"
           scripts="$stage/scripts"
           rm -rf "$stage"
           mkdir -p "$scripts"
@@ -93,7 +93,7 @@ jobs:
           #!/bin/bash
           set -u
           close_running_bundle() {
-            local executable="$1/Contents/MacOS/ZM AIO TOOL"
+            local executable="$1/Contents/MacOS/ZM AI TOOL"
             local pids
             pids="$(/usr/bin/pgrep -f "$executable" || true)"
             if [ -n "$pids" ]; then
@@ -107,10 +107,10 @@ jobs:
 
           # Stop the existing app first. Installer otherwise replaces files on
           # disk while the old process remains open in the user's session.
-          close_running_bundle "/Applications/ZM AIO TOOL.app"
+          close_running_bundle "/Applications/ZM AI TOOL.app"
 
           # Clean only legacy versioned bundles produced by earlier releases.
-          for legacy in /Applications/ZM_AIO_TOOL_v*.app; do
+          for legacy in /Applications/ZM_AI_TOOL_v*.app; do
             if [ -d "$legacy" ]; then
               close_running_bundle "$legacy"
               # Keep cleanup non-fatal: a locked legacy file must not prevent
@@ -124,7 +124,7 @@ jobs:
           cat > "$scripts/postinstall" <<'SCRIPT'
           #!/bin/bash
           set -u
-          app="/Applications/ZM AIO TOOL.app"
+          app="/Applications/ZM AI TOOL.app"
           console_user="$(/usr/bin/stat -f '%Su' /dev/console)"
           if [ -d "$app" ] && [ "$console_user" != "root" ] && [ "$console_user" != "loginwindow" ]; then
             user_id="$(/usr/bin/id -u "$console_user" || true)"
@@ -135,7 +135,7 @@ jobs:
           exit 0
           SCRIPT
           chmod 755 "$scripts/postinstall"
-          pkg="build_app/release/ZM_AIO_TOOL_v${version}-macos-${ARCH}.pkg"
+          pkg="build_app/release/ZM_AI_TOOL_v${version}-macos-${ARCH}.pkg"
           pkgbuild --component "$payload" --scripts "$scripts" --install-location /Applications "$pkg"
           echo "app=$app" >> "$GITHUB_OUTPUT"
           echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
@@ -170,7 +170,7 @@ jobs:
 
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "$PKG" --clobber
-          elif ! gh release create "$TAG" "$PKG" --title "ZM AIO TOOL $TAG" --notes "$BODY"; then
+          elif ! gh release create "$TAG" "$PKG" --title "ZM AI TOOL $TAG" --notes "$BODY"; then
             sleep 5
             gh release upload "$TAG" "$PKG" --clobber
           fi

@@ -861,7 +861,7 @@ def ensure_mp3(job_id: str) -> Path:
 
 
 def publish_job_outputs(job_id: str, output_dir: str = "", output_format: str = "wav48") -> Path:
-    """Publish one TTS job into a stable user-selected root/job-id folder under ZM_AIO_TOOL/text-to-speech."""
+    """Publish one TTS job into a stable user-selected root/job-id folder under ZM_AI_TOOL/text-to-speech."""
     target = item_output_folder(selected_or_default("tts", output_dir), job_id)
     job_dir = _job_dir(job_id)
     source_srt = job_dir / "subs.srt"

@@ -2,7 +2,7 @@
 
 Flow's upstream helper defaults to Playwright's bundled Chromium.  Desktop
 packages do not ship that 200+ MB runtime, so use the user's installed Google
-Chrome instead and keep the persistent account profile inside ZM AIO TOOL.
+Chrome instead and keep the persistent account profile inside ZM AI TOOL.
 """
 from __future__ import annotations
 
