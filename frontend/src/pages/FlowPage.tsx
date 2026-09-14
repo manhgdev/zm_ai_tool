@@ -626,20 +626,22 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       .filter(Boolean);
     const account = selectedFlowAccount(accounts, settings.account);
     if (!prompts.length || !account) {
-      setApiError(
-        t(
-          "Cần prompt và tài khoản Flow đã kết nối.",
-          "A prompt and connected Flow account are required.",
-        ),
-      );
+      if (!account) {
+        // Chưa có tài khoản → tự nhảy qua tab Tài khoản và mở form thêm
+        setUtilityView("accounts");
+        addAccount();
+        toast.info(t("Vui lòng thêm tài khoản Flow trước khi tạo.", "Please add a Flow account first."));
+      } else {
+        setApiError(t("Cần nhập prompt.", "A prompt is required."));
+      }
       return;
     }
     if (account.status !== "online") {
+      setUtilityView("accounts");
       const message = t(
         "Phiên Flow đã hết hạn. Profile vẫn được giữ; hãy bấm Kết nối lại trong Tài khoản.",
         "The Flow session has expired. The profile was kept; click Reconnect in Accounts.",
       );
-      setApiError(message);
       toast.info(message);
       return;
     }
