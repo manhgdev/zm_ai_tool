@@ -65,7 +65,7 @@ def safe_child(base: Path, name: str) -> Path | None:
 def export_display_path(path: Path) -> str:
     """Đường dẫn hiển thị: app desktop = full path; dev = backend/public/… trong repo."""
     resolved = path.resolve()
-    if os.environ.get("ZM_AI_TOOL_DESKTOP") == "1" == "1":
+    if os.environ.get("ZM_AI_TOOL_DESKTOP") == "1":
         return str(resolved)
     try:
         return str(resolved.relative_to(REPO_ROOT.resolve())).replace("\\", "/")
