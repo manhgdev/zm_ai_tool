@@ -634,9 +634,26 @@ class FlowService:
 
 
     async def _login(self, account_id: str) -> None:
-        """Open a visible Chrome window to authenticate and sync the Flow account."""
+        """Open a visible Chrome window to authenticate and sync the Flow account.
+
+        If the account already has a saved projectId (was previously connected),
+        first tries a fast headless probe.  Only opens visible Chrome when the
+        cookie is no longer valid.
+        """
         account = store.get_row("accounts", account_id) or {}
         existing_project_id = str(account.get("projectId") or "")
+
+        # Fast-path: try headless first when there's a saved session
+        if existing_project_id:
+            try:
+                ok = await self._try_headless_reconnect(account_id, existing_project_id)
+                if ok:
+                    with self._guard:
+                        self._connecting_accounts.discard(account_id)
+                    return
+            except Exception as probe_exc:
+                _log.debug("_login headless probe failed for %s, falling back to visible: %s", account_id, probe_exc)
+
         browser = None
         try:
             from .browser import BrowserManager, FLOW_BASE_URL
