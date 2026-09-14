@@ -186,7 +186,9 @@ jobs:
           if (-not (Test-Path (Join-Path $localData 'ZM_AI_TOOL'))) {
             throw 'Setup build did not use LocalAppData for mutable state'
           }
-          foreach ($name in @('data', 'output', 'tmp', 'resources', 'updates', '.venv-runtime', '.venv-ocr', 'app.log', 'last_crash.txt')) {
+          # Chỉ kiểm tra thư mục do runtime tạo ra khi chạy lần đầu.
+          # data/ và resources/ có thể được đóng gói sẵn bởi Inno Setup (seed files).
+          foreach ($name in @('output', 'tmp', '.venv-runtime', '.venv-ocr', 'updates')) {
             if (Test-Path (Join-Path $installDir $name)) {
               throw "Setup build wrote mutable state into install directory: $name"
             }
