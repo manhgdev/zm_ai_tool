@@ -661,6 +661,19 @@ class FlowService:
             await browser.start()
             page = await browser.page()
 
+            # Theo dõi khi user đóng Chrome để thoát loop ngay lập tức
+            _browser_closed = False
+            def _on_browser_disconnected():
+                nonlocal _browser_closed
+                _browser_closed = True
+            try:
+                browser._cdp_browser.on("disconnected", lambda: _on_browser_disconnected())
+            except Exception:
+                try:
+                    browser.context.browser.on("disconnected", lambda: _on_browser_disconnected())
+                except Exception:
+                    pass
+
             existing_email = str(account.get("email") or "").strip()
             from urllib.parse import quote
 
@@ -735,6 +748,8 @@ class FlowService:
                 deadline = time.monotonic() + 600
                 while time.monotonic() < deadline:
                     try:
+                        if _browser_closed or page.is_closed():
+                            break  # Chrome đóng bởi user
                         _ = page.url
                     except Exception:
                         break  # Chrome closed by user
