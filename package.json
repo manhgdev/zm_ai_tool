@@ -1,7 +1,7 @@
 {
   "name": "zm-aio-tools",
   "private": true,
-  "version": "7.5.8",
+  "version": "7.5.9",
   "type": "module",
   "scripts": {
     "setup": "node scripts/setup.mjs",
