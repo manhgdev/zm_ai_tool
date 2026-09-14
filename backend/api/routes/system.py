@@ -202,6 +202,10 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
         expected_size = 0
     target = updates / name
     partial = target.with_suffix(target.suffix + ".part")
+    # File đã tải đủ từ lần trước → dùng lại, không tải lại.
+    if target.is_file() and expected_size and target.stat().st_size == expected_size:
+        _set_update_state(phase="ready", progress=100, message="Đã tải gói cập nhật", assetName=name, latestVersion=version, packagePath=str(target))
+        return target
     _set_update_state(phase="downloading", progress=0, message="Đang tải bản cập nhật…", assetName=name, latestVersion=version)
     last_error: Exception | None = None
     for attempt in range(3):
