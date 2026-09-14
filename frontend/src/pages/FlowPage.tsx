@@ -666,14 +666,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           throw new Error("not-online");
         }
       } catch {
-        // Headless thất bại → yêu cầu user kết nối bằng tay
+        // Headless thất bại → tự mở Chrome để user đăng nhập lại
         setUtilityView("accounts");
-        toast.error(
+        toast.info(
           t(
-            "Không thể tự kết nối lại. Vui lòng bấm Kết nối lại trong Tài khoản.",
-            "Auto-reconnect failed. Please click Reconnect in Accounts.",
+            "Cần đăng nhập lại — đang mở Chrome...",
+            "Re-login required — opening Chrome...",
           ),
         );
+        connectAccount(account);
         return;
       }
     }
