@@ -1001,8 +1001,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const syncAccount = (account: FlowAccount) => {
     if (syncingAccountIds.has(account.id)) return;
     setSyncingAccountIds((s) => new Set(s).add(account.id));
+    toast.info(t("Đang đồng bộ credits...", "Syncing credits..."));
     void flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/sync`, { method: "POST" })
-      .then((updated) => setAccounts((current) => current.map((item) => item.id === updated.id ? updated : item)))
+      .then((updated) => {
+        setAccounts((current) => current.map((item) => item.id === updated.id ? updated : item));
+        toast.success(t("Đồng bộ credits thành công", "Credits synced successfully"));
+      })
       .catch((error) => {
         const msg = error instanceof Error ? error.message : String(error);
         // Refresh accounts so the UI picks up any status change (e.g. reconnect)
