@@ -1115,8 +1115,11 @@ def api_update_apply():
         raise HTTPException(404, "Không tìm thấy gói cập nhật đã tải")
     if sys.platform == "darwin":
         subprocess.Popen(["open", str(package)])
-        _set_update_state(phase="complete", message="Đã mở macOS Installer để cập nhật")
-        return {"ok": True, "message": "Đã mở macOS Installer để cập nhật"}
+        _set_update_state(phase="applying", progress=100, message="Đã mở macOS Installer — đang đóng app…")
+        # Tắt app ngay để sau khi Installer cài xong, user mở lại là bản mới.
+        # Nếu không tắt, bản cũ vẫn chạy trong RAM và Dock reopen bản cũ.
+        threading.Timer(0.8, lambda: os._exit(0)).start()
+        return {"ok": True, "message": "Đã mở macOS Installer — app sẽ đóng để cập nhật"}
 
     try:
         _launch_windows_updater(package)
