@@ -993,11 +993,27 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       toast.error(msg);
     }
   };
-  const connectAccount = (account: FlowAccount) =>
+  const connectAccount = (account: FlowAccount) => {
+    const isReconnect = account.status === "reconnect" || !!account.projectId;
+    toast.info(
+      isReconnect
+        ? t("Đang thử kết nối lại...", "Attempting to reconnect...")
+        : t("Đang mở Chrome để đăng nhập...", "Opening Chrome for login...")
+    );
     void flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/connect`, {
       method: "POST",
-    }).then((connected) => setAccounts((current) => current.map((item) => item.id === connected.id ? normalizeFlowAccounts([connected])[0] : item)))
-      .catch((error) => setApiError(error instanceof Error ? error.message : String(error)));
+    }).then((connected) => {
+      setAccounts((current) => current.map((item) => item.id === connected.id ? normalizeFlowAccounts([connected])[0] : item));
+      if (connected.status === "online") {
+        toast.success(t("Đã kết nối tài khoản thành công", "Account connected successfully"));
+      } else {
+        toast.info(t("Đang mở Chrome để đăng nhập Google...", "Chrome opened — please sign in to Google"));
+      }
+    }).catch((error) => {
+      const msg = error instanceof Error ? error.message : String(error);
+      toast.error(t("Kết nối thất bại", "Connection failed") + ": " + msg);
+    });
+  };
   const syncAccount = (account: FlowAccount) => {
     if (syncingAccountIds.has(account.id)) return;
     setSyncingAccountIds((s) => new Set(s).add(account.id));
