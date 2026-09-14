@@ -82,43 +82,6 @@ def create_app() -> FastAPI:
         except Exception:
             pass
 
-        def _flow_account_health_loop() -> None:
-            """Kiểm tra session Flow định kỳ — tự reconnect headless nếu hết hạn."""
-            import asyncio as _asyncio
-            while True:
-                time.sleep(300)  # 5 phút
-                try:
-                    from pipeline.flow import service as _svc
-                    accounts = _svc.flow.accounts()
-                    for account in accounts:
-                        if account.get("status") != "online" or not account.get("projectId"):
-                            continue
-                        account_id = str(account["id"])
-                        try:
-                            _asyncio.run(_svc.flow.sync_credits_for_account(account_id))
-                        except Exception as exc:
-                            from pipeline.flow.service import _session_needs_login
-                            if _session_needs_login(exc):
-                                # Session hết hạn → thử reconnect headless tự động
-                                try:
-                                    ok = _asyncio.run(_svc.flow._try_headless_reconnect(
-                                        account_id, str(account["projectId"])
-                                    ))
-                                    if ok:
-                                        import logging
-                                        logging.getLogger(__name__).info(
-                                            "health-check: auto reconnect OK for %s", account_id
-                                        )
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
-
-        threading.Thread(
-            target=_flow_account_health_loop,
-            name="flow-health-check",
-            daemon=True,
-        ).start()
 
         threading.Thread(
             target=run_public_cleanup_periodically,
