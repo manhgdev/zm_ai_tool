@@ -180,8 +180,8 @@ def _openai_compatible_chat(
                     headers={
                         "Authorization": f"Bearer {keys[key_index]}",
                         "Content-Type": "application/json",
-                        "HTTP-Referer": "https://localhost/videoclone",
-                        "X-Title": "VideoClone",
+                        "HTTP-Referer": "https://localhost/zm_ai_tool",
+                        "X-Title": "ZM AIO TOOL",
                     },
                     json={
                         "model": model,

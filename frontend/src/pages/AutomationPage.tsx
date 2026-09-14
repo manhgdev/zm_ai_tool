@@ -69,9 +69,9 @@ type ChatProviderOption = { id: string; label: string; kind: 'api' | 'browser'; 
 const API = '/api/automation'
 const fetchWithTimeout = (input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 8000) =>
   fetch(input, { ...init, signal: init.signal || AbortSignal.timeout(timeoutMs) })
-const AUTOMATION_SETTINGS_OPEN_KEY = 'videoclone.automation-settings-open.v1'
-const AUTOMATION_PANEL_WIDTH_KEY = 'videoclone.automation-panel-width.v1'
-const AUTOMATION_SETTINGS_TAB_KEY = 'videoclone.automation-settings-tab.v1'
+const AUTOMATION_SETTINGS_OPEN_KEY = 'zm_ai_tool.automation-settings-open.v1'
+const AUTOMATION_PANEL_WIDTH_KEY = 'zm_ai_tool.automation-panel-width.v1'
+const AUTOMATION_SETTINGS_TAB_KEY = 'zm_ai_tool.automation-settings-tab.v1'
 const DEFAULT_SETTINGS: AutomationSettings = {
   language: 'vi', textProvider: 'openrouter', textModel: 'openrouter/free', chatModel: 'GPT-5.6 Sol',
   promptEngine: 'vi',

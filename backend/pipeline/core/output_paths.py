@@ -72,7 +72,7 @@ def app_output_root() -> Path:
     """User-visible output root, resolved in priority order:
 
     1. outputRoot saved in ui_preferences.json (user picked once via Settings)
-    2. VIDEO_CLONE_OUTPUT_ROOT env var (set by launcher per platform:
+    2. ZM_AI_TOOL_OUTPUT_ROOT env var (set by launcher per platform:
        Windows = portable state root/output, macOS = ~/Downloads/ZM_AIO_TOOL)
     3. Hard fallback: ~/Downloads/ZM_AIO_TOOL
     """
@@ -83,7 +83,7 @@ def app_output_root() -> Path:
             return ensure_writable_output_root(saved)
         except OSError:
             pass
-    env = os.environ.get("VIDEO_CLONE_OUTPUT_ROOT", "").strip()
+    env = (os.environ.get("ZM_AI_TOOL_OUTPUT_ROOT") or "").strip()
     if env:
         try:
             return ensure_writable_output_root(Path(env))
@@ -95,8 +95,8 @@ def app_output_root() -> Path:
 
 def downloads_folder(tab: str) -> Path:
     """Return one feature subfolder inside the shared APP output root."""
-    key = str(tab or "video-clone").strip().lower()
-    parts = _OUTPUT_SUBFOLDERS.get(key, (safe_output_part(key, "video-clone"),))
+    key = str(tab or "clone").strip().lower()
+    parts = _OUTPUT_SUBFOLDERS.get(key, (safe_output_part(key, "clone"),))
     folder = app_output_root().joinpath(*parts)
     folder.mkdir(parents=True, exist_ok=True)
     return folder

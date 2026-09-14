@@ -10,7 +10,7 @@ export type LicenseStatus = {
   message: string
 }
 
-const STATUS_CACHE_KEY = 'videoclone.license.status.v1'
+const STATUS_CACHE_KEY = 'zm_ai_tool.license.status.v1'
 const STATUS_CACHE_MS = 5 * 60 * 1000
 let statusInFlight: Promise<LicenseStatus> | null = null
 

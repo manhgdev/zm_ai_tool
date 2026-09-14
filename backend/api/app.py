@@ -21,14 +21,18 @@ def _allowed_origins() -> list[str]:
     """Origin của chính app (dev Vite + webview) + cấu hình thêm qua env."""
     import os
 
-    port = str(os.environ.get("VIDEO_CLONE_PORT") or 8787)
+    port = str(os.environ.get("ZM_AI_TOOL_PORT") or 8787)
     origins: list[str] = []
     for host in ("localhost", "127.0.0.1"):
         for p in (port, "5173", "4173"):
             origins.append(f"http://{host}:{p}")
     # webview desktop load từ file:// hoặc app scheme → Origin "null"
     origins.append("null")
-    extra = (os.environ.get("VIDEO_CLONE_ALLOW_ORIGINS") or "").strip()
+    extra = (
+        os.environ.get("ZM_AI_TOOL_ALLOW_ORIGINS")
+
+        or ""
+    ).strip()
     if extra:
         origins.extend(o.strip() for o in extra.split(",") if o.strip())
     seen: set[str] = set()
@@ -158,10 +162,10 @@ def create_app() -> FastAPI:
         threading.Thread(target=_run, name="warm-models", daemon=True).start()
         yield
 
-    app = FastAPI(title="Video-Clone Local", lifespan=lifespan)
+    app = FastAPI(title="ZM AI TOOL Local", lifespan=lifespan)
     # API local không có auth → chỉ nhận origin của chính app (Vite dev / webview).
     # allow_origins=["*"] cho phép mọi trang web user đang mở gọi API (xóa
-    # project, đọc file). Thêm origin khác qua VIDEO_CLONE_ALLOW_ORIGINS.
+    # project, đọc file). Thêm origin khác qua ZM_AI_TOOL_ALLOW_ORIGINS.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_allowed_origins(),
@@ -205,8 +209,8 @@ def create_app() -> FastAPI:
 
         from pipeline.core.config import DATA
 
-        port = int(os.environ.get("VIDEO_CLONE_PORT") or 8787)
-        return {"ok": True, "app": "videoclone", "port": port, "data": str(DATA)}
+        port = int(os.environ.get("ZM_AI_TOOL_PORT") or 8787)
+        return {"ok": True, "app": "zm_ai_tool", "port": port, "data": str(DATA)}
 
     app.include_router(router)
     # StaticFiles kiểm thư mục tồn tại lúc mount → máy mới (chưa có public/)

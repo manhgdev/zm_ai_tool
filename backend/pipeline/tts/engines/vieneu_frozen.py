@@ -41,7 +41,7 @@ def _register():
 
 def _enable_torchaudio_soundfile_fallback():
     import torchaudio
-    if getattr(torchaudio.load, "_videoclone_soundfile_fallback", False):
+    if getattr(torchaudio.load, "_zm_ai_tool_soundfile_fallback", False):
         return
     native_load = torchaudio.load
     def load(uri, *args, **kwargs):
@@ -61,7 +61,7 @@ def _enable_torchaudio_soundfile_fallback():
                 dtype="float32", always_2d=True,
             )
             return torch.from_numpy(samples.T if channels_first else samples), sample_rate
-    load._videoclone_soundfile_fallback = True
+    load._zm_ai_tool_soundfile_fallback = True
     torchaudio.load = load
 
 def _prepare_cuda_weight_load(backend, device):
@@ -77,7 +77,7 @@ def _prepare_cuda_weight_load(backend, device):
             raise
     import safetensors.torch as safe_torch
     original = safe_torch.load_model
-    if getattr(original, "_videoclone_cpu_stage", False):
+    if getattr(original, "_zm_ai_tool_cpu_stage", False):
         return
     def load_model_cpu_stage(model, filename, strict=True, device="cpu"):
         target = str(device)
@@ -85,7 +85,7 @@ def _prepare_cuda_weight_load(backend, device):
         if target.startswith("cuda"):
             model.to(target)
         return result
-    load_model_cpu_stage._videoclone_cpu_stage = True
+    load_model_cpu_stage._zm_ai_tool_cpu_stage = True
     safe_torch.load_model = load_model_cpu_stage
 
 def main():

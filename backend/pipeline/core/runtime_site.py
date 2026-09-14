@@ -115,7 +115,7 @@ def runtime_site_packages() -> Path | None:
     """Site-packages dir for the desktop runtime venv (frozen) or None in dev."""
     if not getattr(sys, "frozen", False):
         return None
-    home = (os.environ.get("VIDEO_CLONE_HOME") or "").strip()
+    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
     if not home:
         return None
     venv = Path(home) / ".venv-runtime"
@@ -190,7 +190,7 @@ def subprocess_environment(
 ) -> dict[str, str]:
     """Copy the process environment and bound Windows PATH before spawning."""
     env = dict(sanitize_process_environment(os.environ.copy()))
-    if getattr(sys, "frozen", False) or env.get("VIDEO_CLONE_MEIPASS"):
+    if getattr(sys, "frozen", False) or env.get("ZM_AI_TOOL_MEIPASS"):
         # External Python owns its stdlib/site-packages, not the launcher's
         # Python installation. Preserve app paths explicitly added by workers.
         for name in ("PYTHONHOME", "PYTHONUSERBASE", "PYTHONSTARTUP"):

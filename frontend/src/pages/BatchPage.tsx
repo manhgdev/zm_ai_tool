@@ -25,13 +25,13 @@ type DrawingJob = { id: string; filename: string; status: 'queued' | 'processing
 type DrawingPreset = 'pencil' | 'ink' | 'whiteboard' | 'speed' | 'watercolor'
 type DrawingStrokeOrder = 'natural' | 'outline' | 'region' | 'reading' | 'center' | 'horizontal' | 'vertical'
 type DrawingBatchOptions = { preset: DrawingPreset; duration: number; detail: number; thickness: number; fps: 24 | 30 | 60; resolution: '720p' | '1080p' | '4k'; mode: 'drawing' | 'hand'; tool: 'pencil' | 'pen' | 'marker' | 'brush'; strokeOrder: DrawingStrokeOrder; showOriginalEnd: boolean }
-const BATCH_TAB_LS = 'videoclone.batchTab'
-const BATCH_CLONE_SETTINGS_LS = 'videoclone.batchCloneSettings'
-const BATCH_CLONE_SETTINGS_VERSION_LS = 'videoclone.batchCloneSettingsVersion'
+const BATCH_TAB_LS = 'zm_ai_tool.batchTab'
+const BATCH_CLONE_SETTINGS_LS = 'zm_ai_tool.batchCloneSettings'
+const BATCH_CLONE_SETTINGS_VERSION_LS = 'zm_ai_tool.batchCloneSettingsVersion'
 const BATCH_CLONE_SETTINGS_VERSION = '3'
-const BATCH_REVIEW_SETTINGS_LS = 'videoclone.batchReviewSettings'
-const BATCH_DRAWING_SETTINGS_LS = 'videoclone.batchDrawingSettings'
-const BATCH_OUTPUT_DIR_LS = 'videoclone.batchOutputDir'
+const BATCH_REVIEW_SETTINGS_LS = 'zm_ai_tool.batchReviewSettings'
+const BATCH_DRAWING_SETTINGS_LS = 'zm_ai_tool.batchDrawingSettings'
+const BATCH_OUTPUT_DIR_LS = 'zm_ai_tool.batchOutputDir'
 
 function loadBatchTab(): BatchTab {
   try {

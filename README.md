@@ -199,7 +199,7 @@ npm run release -- 3.8.0
 Artifact local được tạo trong `build_app/release/`. GitHub Actions build macOS và Windows khi push tag theo dạng `v*` và đính kèm các gói phát hành vào GitHub Release:
 
 - **Windows:**
-  - 📦 **Bản Cài đặt (Setup / Installer):** `ZM_AIO_TOOL_v{version}-windows-x64-Setup.exe` — Bộ cài Wizard tiêu chuẩn (Inno Setup), tự động tạo shortcut Desktop, Start Menu và hỗ trợ gỡ cài đặt sạch sẽ trong Windows Settings.
+  - 📦 **Bản Cài đặt (Setup / Installer):** `ZM_AIO_TOOL_v{version}-windows-x64-Setup.exe` — Bộ cài Wizard tiêu chuẩn (Inno Setup), tự động tạo shortcut Desktop/Start Menu, hỗ trợ gỡ cài đặt và lưu runtime/dữ liệu tại `%LOCALAPPDATA%\ZM_AIO_TOOL`.
   - 💼 **Bản Portable (Chạy ngay không cần cài đặt):** `ZM_AIO_TOOL_v{version}-windows-x64-Portable.zip` — Giải nén và chạy ngay `ZM AIO TOOL.exe`, dữ liệu và cache lưu trực tiếp trong thư mục ứng dụng (tiện lưu trữ trên ổ cứng di động/USB).
 - **macOS:** `ZM_AIO_TOOL_v{version}-macos-arm64.pkg` / `ZM_AIO_TOOL_v{version}-macos-x64.pkg`.
 

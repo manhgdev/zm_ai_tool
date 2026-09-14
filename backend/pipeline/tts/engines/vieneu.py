@@ -114,7 +114,7 @@ def _prepare_cuda_weight_load(backend: str, device: str) -> bool:
             raise
     import safetensors.torch as safe_torch
 
-    if getattr(safe_torch.load_model, "_videoclone_cpu_stage", False):
+    if getattr(safe_torch.load_model, "_zm_ai_tool_cpu_stage", False):
         return True
     original = safe_torch.load_model
 
@@ -125,7 +125,7 @@ def _prepare_cuda_weight_load(backend: str, device: str) -> bool:
             model.to(target)
         return result
 
-    load_model_cpu_stage._videoclone_cpu_stage = True  # type: ignore[attr-defined]
+    load_model_cpu_stage._zm_ai_tool_cpu_stage = True  # type: ignore[attr-defined]
     safe_torch.load_model = load_model_cpu_stage
     return True
 
@@ -668,7 +668,7 @@ def _enable_torchaudio_soundfile_fallback() -> None:
     """Keep VieNeu reference WAV loading working with torchaudio builds needing TorchCodec."""
     import torchaudio
 
-    if getattr(torchaudio.load, "_videoclone_soundfile_fallback", False):
+    if getattr(torchaudio.load, "_zm_ai_tool_soundfile_fallback", False):
         return
     native_load = torchaudio.load
 
@@ -694,7 +694,7 @@ def _enable_torchaudio_soundfile_fallback() -> None:
             waveform = torch.from_numpy(samples.T if channels_first else samples)
             return waveform, sample_rate
 
-    load._videoclone_soundfile_fallback = True  # type: ignore[attr-defined]
+    load._zm_ai_tool_soundfile_fallback = True  # type: ignore[attr-defined]
     torchaudio.load = load
 
 

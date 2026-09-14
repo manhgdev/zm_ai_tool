@@ -120,22 +120,20 @@ def _job_concurrency(settings: dict[str, Any]) -> int:
 def _match_model_choice(requested: str, text: str) -> bool:
     req = requested.strip().lower()
     t = re.sub(r"\s+", " ", text).strip().lower()
+    if "lower priority" in req:
+        return "lower priority" in t or "lower" in t
+    if "lite" in req:
+        return "lite" in t and "lower" not in t
+    if "fast" in req:
+        return "fast" in t
+    if "quality" in req:
+        return "quality" in t
+    if "omni" in req or "flash" in req:
+        return "omni" in t or "flash" in t
     if req in t:
         return True
-    if req == "omni flash":
-        return "omni" in t or "flash" in t
-    if "lower priority" in req:
-        return "lower priority" in t or "lite [lower priority]" in t
-    if req == "veo 3.1 - lite":
-        return "lite" in t and "lower" not in t
-    if req == "veo 3.1 - fast":
-        return "fast" in t
-    if req == "veo 3.1 - quality":
-        return "quality" in t
     if "pro" in req:
         return "pro" in t
-    if "lite" in req:
-        return "lite" in t
     if "2" in req:
         return ("2" in t or "banana 2" in t) and "lite" not in t and "pro" not in t
     if "nano banana" in req:
@@ -233,7 +231,7 @@ def _is_settings_trigger(text: str, aria_label: str = "") -> bool:
 def _session_needs_login(error: Exception) -> bool:
     """Identify failures that require the visible Google re-login flow."""
     return bool(re.search(
-        r"LOGIN_REQUIRED|recaptcha|accounts\.google\.com|not signed in|unauthenticated|authentication required",
+        r"LOGIN_REQUIRED|SESSION_EXPIRED|session.*expired|cookies.*expired|\b401\b|recaptcha|accounts\.google\.com|flow\.google\.com/about|/about|not signed in|unauthenticated|authentication required",
         str(error),
         re.I,
     ))
@@ -596,14 +594,15 @@ class FlowService:
             if detected_plan:
                 patch["plan"] = detected_plan
             store.patch_row("accounts", account_id, patch)
-        except FlowAuthError as auth_exc:
-            # Token expired or cookies invalid — mark as needing reconnect.
-            _log.warning("sync_credits_for_account: auth error for %s: %s", account_id, auth_exc)
-            store.patch_row("accounts", account_id, {
-                "status": "reconnect",
-                "error": "FLOW_SESSION_EXPIRED: Session expired — re-connect the account",
-                "updatedAt": time.time(),
-            })
+        except Exception as exc:
+            if isinstance(exc, FlowAuthError) or _session_needs_login(exc):
+                # Token expired or cookies invalid — mark as needing reconnect.
+                _log.warning("sync_credits_for_account: auth error for %s: %s", account_id, exc)
+                store.patch_row("accounts", account_id, {
+                    "status": "reconnect",
+                    "error": f"FLOW_SESSION_EXPIRED: {exc}",
+                    "updatedAt": time.time(),
+                })
             raise
         finally:
             with self._guard:
@@ -635,25 +634,16 @@ class FlowService:
 
 
     async def _login(self, account_id: str) -> None:
-        """Open a visible Chrome window to sync the Flow account.
-
-        Always opens Chrome immediately — no headless probe delay.
-        If the session is still valid, Flow redirects to the project URL quickly
-        and Chrome closes automatically after syncing.
-        """
+        """Open a visible Chrome window to authenticate and sync the Flow account."""
         account = store.get_row("accounts", account_id) or {}
         existing_project_id = str(account.get("projectId") or "")
         browser = None
-        captured_project_id = ""  # track outside try so a mid-session close can still sync
-        # Track whether we were on a signed-in Google page when Chrome closed.
-        _was_signed_in = False
         try:
             from .browser import BrowserManager, FLOW_BASE_URL
             browser = BrowserManager(headless=False, profile_dir=store.profile_dir(account_id))
             await browser.start()
             page = await browser.page()
-            # If we already know the project, go there directly — Flow no longer
-            # auto-redirects from the lobby, so waiting for a redirect is unreliable.
+
             start_url = (
                 f"https://flow.google.com/project/{existing_project_id}"
                 if existing_project_id
@@ -661,47 +651,55 @@ class FlowService:
             )
             await page.goto(start_url, wait_until="domcontentloaded", timeout=30_000)
 
-            # Fast-detect: already on project URL or redirected there.
-            project_id = ""
-            match = _PROJECT_RE.search(page.url)
-            if match:
-                project_id = match.group(1)
-            else:
-                # Wait briefly for a redirect (e.g. session validation bounce).
+            async def _is_flow_authenticated() -> tuple[bool, str]:
                 try:
-                    await page.wait_for_url(
-                        lambda url: bool(_PROJECT_RE.search(url)),
-                        timeout=10_000,
+                    url = str(page.url or "")
+                    if "accounts.google.com" in url or "/about" in url:
+                        return False, ""
+                    has_auth = await page.evaluate(
+                        "() => Boolean(window.WIZ_global_data?.SNlM0e || window.WIZ_global_data?.oPEP7c)"
                     )
-                    match = _PROJECT_RE.search(page.url)
-                    if match:
-                        project_id = match.group(1)
+                    if not has_auth:
+                        return False, ""
+                    m = _PROJECT_RE.search(url)
+                    return True, m.group(1) if m else ""
                 except Exception:
-                    pass
+                    return False, ""
 
-            if not project_id:
-                # Interactive loop: user must navigate / sign in manually.
-                # Check lobby links too (Flow hub page without direct project URL).
+            # Fast-detect: only if already authenticated and project is open
+            await asyncio.sleep(2.0)
+            is_auth, project_id = await _is_flow_authenticated()
+
+            if not project_id or not is_auth:
+                # If redirected to /about, click "Sign in" to guide the user to Google login prompt
+                if "/about" in str(page.url or ""):
+                    try:
+                        sign_in_link = page.locator('a:has-text("Sign in"), a[href*="ServiceLogin"]').first
+                        if await sign_in_link.count() > 0:
+                            await sign_in_link.click()
+                    except Exception:
+                        pass
+
+                # Interactive loop: wait for user to finish signing in in visible Chrome
                 deadline = time.monotonic() + 600
                 while time.monotonic() < deadline:
                     try:
-                        current_url = page.url
+                        _ = page.url
                     except Exception:
-                        break  # page closed
-                    match = _PROJECT_RE.search(current_url)
-                    if match:
-                        project_id = match.group(1)
-                        break
-                    _was_signed_in = "accounts.google.com" not in current_url
-                    if _was_signed_in and ("flow.google.com" in current_url or "labs.google" in current_url):
+                        break  # Chrome closed by user
+
+                    is_auth, pid = await _is_flow_authenticated()
+                    if is_auth:
+                        if pid:
+                            project_id = pid
+                            break
+                        # Authenticated on Flow, but might be on lobby/hub page
                         links = await page.locator('a[href*="/project/"]').all()
                         if links:
                             href = await links[0].get_attribute("href") or ""
-                            match = _PROJECT_RE.search(href)
-                            if match:
-                                project_id = match.group(1)
-                                # Navigate to the project page so email / credits
-                                # can be read from the correct page context.
+                            m = _PROJECT_RE.search(href)
+                            if m:
+                                project_id = m.group(1)
                                 try:
                                     await page.goto(
                                         f"https://flow.google.com/project/{project_id}",
@@ -709,81 +707,59 @@ class FlowService:
                                         timeout=15_000,
                                     )
                                 except Exception:
-                                    pass  # best-effort; we already have project_id
+                                    pass
                                 break
-                    await asyncio.sleep(2)
+                        elif existing_project_id:
+                            try:
+                                await page.goto(
+                                    f"https://flow.google.com/project/{existing_project_id}",
+                                    wait_until="domcontentloaded",
+                                    timeout=15_000,
+                                )
+                                await asyncio.sleep(2.0)
+                                is_auth2, pid2 = await _is_flow_authenticated()
+                                if is_auth2 and pid2:
+                                    project_id = pid2
+                                    break
+                            except Exception:
+                                pass
+                    await asyncio.sleep(1.5)
 
             if not project_id:
-                raise RuntimeError("Login timed out or no Google Flow project was opened")
+                raise RuntimeError("Login timed out or Chrome was closed before sign-in completed")
 
-            # Persist project_id immediately so a browser crash/close below
-            # doesn't lose it.
-            captured_project_id = project_id
-            _log.info("_login: project_id captured=%s for account=%s", project_id, account_id)
-
-            email = await page.evaluate("() => window.WIZ_global_data?.oPEP7c || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''")
-            credits = None
-            credits_synced_at = None
-            detected_plan = None
-            try:
-                from ._flow._api import FlowAPI
-                _log.info("_login: fetching credits for project=%s", project_id)
-                credit_info = await asyncio.wait_for(
-                    FlowAPI(browser, project_id=project_id).get_credits(),
-                    timeout=30.0,
+            # Verify session and fetch credits
+            from ._flow._api import FlowAPI
+            _log.info("_login: fetching credits for project=%s", project_id)
+            credit_info = await asyncio.wait_for(
+                FlowAPI(browser, project_id=project_id).get_credits(),
+                timeout=30.0,
+            )
+            credits = int(credit_info.credits)
+            credits_synced_at = time.time()
+            detected_plan = _detect_plan(credit_info)
+            email = getattr(credit_info, "email", "")
+            if not email:
+                email = await page.evaluate(
+                    "() => window.WIZ_global_data?.oPEP7c || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''"
                 )
-                credits = int(credit_info.credits)
-                credits_synced_at = time.time()
-                detected_plan = _detect_plan(credit_info)
-                if getattr(credit_info, "email", ""):
-                    email = credit_info.email or email
-                _log.info("Plan detected on connect: %s (tier=%s sku=%s)",
-                          detected_plan, getattr(credit_info, 'tier', ''), getattr(credit_info, 'sku', ''))
-            except Exception as credits_exc:
-                _log.warning("_login: get_credits failed (non-fatal): %s", credits_exc)
+
             patch: dict[str, Any] = {
-                "status": "online", "projectId": project_id,
+                "status": "online",
+                "projectId": project_id,
                 "email": email or (store.get_row("accounts", account_id) or {}).get("email", ""),
-                "credits": credits, "creditsSyncedAt": credits_synced_at,
-                "updatedAt": time.time(), "error": None,
+                "credits": credits,
+                "creditsSyncedAt": credits_synced_at,
+                "updatedAt": time.time(),
+                "error": None,
             }
             if detected_plan:
                 patch["plan"] = detected_plan
             store.patch_row("accounts", account_id, patch)
             self._log("success", "account_connected", account_id=account_id, details={"projectId": project_id, "credits": credits, "plan": detected_plan})
         except Exception as exc:
-            # If the browser was closed by the user AFTER we had already captured
-            # the project_id, treat this as a successful reconnect (credits may be
-            # missing but the account is usable).  Only fall to "reconnect" when
-            # we never got a project_id.
-            if captured_project_id:
-                existing = store.get_row("accounts", account_id) or {}
-                if existing.get("status") != "online":
-                    store.patch_row("accounts", account_id, {
-                        "status": "online",
-                        "projectId": captured_project_id,
-                        "error": None,
-                        "updatedAt": time.time(),
-                    })
-                    self._log("success", "account_connected", account_id=account_id,
-                              details={"projectId": captured_project_id, "note": "browser closed early"})
-            elif existing_project_id and _was_signed_in:
-                # Browser was closed while the user was already on a signed-in Google
-                # page (not the login screen).  The existing session is valid — reuse
-                # the saved project_id instead of dropping to "reconnect".
-                existing = store.get_row("accounts", account_id) or {}
-                if existing.get("status") != "online":
-                    store.patch_row("accounts", account_id, {
-                        "status": "online",
-                        "projectId": existing_project_id,
-                        "error": None,
-                        "updatedAt": time.time(),
-                    })
-                    self._log("success", "account_connected", account_id=account_id,
-                              details={"projectId": existing_project_id, "note": "browser closed while signed-in"})
-            else:
-                store.patch_row("accounts", account_id, {"status": "reconnect", "error": str(exc), "updatedAt": time.time()})
-                self._log("error", "account_connect_failed", account_id=account_id, message=str(exc))
+            store.patch_row("accounts", account_id, {"status": "reconnect", "error": str(exc), "updatedAt": time.time()})
+            self._log("error", "account_connect_failed", account_id=account_id, message=str(exc))
         finally:
             if browser is not None:
                 try:
@@ -1143,6 +1119,12 @@ class FlowService:
         2. Switch to the correct mode tab (Image/Video).
         3. Click the model family selector and pick the right option.
         """
+        current_url = str(page.url or "")
+        if "accounts.google.com" in current_url or "/about" in current_url or "flow.google.com/about" in current_url:
+            raise RuntimeError(
+                f"FLOW_LOGIN_REQUIRED: Google session expired or redirected to {current_url}; please reconnect the account in Settings"
+            )
+
         try:
             await page.wait_for_selector('button', timeout=30_000, state="attached")
         except Exception:
@@ -1292,6 +1274,11 @@ class FlowService:
                     )
 
             if mode_tab is None:
+                current_url = str(page.url or "")
+                if "accounts.google.com" in current_url or "/about" in current_url or "flow.google.com/about" in current_url:
+                    raise RuntimeError(
+                        f"FLOW_LOGIN_REQUIRED: Google session expired or redirected to {current_url}; please reconnect the account in Settings"
+                    )
                 if await _model_pill_already_visible():
                     _log.info(
                         "_prepare_ui_model: %s tab not found but model pill present — skipping",
@@ -1463,6 +1450,11 @@ class FlowService:
             )
         _, _, button = max(candidates, key=lambda item: (item[0], item[1]))
         try:
+            try:
+                await button.hover(timeout=2_000)
+                await asyncio.sleep(0.4)
+            except Exception:
+                pass
             await button.click(force=True, timeout=8_000)
         except Exception as exc:
             raise RuntimeError(f"FLOW_SUBMIT_CLICK_FAILED: {exc}") from exc
@@ -1612,6 +1604,84 @@ class FlowService:
             f"FLOW_GENERATION_TIMEOUT: no completed {kind} media appeared after submit"
         )
 
+    async def _wait_and_download_flow_videos(
+        self,
+        page,
+        job: dict[str, Any],
+        count: int,
+        baseline_text: str,
+        job_id: str,
+        timeout_s: int = 600,
+    ) -> list[str]:
+        """Wait for newly generated Flow video tiles to complete and download MP4s directly."""
+        deadline = time.monotonic() + timeout_s
+        expected_count = max(1, min(4, int(count or 1)))
+        started = False
+        while time.monotonic() < deadline:
+            self._check_cancel(job_id)
+            info = await page.evaluate("""(expCount) => {
+                const tiles = Array.from(document.querySelectorAll('flow-grid-tile-container')).slice(0, expCount);
+                if (!tiles.length) return null;
+                return tiles.map(t => {
+                    const text = (t.innerText || '').trim().replace(/\\s+/g, ' ');
+                    const hasThumb = !!t.querySelector('.thumbnail');
+                    const pctMatch = text.match(/(\\d+)%/);
+                    const pct = pctMatch ? parseInt(pctMatch[1], 10) : -1;
+                    const hasError = /lỗi|thất bại|failed|error|rejected|hoạt động bất thường|không thành công/i.test(text);
+                    return { text, hasThumb, pct, hasError };
+                });
+            }""", expected_count)
+            if not info:
+                await asyncio.sleep(2)
+                continue
+            for item in info:
+                if item.get("hasError"):
+                    raise RuntimeError(f"FLOW_GENERATION_FAILED: {item['text']}")
+            top_text = info[0].get("text", "")
+            if not started:
+                prompt_sub = str(job.get("prompt") or "")[:15].lower()
+                if top_text != baseline_text or prompt_sub in top_text.lower():
+                    started = True
+            if started:
+                pcts = [item["pct"] for item in info if item.get("pct", -1) != -1]
+                if pcts:
+                    avg_pct = sum(pcts) // len(pcts)
+                    store.patch_row("jobs", job_id, {
+                        "stage": "generating",
+                        "progress": max(20, min(90, avg_pct)),
+                        "updatedAt": time.time(),
+                    })
+                all_done = all(item.get("hasThumb") and item.get("pct", -1) == -1 for item in info)
+                if all_done and len(info) >= expected_count:
+                    break
+            await asyncio.sleep(2.5)
+        else:
+            raise RuntimeError(f"FLOW_GENERATION_TIMEOUT: videos did not complete within {timeout_s}s")
+
+        store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
+        outputs: list[str] = []
+        for output_index in range(1, expected_count + 1):
+            self._check_cancel(job_id)
+            output = self._output_path(job, output_index, "mp4")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            tile = page.locator("flow-grid-tile-container").nth(output_index - 1)
+            thumb = tile.locator(".thumbnail").first
+            await thumb.click()
+            await asyncio.sleep(1.5)
+            dl_btn = page.locator('button[aria-label*="Tải"], button:has-text("download"), button[aria-label*="download"]').first
+            await dl_btn.click()
+            await asyncio.sleep(1)
+            item_res = page.locator('[role="menuitem"]:has-text("720p"), [role="menuitem"]:has-text("1080p")').first
+            async with page.expect_download(timeout=30_000) as dl_info:
+                await item_res.click()
+            dl = await dl_info.value
+            await dl.save_as(str(output))
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.8)
+            outputs.append(str(output))
+            self._log("success", "output_downloaded", job_id=job_id, account_id=str(job.get("accountId") or ""), details={"outputIndex": output_index, "path": str(output)})
+        return outputs
+
     async def _wait_for_project_videos(
         self,
         api,
@@ -1758,69 +1828,38 @@ class FlowService:
                     workflow_id = str(media.get("workflowId") or "")
                     if not workflow_id:
                         raise RuntimeError("FLOW_EXTEND_WORKFLOW_MISSING: prior video has no workflow")
-                    # Use the authenticated Flow editor, which mints the
-                    # extension token that the raw endpoint rejects on 403.
                     remote = [await client.extend_video(media_id, workflow_id, job["prompt"])]
+                    media_ids = [item.media_name for item in remote]
+                    self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model, "mediaIds": media_ids})
+                    await self._sync_credits(api, account["id"])
+                    store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": 20})
+                    outputs = []
+                    for output_index, media_id in enumerate(media_ids, 1):
+                        self._check_cancel(job_id)
+                        status = await api.wait_for_video(remote[0], timeout_s=900, on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 20 + int(elapsed / 12)), "updatedAt": time.time()}))
+                        output = self._output_path(job, output_index, "mp4")
+                        await api.download(status.fife_url, output)
+                        outputs.append(str(output))
+                        self._log("success", "output_downloaded", job_id=job_id, account_id=account["id"], details={"outputIndex": output_index, "path": str(output)})
                 else:
-                    media_items = await self._find_existing_project_media(
-                        api, page, job, "video", count,
+                    baseline_text = await page.evaluate("""() => {
+                        const top = document.querySelector('flow-grid-tile-container');
+                        return top ? (top.innerText || '').trim().replace(/\\s+/g, ' ') : '';
+                    }""")
+                    await self._set_flow_count(page, count)
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.2)
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.2)
+                    if not await client._ui.fill_prompt(page, job["prompt"]):
+                        raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
+                    await asyncio.sleep(1)
+                    await self._click_flow_submit(page)
+                    self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model})
+                    await self._sync_credits(api, account["id"])
+                    outputs = await self._wait_and_download_flow_videos(
+                        page, job, count, baseline_text, job_id,
                     )
-                    if not media_items:
-                        baseline_media = await self._project_media_elements(page)
-                        baseline_ids = {str(item.get("id")) for item in baseline_media if item.get("id")}
-                        await self._set_flow_count(page, count)
-                        if not await client._ui.fill_prompt(page, job["prompt"]):
-                            raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
-                        await self._click_flow_submit(page)
-                        try:
-                            media_items = await self._wait_for_project_media(
-                                page, baseline_ids, "video", count, job_id,
-                            )
-                        except Exception as exc:
-                            _log.info("_wait_for_project_media finished with: %s; falling back to project video watcher", exc)
-                            media_items = []
-                media_ids = [item.media_name for item in remote]
-                if media_items:
-                    media_ids = [str(item["id"]) for item in media_items]
-                elif not media_ids:
-                    media_ids = await self._wait_for_project_videos(
-                        api,
-                        baseline_ids,
-                        max(1, min(4, int(settings.get("count", 1)))),
-                        job_id,
-                    )
-                self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model, "mediaIds": media_ids})
-                await self._sync_credits(api, account["id"])
-                store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": 20})
-                outputs = []
-                remote_by_id = {item.media_name: item for item in remote}
-                media_by_id = {str(item["id"]): item for item in media_items}
-                for output_index, media_id in enumerate(media_ids, 1):
-                    self._check_cancel(job_id)
-                    remote_job = remote_by_id.get(media_id)
-                    status = None
-                    if remote_job is not None:
-                        status = await api.wait_for_video(remote_job, timeout_s=900, on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 20 + int(elapsed / 12)), "updatedAt": time.time()}))
-                    suffix = "mp4"
-                    output = self._output_path(job, output_index, suffix)
-                    media_url = (
-                        status.fife_url
-                        if status is not None and status.fife_url
-                        else str((media_by_id.get(media_id) or {}).get("src") or "")
-                    )
-                    if not media_url:
-                        try:
-                            for item in await self._project_media_elements(page):
-                                if str(item.get("id")) == media_id and str(item.get("src") or "").startswith("http"):
-                                    media_url = str(item["src"])
-                                    break
-                        except Exception:
-                            pass
-                    if not media_url:
-                        media_url = f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}"
-                    await api.download(media_url, output)
-                    outputs.append(str(output))
-                    self._log("success", "output_downloaded", job_id=job_id, account_id=account["id"], details={"outputIndex": output_index, "path": str(output)})
             else:
                 model = str(settings.get("model") or "Nano Banana 2")
                 sources = job.get("sourceFiles") or []
@@ -1898,7 +1937,7 @@ class FlowService:
             root = selected_or_default("flow", "")
             series_root = root / "series" / safe_output_part(series_context.get("seriesSlug") or series_context.get("seriesTitle") or "series", "series") / kind
             folder = series_root / "anchors" if series_context.get("artifact") == "anchor" else series_root / f"tap-{int(series_context.get('episodeIndex') or 1):02d}"
-        elif selected.is_absolute() and os.environ.get("VIDEO_CLONE_DESKTOP") == "1":
+        elif selected.is_absolute() and os.environ.get("ZM_AI_TOOL_DESKTOP") == "1":
             folder = _selected_flow_folder(selected, kind)
 
         elif selected.is_absolute():

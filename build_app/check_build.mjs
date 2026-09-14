@@ -70,6 +70,7 @@ const internalDir = isMac
 
 if (isWin) {
   check('portable app/ payload', existsSync(path.join(distDir, 'app')))
+  check('portable package has no Setup marker', !existsSync(path.join(distDir, '.zmaio-installed')))
   check(
     'portable package excludes mutable state',
     !['data', 'output', 'tmp', '.venv-runtime', '.venv-ocr', 'resources', 'updates', '.env', 'app.log', 'last_crash.txt']

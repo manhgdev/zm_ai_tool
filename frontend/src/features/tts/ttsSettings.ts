@@ -1,6 +1,6 @@
 /** TTS Studio UI preferences — localStorage, not project/backend settings. */
 
-export const TTS_SETTINGS_KEY = 'video-clone:tts-settings:v1'
+export const TTS_SETTINGS_KEY = 'zm-ai-tool:tts-settings:v1'
 export const DEFAULT_CAPCUT_VOICE = 'cc:BV074_streaming:7102355709945188865'
 
 export type TtsEngine = 'all' | 'zmai' | 'vieneu' | 'clone' | 'capcut' | 'eleven' | 'system'

@@ -13,9 +13,9 @@ type SourceKind = 'media' | 'caption' | 'manual' | 'url'
 type OutputMode = 'original' | 'translated' | 'bilingual'
 type RecognitionEngine = 'whisper' | 'capcut'
 type Job = { id: string; filename: string; sourceKind: SourceKind | 'platform'; status: 'queued' | 'processing' | 'done' | 'error' | 'cancelled'; progress: number; message: string; error?: string; files: string[]; options?: { outputMode?: OutputMode; targetLang?: string; recognitionEngine?: RecognitionEngine } }
-const CACHE_KEY = 'videoclone.srt-export.source-kind'
-const JOB_KEY = 'videoclone.srt-export.job-id.v1'
-const OUTPUT_DIR_KEY = 'videoclone.srt-export.output-dir.v1'
+const CACHE_KEY = 'zm_ai_tool.srt-export.source-kind'
+const JOB_KEY = 'zm_ai_tool.srt-export.job-id.v1'
+const OUTPUT_DIR_KEY = 'zm_ai_tool.srt-export.output-dir.v1'
 const LANGUAGE_LABELS: Record<string, string> = { vi: 'Tiếng Việt', en: 'Tiếng Anh', zh: 'Tiếng Trung', ja: 'Tiếng Nhật', ko: 'Tiếng Hàn' }
 
 function loadKind(): SourceKind {

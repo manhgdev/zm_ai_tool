@@ -79,7 +79,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
     cached.logoSource === 'image' || cached.logoSource === 'icon' ? cached.logoSource : 'text',
   )
   const [logoText, setLogoText] = useState(String(
-    !cached.logoText || cached.logoText === 'VideoClone' ? 'ZMTOOL' : cached.logoText,
+    !cached.logoText || cached.logoText === 'ZM AIO TOOL' ? 'ZMTOOL' : cached.logoText,
   ))
   const [logoFontSize, setLogoFontSize] = useState(Number(
     cached.logoFontSize == null || cached.logoFontSize === 42 ? 10 : cached.logoFontSize,

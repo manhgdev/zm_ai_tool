@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from .probe import (
     _nvidia_present,
     _ocr_cuda_check,
     _ocr_cuda_check_fresh,
+    _ocr_directml_check,
     _ocr_venv_fast,
     _runtime_torch_accel,
     _runtime_mod_ok,
@@ -31,7 +33,7 @@ from .probe import (
     _torch_cuda_ready,
     _torch_cuda_ready_cached,
     _torch_dll_locked,
-    _video_clone_home,
+    _zm_ai_tool_home,
     _venv_site_packages,
     _which,
 )
@@ -39,6 +41,16 @@ from .probe import (
 # Callback do routes/system.py gán khi start install job — nhận 1 dòng log pip.
 # ponytail: Callable thay vì import tránh circular dep.
 _install_log_fn: Any = None  # Callable[[str], None] | None
+_install_progress_fn: Any = None  # Callable[[int, str], None] | None
+
+
+def _report_install(progress: int | float, message: str) -> None:
+    if _install_progress_fn is None:
+        return
+    try:
+        _install_progress_fn(progress, message)
+    except Exception:
+        pass
 
 
 def _runtime_subprocess_env() -> dict[str, str]:
@@ -47,12 +59,15 @@ def _runtime_subprocess_env() -> dict[str, str]:
 
     return subprocess_environment({
         "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
         # Tăng tốc uv: 10 kết nối song song, timeout dài hơn, không compile .pyc lúc cài
         "UV_CONCURRENT_DOWNLOADS": "10",
         "UV_HTTP_TIMEOUT": "300",
         "UV_COMPILE_BYTECODE": "0",
-        # Tắt progress bar Unicode (gây lỗi pipe trên Windows terminal cũ)
-        "UV_NO_PROGRESS": "0",
+        "UV_NO_PROGRESS": "false",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "PIP_NO_INPUT": "1",
     })
 
 
@@ -88,63 +103,200 @@ def _clean_corrupted_dists(site: Path | None = None) -> None:
                 pass
 
 
-def _pip_stream(cmd: list[str], *, timeout: float = 1800) -> subprocess.CompletedProcess:
-    """Chạy pip, stream stdout+stderr. Reader thread riêng đọc stdout → không block
-    GIL của thread install → uvicorn event loop vẫn xử lý request bình thường.
-    """
+def _pip_stream(
+    cmd: list[str],
+    *,
+    timeout: float = 1800,
+    idle_timeout: float | None = 900,
+    progress: tuple[int, int, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Stream installer output without waiting forever on a silent Windows pipe."""
     import queue as _queue
-    buf: list[str] = []
+    output = ""
     q: _queue.Queue[str | None] = _queue.Queue()
     env = _runtime_subprocess_env()
 
     def _reader(stdout) -> None:  # chạy trong thread riêng
+        import codecs
+
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         try:
-            for line in stdout:
-                q.put(line)
+            while raw := stdout.read(4096):
+                chunk = decoder.decode(raw)
+                if chunk:
+                    q.put(chunk)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                q.put(tail)
+        except (OSError, ValueError):
+            pass
         finally:
             q.put(None)  # sentinel
 
-    with subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        bufsize=0,
         env=env,
-    ) as proc:
-        assert proc.stdout
-        t = threading.Thread(target=_reader, args=(proc.stdout,), daemon=True)
-        t.start()
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            try:
-                if remaining <= 0:
-                    raise _queue.Empty
-                line = q.get(timeout=remaining)
-            except _queue.Empty:
-                from ..jobs import kill_process_tree
+    )
+    assert proc.stdout
+    t = threading.Thread(target=_reader, args=(proc.stdout,), daemon=True)
+    t.start()
+    last_activity = time.monotonic()
+    deadline = last_activity + timeout
+    exit_seen: float | None = None
+    log_pending = ""
+    progress_scan_tail = ""
+    progress_value = progress[0] if progress else 0
+    if progress:
+        _report_install(progress_value, f"Đang cài {progress[2]}… / Installing {progress[2]}…")
 
-                kill_process_tree(proc)
-                raise subprocess.TimeoutExpired(cmd, timeout, output="".join(buf))
-            if line is None:
-                break
-            buf.append(line)
-            if _install_log_fn is not None:
-                try:
-                    _install_log_fn(line)
-                except Exception:
-                    pass
-        t.join(timeout=5)
+    timed_out = ""
+    while True:
+        now = time.monotonic()
+        # Check the hard deadline even while a spinner keeps stdout busy.
+        # Otherwise a continuously non-empty queue can bypass q.get()'s
+        # timeout forever despite the child making no meaningful progress.
+        if now >= deadline:
+            timed_out = (
+                f"INSTALL_TIMEOUT: Cài đặt vượt quá {round(timeout / 60)} phút. / "
+                f"Installation exceeded {round(timeout / 60)} minutes."
+            )
+            break
         try:
-            proc.wait(timeout=max(0.01, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            from ..jobs import kill_process_tree
+            chunk = q.get(timeout=min(0.5, max(0.01, deadline - now)))
+        except _queue.Empty:
+            now = time.monotonic()
+            if now >= deadline:
+                timed_out = (
+                    f"INSTALL_TIMEOUT: Cài đặt vượt quá {round(timeout / 60)} phút. / "
+                    f"Installation exceeded {round(timeout / 60)} minutes."
+                )
+                break
+            if idle_timeout is not None and now - last_activity >= idle_timeout:
+                timed_out = (
+                    f"INSTALL_IDLE_TIMEOUT: Không nhận được dữ liệu trong "
+                    f"{round(idle_timeout / 60)} phút; đã dừng tiến trình bị treo. / "
+                    f"No installer activity for {round(idle_timeout / 60)} minutes; "
+                    "the stalled process was stopped."
+                )
+                break
+            if proc.poll() is not None:
+                exit_seen = exit_seen or now
+                # A grandchild can accidentally retain stdout after uv exits.
+                if now - exit_seen >= 3:
+                    break
+            continue
+        if chunk is None:
+            break
 
-            kill_process_tree(proc)
-            raise
-    return subprocess.CompletedProcess(cmd, proc.returncode, "".join(buf), "")
+        last_activity = time.monotonic()
+        output = (output + chunk)[-1_000_000:]
+        if _install_log_fn is not None:
+            try:
+                log_parts = (log_pending + chunk).replace("\r", "\n").split("\n")
+                log_pending = log_parts.pop()
+                if log_parts:
+                    _install_log_fn("\n".join(log_parts) + "\n")
+            except Exception:
+                pass
+        if progress:
+            clean = re.sub(
+                r"\x1b\[[0-9;?]*[ -/]*[@-~]",
+                "",
+                progress_scan_tail + chunk,
+            ).lower()
+            progress_scan_tail = clean[-512:]
+            markers = (
+                ("successfully installed", 0.98, "Đã cài xong / Installed"),
+                ("uninstalled ", 0.95, "Đã gỡ gói cũ / Old package removed"),
+                ("installed ", 0.95, "Đã cài xong / Installed"),
+                ("prepared ", 0.78, "Đã chuẩn bị gói / Packages prepared"),
+                ("installing collected packages", 0.82, "Đang ghi gói / Installing files"),
+                ("downloaded ", 0.68, "Đã tải gói / Packages downloaded"),
+                ("downloading ", 0.22, "Đang tải gói / Downloading packages"),
+                ("collecting ", 0.12, "Đang phân tích gói / Resolving packages"),
+                ("resolved ", 0.10, "Đã phân tích gói / Packages resolved"),
+            )
+            for marker, fraction, status in markers:
+                if marker in clean:
+                    start, end, label = progress
+                    progress_value = max(progress_value, round(start + (end - start) * fraction))
+                    _report_install(progress_value, f"{status}: {label}")
+                    break
+
+            # pip/uv progress bars use either ``42%`` or ``120/950 MiB``.
+            # Map the real byte/download ratio to the download portion of this
+            # stage; package extraction and installation still need headroom.
+            ratio: float | None = None
+            percent_matches = re.findall(r"(?<![\d.])(\d{1,3}(?:\.\d+)?)\s*%", clean)
+            if percent_matches:
+                pct = float(percent_matches[-1])
+                if 0 <= pct <= 100:
+                    ratio = pct / 100
+            byte_matches = re.findall(
+                r"(\d+(?:\.\d+)?)\s*([kmgt]?i?b)?\s*/\s*"
+                r"(\d+(?:\.\d+)?)\s*([kmgt]?i?b)",
+                clean,
+            )
+            if byte_matches:
+                current, current_unit, total, total_unit = byte_matches[-1]
+                powers = {"b": 0, "kb": 1, "kib": 1, "mb": 2, "mib": 2,
+                          "gb": 3, "gib": 3, "tb": 4, "tib": 4}
+                current_bytes = float(current) * (1024 ** powers[current_unit or total_unit])
+                total_bytes = float(total) * (1024 ** powers[total_unit])
+                if total_bytes > 0:
+                    ratio = max(0.0, min(1.0, current_bytes / total_bytes))
+            if ratio is not None:
+                start, end, label = progress
+                value = round(start + (end - start) * (0.22 + 0.46 * ratio))
+                if value > progress_value:
+                    progress_value = value
+                    _report_install(
+                        progress_value,
+                        f"Đang tải / Downloading {label}: {round(ratio * 100)}%",
+                    )
+
+    if timed_out:
+        from ..jobs import kill_process_tree
+
+        kill_process_tree(proc)
+    termination_error = ""
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        from ..jobs import kill_process_tree
+
+        kill_process_tree(proc)
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            termination_error = (
+                "INSTALL_TERMINATION_FAILED: Không thể dừng tiến trình cài đặt. / "
+                "The installer process could not be stopped."
+            )
+    finally:
+        if log_pending and _install_log_fn is not None:
+            try:
+                _install_log_fn(log_pending + "\n")
+            except Exception:
+                pass
+        try:
+            proc.stdout.close()
+        except OSError:
+            pass
+        t.join(timeout=3)
+
+    if timed_out:
+        tail = re.sub(r"\r+", "\n", output).strip()[-3000:]
+        raise RuntimeError(f"{timed_out}\n{tail}" if tail else timed_out)
+    if termination_error:
+        raise RuntimeError(termination_error)
+    if progress and proc.returncode == 0:
+        _report_install(progress[1], f"Đã hoàn tất {progress[2]} / Finished {progress[2]}")
+    return subprocess.CompletedProcess(cmd, proc.returncode, output, "")
 
 
 _AI_RUNTIME_PACKAGES = (
@@ -251,6 +403,23 @@ def _verify_frozen_runtime_install() -> None:
             "Kiểm tra driver NVIDIA và GPU được cấp cho máy ảo; không tự hạ xuống CPU. / "
             "Torch is installed but CUDA cannot run. Check the NVIDIA driver and VM GPU passthrough; no silent CPU fallback."
         )
+    ort_accel = _runtime_ort_accel()
+    if ort_accel == "cuda":
+        ok, detail = _ocr_cuda_check()
+        if not ok:
+            raise RuntimeError(
+                "AI_RUNTIME_ORT_CUDA_UNAVAILABLE: ONNX Runtime đã cài nhưng CUDA provider "
+                f"chưa chạy được: {detail}. Kiểm tra driver NVIDIA/CUDA rồi thử lại. / "
+                "ONNX Runtime is installed but its CUDA provider is unavailable. "
+                "Check the NVIDIA driver/CUDA runtime and retry."
+            )
+    elif ort_accel == "directml":
+        ok, detail = _ocr_directml_check()
+        if not ok:
+            raise RuntimeError(
+                "AI_RUNTIME_ORT_DIRECTML_UNAVAILABLE: ONNX Runtime DirectML chưa chạy được: "
+                f"{detail}. / ONNX Runtime DirectML is unavailable after installation."
+            )
 
 
 def _sherpa_cuda_ready(python: Path | str = sys.executable) -> bool:
@@ -272,11 +441,22 @@ def _install_sherpa_cuda(python: Path | str, uv: str | None = None) -> None:
     if _install_log_fn:
         _install_log_fn("\n=== Speaker diarization GPU (Sherpa CUDA 12) ===\n")
     cmd = (
-        [uv, "pip", "install", "--python", str(python), "--force-reinstall", _SHERPA_CUDA_SPEC, "-f", _SHERPA_CUDA_INDEX]
+        [
+            uv, "pip", "install", "--python", str(python),
+            "--force-reinstall", "--no-deps", _SHERPA_CUDA_SPEC,
+            "-f", _SHERPA_CUDA_INDEX,
+        ]
         if uv else
-        [str(python), "-m", "pip", "install", "--force-reinstall", _SHERPA_CUDA_SPEC, "-f", _SHERPA_CUDA_INDEX]
+        [
+            str(python), "-m", "pip", "install", "--force-reinstall",
+            "--no-deps", _SHERPA_CUDA_SPEC, "-f", _SHERPA_CUDA_INDEX,
+        ]
     )
-    proc = _pip_stream(cmd, timeout=1800)
+    proc = _pip_stream(
+        cmd,
+        timeout=1800,
+        progress=(68, 76, "Sherpa CUDA"),
+    )
     if proc.returncode:
         raise RuntimeError("[Sherpa CUDA] " + (proc.stderr or proc.stdout)[-3000:])
 
@@ -307,9 +487,20 @@ _MODULE_TO_PACKAGE: dict[str, str] = {
 
 def _find_uv() -> str | None:
     """Tìm 'uv' trên PATH và các vị trí cài đặt phổ biến (Windows / macOS / Linux)."""
+    bundle_candidates: list[Path] = []
+    for raw in (
+        os.environ.get("ZM_AI_TOOL_BUNDLE"),
+        str(getattr(sys, "_MEIPASS", "") or ""),
+        str(Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else ""),
+    ):
+        if raw:
+            bundle_candidates.append(Path(raw) / ("uv.exe" if sys.platform == "win32" else "uv"))
     found = shutil.which("uv")
     if found:
         return found
+    for candidate in bundle_candidates:
+        if candidate.is_file():
+            return str(candidate)
     home = Path.home()
     if sys.platform == "win32":
         localappdata = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
@@ -354,7 +545,11 @@ def _ensure_frozen_runtime_venv(uv: str, venv: Path) -> Path:
         venv.replace(backup)
     version = f"{sys.version_info.major}.{sys.version_info.minor}"
     try:
-        managed = _pip_stream([uv, "python", "install", version], timeout=1800)
+        managed = _pip_stream(
+            [uv, "python", "install", version],
+            timeout=1800,
+            progress=(24, 26, f"Python {version}"),
+        )
         if managed.returncode:
             raise RuntimeError(
                 "Không tải được Python runtime. Kiểm tra Internet rồi thử lại.\n"
@@ -367,7 +562,11 @@ def _ensure_frozen_runtime_venv(uv: str, venv: Path) -> Path:
         command = [uv, "venv", "--python", version, "--seed"]
         if "--relocatable" in (help_result.stdout or ""):
             command.append("--relocatable")
-        created = _pip_stream([*command, str(venv)], timeout=900)
+        created = _pip_stream(
+            [*command, str(venv)],
+            timeout=900,
+            progress=(26, 28, "Python virtual environment"),
+        )
         if created.returncode or not py.is_file():
             raise RuntimeError(
                 "Không tạo được Python runtime riêng cho APP.\n"
@@ -391,7 +590,7 @@ def _ensure_frozen_runtime_venv(uv: str, venv: Path) -> Path:
 
 def _runtime_pip_cmd(*extra: str) -> list[str]:
     if getattr(sys, "frozen", False):
-        home = _video_clone_home()
+        home = _zm_ai_tool_home()
         venv = home / ".venv-runtime"
         py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         uv = _find_uv()
@@ -409,7 +608,7 @@ def _runtime_pip_cmd(*extra: str) -> list[str]:
 
 def _runtime_pip_uninstall_cmd(*packages: str) -> list[str]:
     if getattr(sys, "frozen", False):
-        home = _video_clone_home()
+        home = _zm_ai_tool_home()
         venv = home / ".venv-runtime"
         py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         uv = _find_uv()
@@ -428,13 +627,14 @@ def _runtime_pip_install(
     *packages: str,
     index_url: str | None = None,
     timeout: float = 600,
+    progress: tuple[int, int, str] | None = None,
 ) -> None:
     if not packages:
         return
     cmd = _runtime_pip_cmd("--upgrade", *packages)
     if index_url:
         cmd.extend(["--index-url", index_url])
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=_runtime_subprocess_env())
+    proc = _pip_stream(cmd, timeout=timeout, progress=progress)
     if proc.returncode:
         raise RuntimeError((proc.stderr or proc.stdout)[-2000:])
 
@@ -444,12 +644,11 @@ def _install_runtime_torch(*, accel: str | None = None) -> None:
     wanted = accel or _runtime_torch_accel()
     if wanted == "cuda":
         index_url = _runtime_torch_cuda_index()
-        removed = subprocess.run(
+        removed = _pip_stream(
             _runtime_pip_uninstall_cmd("torch", "torchaudio", "torchvision"),
-            capture_output=True,
-            text=True,
             timeout=300,
-            env=_runtime_subprocess_env(),
+            idle_timeout=120,
+            progress=(80, 82, "Torch cũ / old Torch"),
         )
         if removed.returncode:
             raise RuntimeError((removed.stderr or removed.stdout)[-2000:])
@@ -457,19 +656,27 @@ def _install_runtime_torch(*, accel: str | None = None) -> None:
             "torch",
             "torchaudio",
             index_url=index_url,
-            timeout=2400,
+            timeout=2700,
+            progress=(82, 96, "PyTorch CUDA + Torchaudio"),
         )
         return
     if wanted == "mac":
-        _runtime_pip_install("torch", "torchaudio", timeout=1200)
+        _runtime_pip_install(
+            "torch", "torchaudio", timeout=1200,
+            progress=(82, 96, "PyTorch Metal + Torchaudio"),
+        )
         return
     if wanted == "rocm":
         _runtime_pip_install(
-            "torch", "torchaudio", index_url=_TORCH_ROCM_INDEX, timeout=2400
+            "torch", "torchaudio", index_url=_TORCH_ROCM_INDEX, timeout=2400,
+            progress=(82, 96, "PyTorch ROCm + Torchaudio"),
         )
         return
     idx = None if sys.platform == "darwin" else _TORCH_CPU_INDEX
-    _runtime_pip_install("torch", "torchaudio", index_url=idx, timeout=1200)
+    _runtime_pip_install(
+        "torch", "torchaudio", index_url=idx, timeout=1200,
+        progress=(82, 96, "PyTorch CPU + Torchaudio"),
+    )
 
 
 def _runtime_torch_cuda_index() -> str:
@@ -493,6 +700,12 @@ _torch_warm_done = False  # once per process — không spam pip / log
 
 
 def _runtime_torch_needs_install() -> bool:
+    if getattr(sys, "frozen", False):
+        if not _runtime_mod_ok("torch")[0]:
+            return True
+        if not _runtime_mod_ok("torchaudio")[0]:
+            return True
+        return _nvidia_present() and not _torch_cuda_ready_cached()
     # Chỉ import được mới tin — metadata ~orch hỏng không bắt reinstall.
     if not _mod_ok("torch")[0]:
         return True
@@ -605,18 +818,46 @@ def install_ai_runtime() -> dict[str, Any]:
     from pipeline.asr.speaker import ensure_diarization_models
     from pipeline.core.config import DATA
 
-    ensure_diarization_models(DATA / "models" / "pyannote", log=_install_log_fn)
+    _report_install(2, "Đang kiểm tra model tách người nói… / Checking speaker models…")
+
+    def model_progress(stage: str, current: int, total: int) -> None:
+        start, end, name = (
+            (2, 10, "model phân đoạn / segmentation model")
+            if stage == "segmentation"
+            else (10, 18, "model nhận dạng giọng / speaker embedding model")
+        )
+        ratio = current / total if total > 0 else 0
+        value = start + round((end - start) * max(0.0, min(1.0, ratio)))
+        size = (
+            f" ({current // (1 << 20)}/{total // (1 << 20)} MB)"
+            if total > 0 else ""
+        )
+        if total <= 0 and current > 0:
+            size = f" ({current // (1 << 20)} MB)"
+        _report_install(value, f"Đang tải {name}{size}")
+
+    ensure_diarization_models(
+        DATA / "models" / "pyannote",
+        log=_install_log_fn,
+        progress=model_progress,
+    )
+    _report_install(18, "Đã kiểm tra model / Speaker models ready")
     if getattr(sys, "frozen", False):
+        _report_install(20, "Đang kiểm tra các gói đã cài… / Checking installed packages…")
         _invalidate_checks_cache()
         ok, detail = _runtime_venv_fast()
         # Filesystem metadata is only a fast hint; import every runtime module
         # before declaring success so a broken wheel is repaired on demand.
         missing = _frozen_runtime_missing_modules()
-        needs_torch = _runtime_torch_needs_install()
+        needs_torch = (
+            "torch" in missing
+            or "torchaudio" in missing
+            or (_nvidia_present() and not _torch_cuda_ready_cached())
+        )
         if ok and not missing and not needs_torch and (
             _runtime_ort_accel() != "cuda"
             or _sherpa_cuda_ready(
-                _video_clone_home()
+                _zm_ai_tool_home()
                 / ".venv-runtime"
                 / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
             )
@@ -650,13 +891,15 @@ def install_ai_runtime() -> dict[str, Any]:
         }
 
     if getattr(sys, "frozen", False):
-        home = _video_clone_home()
+        home = _zm_ai_tool_home()
         venv = home / ".venv-runtime"
         py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         uv = _find_uv()
         if not uv:
             raise RuntimeError("Bản ứng dụng thiếu uv để cài gói AI")
+        _report_install(24, "Đang chuẩn bị Python runtime… / Preparing Python runtime…")
         py = _ensure_frozen_runtime_venv(uv, venv)
+        _report_install(28, "Python runtime đã sẵn sàng / Python runtime ready")
 
         from pipeline.tts.engines import vieneu_frozen
 
@@ -818,11 +1061,22 @@ def install_ai_runtime() -> dict[str, Any]:
             pass  # tất cả gói cần thiết đều đã có, bỏ qua
         else:
             _clean_corrupted_dists(_venv_site_packages(venv))
-            proc = _pip_stream(base_cmd)
+            if _install_log_fn:
+                _install_log_fn("\n=== AI dependencies ===\n")
+            proc = _pip_stream(
+                base_cmd,
+                timeout=2400,
+                progress=(30, 62, "các thư viện AI / AI dependencies"),
+            )
             if proc.returncode:
                 raise RuntimeError((proc.stderr or proc.stdout)[-3000:])
             if getattr(sys, "frozen", False) and ort_accel in ("cuda", "directml"):
-                removed = _pip_stream([uv, "pip", "uninstall", "--python", str(py), "onnxruntime"])
+                removed = _pip_stream(
+                    [uv, "pip", "uninstall", "--python", str(py), "onnxruntime"],
+                    timeout=300,
+                    idle_timeout=120,
+                    progress=(62, 64, "ONNX Runtime cũ / old ONNX Runtime"),
+                )
                 if removed.returncode:
                     raise RuntimeError((removed.stderr or removed.stdout)[-2000:])
                 provider_pkg = _ORT_GPU_PKG if ort_accel == "cuda" else _ORT_DIRECTML_PKG
@@ -831,13 +1085,21 @@ def install_ai_runtime() -> dict[str, Any]:
                     "--index-strategy", "unsafe-best-match",
                     provider_pkg,
                 ]
-                proc_provider = _pip_stream(provider_cmd)
+                proc_provider = _pip_stream(
+                    provider_cmd,
+                    timeout=1200,
+                    progress=(64, 68, "ONNX Runtime GPU"),
+                )
                 if proc_provider.returncode:
                     raise RuntimeError((proc_provider.stderr or proc_provider.stdout)[-3000:])
-            if getattr(sys, "frozen", False):
-                _install_sherpa_cuda(py, uv)
+    if getattr(sys, "frozen", False):
+        _install_sherpa_cuda(py, uv)
     if "vieneu" in missing or not _mod_ok("vieneu")[0]:
-        proc = _pip_stream(vieneu_cmd)
+        proc = _pip_stream(
+            vieneu_cmd,
+            timeout=1200,
+            progress=(76, 80, "VieNeu"),
+        )
         if proc.returncode:
             raise RuntimeError((proc.stderr or proc.stdout)[-3000:])
     if needs_torch:
@@ -865,6 +1127,9 @@ def install_ai_runtime() -> dict[str, Any]:
         else:
             _install_runtime_torch()
             _clear_torch_modules()
+    else:
+        _report_install(96, "PyTorch đã sẵn sàng / PyTorch ready")
+    _report_install(97, "Đang xác minh runtime… / Verifying AI runtime…")
     _invalidate_checks_cache()
     if getattr(sys, "frozen", False):
         _verify_frozen_runtime_install()
@@ -877,35 +1142,59 @@ def install_ai_runtime() -> dict[str, Any]:
 
 def install_ocr_cuda() -> dict[str, Any]:
     """Install the OCR GPU runtime into the Python running this API."""
+    _report_install(5, "Đang kiểm tra OCR GPU… / Checking OCR GPU…")
     ok, detail = _ocr_cuda_check()
     if ok:
         return {"ok": True, "message": "GPU tăng tốc đã được cài", "detail": detail}
     if getattr(sys, "frozen", False):
-        home = Path(os.environ.get("VIDEO_CLONE_HOME") or "")
+        home = Path(os.environ.get("ZM_AI_TOOL_HOME") or "")
         venv = home / ".venv-runtime"
         py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         uv = _find_uv()
         if not uv:
             raise RuntimeError("Bản ứng dụng thiếu uv để cài OCR GPU")
+        _report_install(15, "Đang chuẩn bị Python runtime… / Preparing Python runtime…")
         py = _ensure_frozen_runtime_venv(uv, venv)
-        proc = subprocess.run(
-            [
-                uv,
-                "pip",
-                "install",
-                "--python",
-                str(py),
-                "--index-strategy",
-                "unsafe-best-match",
-                _ORT_GPU_PKG,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=1200,
-            env=_runtime_subprocess_env(),
+        removed = _pip_stream(
+            [uv, "pip", "uninstall", "--python", str(py), "onnxruntime"],
+            timeout=300,
+            idle_timeout=120,
+            progress=(30, 38, "ONNX Runtime CPU"),
         )
-        if proc.returncode:
-            raise RuntimeError((proc.stderr or proc.stdout)[-2000:])
+        if removed.returncode:
+            raise RuntimeError((removed.stderr or removed.stdout)[-2000:])
+        try:
+            proc = _pip_stream(
+                [
+                    uv,
+                    "pip",
+                    "install",
+                    "--python",
+                    str(py),
+                    "--force-reinstall",
+                    "--index-strategy",
+                    "unsafe-best-match",
+                    _ORT_GPU_PKG,
+                ],
+                timeout=1200,
+                progress=(38, 92, "ONNX Runtime GPU"),
+            )
+            if proc.returncode:
+                raise RuntimeError((proc.stderr or proc.stdout)[-2000:])
+        except Exception:
+            # GPU is optional. Restore the CPU provider so a failed upgrade
+            # never leaves OCR unusable on Windows.
+            _report_install(92, "Đang khôi phục OCR CPU… / Restoring OCR CPU…")
+            try:
+                _pip_stream(
+                    [uv, "pip", "install", "--python", str(py), "onnxruntime"],
+                    timeout=600,
+                    idle_timeout=300,
+                )
+            except Exception:
+                pass
+            raise
+        _report_install(96, "Đang xác minh CUDA provider… / Verifying CUDA provider…")
         ok, detail = _ocr_cuda_check_fresh(py)
         if not ok:
             raise RuntimeError(f"CUDA provider unavailable after install: {detail}")
@@ -916,15 +1205,14 @@ def install_ocr_cuda() -> dict[str, Any]:
             "detail": detail,
         }
     pip = [sys.executable, "-m", "pip"]
-    subprocess.run(
+    _pip_stream(
         pip + ["uninstall", "-y", "onnxruntime", "onnxruntime-gpu"],
-        capture_output=True,
-        text=True,
         timeout=180,
-        env=_runtime_subprocess_env(),
+        idle_timeout=120,
+        progress=(10, 25, "ONNX Runtime cũ / old ONNX Runtime"),
     )
     try:
-        proc = subprocess.run(
+        proc = _pip_stream(
             pip
             + [
                 "install",
@@ -932,22 +1220,22 @@ def install_ocr_cuda() -> dict[str, Any]:
                 "off",
                 _ORT_GPU_PKG,
             ],
-            capture_output=True,
-            text=True,
             timeout=900,
-            env=_runtime_subprocess_env(),
+            progress=(25, 95, "ONNX Runtime GPU"),
         )
         if proc.returncode:
             raise RuntimeError((proc.stderr or proc.stdout)[-2000:])
     except Exception:
         # ponytail: keep OCR usable if the optional 2 GB GPU install fails.
-        subprocess.run(
-            pip + ["install", "onnxruntime"],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            env=_runtime_subprocess_env(),
-        )
+        _report_install(95, "Đang khôi phục OCR CPU… / Restoring OCR CPU…")
+        try:
+            _pip_stream(
+                pip + ["install", "onnxruntime"],
+                timeout=600,
+                idle_timeout=300,
+            )
+        except Exception:
+            pass
         raise
     # ponytail: Windows keeps the old ORT DLL mapped until this API exits; verify after restart.
     _invalidate_checks_cache()

@@ -332,21 +332,22 @@ def _pip_install_demucs_torch(py: Path, project_id: str | None) -> None:
 
 
 def _demucs_root_candidates() -> list[Path]:
-    """Ưu tiên VIDEO_CLONE_HOME (app), rồi backend/, rồi LocalAppData."""
+    """Ưu tiên ZM_AI_TOOL_HOME (app), rồi backend/, rồi LocalAppData."""
     roots: list[Path] = []
-    home = os.environ.get("VIDEO_CLONE_HOME", "").strip()
+    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
     if home:
         roots.append(Path(home))
     server = Path(__file__).resolve().parents[2]
     roots.append(server)
     if sys.platform == "win32":
-        la = Path(os.environ.get("LOCALAPPDATA", "") or "") / "VideoClone"
-        if str(la):
-            roots.append(la)
+        local_root = Path(os.environ.get("LOCALAPPDATA", "") or "")
+        if str(local_root):
+            roots.append(local_root / "ZM_AI_TOOL")
     elif sys.platform == "darwin":
-        roots.append(Path.home() / "Library" / "Application Support" / "VideoClone")
+        roots.append(Path.home() / "Library" / "Application Support" / "ZM_AI_TOOL")
     else:
-        roots.append(Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "VideoClone")
+        xdg = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+        roots.append(xdg / "ZM_AI_TOOL")
     seen: set[str] = set()
     out: list[Path] = []
     for r in roots:
@@ -366,7 +367,7 @@ def _demucs_py_in(root: Path) -> Path:
 
 def _demucs_install_root() -> Path:
     """Nơi tạo/cài venv Demucs: app home khi frozen, backend/ khi dev."""
-    home = os.environ.get("VIDEO_CLONE_HOME", "").strip()
+    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
     if home or getattr(sys, "frozen", False):
         return Path(home or _demucs_root_candidates()[0])
     return Path(__file__).resolve().parents[2]

@@ -222,7 +222,7 @@ def save_app_config(patch: dict[str, Any]) -> dict[str, Any]:
 def public_app_config() -> dict[str, Any]:
     """Keys masked for UI."""
     cfg = load_app_config()
-    is_desktop = os.environ.get("VIDEO_CLONE_DESKTOP") == "1"
+    is_desktop = (os.environ.get("ZM_AI_TOOL_DESKTOP")) == "1"
     out_cloud: dict[str, Any] = {}
     for pid, meta in PROVIDERS.items():
         b = cfg["cloud"][pid]

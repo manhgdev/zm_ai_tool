@@ -1,4 +1,4 @@
-"""Windows portable state selection and non-destructive legacy migration."""
+"""Windows portable state selection and non-destructive version migration."""
 from __future__ import annotations
 
 import json
@@ -13,7 +13,8 @@ from pathlib import Path
 _VERSIONED_APP = re.compile(
     r"^ZM[_ ]AIO[_ ]TOOL[_ ]?v(\d+)\.(\d+)\.(\d+)(?:-|$)", re.IGNORECASE
 )
-_APP_EXECUTABLES = ("ZM AIO TOOL.exe", "VideoClone.exe")
+_APP_EXECUTABLES = ("ZM AIO TOOL.exe",)
+_INSTALLED_MARKER = ".zmaio-installed"
 _LEGACY_STATE: tuple[tuple[str, str], ...] = (
     ("data", "data"),
     ("public_data", "data/public"),
@@ -46,17 +47,26 @@ def ensure_writable_directory(folder: Path) -> Path:
 def windows_portable_home(
     executable: Path, environ: Mapping[str, str] | None = None
 ) -> tuple[Path, Path | None]:
-    """Use the portable root when writable, otherwise a safe per-user fallback."""
+    """Select stable state storage for Windows Setup and Portable builds.
+
+    Inno Setup writes ``.zmaio-installed`` next to the EXE, so an installed
+    copy always uses LocalAppData even when it was launched elevated or placed
+    in a custom writable folder. A marker-free Portable copy remains truly
+    portable and stores state beside the EXE whenever that location is writable.
+    """
     env = os.environ if environ is None else environ
     # Keep mapped/subst drive spelling; resolving junctions can make AI paths much longer.
     portable_root = executable.absolute().parent
+    local = Path(
+        env.get("LOCALAPPDATA")
+        or (Path.home() / "AppData" / "Local")
+    )
+    if (portable_root / _INSTALLED_MARKER).is_file():
+        installed_home = local / "ZM_AIO_TOOL"
+        return ensure_writable_directory(installed_home), portable_root
     try:
         return ensure_writable_directory(portable_root), None
     except OSError:
-        local = Path(
-            env.get("LOCALAPPDATA")
-            or (Path.home() / "AppData" / "Local")
-        )
         fallback = local / "ZM_AIO_TOOL" / "portable-data"
         return ensure_writable_directory(fallback), portable_root
 
@@ -69,7 +79,7 @@ def _version_key(folder: Path) -> tuple[int, int, int]:
 def _legacy_homes(
     executable: Path, home: Path, environ: Mapping[str, str]
 ) -> list[tuple[Path, bool]]:
-    """Return the current read-only root, older siblings, then legacy AppData homes."""
+    """Return the current read-only root and older ZM AIO TOOL siblings."""
     executable_dir = executable.absolute().parent
     confirmed_old_target: Path | None = None
     for params in (
@@ -101,11 +111,7 @@ def _legacy_homes(
         pass
     siblings.sort(key=_version_key, reverse=True)
 
-    local_root = Path(
-        environ.get("LOCALAPPDATA")
-        or (Path.home() / "AppData" / "Local")
-    )
-    # Only move when the legacy updater explicitly identifies its old target.
+    # Only move when the updater explicitly identifies its old target.
     # A manually extracted second copy must not steal state from another copy.
     result: list[tuple[Path, bool]] = []
     if not _same_path(executable_dir, home):
@@ -114,9 +120,6 @@ def _legacy_homes(
         (candidate, confirmed_old_target is not None and _same_path(candidate, confirmed_old_target))
         for candidate in siblings
     ]
-    for local in (local_root / "ZM_AIO_TOOL" / "portable-data", local_root / "VideoClone"):
-        if local.is_dir() and not _same_path(local, home):
-            result.append((local, False))
     return result
 
 

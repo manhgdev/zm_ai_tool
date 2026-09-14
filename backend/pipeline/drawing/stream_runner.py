@@ -45,8 +45,8 @@ def _load_reference():
     candidates = [
         bundled if bundled.is_file() else None,
         # Legacy: tìm trong references/ nếu dev vẫn còn submodule local
-        Path(os.environ["VIDEO_CLONE_BUNDLE"]) / "references" / "whiteboard-stream-animation" / "scripts" / "stream_render.py"
-        if os.environ.get("VIDEO_CLONE_BUNDLE") else None,
+        Path(os.environ["ZM_AI_TOOL_BUNDLE"]) / "references" / "whiteboard-stream-animation" / "scripts" / "stream_render.py"
+        if os.environ.get("ZM_AI_TOOL_BUNDLE") else None,
         current.parents[2] / "references" / "whiteboard-stream-animation" / "scripts" / "stream_render.py",
         current.parents[3] / "references" / "whiteboard-stream-animation" / "scripts" / "stream_render.py",
     ]
@@ -56,7 +56,7 @@ def _load_reference():
     )
     if source is None:
         raise RuntimeError("whiteboard-stream-animation renderer is unavailable")
-    spec = importlib.util.spec_from_file_location("videoclone_whiteboard_stream", source)
+    spec = importlib.util.spec_from_file_location("zm_ai_tool_whiteboard_stream", source)
     if not spec or not spec.loader:
         raise RuntimeError("could not load whiteboard-stream-animation renderer")
     module = importlib.util.module_from_spec(spec)

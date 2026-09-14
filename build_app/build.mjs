@@ -22,7 +22,7 @@ const APP_ARTIFACT_NAME = 'ZM_AIO_TOOL'
 const APP_EXECUTABLE_NAME = APP_DISPLAY_NAME
 // Useful for a local smoke build while a previous root-owned release bundle is
 // still present. CI leaves it unset and uses the normal release folder.
-const releaseDir = process.env.VIDEO_CLONE_BUILD_RELEASE_DIR || path.join(root, 'build_app', 'release')
+const releaseDir = process.env.ZM_AI_TOOL_BUILD_RELEASE_DIR || path.join(root, 'build_app', 'release')
 
 function npmArgs(...args) {
   return isWin ? ['/d', '/s', '/c', `npm ${args.join(' ')}`] : args
@@ -50,7 +50,7 @@ function cleanFrontendDist() {
       renameSync(dist, stale)
       console.warn(`frontend/dist đang bị Windows giữ khóa — đã chuyển bản cũ sang ${path.basename(stale)}.`)
     } catch {
-      console.error('Không thể dọn frontend/dist. Hãy đóng cửa sổ VideoClone/Preview rồi chạy build lại.')
+      console.error('Không thể dọn frontend/dist. Hãy đóng cửa sổ ZM AIO TOOL/Preview rồi chạy build lại.')
       console.error(error instanceof Error ? error.message : error)
       process.exit(1)
     }
@@ -332,9 +332,9 @@ for (const tool of ['ffmpeg', 'ffprobe']) {
 args.push(path.join(root, 'build_app', 'launcher.py'))
 const buildHome = path.join(root, 'build_app', '.build-home')
 run(python, args, {
-  VIDEO_CLONE_HOME: buildHome,
-  VIDEO_CLONE_DATA: path.join(buildHome, 'data'),
-  VIDEO_CLONE_PUBLIC_DATA: path.join(buildHome, 'public_data'),
+  ZM_AI_TOOL_HOME: buildHome,
+  ZM_AI_TOOL_DATA: path.join(buildHome, 'data'),
+  ZM_AI_TOOL_PUBLIC_DATA: path.join(buildHome, 'public_data'),
 })
 
 const verName = `${APP_ARTIFACT_NAME}_v${appVersion}`

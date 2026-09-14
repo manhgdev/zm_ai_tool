@@ -117,10 +117,10 @@ function SvgChevron({ open }: { open: boolean }) {
   )
 }
 
-const LS_VC_JOBS = 'videoclone.vc.jobs'
-const LS_VC_METHOD = 'videoclone.vc.method'
-const LS_VC_OPTS = 'videoclone.vc.opts'
-const LS_VC_OUTPUT_DIR = 'videoclone.vc.output-dir'
+const LS_VC_JOBS = 'zm_ai_tool.vc.jobs'
+const LS_VC_METHOD = 'zm_ai_tool.vc.method'
+const LS_VC_OPTS = 'zm_ai_tool.vc.opts'
+const LS_VC_OUTPUT_DIR = 'zm_ai_tool.vc.output-dir'
 
 function loadJobs(): CleanJob[] {
   try {

@@ -176,7 +176,7 @@ def _nvidia_bin_dirs() -> list[Path]:
                 roots.append(s)
     except Exception:
         pass
-    home = os.environ.get("VIDEO_CLONE_HOME", "").strip()
+    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
     if home:
         for venv_name in (".venv-runtime", ".venv-ocr"):
             ocr_site = (
@@ -262,7 +262,7 @@ def prepare_cuda_dlls() -> None:
                         seen_bins.add(str(libs_dir))
                         bins.append(libs_dir)
         # Frozen APP (PyInstaller): thêm _MEIPASS/onnxruntime/capi/ và _MEIPASS/torch/lib/
-        meipass = getattr(sys, "_MEIPASS", os.environ.get("VIDEO_CLONE_MEIPASS"))
+        meipass = getattr(sys, "_MEIPASS", os.environ.get("ZM_AI_TOOL_MEIPASS"))
         if meipass:
             for sub in ("onnxruntime/capi", "torch/lib"):
                 d = Path(meipass) / sub

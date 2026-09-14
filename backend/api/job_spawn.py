@@ -26,7 +26,7 @@ _DEFAULT_WORKER_TIMEOUT_SECONDS = 12 * 60 * 60
 
 
 def _job_python() -> str:
-    """Never VideoClone.exe — launcher exits 2 on extra argv."""
+    """Never launch the GUI executable as a worker; launcher exits 2 on extra argv."""
     if getattr(sys, "frozen", False):
         from pipeline.core.accel import _runtime_python
 
@@ -71,10 +71,10 @@ def _worker_environment(backend) -> dict[str, str]:  # noqa: ANN001
 
     env = subprocess_environment()
     path_parts = [str(Path(backend))]
-    meipass = getattr(sys, "_MEIPASS", None) or env.get("VIDEO_CLONE_MEIPASS")
+    meipass = getattr(sys, "_MEIPASS", None) or env.get("ZM_AI_TOOL_MEIPASS")
     if meipass:
         path_parts.insert(0, str(meipass))
-        env["VIDEO_CLONE_MEIPASS"] = str(meipass)
+        env["ZM_AI_TOOL_MEIPASS"] = str(meipass)
     env["PYTHONPATH"] = os.pathsep.join(path_parts + [env.get("PYTHONPATH", "")])
     return env
 
@@ -93,7 +93,7 @@ def _spawn_error_message(exc: OSError) -> str:
 def _worker_timeout_seconds() -> int:
     """Bound native workers while allowing long exports by default."""
     try:
-        value = int(os.environ.get("VIDEO_CLONE_WORKER_TIMEOUT", _DEFAULT_WORKER_TIMEOUT_SECONDS))
+        value = int(os.environ.get("ZM_AI_TOOL_WORKER_TIMEOUT") or _DEFAULT_WORKER_TIMEOUT_SECONDS)
     except (TypeError, ValueError):
         value = _DEFAULT_WORKER_TIMEOUT_SECONDS
     return max(60, min(24 * 60 * 60, value))

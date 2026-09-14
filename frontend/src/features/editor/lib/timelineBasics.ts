@@ -29,7 +29,7 @@ export function fitTimelineZoom(durationSec: number, widthPx: number, widthRatio
 }
 
 export function bookmarkKey(projectId: string) {
-  return `videoclone.bookmarks.${projectId}`
+  return `zm_ai_tool.bookmarks.${projectId}`
 }
 
 export function loadBookmarks(projectId: string): number[] {

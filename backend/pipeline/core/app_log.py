@@ -16,8 +16,8 @@ _hooks_installed = False
 
 
 def log_path() -> Path:
-    """Desktop: VIDEO_CLONE_HOME/app.log; dev: backend/data/app.log."""
-    home = os.environ.get("VIDEO_CLONE_HOME")
+    """Desktop: ZM_AI_TOOL_HOME/app.log; dev: backend/data/app.log."""
+    home = os.environ.get("ZM_AI_TOOL_HOME")
     if home:
         return Path(home) / "app.log"
     # backend/pipeline/core → parents[2] = backend
@@ -82,7 +82,7 @@ def read_log(*, tail: int = 800, max_chars: int = 400_000) -> dict[str, Any]:
         "path": str(path),
         "text": body,
         "lines": body.count("\n") + (1 if body else 0),
-        "desktop": os.environ.get("VIDEO_CLONE_DESKTOP") == "1",
+        "desktop": (os.environ.get("ZM_AI_TOOL_DESKTOP")) == "1",
     }
 
 

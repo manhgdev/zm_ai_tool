@@ -74,7 +74,7 @@ export const GENRES = [
 
 export type Pack = { id: string; name: string; hint: string; rules: string; locked?: boolean }
 
-export const PACK_LS = 'videoclone.reviewPacks'
+export const PACK_LS = 'zm_ai_tool.reviewPacks'
 
 export const DEFAULT_PACKS: Pack[] = GENRES.map((g) => ({
   id: g.id,

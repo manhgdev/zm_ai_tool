@@ -7,7 +7,7 @@ import { CSS as DndCSS } from '@dnd-kit/utilities'
 import { cn } from '@/shared/lib/cn'
 import { captionFontCss } from '@/features/editor/lib'
 
-export const TIMELINE_TOOLS_STORAGE_KEY = 'videoclone.editor.timeline-tools'
+export const TIMELINE_TOOLS_STORAGE_KEY = 'zm_ai_tool.editor.timeline-tools'
 
 export function loadTimelineTool(name: 'mainTrackMagnet' | 'autoSnapping' | 'mediaLinked') {
   try {

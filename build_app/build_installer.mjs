@@ -37,7 +37,7 @@ function findISCC() {
 }
 
 export function buildInstaller(customVersion) {
-  const releaseDir = process.env.VIDEO_CLONE_BUILD_RELEASE_DIR || path.join(root, 'build_app', 'release')
+  const releaseDir = process.env.ZM_AI_TOOL_BUILD_RELEASE_DIR || path.join(root, 'build_app', 'release')
   const versionFile = path.join(root, 'build_app', 'VERSION')
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
 

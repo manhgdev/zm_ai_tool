@@ -199,8 +199,8 @@ class BrowserManager:
     async def ensure_authenticated(self) -> Page:
         """Navigate to Flow and raise AuthError if a login wall is detected."""
         page = await self.navigate_to_flow()
-        # Google login wall: URL contains accounts.google.com
-        if "accounts.google.com" in page.url:
+        # Google login wall: URL contains accounts.google.com or /about
+        if "accounts.google.com" in page.url or "/about" in page.url:
             raise AuthError(
                 "Not logged in. Run `flow login` to authenticate interactively."
             )

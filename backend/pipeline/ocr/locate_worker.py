@@ -105,12 +105,12 @@ def _uv_run_cmd() -> list[str] | None:
         # Keep RapidOCR/ONNX in a clean process: CTranslate2 Whisper may have
         # already loaded an incompatible cuDNN DLL into the server process.
         return [_dev_worker_python()]
-    home = (os.environ.get("VIDEO_CLONE_HOME") or "").strip()
+    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
     if not home:
         if sys.platform == "win32":
-            home = str(Path(os.environ.get("LOCALAPPDATA", "")) / "VideoClone")
+            home = str(Path(os.environ.get("LOCALAPPDATA", "")) / "ZM_AI_TOOL")
         else:
-            home = str(Path.home() / ".local" / "share" / "VideoClone")
+            home = str(Path.home() / ".local" / "share" / "ZM_AI_TOOL")
     venv = Path(home) / ".venv-runtime"
     if not venv.is_dir():
         return None
@@ -216,16 +216,16 @@ Path(sys.argv[3]).write_text(
             env = subprocess_environment()
             env["PYTHONPATH"] = str(pipeline_root) + os.pathsep + env.get("PYTHONPATH", "")
             if meipass:
-                env["VIDEO_CLONE_MEIPASS"] = str(meipass)
+                env["ZM_AI_TOOL_MEIPASS"] = str(meipass)
             # Con phải dùng ĐÚNG data dir của cha (dev: backend/, frozen: home
             # launcher đã set) — fallback LOCALAPPDATA cũ làm set_status của
             # worker ghi vào public/ ma, UI không thấy «Định vị OCR · x/y».
             from pipeline.core.config import DATA, PUBLIC_DATA, SERVER_ROOT
 
-            env["VIDEO_CLONE_HOME"] = str(SERVER_ROOT)
-            env["VIDEO_CLONE_DATA"] = str(DATA)
-            env["VIDEO_CLONE_PUBLIC_DATA"] = str(PUBLIC_DATA)
-            env.pop("VIDEO_CLONE_DESKTOP", None)
+            env["ZM_AI_TOOL_HOME"] = str(SERVER_ROOT)
+            env["ZM_AI_TOOL_DATA"] = str(DATA)
+            env["ZM_AI_TOOL_PUBLIC_DATA"] = str(PUBLIC_DATA)
+            env.pop("ZM_AI_TOOL_DESKTOP", None)
             
             # Windows: KHÔNG dùng MSMF vì MSMF tự động bóp méo khung hình/chèn viền đen (letterboxing)
             # làm lệch tọa độ Bbox. Ép dùng FFmpeg với threads=1.
@@ -399,11 +399,11 @@ def _warm_worker_env(pipeline_root: Path, meipass: str | None) -> dict[str, str]
     env = subprocess_environment()
     env["PYTHONPATH"] = str(pipeline_root) + os.pathsep + env.get("PYTHONPATH", "")
     if meipass:
-        env["VIDEO_CLONE_MEIPASS"] = str(meipass)
-    env["VIDEO_CLONE_HOME"] = str(SERVER_ROOT)
-    env["VIDEO_CLONE_DATA"] = str(DATA)
-    env["VIDEO_CLONE_PUBLIC_DATA"] = str(PUBLIC_DATA)
-    env.pop("VIDEO_CLONE_DESKTOP", None)
+        env["ZM_AI_TOOL_MEIPASS"] = str(meipass)
+    env["ZM_AI_TOOL_HOME"] = str(SERVER_ROOT)
+    env["ZM_AI_TOOL_DATA"] = str(DATA)
+    env["ZM_AI_TOOL_PUBLIC_DATA"] = str(PUBLIC_DATA)
+    env.pop("ZM_AI_TOOL_DESKTOP", None)
     env["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "threads;1"
     env["OPENCV_FFMPEG_MULTITHREADED"] = "0"
     if sys.platform == "win32":

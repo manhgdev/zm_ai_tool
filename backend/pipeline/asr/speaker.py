@@ -46,7 +46,7 @@ _DOWNLOAD_TIMEOUT = 600  # 10 phút tối đa mỗi file model (~100MB qua mạn
 _DOWNLOAD_RETRIES = 2
 
 
-def _download_file(url: str, dest: Path, log=None) -> None:
+def _download_file(url: str, dest: Path, log=None, progress=None) -> None:
     """Download url → dest (atomic), với timeout và retry."""
     import time
 
@@ -83,6 +83,8 @@ def _download_file(url: str, dest: Path, log=None) -> None:
                                 for chunk in resp.iter_bytes(chunk_size=1 << 20):  # 1 MB
                                     fh.write(chunk)
                                     downloaded += len(chunk)
+                                    if progress:
+                                        progress(downloaded, total)
                                     if total:
                                         pct = int(downloaded * 100 / total)
                                         if pct % 10 == 0:
@@ -92,11 +94,15 @@ def _download_file(url: str, dest: Path, log=None) -> None:
                     import socket
                     import urllib.request as _ur
 
-                    report("  (dùng urllib, không có progress bar)")
+                    report("  (dùng urllib fallback)")
                     old_timeout = socket.getdefaulttimeout()
                     socket.setdefaulttimeout(_DOWNLOAD_TIMEOUT)
                     try:
-                        _ur.urlretrieve(url, partial)
+                        def reporthook(blocks: int, block_size: int, total: int) -> None:
+                            if progress:
+                                progress(blocks * block_size, max(0, total))
+
+                        _ur.urlretrieve(url, partial, reporthook=reporthook)
                     finally:
                         socket.setdefaulttimeout(old_timeout)
 
@@ -131,7 +137,7 @@ def _download_file(url: str, dest: Path, log=None) -> None:
     )
 
 
-def ensure_diarization_models(model_dir: Path, log=None) -> tuple[Path, Path]:
+def ensure_diarization_models(model_dir: Path, log=None, progress=None) -> tuple[Path, Path]:
     """Download the two official Sherpa models once, with atomic destination writes."""
     model_dir.mkdir(parents=True, exist_ok=True)
     segmentation = model_dir / "model.int8.onnx"
@@ -149,10 +155,16 @@ def ensure_diarization_models(model_dir: Path, log=None) -> tuple[Path, Path]:
             # Tải trực tiếp nếu URL là file .onnx đơn giản
             # Nếu URL là tar.bz2 thì cần extract
             import tempfile
-            with tempfile.TemporaryDirectory(prefix="videoclone-diarization-") as tmp_raw:
+            with tempfile.TemporaryDirectory(prefix="zm_ai_tool-diarization-") as tmp_raw:
                 tmp = Path(tmp_raw)
                 archive = tmp / "segmentation.tar.bz2"
-                _download_file(SEGMENTATION_URL, archive, log)
+                _download_file(
+                    SEGMENTATION_URL,
+                    archive,
+                    log,
+                    (lambda current, total: progress("segmentation", current, total))
+                    if progress else None,
+                )
                 report("Đang giải nén model phân đoạn…")
                 import tarfile
                 with tarfile.open(archive, "r:bz2") as bundle:
@@ -181,7 +193,13 @@ def ensure_diarization_models(model_dir: Path, log=None) -> tuple[Path, Path]:
     if not embedding.is_file():
         report("Đang tải model nhận dạng giọng người nói (embedding)…")
         try:
-            _download_file(EMBEDDING_URL, embedding, log)
+            _download_file(
+                EMBEDDING_URL,
+                embedding,
+                log,
+                (lambda current, total: progress("embedding", current, total))
+                if progress else None,
+            )
         except Exception as e:
             embedding.unlink(missing_ok=True)
             raise RuntimeError(f"Không tải được model embedding: {e}") from e

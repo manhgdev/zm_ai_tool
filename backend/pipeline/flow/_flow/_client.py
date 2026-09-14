@@ -772,6 +772,15 @@ class FlowClient:
                 self._project_url, wait_until="domcontentloaded", timeout=20_000
             )
             await asyncio.sleep(2)
+        current_url = str(page.url or "")
+        if "accounts.google.com" in current_url or "/about" in current_url or "flow.google.com/about" in current_url:
+            raise RuntimeError(
+                f"FLOW_LOGIN_REQUIRED: Google session expired or redirected to {current_url}; please reconnect the account in Settings"
+            )
+        if self.project_id and self.project_id not in current_url:
+            raise RuntimeError(
+                f"FLOW_PROJECT_NOT_FOUND: Could not navigate to project {self.project_id} (current url: {current_url})"
+            )
 
     def __repr__(self):
         return (

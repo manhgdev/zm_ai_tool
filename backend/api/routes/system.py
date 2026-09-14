@@ -80,10 +80,13 @@ _install_state: dict[str, Any] = {
     "running": False,
     "kind": "",
     "message": "",
+    "progress": 0,
     "error": "",
     "needsRestart": False,
     "result": None,
     "log": "",
+    "startedAt": 0.0,
+    "updatedAt": 0.0,
 }
 _install_lock = threading.Lock()
 _checks_warm_lock = threading.Lock()
@@ -116,7 +119,7 @@ def _version_key(value: str) -> tuple[int, int, int]:
 
 
 def _desktop_version() -> str:
-    return str(os.environ.get("VIDEO_CLONE_VERSION") or "0.0.0").strip()
+    return str(os.environ.get("ZM_AI_TOOL_VERSION") or "0.0.0").strip()
 
 
 def _latest_release() -> dict[str, Any]:
@@ -170,7 +173,8 @@ def _release_asset(release: dict[str, Any]) -> dict[str, Any] | None:
 
 def _update_supported() -> bool:
     """The browser/dev server must never replace a local development checkout."""
-    return os.environ.get("VIDEO_CLONE_DESKTOP") == "1" and bool(getattr(sys, "frozen", False))
+    desktop = os.environ.get("ZM_AI_TOOL_DESKTOP")
+    return desktop == "1" and bool(getattr(sys, "frozen", False))
 
 
 def _update_snapshot() -> dict[str, Any]:
@@ -400,8 +404,8 @@ try {
     $newExe = Join-Path $Target $exeName
     Log "Launch: $newExe"
     Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
-    $env:VIDEO_CLONE_UPDATE_READY_FILE = $ReadyFile
-    $env:VIDEO_CLONE_SUPERVISOR_CHILD = $null
+    $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ReadyFile
+    $env:ZM_AI_TOOL_SUPERVISOR_CHILD = $null
     $newProcess = Start-Process -FilePath $newExe -WorkingDirectory $Target -PassThru
     $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
@@ -418,7 +422,7 @@ try {
     if ($newProcess.HasExited) {
         throw "Ban moi thoat sau khi khoi dong voi ma $($newProcess.ExitCode); se khoi phuc ban cu."
     }
-    $env:VIDEO_CLONE_UPDATE_READY_FILE = $null
+    $env:ZM_AI_TOOL_UPDATE_READY_FILE = $null
     Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
     $committed = $true
     Log "=== Cap nhat thanh cong; du lieu portable duoc giu nguyen. ==="
@@ -429,7 +433,7 @@ try {
 } catch {
     $err = $_.Exception.Message
     Log "LOI CAP NHAT: $err"
-    $env:VIDEO_CLONE_UPDATE_READY_FILE = $null
+    $env:ZM_AI_TOOL_UPDATE_READY_FILE = $null
     if ($ReadyFile) { Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue }
     if (-not $committed -and $backup -and (Test-Path -LiteralPath $backup)) {
         try {
@@ -496,12 +500,31 @@ def _start_checks_warm() -> None:
 def _append_install_log(text: str) -> None:
     """Thread-safe append to install log, keep last 200 lines."""
     with _install_lock:
-        lines = (_install_state["log"] + text).splitlines()
+        lines = [*_install_state["log"].splitlines(), *text.splitlines()]
         _install_state["log"] = "\n".join(lines[-200:])
+        _install_state["updatedAt"] = time.time()
+
+
+def _set_install_progress(progress: int | float, message: str = "") -> None:
+    """Publish monotonic, backend-owned install progress to polling clients."""
+    try:
+        value = max(0, min(99, round(float(progress))))
+    except (TypeError, ValueError):
+        return
+    with _install_lock:
+        if not _install_state["running"]:
+            return
+        current = int(_install_state.get("progress") or 0)
+        if value < current:
+            return
+        _install_state["progress"] = value
+        if message:
+            _install_state["message"] = message
+        _install_state["updatedAt"] = time.time()
 
 
 def _setup_gate_path() -> Path:
-    home = (os.environ.get("VIDEO_CLONE_HOME") or "").strip()
+    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
     if home:
         return Path(home) / "setup_ok"
     return Path(DATA) / "setup_ok"
@@ -518,48 +541,66 @@ def _mark_setup_gate() -> None:
 
 
 def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str, Any]:
+    started_at = time.time()
     with _install_lock:
         if _install_state["running"]:
             return {
                 "ok": True,
                 "running": True,
                 "kind": _install_state["kind"],
-                "message": f"Đang cài {_install_state['kind']}…",
+                "message": _install_state["message"],
+                "progress": _install_state["progress"],
             }
         _install_state.update(
             running=True,
             kind=kind,
-            message="Đang cài…",
+            message="Đang chuẩn bị cài đặt… / Preparing installation…",
+            progress=1,
             error="",
             needsRestart=False,
             result=None,
             log="",
+            startedAt=started_at,
+            updatedAt=started_at,
         )
 
     def work() -> None:
         import pipeline.core.system_check as _sc
         _sc._install_log_fn = _append_install_log
+        _sc._install_progress_fn = _set_install_progress
         try:
             result = fn()
             changed = "Đã cài" in str(result.get("message", ""))
-            if changed and needs_restart and os.environ.get("VIDEO_CLONE_DESKTOP") == "1":
+            desktop = os.environ.get("ZM_AI_TOOL_DESKTOP")
+            if changed and needs_restart and desktop == "1":
                 result = {**result, "needsRestart": True}
             with _install_lock:
                 _install_state["result"] = result
                 _install_state["message"] = str(result.get("message") or "")
+                _install_state["progress"] = 100
                 _install_state["needsRestart"] = bool(result.get("needsRestart"))
+                _install_state["updatedAt"] = time.time()
         except Exception as e:
             with _install_lock:
                 _install_state["error"] = str(e)
+                _install_state["message"] = "Cài đặt thất bại / Installation failed"
+                _install_state["updatedAt"] = time.time()
         finally:
             _sc._install_log_fn = None
+            _sc._install_progress_fn = None
             with _install_lock:
                 _install_state["running"] = False
 
         _start_checks_warm()
 
     threading.Thread(target=work, name=f"install-{kind}", daemon=True).start()
-    return {"ok": True, "running": True, "kind": kind, "message": f"Đang cài {kind}…"}
+    return {
+        "ok": True,
+        "running": True,
+        "kind": kind,
+        "message": "Đang chuẩn bị cài đặt… / Preparing installation…",
+        "progress": 1,
+    }
 
 # Aliases matching original routes_all names
 _spawn = spawn
@@ -807,7 +848,7 @@ def api_install_resource(resource_id: str):
 
 @router.post("/api/system/ollama/signin")
 def api_ollama_signin():
-    """Mở luồng đăng nhập chính chủ; VideoClone không đọc hay giữ token Ollama."""
+    """Mở luồng đăng nhập chính chủ; ZM AI TOOL không đọc hay giữ token Ollama."""
     import subprocess
 
     from pipeline.core.system_check.checks import _ollama_executable
@@ -839,7 +880,14 @@ def api_install_status():
     out: dict[str, Any] = {
         "running": bool(st.get("running")),
         "kind": st.get("kind") or "",
+        "progress": int(st.get("progress") or 0),
+        "message": st.get("message") or "",
+        "startedAt": float(st.get("startedAt") or 0),
+        "updatedAt": float(st.get("updatedAt") or 0),
     }
+    if st.get("log"):
+        # Trả 30 dòng cuối để tránh payload quá lớn.
+        out["log"] = "\n".join(st["log"].splitlines()[-30:])
     if st.get("error"):
         out["error"] = st["error"]
         out["ok"] = False
@@ -851,11 +899,6 @@ def api_install_status():
         if st.get("needsRestart"):
             out["needsRestart"] = True
         return out
-    if st.get("message"):
-        out["message"] = st["message"]
-    if st.get("log"):
-        # Trả 30 dòng cuối để tránh payload quá lớn
-        out["log"] = "\n".join(st["log"].splitlines()[-30:])
     return out
 
 
@@ -892,7 +935,7 @@ def api_install_nvm():
 
 @router.get("/api/system/setup-gate")
 def api_get_setup_gate():
-    """Cổng first-run — lưu file dưới VIDEO_CLONE_HOME (không phụ thuộc port/localStorage)."""
+    """Cổng first-run — lưu file dưới ZM_AI_TOOL_HOME (không phụ thuộc port/localStorage)."""
     return {"passed": _setup_gate_passed()}
 
 
@@ -905,7 +948,7 @@ def api_pass_setup_gate():
 @router.post("/api/system/restart")
 def api_system_restart():
     """Khởi động lại bản desktop — gọi sau khi cài xong mọi gói cần reload."""
-    if os.environ.get("VIDEO_CLONE_DESKTOP") != "1":
+    if (os.environ.get("ZM_AI_TOOL_DESKTOP")) != "1":
         raise HTTPException(400, "Chỉ bản desktop hỗ trợ khởi động lại từ app")
     subprocess.Popen([sys.executable, "--restart-after", str(os.getpid())])
     threading.Timer(0.8, lambda: os._exit(0)).start()
@@ -914,7 +957,7 @@ def api_system_restart():
 
 @router.get("/api/system/update/check")
 def api_update_check():
-    if os.environ.get("VIDEO_CLONE_DESKTOP") != "1":
+    if (os.environ.get("ZM_AI_TOOL_DESKTOP")) != "1":
         return {"desktop": False, "supported": False, "updateAvailable": False, "currentVersion": _desktop_version()}
     try:
         release = _latest_release()
@@ -972,9 +1015,9 @@ def api_update_install():
                         "The app folder is not writable. Move the complete Portable folder to a "
                         "writable location (for example C:\\ZM_AIO_TOOL) and retry."
                     ) from exc
-                updates = Path(os.environ.get("VIDEO_CLONE_HOME") or DATA) / "updates"
+                updates = Path(os.environ.get("ZM_AI_TOOL_HOME") or DATA) / "updates"
             else:
-                updates = Path(os.environ.get("VIDEO_CLONE_HOME") or DATA) / "updates"
+                updates = Path(os.environ.get("ZM_AI_TOOL_HOME") or DATA) / "updates"
             updates.mkdir(parents=True, exist_ok=True)
             package = _download_update(asset, updates, version)
             _set_update_state(phase="ready", progress=100, message="Đã tải gói cập nhật", packagePath=str(package))
@@ -989,7 +1032,8 @@ def api_update_install():
 
 @router.get("/api/system/update/status")
 def api_update_status():
-    return {"desktop": os.environ.get("VIDEO_CLONE_DESKTOP") == "1", **_update_snapshot()}
+    desktop = os.environ.get("ZM_AI_TOOL_DESKTOP")
+    return {"desktop": desktop == "1", **_update_snapshot()}
 
 
 def _launch_windows_updater(package: Path) -> None:

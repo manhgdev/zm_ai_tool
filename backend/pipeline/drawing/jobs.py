@@ -81,7 +81,7 @@ def _drawing_python() -> Path:
     """Return a real Python executable, never the frozen desktop launcher."""
     if not getattr(sys, "frozen", False):
         return Path(sys.executable)
-    home = Path(os.environ.get("VIDEO_CLONE_HOME") or "")
+    home = Path(os.environ.get("ZM_AI_TOOL_HOME") or "")
     python = home / ".venv-runtime" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     if python.is_file():
         return python

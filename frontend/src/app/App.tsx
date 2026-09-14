@@ -573,8 +573,8 @@ export default function App() {
       }
       if (res.clearedFrontend || parts.includes('frontend')) {
         try {
-          localStorage.removeItem(`videoclone.videoClips.${projectId}`)
-          localStorage.removeItem(`videoclone.bgClips.${projectId}`)
+          localStorage.removeItem(`zm_ai_tool.videoClips.${projectId}`)
+          localStorage.removeItem(`zm_ai_tool.bgClips.${projectId}`)
         } catch {
           /* ignore */
         }
@@ -609,8 +609,8 @@ export default function App() {
     // Full: xóa clip timeline local (đang kẹt độ dài preview cũ)
     if (wc <= 0 && typeof localStorage !== 'undefined') {
       try {
-        localStorage.removeItem(`videoclone.videoClips.${projectId}`)
-        localStorage.removeItem(`videoclone.bgClips.${projectId}`)
+        localStorage.removeItem(`zm_ai_tool.videoClips.${projectId}`)
+        localStorage.removeItem(`zm_ai_tool.bgClips.${projectId}`)
       } catch { /* ignore */ }
     }
     // Bust video URL ngay — tránh stream preview_Ns / full lẫn nhau

@@ -392,6 +392,15 @@ class FlowAPI:
                 timeout=20000,
             )
             await asyncio.sleep(1.5)
+        current_url = str(page.url or "")
+        if "accounts.google.com" in current_url or "/about" in current_url or "flow.google.com/about" in current_url:
+            raise RuntimeError(
+                f"FLOW_LOGIN_REQUIRED: Google session expired or redirected to {current_url}; please reconnect the account in Settings"
+            )
+        if self.project_id and self.project_id not in current_url:
+            raise RuntimeError(
+                f"FLOW_PROJECT_NOT_FOUND: Could not navigate to project {self.project_id} (current url: {current_url})"
+            )
 
     async def get_recaptcha_token(self) -> str:
         """Generate a fresh reCAPTCHA Enterprise token from the project page.
@@ -773,7 +782,7 @@ class FlowAPI:
         # 1. Primary: on flow.google.com, use the active page context and batchexecute RPC (nzlxg)
         try:
             page = await self._bm.page()
-            if "accounts.google.com" in page.url:
+            if "accounts.google.com" in page.url or "/about" in page.url:
                 raise AuthError("HTTP 401: Google session cookies expired — redirected to login")
 
             if "flow.google.com" not in page.url and "labs.google" not in page.url:
@@ -782,7 +791,7 @@ class FlowAPI:
                 await asyncio.sleep(1.5)
                 page = await self._bm.page()
 
-            if "accounts.google.com" in page.url:
+            if "accounts.google.com" in page.url or "/about" in page.url:
                 raise AuthError("HTTP 401: Google session cookies expired — redirected to login")
 
             data = await self._get_credits_from_page(page)
@@ -795,7 +804,7 @@ class FlowAPI:
 
         # 2. Fallback: legacy aisandbox-pa REST endpoint via Bearer token
         page = await self._bm.page()
-        if "accounts.google.com" in page.url:
+        if "accounts.google.com" in page.url or "/about" in page.url:
             raise AuthError("HTTP 401: Google session cookies expired — redirected to login")
         data = await self._fetch("GET", f"{API_BASE}/credits")
         return Credits(data)

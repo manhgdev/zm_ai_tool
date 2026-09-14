@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppConfig, CloudProviderId, SystemChecks } from '@/features/project/project.types'
-import { api } from '@/features/project/project.api'
+import { api, type InstallStatus } from '@/features/project/project.api'
 import ProgressPopup from '@/shared/components/ProgressPopup'
 import LicensePage from '@/features/license/LicensePage'
 import type { LicenseStatus } from '@/features/license/license.api'
@@ -87,6 +87,8 @@ export default function ConfigModal({
   const [installProgressMinimized, setInstallProgressMinimized] = useState(false)
   const [installPopupError, setInstallPopupError] = useState('')
   const [installLog, setInstallLog] = useState('')
+  const [installProgress, setInstallProgress] = useState(0)
+  const [installMessage, setInstallMessage] = useState('')
   const [pendingRestart, setPendingRestart] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const [logText, setLogText] = useState('')
@@ -99,6 +101,7 @@ export default function ConfigModal({
   const autoSetupLock = useRef(false)
   const autoAttempted = useRef<Set<string>>(new Set())
   const restartRequested = useRef(false)
+  const observedInstallError = useRef('')
   const [outputRoot, setOutputRoot] = useState('')
   const [outputRootDefault, setOutputRootDefault] = useState('')
   const [outputRootSaving, setOutputRootSaving] = useState(false)
@@ -318,7 +321,17 @@ export default function ConfigModal({
         errCount = 0  // reset on success
         if (st.running && st.kind) {
           setInstalling(st.kind)
-          setMsg(`Đang cài ${installLabel(st.kind)}…`)
+          setInstallProgress(Number(st.progress) || 1)
+          setInstallMessage(st.message || localize(locale, `Đang cài ${installLabel(st.kind)}…`, `Installing ${installLabel(st.kind)}…`))
+          if (st.log) setInstallLog(st.log)
+          setMsg(st.message || localize(locale, `Đang cài ${installLabel(st.kind)}…`, `Installing ${installLabel(st.kind)}…`))
+        } else {
+          setInstalling(null)
+          if (st.error && st.error !== observedInstallError.current) {
+            observedInstallError.current = st.error
+            setInstallPopupError(st.error)
+            setChecksErr(st.error)
+          }
         }
       } catch {
         /* backend chưa sẵn sàng — backoff */
@@ -336,7 +349,7 @@ export default function ConfigModal({
       cancelled = true
       window.clearTimeout(timerId)
     }
-  }, [open, section])
+  }, [open, section, locale])
 
   const cur = draft[tab]
   const canClose = !forceSetup || !!checks?.ok
@@ -344,19 +357,28 @@ export default function ConfigModal({
   const installAction = useCallback(async (kind: InstallKind) => {
     setInstalling(kind)
     setInstallProgressMinimized(false)
+    observedInstallError.current = ''
     setInstallPopupError('')
     setInstallLog('')
+    setInstallProgress(1)
+    setInstallMessage(localize(locale, 'Đang chuẩn bị cài đặt…', 'Preparing installation…'))
     setChecksErr('')
-    const onLog = (log: string) => setInstallLog(log)
+    const onStatus = (status: InstallStatus) => {
+      if (status.log) setInstallLog(status.log)
+      if (typeof status.progress === 'number') setInstallProgress(status.progress)
+      if (status.message) setInstallMessage(status.message)
+    }
     try {
       const result = kind === 'ai_runtime'
-        ? await api.installAiRuntime(onLog)
+        ? await api.installAiRuntime(onStatus)
         : kind === 'ocr_cuda'
-          ? await api.installOcrCuda(onLog)
+          ? await api.installOcrCuda(onStatus)
           : kind === 'demucs_cuda'
-            ? await api.installDemucsCuda(onLog)
-            : await api.installNvm(onLog)
+            ? await api.installDemucsCuda(onStatus)
+            : await api.installNvm(onStatus)
       const doneMsg = result.detail || result.message || 'Hoàn thành'
+      setInstallProgress(100)
+      setInstallMessage(doneMsg)
       setInstallLog((prev) => prev ? `${prev}\n\n✓ ${doneMsg}` : `✓ ${doneMsg}`)
       setMsg(doneMsg)
       if (result.needsRestart) setPendingRestart(true)
@@ -376,12 +398,13 @@ export default function ConfigModal({
               : 'Cài NVM + Node.js LTS thất bại'
       setChecksErr(message)
       setInstallPopupError(message)
+      observedInstallError.current = message
       // ponytail: giữ lock=true khi fail — tránh auto-retry vô tận.
       // User phải bấm nút thủ công để thử lại.
     } finally {
       setInstalling(null)
     }
-  }, [loadChecks])
+  }, [loadChecks, locale])
 
 
   const restartApp = useCallback(async () => {
@@ -1335,21 +1358,24 @@ export default function ConfigModal({
           running={Boolean(installing)}
           title={
             installPopupError
-              ? 'Cài đặt thất bại'
+              ? t('Cài đặt thất bại', 'Installation failed')
               : installing === 'ai_runtime'
-                ? 'Đang cài gói AI'
+                ? t('Đang cài gói AI', 'Installing AI packages')
                 : installing === 'ocr_cuda'
-                  ? 'Đang cài GPU OCR'
+                  ? t('Đang cài GPU OCR', 'Installing OCR GPU')
                   : installing === 'demucs_cuda'
-                    ? 'Đang cài Demucs'
-                    : 'Đang cài NVM + Node.js LTS'
+                    ? t('Đang cài Demucs', 'Installing Demucs')
+                    : t('Đang cài NVM + Node.js LTS', 'Installing NVM + Node.js LTS')
           }
           message={
             installing
-              ? `Đang cài ${installLabel(installing)}. Vui lòng không tắt ứng dụng.`
+              ? installMessage || t(
+                `Đang cài ${installLabel(installing)}. Vui lòng không tắt ứng dụng.`,
+                `Installing ${installLabel(installing)}. Please keep the app open.`,
+              )
               : installPopupError || undefined
           }
-          progress={installing ? 35 : 0}
+          progress={installProgress}
           error={installPopupError || null}
           log={installLog || undefined}
           onMinimize={() => {

@@ -15,14 +15,14 @@ CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 
 
 def _retention_days() -> int:
-    raw = os.environ.get("VIDEO_CLONE_PUBLIC_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))
+    raw = os.environ.get("ZM_AI_TOOL_PUBLIC_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))
     try:
         days = int(raw)
     except ValueError:
         days = 0
     if days < 1:
         logger.warning(
-            "Invalid VIDEO_CLONE_PUBLIC_RETENTION_DAYS=%r; using %d",
+            "Invalid ZM_AI_TOOL_PUBLIC_RETENTION_DAYS=%r; using %d",
             raw,
             DEFAULT_RETENTION_DAYS,
         )

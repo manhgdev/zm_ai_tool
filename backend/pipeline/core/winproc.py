@@ -15,13 +15,13 @@ _PROCESS_QUERY_INFORMATION = 0x0400
 def cpu_budget_cores(fraction: float = 0.6, *, minimum: int = 2) -> int:
     """Số core tối đa cho job nền — chừa phần còn lại cho UI/hệ điều hành.
 
-    Chỉnh bằng VIDEO_CLONE_JOB_CPU_FRACTION (0.1–1.0) nếu máy vẫn nặng/thừa.
+    Chỉnh bằng ZM_AI_TOOL_JOB_CPU_FRACTION (0.1–1.0) nếu máy vẫn nặng/thừa.
     """
     try:
         cores = os.cpu_count() or 4
     except Exception:
         cores = 4
-    raw = (os.environ.get("VIDEO_CLONE_JOB_CPU_FRACTION") or "").strip()
+    raw = (os.environ.get("ZM_AI_TOOL_JOB_CPU_FRACTION") or "").strip()
     if raw:
         try:
             fraction = max(0.1, min(1.0, float(raw)))

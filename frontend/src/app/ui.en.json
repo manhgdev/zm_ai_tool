@@ -644,7 +644,7 @@
   "Olá, esta é uma amostra de prévia de voz.": "Olá, esta é uma amostra de prévia de voz.",
   "On: audio and exported files keep each SRT cue’s exact start/end. Off: cues are joined sequentially and SRT timestamps follow the audio.": "On: audio and exported files keep each SRT cue’s exact start/end. Off: cues are joined sequentially and SRT timestamps follow the audio.",
   "One subprocess for all runtime imports — avoids 8× cold-start on system checks.": "One subprocess for all runtime imports — avoids 8× cold-start on system checks.",
-  "PATH của process có thể cũ nếu Ollama được cài sau khi VideoClone mở.": "The process PATH may be old if Ollama was installed after VideoClone opened.",
+  "PATH của process có thể cũ nếu Ollama được cài sau khi ZM AIO TOOL mở.": "The process PATH may be old if Ollama was installed after ZM AIO TOOL opened.",
   "Path trên máy chạy backend — lưu localStorage + server": "Path on the machine running the backend — save localStorage + server",
   "Phong cách (VieNeu)": "Style (VieNeu)",
   "Phát": "Phat",

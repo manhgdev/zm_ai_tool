@@ -247,7 +247,7 @@ def _torch_cuda_ready() -> bool:
 
 def _runtime_python() -> Path:
     if getattr(sys, "frozen", False):
-        home = _video_clone_home()
+        home = _zm_ai_tool_home()
         venv = home / ".venv-runtime"
         return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     return Path(sys.executable)
@@ -255,7 +255,7 @@ def _runtime_python() -> Path:
 
 def _ocr_python() -> Path:
     if getattr(sys, "frozen", False):
-        home = Path(os.environ.get("VIDEO_CLONE_HOME") or "")
+        home = Path(os.environ.get("ZM_AI_TOOL_HOME") or "")
         for venv_name in (".venv-runtime", ".venv-ocr"):
             venv = home / venv_name
             py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
@@ -265,15 +265,15 @@ def _ocr_python() -> Path:
     return Path(sys.executable)
 
 
-def _video_clone_home() -> Path:
-    home = os.environ.get("VIDEO_CLONE_HOME", "").strip()
+def _zm_ai_tool_home() -> Path:
+    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
     if home:
         return Path(home)
     if sys.platform == "win32":
-        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "VideoClone"
+        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ZM_AI_TOOL"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "VideoClone"
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "VideoClone"
+        return Path.home() / "Library" / "Application Support" / "ZM_AI_TOOL"
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "ZM_AI_TOOL"
 
 
 def _venv_site_packages(venv: Path) -> Path:
@@ -296,7 +296,7 @@ def _site_has_dist(sp: Path, prefix: str) -> bool:
 
 def _runtime_venv_fast() -> tuple[bool, str]:
     """Filesystem-only — no torch/whisper import subprocess."""
-    venv = _video_clone_home() / ".venv-runtime"
+    venv = _zm_ai_tool_home() / ".venv-runtime"
     py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     if not py.is_file():
         return False, "chưa cài"

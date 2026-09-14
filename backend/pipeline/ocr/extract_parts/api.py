@@ -128,13 +128,13 @@ Path(sys.argv[3]).write_text(
             env = subprocess_environment()
             env["PYTHONPATH"] = str(pipeline_root) + os.pathsep + env.get("PYTHONPATH", "")
             if meipass:
-                env["VIDEO_CLONE_MEIPASS"] = str(meipass)
-            if not env.get("VIDEO_CLONE_HOME"):
+                env["ZM_AI_TOOL_MEIPASS"] = str(meipass)
+            if not env.get("ZM_AI_TOOL_HOME"):
                 if sys.platform == "win32":
-                    env["VIDEO_CLONE_HOME"] = str(Path(os.environ.get("LOCALAPPDATA", "")) / "VideoClone")
+                    env["ZM_AI_TOOL_HOME"] = str(Path(os.environ.get("LOCALAPPDATA", "")) / "ZM_AI_TOOL")
                 else:
-                    env["VIDEO_CLONE_HOME"] = str(Path.home() / ".local" / "share" / "VideoClone")
-            env.pop("VIDEO_CLONE_DESKTOP", None)
+                    env["ZM_AI_TOOL_HOME"] = str(Path.home() / ".local" / "share" / "ZM_AI_TOOL")
+            env.pop("ZM_AI_TOOL_DESKTOP", None)
             # (libavcodec/pthread_frame.c:173). Cả hai env var để cover các version OpenCV khác nhau.
             env["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "threads;1"
             env["OPENCV_FFMPEG_MULTITHREADED"] = "0"

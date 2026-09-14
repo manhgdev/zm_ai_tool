@@ -63,7 +63,7 @@ def _runtime_python() -> str | None:
     """Python that owns torch in frozen app."""
     if not getattr(sys, "frozen", False):
         return sys.executable
-    home = (os.environ.get("VIDEO_CLONE_HOME") or "").strip()
+    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
     if not home:
         return None
     py = (

@@ -1,10 +1,10 @@
 import type { JobStatus, ProjectSettings } from '@/features/project/project.types'
 
-export const SETTINGS_LS = 'videoclone.settings'
-export const SESSION_LS = 'videoclone.session'
-export const SIDEBAR_W_LS = 'videoclone.sidebarWidth'
-export const THEME_LS = 'videoclone.theme'
-export const SETUP_GATE_LS = 'videoclone.setupGate'
+export const SETTINGS_LS = 'zm_ai_tool.settings'
+export const SESSION_LS = 'zm_ai_tool.session'
+export const SIDEBAR_W_LS = 'zm_ai_tool.sidebarWidth'
+export const THEME_LS = 'zm_ai_tool.theme'
+export const SETUP_GATE_LS = 'zm_ai_tool.setupGate'
 
 export function loadSetupGate(): boolean {
   try {

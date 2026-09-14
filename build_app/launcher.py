@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 APP_DISPLAY_NAME = "ZM AIO TOOL"
-_SUPERVISOR_ENV = "VIDEO_CLONE_SUPERVISOR_CHILD"
+_SUPERVISOR_ENV = "ZM_AI_TOOL_SUPERVISOR_CHILD"
 
 
 def _unblock_zone_identifier(path: Path) -> bool:
@@ -192,8 +192,9 @@ if _portable_ui_child and not acquire_single_instance():
 def app_home() -> Path:
     """Return the root directory where app data lives.
 
-    Windows portable: use the folder containing the EXE when writable. A
-    read-only install falls back to LocalAppData so the app can still start.
+    Windows Setup: always use LocalAppData. Windows Portable: use the folder
+    containing the EXE when writable, with a LocalAppData fallback for a
+    read-only extraction location.
     macOS: ~/Library/Application Support/ZM_AIO_TOOL (standard convention).
     """
     if sys.platform == "win32":
@@ -264,23 +265,23 @@ def set_desktop_path(name: str, value: Path | str) -> None:
         os.environ.setdefault(name, str(value))
 
 
-os.environ["VIDEO_CLONE_DESKTOP"] = "1"
-set_desktop_path("VIDEO_CLONE_HOME", home)
+os.environ["ZM_AI_TOOL_DESKTOP"] = "1"
+set_desktop_path("ZM_AI_TOOL_HOME", home)
 if _portable_root is not None:
-    os.environ["VIDEO_CLONE_PORTABLE_ROOT"] = str(_portable_root)
+    os.environ["ZM_AI_TOOL_PORTABLE_ROOT"] = str(_portable_root)
 else:
-    os.environ.pop("VIDEO_CLONE_PORTABLE_ROOT", None)
+    os.environ.pop("ZM_AI_TOOL_PORTABLE_ROOT", None)
 if _portable_fallback_from is not None:
-    os.environ["VIDEO_CLONE_PORTABLE_FALLBACK_FROM"] = str(_portable_fallback_from)
+    os.environ["ZM_AI_TOOL_PORTABLE_FALLBACK_FROM"] = str(_portable_fallback_from)
 else:
-    os.environ.pop("VIDEO_CLONE_PORTABLE_FALLBACK_FROM", None)
+    os.environ.pop("ZM_AI_TOOL_PORTABLE_FALLBACK_FROM", None)
 if _previous_homes:
-    os.environ["VIDEO_CLONE_PREVIOUS_HOME"] = os.pathsep.join(map(str, _previous_homes))
+    os.environ["ZM_AI_TOOL_PREVIOUS_HOME"] = os.pathsep.join(map(str, _previous_homes))
 else:
-    os.environ.pop("VIDEO_CLONE_PREVIOUS_HOME", None)
-set_desktop_path("VIDEO_CLONE_DATA", home / "data")
+    os.environ.pop("ZM_AI_TOOL_PREVIOUS_HOME", None)
+set_desktop_path("ZM_AI_TOOL_DATA", home / "data")
 # PUBLIC_DATA (project temp files) sits inside data/ — one tree, easy backup.
-set_desktop_path("VIDEO_CLONE_PUBLIC_DATA", home / "data" / "public")
+set_desktop_path("ZM_AI_TOOL_PUBLIC_DATA", home / "data" / "public")
 set_desktop_path("CAPCUT_DEVICE_JSON", home / "data" / "capcut_device.json")
 set_desktop_path("UV_PYTHON_INSTALL_DIR", home / "data" / ".python-runtime")
 if sys.platform == "win32":
@@ -294,7 +295,7 @@ _default_output = (
     str(home / "output") if sys.platform == "win32"
     else str(Path.home() / "Downloads" / "ZM_AIO_TOOL")
 )
-set_desktop_path("VIDEO_CLONE_OUTPUT_ROOT", _default_output)
+set_desktop_path("ZM_AI_TOOL_OUTPUT_ROOT", _default_output)
 # httpx parse NO_PROXY IPv6 trần ``::1`` thành port ``:1`` → Whisper/HF crash.
 _broken_np = {"::1", "::1/128", "[::1]", "[::1]/128"}
 for _np in ("NO_PROXY", "no_proxy"):
@@ -453,9 +454,14 @@ if getattr(sys, "frozen", False):
     _log_path = home / "app.log"
     _runtime_log = _log_path.open("a", encoding="utf-8", buffering=1)
     if _portable_fallback_from is not None:
+        _layout_reason = (
+            "installed app"
+            if (_portable_fallback_from / ".zmaio-installed").is_file()
+            else "read-only portable folder"
+        )
         _runtime_log.write(
-            f"[portable] Thư mục ứng dụng chỉ đọc; dùng dữ liệu dự phòng / "
-            f"App folder is read-only; using fallback data: {home}\n"
+            f"[windows] Dùng dữ liệu người dùng ({_layout_reason}) / "
+            f"Using per-user data ({_layout_reason}): {home}\n"
         )
     if sys.stdout is None:
         sys.stdout = _runtime_log
@@ -487,7 +493,7 @@ if getattr(sys, "frozen", False):
 
 if runtime_site.is_dir():
     sys.path.insert(0, str(runtime_site))
-    # Không nhét nvidia/torch CUDA vào PATH của VideoClone.exe (WebView2).
+    # Không nhét nvidia/torch CUDA vào PATH của ZM AIO TOOL.exe (WebView2).
     # GPU chạy trong worker .venv-runtime — python.exe đó tự load CUDA DLL.
     if getattr(sys, "frozen", False):
         try:
@@ -531,7 +537,7 @@ if ocr_site.is_dir():
             sys.path[:] = [p for p in sys.path if _path_ok(p)]
 
 bundle = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
-set_desktop_path("VIDEO_CLONE_BUNDLE", bundle)
+set_desktop_path("ZM_AI_TOOL_BUNDLE", bundle)
 try:
     from pipeline.core.runtime_site import prepend_windows_path, sanitize_process_environment
 
@@ -679,7 +685,7 @@ def app_version() -> str:
 
 
 APP_VERSION = app_version()
-set_desktop_path("VIDEO_CLONE_VERSION", APP_VERSION)
+set_desktop_path("ZM_AI_TOOL_VERSION", APP_VERSION)
 
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from main import app  # noqa: E402
@@ -703,7 +709,7 @@ def server_running(port: int) -> bool:
             if response.status != 200:
                 return False
             body = response.read(512).decode("utf-8", errors="replace")
-            return '"app":"videoclone"' in body.replace(" ", "")
+            return '"app":"zm_ai_tool"' in body.replace(" ", "")
     except Exception:
         return False
 
@@ -782,7 +788,7 @@ def centered_xy(width: int, height: int) -> tuple[int, int]:
 
 def mark_update_ready(*_args: object) -> None:
     """Tell the detached updater that API + native webview initialization succeeded."""
-    raw = os.environ.get("VIDEO_CLONE_UPDATE_READY_FILE", "").strip()
+    raw = os.environ.get("ZM_AI_TOOL_UPDATE_READY_FILE", "").strip()
     if not raw:
         return
     candidate = Path(raw)
@@ -811,7 +817,7 @@ def run_desktop() -> int:
     api_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     api_socket.bind((API_HOST, 0))
     port = int(api_socket.getsockname()[1])
-    os.environ["VIDEO_CLONE_PORT"] = str(port)
+    os.environ["ZM_AI_TOOL_PORT"] = str(port)
     base = api_base(port)
 
     config = uvicorn.Config(app, host=API_HOST, port=port, log_level="error")
@@ -819,7 +825,7 @@ def run_desktop() -> int:
     thread = threading.Thread(
         target=server.run,
         kwargs={"sockets": [api_socket]},
-        name="videoclone-api",
+        name="zm_ai_tool-api",
         daemon=True,
     )
     thread.start()

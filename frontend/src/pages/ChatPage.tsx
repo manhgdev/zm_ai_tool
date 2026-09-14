@@ -13,9 +13,9 @@ type ChatProvider = { id: string; label: string; kind: 'api' | 'browser'; config
 type ChatMode = 'chat' | 'search' | 'research' | 'image'
 
 const API = '/api/chat'
-const LAST_ACCOUNT = 'videoclone.chat.account'
-const LAST_PROVIDER = 'videoclone.chat.provider'
-const LAST_MODEL = 'videoclone.chat.model'
+const LAST_ACCOUNT = 'zm_ai_tool.chat.account'
+const LAST_PROVIDER = 'zm_ai_tool.chat.provider'
+const LAST_MODEL = 'zm_ai_tool.chat.model'
 const DEFAULT_MODEL = 'GPT-5.6 Sol'
 const DEFAULT_PROVIDER = 'openrouter'
 const modelCache = new Map<string, ChatModel[]>()

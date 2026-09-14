@@ -4,17 +4,20 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# backend/ is VIDEO_CLONE_HOME; repo root = SERVER_ROOT.parent
-SERVER_ROOT = Path(os.environ.get("VIDEO_CLONE_HOME", Path(__file__).resolve().parents[2]))
+# backend/ is ZM_AI_TOOL_HOME; repo root = SERVER_ROOT.parent
+SERVER_ROOT = Path(
+    os.environ.get("ZM_AI_TOOL_HOME")
+
+    or Path(__file__).resolve().parents[2]
+)
 REPO_ROOT = SERVER_ROOT.parent
 # Private: API keys, clone references, temporary uploads.
-DATA = Path(os.environ.get("VIDEO_CLONE_DATA", SERVER_ROOT / "data"))
+DATA = Path(os.environ.get("ZM_AI_TOOL_DATA") or SERVER_ROOT / "data")
 # Public: project video/audio and completed TTS jobs (Vite/static at /data/*).
 PUBLIC_DATA = Path(
-    os.environ.get(
-        "VIDEO_CLONE_PUBLIC_DATA",
-        SERVER_ROOT / "public",
-    )
+    os.environ.get("ZM_AI_TOOL_PUBLIC_DATA")
+
+    or SERVER_ROOT / "public"
 )
 
 # ponytail: không mkdir lúc import — PyInstaller build sẽ tạo backend/public trống
@@ -62,7 +65,7 @@ def safe_child(base: Path, name: str) -> Path | None:
 def export_display_path(path: Path) -> str:
     """Đường dẫn hiển thị: app desktop = full path; dev = backend/public/… trong repo."""
     resolved = path.resolve()
-    if os.environ.get("VIDEO_CLONE_DESKTOP") == "1":
+    if os.environ.get("ZM_AI_TOOL_DESKTOP") == "1" == "1":
         return str(resolved)
     try:
         return str(resolved.relative_to(REPO_ROOT.resolve())).replace("\\", "/")

@@ -73,7 +73,7 @@ export function normalizeMediaClips(clips: MediaClip[], durationSec: number, pre
 }
 
 export function mediaClipsKey(projectId: string, kind: 'video' | 'bg') {
-  return `videoclone.${kind}Clips.${projectId}`
+  return `zm_ai_tool.${kind}Clips.${projectId}`
 }
 
 export function loadMediaClips(projectId: string, kind: 'video' | 'bg', durationSec: number): MediaClip[] {

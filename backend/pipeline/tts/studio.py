@@ -922,7 +922,7 @@ def published_job_output_dir(job_id: str) -> Path:
                 target = Path(saved).expanduser()
                 try:
                     is_stale = False
-                    for old in filter(None, os.environ.get("VIDEO_CLONE_PREVIOUS_HOME", "").split(os.pathsep)):
+                    for old in filter(None, os.environ.get("ZM_AI_TOOL_PREVIOUS_HOME", "").split(os.pathsep)):
                         try:
                             target.resolve().relative_to((Path(old) / "output").resolve())
                             is_stale = True

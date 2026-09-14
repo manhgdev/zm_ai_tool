@@ -974,7 +974,7 @@ def attach_speech_hardsub_boxes(
     analysis_region: {x,y,w,h} 0–1 — thu hẹp ROI OCR (nhanh + ít nhiễu).
 
     Frozen desktop: chạy trong subprocess .venv-runtime — crash OpenCV/RapidOCR
-    không kéo tắt VideoClone.exe. Không fallback in-process — native ext crash
+    không kéo tắt ZM AIO TOOL.exe. Không fallback in-process — native ext crash
     trong frozen parent kill cả app, không bắt được bằng try/except.
     """
     n = _locate_via_runtime_subprocess(

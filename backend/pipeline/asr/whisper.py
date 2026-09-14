@@ -414,7 +414,7 @@ def asr_whisper(
     on_progress: Callable[[int, float], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Whisper CUDA. Windows/frozen: subprocess — native crash không tắt API."""
-    inproc = os.environ.get("VIDEO_CLONE_WHISPER_INPROCESS", "").strip() == "1"
+    inproc = os.environ.get("ZM_AI_TOOL_WHISPER_INPROCESS", "").strip() == "1"
     if not inproc and (getattr(sys, "frozen", False) or sys.platform == "win32"):
         if on_progress:
             on_progress(0, 0.0)
@@ -499,13 +499,13 @@ Path(sys.argv[3]).write_text(json.dumps(rows, ensure_ascii=False), encoding="utf
 
             env = subprocess_environment()
             env["PYTHONPATH"] = str(pipeline_root) + os.pathsep + env.get("PYTHONPATH", "")
-            env["VIDEO_CLONE_HOME"] = str(SERVER_ROOT)
-            env["VIDEO_CLONE_DATA"] = str(DATA)
-            env["VIDEO_CLONE_PUBLIC_DATA"] = str(PUBLIC_DATA)
-            env.pop("VIDEO_CLONE_DESKTOP", None)
-            env["VIDEO_CLONE_WHISPER_INPROCESS"] = "1"
+            env["ZM_AI_TOOL_HOME"] = str(SERVER_ROOT)
+            env["ZM_AI_TOOL_DATA"] = str(DATA)
+            env["ZM_AI_TOOL_PUBLIC_DATA"] = str(PUBLIC_DATA)
+            env.pop("ZM_AI_TOOL_DESKTOP", None)
+            env["ZM_AI_TOOL_WHISPER_INPROCESS"] = "1"
             if meipass:
-                env["VIDEO_CLONE_MEIPASS"] = str(meipass)
+                env["ZM_AI_TOOL_MEIPASS"] = str(meipass)
             kw: dict[str, Any] = {
                 "cwd": str(pipeline_root),
                 "env": env,

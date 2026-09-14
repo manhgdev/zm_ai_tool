@@ -16,11 +16,11 @@
          before React reads localStorage so settings survive a port change. -->
     <script>
       (function () {
-        var ignored = /^(videoclone\.(?:videoClips|bgClips|importedClips|bookmarks)\.)/
+        var ignored = /^(zm_ai_tool\.(?:videoClips|bgClips|importedClips|bookmarks)\.)/
         var isPersistent = function (key) {
           return !ignored.test(key) && (
-            key.indexOf('videoclone.') === 0 ||
-            key.indexOf('video-clone:') === 0 ||
+            key.indexOf('zm_ai_tool.') === 0 ||
+            key.indexOf('zm-ai-tool:') === 0 ||
             key.indexOf('zm-') === 0 ||
             key === 'exportOutputDir'
           )
@@ -70,7 +70,7 @@
         }
         window.addEventListener('pagehide', sync)
         if (localStorage.length) scheduleSync()
-        if (localStorage.getItem('videoclone.theme') === 'dark') document.documentElement.classList.add('dark')
+        if (localStorage.getItem('zm_ai_tool.theme') === 'dark') document.documentElement.classList.add('dark')
       })();
     </script>
   </head>

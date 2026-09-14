@@ -3,7 +3,7 @@ import englishCatalog from './ui.en.json'
 
 export type AppLocale = 'vi' | 'en'
 
-export const LOCALE_LS = 'videoclone.locale'
+export const LOCALE_LS = 'zm_ai_tool.locale'
 
 export function detectLocale(): AppLocale {
   try {
@@ -26,7 +26,7 @@ export function loadLocale(): AppLocale {
 
 export function persistLocale(locale: AppLocale) {
   try { localStorage.setItem(LOCALE_LS, locale) } catch { /* private mode */ }
-  document.cookie = `videoclone_locale=${locale}; path=/; SameSite=Lax`
+  document.cookie = `zm_ai_tool_locale=${locale}; path=/; SameSite=Lax`
 }
 
 type LocaleContextValue = { locale: AppLocale; setLocale: (locale: AppLocale) => void }

@@ -201,13 +201,13 @@ tests/
 
 ```text
 build_app/
-├─ launcher.py       Cửa sổ ứng dụng + spawn backend API + thiết lập VIDEO_CLONE_HOME
+├─ launcher.py       Cửa sổ ứng dụng + spawn backend API + thiết lập ZM_AI_TOOL_HOME
 ├─ build.mjs         Vite build + PyInstaller packaging
 ├─ check_build.mjs   Kiểm tra tính toàn vẹn bản build desktop
-└─ release/          VideoClone_v<version>/ (chạy cả thư mục)
+└─ release/          ZM_AIO_TOOL_v<version>/ (chạy cả thư mục)
 ```
 
-AI nặng cài sau vào `%LOCALAPPDATA%\VideoClone\.venv-runtime` (và `.venv-ocr`), không nhét full vào EXE.
+AI nặng cài sau vào `%LOCALAPPDATA%\ZM_AI_TOOL\.venv-runtime` (và `.venv-ocr`), không nhét full vào EXE.
 
 ---
 

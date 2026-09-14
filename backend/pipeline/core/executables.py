@@ -11,7 +11,7 @@ def _bundled_candidates(name: str) -> list[Path]:
     ext = ".exe" if sys.platform == "win32" else ""
     filename = f"{name}{ext}"
     roots: list[Path] = []
-    meipass = getattr(sys, "_MEIPASS", None) or os.environ.get("VIDEO_CLONE_MEIPASS")
+    meipass = getattr(sys, "_MEIPASS", None) or os.environ.get("ZM_AI_TOOL_MEIPASS")
     if meipass:
         root = Path(meipass)
         roots.extend((root, root.parent / "Frameworks"))

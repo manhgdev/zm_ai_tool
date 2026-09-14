@@ -8,7 +8,7 @@ _locale: ContextVar[str] = ContextVar("locale", default="vi")
 
 
 def locale_from_request(request: Request) -> str:
-    saved = (request.cookies.get("videoclone_locale") or "").lower()
+    saved = (request.cookies.get("zm_ai_tool_locale") or "").lower()
     if saved in {"vi", "en"}:
         return saved
     accepted = (request.headers.get("accept-language") or "").lower()

@@ -57,9 +57,9 @@ export function sectionFromUrl(): string {
   return TTS_URL_SECTIONS.has(section) ? section : 'overview'
 }
 
-export const FAVORITE_LS_KEY = 'video-clone:tts-voice-favorites'
-export const OUTPUT_DIR_LS_KEY = 'video-clone:tts-output-dir.v1'
-export const TTS_TEXT_LS_KEY = 'video-clone:tts-text:v1'
-export const TTS_SRT_LS_KEY = 'video-clone:tts-srt:v1'
-export const TTS_INPUT_MODE_LS_KEY = 'video-clone:tts-input-mode:v1'
-export const TTS_ACTIVE_JOB_LS_KEY = 'video-clone:tts-active-job:v1'
+export const FAVORITE_LS_KEY = 'zm-ai-tool:tts-voice-favorites'
+export const OUTPUT_DIR_LS_KEY = 'zm-ai-tool:tts-output-dir.v1'
+export const TTS_TEXT_LS_KEY = 'zm-ai-tool:tts-text:v1'
+export const TTS_SRT_LS_KEY = 'zm-ai-tool:tts-srt:v1'
+export const TTS_INPUT_MODE_LS_KEY = 'zm-ai-tool:tts-input-mode:v1'
+export const TTS_ACTIVE_JOB_LS_KEY = 'zm-ai-tool:tts-active-job:v1'

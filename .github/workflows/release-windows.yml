@@ -54,9 +54,11 @@ jobs:
           Set-Content -Path build_app/VERSION -Value $version.Trim()
           Write-Host "Building version: $version"
 
-      - name: Test Portable state migration
+      - name: Test Windows Portable and AI installer control flow
         shell: pwsh
-        run: backend/.venv/Scripts/python.exe tests/test_portable_layout.py
+        run: |
+          backend/.venv/Scripts/python.exe tests/test_portable_layout.py
+          backend/.venv/Scripts/python.exe tests/test_ai_install_progress.py
 
       - name: Build EXE
         shell: pwsh
@@ -151,6 +153,62 @@ jobs:
           "directory=$($package.FullName)" >> $env:GITHUB_OUTPUT
           "zip=$portableZip" >> $env:GITHUB_OUTPUT
           "installer=$setupExe" >> $env:GITHUB_OUTPUT
+
+      - name: Smoke test Windows Setup install, launch, and uninstall
+        shell: pwsh
+        env:
+          SETUP_EXE: ${{ steps.package.outputs.installer }}
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'zmaio-setup-smoke'
+          $localData = Join-Path $env:RUNNER_TEMP 'zmaio-localappdata'
+          Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $localData -Recurse -Force -ErrorAction SilentlyContinue
+
+          $setup = Start-Process -FilePath $env:SETUP_EXE -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir", '/TASKS='
+          ) -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Setup failed: exit $($setup.ExitCode)" }
+
+          $exe = Join-Path $installDir 'ZM AIO TOOL.exe'
+          $marker = Join-Path $installDir '.zmaio-installed'
+          if (-not (Test-Path $exe)) { throw 'Installed EXE is missing' }
+          if (-not (Test-Path $marker)) { throw 'Setup layout marker is missing' }
+
+          $env:LOCALAPPDATA = $localData
+          $ready = Join-Path $env:RUNNER_TEMP 'zmaio-setup-ready.txt'
+          Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
+          $env:VIDEO_CLONE_UPDATE_READY_FILE = $ready
+          $app = Start-Process -FilePath $exe -WorkingDirectory $installDir -PassThru
+          $deadline = (Get-Date).AddSeconds(90)
+          while ((Get-Date) -lt $deadline -and -not (Test-Path $ready)) {
+            if ($app.HasExited) { throw "Installed GUI exited early: $($app.ExitCode)" }
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not (Test-Path $ready)) { throw 'Installed GUI did not initialize in 90 seconds' }
+          if (-not (Test-Path (Join-Path $localData 'ZM_AIO_TOOL'))) {
+            throw 'Setup build did not use LocalAppData for mutable state'
+          }
+          foreach ($name in @('data', 'output', 'tmp', 'resources', 'updates', '.venv-runtime', '.venv-ocr', 'app.log', 'last_crash.txt')) {
+            if (Test-Path (Join-Path $installDir $name)) {
+              throw "Setup build wrote mutable state into install directory: $name"
+            }
+          }
+          taskkill.exe /PID $app.Id /T /F 2>$null
+          if ($LASTEXITCODE -ne 0 -and -not $app.HasExited) { throw 'Could not stop installed GUI' }
+          $env:VIDEO_CLONE_UPDATE_READY_FILE = $null
+
+          $uninstaller = Join-Path $installDir 'unins000.exe'
+          if (-not (Test-Path $uninstaller)) { throw 'Uninstaller is missing' }
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          ) -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstall failed: exit $($uninstall.ExitCode)" }
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Get-Date) -lt $deadline -and (Test-Path $exe)) {
+            Start-Sleep -Milliseconds 250
+          }
+          if (Test-Path $exe) { throw 'Installed EXE remains after uninstall' }
+          Remove-Item -LiteralPath $localData -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/action/')

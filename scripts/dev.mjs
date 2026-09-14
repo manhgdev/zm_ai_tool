@@ -13,7 +13,7 @@ const isWin = process.platform === 'win32'
 const PORTS = [5173, 8787]
 const lockPath = path.join(
   tmpdir(),
-  `video-clone-dev-${createHash('sha1').update(root).digest('hex').slice(0, 12)}.lock`,
+  `zm-ai-tool-dev-${createHash('sha1').update(root).digest('hex').slice(0, 12)}.lock`,
 )
 
 function acquireDevLock() {
@@ -219,7 +219,7 @@ if (!py) {
       env: label === 'api'
         ? {
             ...process.env,
-            VIDEO_CLONE_SUPERVISED: '1',
+            ZM_AI_TOOL_SUPERVISED: '1',
             PYTHONOPTIMIZE: '1',
             PYTHONUNBUFFERED: '1',
             OLLAMA_NUM_PARALLEL: '2',  // cho phép 2 inference đồng thời — M5 Pro 48GB RAM đủ
@@ -300,8 +300,8 @@ if (!py) {
   console.log('Ctrl+C để dừng API + Vite.\n')
 
   // Reload làm chậm boot (2 process) + hay miss worker trên Windows.
-  // Bật lại: set VIDEO_CLONE_RELOAD=1
-  const wantReload = /^(1|true|yes)$/i.test(String(process.env.VIDEO_CLONE_RELOAD || ''))
+  // Bật lại: set ZM_AI_TOOL_RELOAD=1
+  const wantReload = /^(1|true|yes)$/i.test(String(process.env.ZM_AI_TOOL_RELOAD || ''))
   const apiArgs = wantReload
     ? [
         '-m',
@@ -319,7 +319,7 @@ if (!py) {
 
   spawnOne('api', py, apiArgs, backendDir)
   if (!wantReload) {
-    console.log('API reload tắt (nhanh hơn). VIDEO_CLONE_RELOAD=1 để bật.\n')
+    console.log('API reload tắt (nhanh hơn). ZM_AI_TOOL_RELOAD=1 để bật.\n')
   }
 
   // /api/health — không import torch / engines (tránh đợi warm)

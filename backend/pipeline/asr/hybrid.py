@@ -14,7 +14,7 @@ def hybrid_asr(audio: Path, engine: str, language: str, *, project_id: str | Non
     step = max(1, int(chunk_sec * rate))
     overlap = max(0, int(overlap_sec * rate))
     out: list[dict[str, Any]] = []
-    with tempfile.TemporaryDirectory(prefix="videoclone-hybrid-asr-") as raw:
+    with tempfile.TemporaryDirectory(prefix="zm_ai_tool-hybrid-asr-") as raw:
         root = Path(raw)
         for index, center_start in enumerate(range(0, len(samples), step)):
             start = max(0, center_start - overlap)

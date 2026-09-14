@@ -726,7 +726,7 @@ def _candidate_prompt_paths(filename: str) -> list[Path]:
         Path(__file__).resolve().parent / "templates" / filename,
         Path(__file__).resolve().parent / filename,
     ]
-    meipass = getattr(sys, "_MEIPASS", None) or os.environ.get("VIDEO_CLONE_MEIPASS")
+    meipass = getattr(sys, "_MEIPASS", None) or os.environ.get("ZM_AI_TOOL_MEIPASS")
     if meipass:
         m = Path(meipass)
         candidates.extend([

@@ -261,12 +261,12 @@ export default function LivePreviewEditor({
 
   // Kéo panel editor → localStorage (mở lại không reset)
   const mainLayout = useDefaultLayout({
-    id: 'videoclone.editor.main',
+    id: 'zm_ai_tool.editor.main',
     storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
     panelIds: ['main', 'timeline'],
   })
   const sideLayout = useDefaultLayout({
-    id: 'videoclone.editor.sides',
+    id: 'zm_ai_tool.editor.sides',
     storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
     panelIds: ['tools', 'preview', 'properties'],
   })
@@ -274,7 +274,7 @@ export default function LivePreviewEditor({
   // Panel order — persist to localStorage
   const [panelOrder, setPanelOrder] = useState<PanelId[]>(() => {
     try {
-      const saved = localStorage.getItem('videoclone.panel-order')
+      const saved = localStorage.getItem('zm_ai_tool.panel-order')
       if (saved) {
         const p = JSON.parse(saved) as unknown[]
         if (Array.isArray(p) && p.length === 3 && p.every((x) => ['tools','preview','properties'].includes(x as string)))
@@ -285,14 +285,14 @@ export default function LivePreviewEditor({
   })
 
   const outerLayout = useDefaultLayout({
-    id: 'videoclone.editor.outer',
+    id: 'zm_ai_tool.editor.outer',
     storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
     panelIds: ['left-col', 'right-col'],
   })
 
   // Layout preset: 'vertical' = preview cột phải full height; 'default' = preview giữa inline
   const [layoutPreset, setLayoutPreset] = useState<'vertical' | 'default'>(() => {
-    try { return (localStorage.getItem('videoclone.layout-preset') as 'vertical' | 'default') || 'vertical' } catch { return 'vertical' }
+    try { return (localStorage.getItem('zm_ai_tool.layout-preset') as 'vertical' | 'default') || 'vertical' } catch { return 'vertical' }
   })
   const [showLayoutMenu, setShowLayoutMenu] = useState(false)
 
@@ -308,7 +308,7 @@ export default function LivePreviewEditor({
     if (!over || active.id === over.id) return
     const next = arrayMove(panelOrder, panelOrder.indexOf(active.id as PanelId), panelOrder.indexOf(over.id as PanelId))
     setPanelOrder(next)
-    try { localStorage.setItem('videoclone.panel-order', JSON.stringify(next)) } catch { /* ignore */ }
+    try { localStorage.setItem('zm_ai_tool.panel-order', JSON.stringify(next)) } catch { /* ignore */ }
   }
 
   const [time, setTime] = useState(0)
@@ -429,7 +429,7 @@ export default function LivePreviewEditor({
   const mediaDurRef = useRef(0)
   const [importedClips, setImportedClips] = useState<ImportedTimelineClip[]>(() => {
     try {
-      const parsed = JSON.parse(localStorage.getItem(`videoclone.importedClips.${projectId}`) || '[]')
+      const parsed = JSON.parse(localStorage.getItem(`zm_ai_tool.importedClips.${projectId}`) || '[]')
       if (!Array.isArray(parsed)) return []
       return parsed.filter((clip): clip is ImportedTimelineClip =>
         clip && typeof clip.id === 'string' && typeof clip.assetId === 'string'
@@ -601,7 +601,7 @@ export default function LivePreviewEditor({
     persistMediaClips(projectId, 'bg', bgClips)
   }, [projectId, bgClips])
   useEffect(() => {
-    try { localStorage.setItem(`videoclone.importedClips.${projectId}`, JSON.stringify(importedClips)) } catch { /* ignore */ }
+    try { localStorage.setItem(`zm_ai_tool.importedClips.${projectId}`, JSON.stringify(importedClips)) } catch { /* ignore */ }
     const timer = window.setTimeout(() => { void api.replaceMediaTimeline(projectId, importedClips).catch(() => { /* local fallback remains usable offline */ }) }, 350)
     return () => window.clearTimeout(timer)
   }, [projectId, importedClips])
@@ -4634,7 +4634,7 @@ export default function LivePreviewEditor({
                       className="flex w-full items-center gap-2 px-3 py-2 hover:bg-accent transition-colors text-left"
                       onClick={() => {
                         setLayoutPreset(preset)
-                        try { localStorage.setItem('videoclone.layout-preset', preset) } catch { /* ignore */ }
+                        try { localStorage.setItem('zm_ai_tool.layout-preset', preset) } catch { /* ignore */ }
                         setShowLayoutMenu(false)
                       }}
                     >
@@ -4653,10 +4653,10 @@ export default function LivePreviewEditor({
                     onClick={() => {
                       setLayoutPreset('vertical')
                       try {
-                        localStorage.removeItem('videoclone.layout-preset')
-                        localStorage.removeItem('videoclone.editor.outer')
-                        localStorage.removeItem('videoclone.editor.main')
-                        localStorage.removeItem('videoclone.editor.sides')
+                        localStorage.removeItem('zm_ai_tool.layout-preset')
+                        localStorage.removeItem('zm_ai_tool.editor.outer')
+                        localStorage.removeItem('zm_ai_tool.editor.main')
+                        localStorage.removeItem('zm_ai_tool.editor.sides')
                       } catch { /* ignore */ }
                       setShowLayoutMenu(false)
                     }}
@@ -4683,7 +4683,7 @@ export default function LivePreviewEditor({
       {/* ── Editor layout — vertical gap-[0.18rem], panels rounded-sm ── */}
       <div className="min-h-0 min-w-0 flex-1">
         <ResizablePanelGroup
-          id="videoclone.editor.outer"
+          id="zm_ai_tool.editor.outer"
           direction="horizontal"
           className="size-full"
           defaultLayout={outerLayout.defaultLayout}
@@ -4691,7 +4691,7 @@ export default function LivePreviewEditor({
         >
           <ResizablePanel id="left-col" defaultSize={70} minSize={30} className="pl-2">
         <ResizablePanelGroup
-          id="videoclone.editor.main"
+          id="zm_ai_tool.editor.main"
           direction="vertical"
           className="size-full"
           defaultLayout={mainLayout.defaultLayout}
@@ -4704,7 +4704,7 @@ export default function LivePreviewEditor({
               <SortableContext items={layoutPreset === 'vertical' ? panelOrder.filter(p => p !== 'preview') : panelOrder} strategy={horizontalListSortingStrategy}>
               <ResizablePanelGroup
                 key={`${panelOrder.join('|')}-${layoutPreset}`}
-                id={layoutPreset === 'vertical' ? 'videoclone.editor.sides-v' : 'videoclone.editor.sides'}
+                id={layoutPreset === 'vertical' ? 'zm_ai_tool.editor.sides-v' : 'zm_ai_tool.editor.sides'}
                 direction="horizontal"
                 className="size-full"
                 {...(layoutPreset !== 'vertical'
@@ -4927,7 +4927,7 @@ export default function LivePreviewEditor({
                               title={`${preset.id === 'feather' ? t('Dải kính có mặt nạ tan mềm ở hai mép', 'Glass band with a soft feathered edge') : preset.desc} — ${t('kéo vào video hoặc bấm thêm', 'drag onto video or click to add')}`}
                               className="flex items-center gap-2 rounded-md border border-border bg-accent/50 hover:bg-accent px-2 py-2 text-left transition-colors cursor-grab active:cursor-grabbing"
                               onDragStart={(e) => {
-                                e.dataTransfer.setData('application/x-videoclone-effect', preset.id)
+                                e.dataTransfer.setData('application/x-zm_ai_tool-effect', preset.id)
                                 e.dataTransfer.effectAllowed = 'copy'
                               }}
                               onClick={() => addEffectOverlay(preset)}
@@ -5061,13 +5061,13 @@ export default function LivePreviewEditor({
                         }
                       }}
                       onDragOver={(e) => {
-                        if (e.dataTransfer.types.includes('application/x-videoclone-effect')) {
+                        if (e.dataTransfer.types.includes('application/x-zm_ai_tool-effect')) {
                           e.preventDefault()
                           e.dataTransfer.dropEffect = 'copy'
                         }
                       }}
                       onDrop={(e) => {
-                        const pid = e.dataTransfer.getData('application/x-videoclone-effect')
+                        const pid = e.dataTransfer.getData('application/x-zm_ai_tool-effect')
                         if (!pid) return
                         e.preventDefault()
                         const preset = EFFECT_PRESETS.find((p) => p.id === pid)
@@ -6598,13 +6598,13 @@ export default function LivePreviewEditor({
                     ref={tracksScrollRef}
                     onScroll={syncFollowers}
                     onDragOver={(e) => {
-                      if (e.dataTransfer.types.includes('application/x-videoclone-asset')) {
+                      if (e.dataTransfer.types.includes('application/x-zm_ai_tool-asset')) {
                         e.preventDefault()
                         e.dataTransfer.dropEffect = 'copy'
                       }
                     }}
                     onDrop={(e) => {
-                      const raw = e.dataTransfer.getData('application/x-videoclone-asset')
+                      const raw = e.dataTransfer.getData('application/x-zm_ai_tool-asset')
                       if (!raw) return
                       try {
                         const asset = JSON.parse(raw) as ProjectMediaAsset

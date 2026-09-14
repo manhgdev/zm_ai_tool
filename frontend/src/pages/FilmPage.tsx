@@ -22,7 +22,7 @@ type Draft = ReviewSettings & {
   seriesEpisode: number
 }
 
-const DRAFT_LS = 'videoclone.reviewDraft'
+const DRAFT_LS = 'zm_ai_tool.reviewDraft'
 
 const DEFAULT_DRAFT: Draft = {
   ...DEFAULT_REVIEW_SETTINGS,

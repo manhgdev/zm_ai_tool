@@ -7,7 +7,7 @@ file này chỉ chuyển kết quả đó thành filter_complex để khung hìn
 Không xử lý được (trả False → pipeline dùng render_burned_video cũ):
 - cặp title dọc + nhãn xung đột nguồn (logic ẩn theo frame của bản cũ)
 - quá 160 cue hoạt động (đợi P2 chia đoạn)
-- VIDEO_CLONE_LEGACY_BURN=1 (van thoát khi nghi bug)
+- ZM_AI_TOOL_LEGACY_BURN=1 (van thoát khi nghi bug)
 
 P1.5: nhận post_crop/post_height — nối crop,scale vào cuối graph để bỏ hẳn
 lần encode thứ hai (encode_export_1080 chỉ còn copy). Logo opacity tĩnh nướng
@@ -62,8 +62,8 @@ def _feasible(
     cue_overlays: list[Any],
 ) -> str | None:
     """None = chạy được bằng ffmpeg; str = lý do phải dùng đường cũ."""
-    if os.environ.get("VIDEO_CLONE_LEGACY_BURN") == "1":
-        return "VIDEO_CLONE_LEGACY_BURN=1"
+    if os.environ.get("ZM_AI_TOOL_LEGACY_BURN") == "1":
+        return "ZM_AI_TOOL_LEGACY_BURN=1"
     # Title dọc + nhãn xung đột nguồn cùng khung → bản cũ ẩn dọc theo frame
     for i, ci in enumerate(cues):
         if (ci[6] if len(ci) > 6 else "") != "vertical":

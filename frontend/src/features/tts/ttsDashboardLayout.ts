@@ -2,7 +2,7 @@
 
 import type { CSSProperties } from 'react'
 
-export const TTS_DASH_LAYOUT_KEY = 'video-clone:tts-dash-layout:v7'
+export const TTS_DASH_LAYOUT_KEY = 'zm-ai-tool:tts-dash-layout:v7'
 export const DASH_COLS = 24
 export const DASH_ROWS = 4
 export const DASH_MIN_W = 3

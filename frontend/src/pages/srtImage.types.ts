@@ -26,8 +26,8 @@ export type MissingMediaInfo = {
   preview: boolean
 }
 
-export const SETTINGS_KEY = 'videoclone.srt-image.settings.v1'
-export const JOB_KEY = 'videoclone.srt-image.job-id.v1'
+export const SETTINGS_KEY = 'zm_ai_tool.srt-image.settings.v1'
+export const JOB_KEY = 'zm_ai_tool.srt-image.job-id.v1'
 
 export const HELP = {
   media: ['Thư mục ảnh / video', 'Chọn một thư mục chứa toàn bộ ảnh hoặc clip dùng để dựng video. APP đọc trực tiếp trong thư mục và tự sắp xếp theo tên, không upload/copy từng video.', 'Dùng JPG, JPEG, JFIF, PNG, WEBP, BMP, MP4, MOV, MKV, WEBM, AVI hoặc M4V. Nên đặt tên 001, 002, 003… tương ứng từng dòng timeline.'],

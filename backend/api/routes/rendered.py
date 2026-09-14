@@ -278,7 +278,7 @@ def ensure_thumbnail(render_id: str) -> Path:
 
 @router.get("/api/renders")
 def api_renders():
-    desktop = os.environ.get("VIDEO_CLONE_DESKTOP") == "1" or bool(getattr(sys, "frozen", False))
+    desktop = (os.environ.get("ZM_AI_TOOL_DESKTOP")) == "1" or bool(getattr(sys, "frozen", False))
     return {"items": list_rendered_videos(), "canReveal": desktop}
 
 

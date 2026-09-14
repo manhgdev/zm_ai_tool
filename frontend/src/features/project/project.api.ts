@@ -13,22 +13,31 @@ import { fetchJson } from '@/shared/api/fetchJson'
 
 const base = '/api'
 
+export type InstallStatus = {
+  running: boolean
+  kind?: string
+  ok?: boolean
+  message?: string
+  detail?: string
+  error?: string
+  needsRestart?: boolean
+  log?: string
+  progress?: number
+  startedAt?: number
+  updatedAt?: number
+}
+
 async function pollInstall(
   url: string,
-  onLog?: (log: string) => void,
+  onStatus?: (status: InstallStatus) => void,
 ): Promise<{
   ok: boolean
   message: string
   detail: string
   needsRestart?: boolean
 }> {
-  const kick = await fetchJson<{
-    ok: boolean
-    running?: boolean
-    message?: string
-    detail?: string
-    needsRestart?: boolean
-  }>(url, { method: 'POST' }, 60_000)
+  const kick = await fetchJson<InstallStatus & { ok: boolean }>(url, { method: 'POST' }, 60_000)
+  onStatus?.({ ...kick, running: kick.running !== false })
   if (kick.running === false) {
     return {
       ok: kick.ok ?? true,
@@ -39,17 +48,9 @@ async function pollInstall(
   }
   let pollMs = 2000
   for (;;) {
-    const st = await fetchJson<{
-      running: boolean
-      ok?: boolean
-      message?: string
-      detail?: string
-      error?: string
-      needsRestart?: boolean
-      log?: string
-    }>(`${base}/system/install/status`, undefined, 30_000)
+    const st = await fetchJson<InstallStatus>(`${base}/system/install/status`, undefined, 30_000)
+    onStatus?.(st)
     if (st.error) throw new Error(st.error)
-    if (st.log && onLog) onLog(st.log)
     if (!st.running) {
       return {
         ok: st.ok ?? true,
@@ -102,8 +103,8 @@ export const api = {
 
   resources: () => fetchJson<{ items: import('./project.types').AiResource[] }>(`${base}/resources`, undefined, 20_000),
 
-  installResource: (resourceId: string, onLog?: (log: string) => void) =>
-    pollInstall(`${base}/resources/${encodeURIComponent(resourceId)}/install`, onLog),
+  installResource: (resourceId: string, onStatus?: (status: InstallStatus) => void) =>
+    pollInstall(`${base}/resources/${encodeURIComponent(resourceId)}/install`, onStatus),
 
   runOcrTranslate: (projectId: string, settings: ProjectSettings) => fetchJson<{ ok: boolean }>(`${base}/projects/${projectId}/ocr-translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) }, 30_000),
 
@@ -124,23 +125,15 @@ export const api = {
     fetchJson<{ passed: boolean }>(`${base}/system/setup-gate`, { method: 'POST' }, 5_000),
 
   installStatus: () =>
-    fetchJson<{
-      running: boolean
-      kind?: string
-      ok?: boolean
-      message?: string
-      detail?: string
-      error?: string
-      needsRestart?: boolean
-    }>(`${base}/system/install/status`, undefined, 30_000),
+    fetchJson<InstallStatus>(`${base}/system/install/status`, undefined, 30_000),
 
-  installAiRuntime: (onLog?: (log: string) => void) => pollInstall(`${base}/system/install/ai_runtime`, onLog),
+  installAiRuntime: (onStatus?: (status: InstallStatus) => void) => pollInstall(`${base}/system/install/ai_runtime`, onStatus),
 
-  installOcrCuda: (onLog?: (log: string) => void) => pollInstall(`${base}/system/install/ocr_cuda`, onLog),
+  installOcrCuda: (onStatus?: (status: InstallStatus) => void) => pollInstall(`${base}/system/install/ocr_cuda`, onStatus),
 
-  installDemucsCuda: (onLog?: (log: string) => void) => pollInstall(`${base}/system/install/demucs_cuda`, onLog),
+  installDemucsCuda: (onStatus?: (status: InstallStatus) => void) => pollInstall(`${base}/system/install/demucs_cuda`, onStatus),
 
-  installNvm: (onLog?: (log: string) => void) => pollInstall(`${base}/system/install/nvm`, onLog),
+  installNvm: (onStatus?: (status: InstallStatus) => void) => pollInstall(`${base}/system/install/nvm`, onStatus),
 
   restartApp: () =>
     fetchJson<{ ok: boolean; message: string }>(
