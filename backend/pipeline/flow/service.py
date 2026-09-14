@@ -709,11 +709,16 @@ class FlowService:
                 except Exception:
                     return False, ""
 
-            # Nếu đang ở trang identifier Google → tự click Next để vào bước mật khẩu
+            # Điền email vào ô input và click Next tự động
             try:
                 if "accounts.google.com" in str(page.url or ""):
+                    email_input = page.locator('input[type="email"], input[name="identifier"]').first
+                    await email_input.wait_for(state="visible", timeout=5_000)
+                    current_val = await email_input.input_value()
+                    if not current_val.strip():
+                        await email_input.fill(existing_email)
                     next_btn = page.locator("#identifierNext, button:has-text('Next'), button:has-text('Tiếp theo')").first
-                    await next_btn.wait_for(state="visible", timeout=4_000)
+                    await next_btn.wait_for(state="visible", timeout=3_000)
                     await next_btn.click()
             except Exception:
                 pass
