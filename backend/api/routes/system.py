@@ -1116,16 +1116,33 @@ def api_update_apply():
     if sys.platform == "darwin":
         app_name = "ZM AI Tool"
         pkg_path = str(package)
-        # osascript yêu cầu quyền admin qua dialog macOS (không cần sudo trong terminal)
-        # Sau khi cài xong tự mở lại app
-        script = "\n".join([
-            "sleep 1",
-            f"osascript -e 'do shell script \"installer -pkg {pkg_path} -target /\" with administrator privileges'",
-            f"open -a '{app_name}'",
-        ])
-        subprocess.Popen(["bash", "-c", script], close_fds=True)
-        _set_update_state(phase="applying", progress=100, message="Đang cài — app sẽ tự khởi động lại…")
-        threading.Timer(0.8, lambda: os._exit(0)).start()
+
+        def _install_and_relaunch() -> None:
+            """Cài PKG trong nền — app vẫn sống để dialog admin hiện tự nhiên."""
+            try:
+                result = subprocess.run(
+                    [
+                        "osascript", "-e",
+                        f'do shell script "installer -pkg {pkg_path} -target /" with administrator privileges',
+                    ],
+                    timeout=180,
+                )
+                if result.returncode == 0:
+                    subprocess.Popen(["open", "-a", app_name])
+                else:
+                    _set_update_state(phase="error", error="Cài đặt thất bại", message="Cài đặt thất bại — thử lại hoặc cài thủ công")
+                    return
+            except subprocess.TimeoutExpired:
+                _set_update_state(phase="error", error="Timeout", message="Cài đặt quá lâu — thử lại")
+                return
+            except Exception as exc:
+                _set_update_state(phase="error", error=str(exc), message="Lỗi cài đặt")
+                return
+            finally:
+                os._exit(0)
+
+        _set_update_state(phase="applying", progress=50, message="Đang cài — nhập mật khẩu nếu được hỏi…")
+        threading.Thread(target=_install_and_relaunch, daemon=True).start()
         return {"ok": True, "message": "Đang cài — app sẽ tự khởi động lại"}
 
     try:
