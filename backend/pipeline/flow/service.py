@@ -696,6 +696,15 @@ class FlowService:
                 except Exception:
                     return False, ""
 
+            # Nếu đang ở trang identifier Google → tự click Next để vào bước mật khẩu
+            try:
+                if "accounts.google.com" in str(page.url or ""):
+                    next_btn = page.locator("#identifierNext, button:has-text('Next'), button:has-text('Tiếp theo')").first
+                    await next_btn.wait_for(state="visible", timeout=4_000)
+                    await next_btn.click()
+            except Exception:
+                pass
+
             # Fast-detect: only if already authenticated and project is open
             await asyncio.sleep(2.0)
             is_auth, project_id = await _is_flow_authenticated()
