@@ -650,13 +650,32 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       return;
     }
     if (account.status !== "online") {
-      setUtilityView("accounts");
-      const message = t(
-        "Phiên Flow đã hết hạn. Profile vẫn được giữ; hãy bấm Kết nối lại trong Tài khoản.",
-        "The Flow session has expired. The profile was kept; click Reconnect in Accounts.",
-      );
-      toast.info(message);
-      return;
+      // Thử tự reconnect headless trước
+      toast.info(t("Đang thử kết nối lại tự động...", "Attempting auto-reconnect..."));
+      try {
+        const refreshed = await flowRequest<FlowAccount>(
+          `/api/flow/accounts/${account.id}/sync`,
+          { method: "POST" },
+        );
+        if (refreshed.status === "online") {
+          // Headless thành công → cập nhật state và chạy tiếp (fall-through)
+          setAccounts((current) =>
+            current.map((item) => (item.id === refreshed.id ? refreshed : item)),
+          );
+        } else {
+          throw new Error("not-online");
+        }
+      } catch {
+        // Headless thất bại → yêu cầu user kết nối bằng tay
+        setUtilityView("accounts");
+        toast.error(
+          t(
+            "Không thể tự kết nối lại. Vui lòng bấm Kết nối lại trong Tài khoản.",
+            "Auto-reconnect failed. Please click Reconnect in Accounts.",
+          ),
+        );
+        return;
+      }
     }
     if (createKind === "video" && account.plan === "Free") {
       const message = t(
