@@ -1011,7 +1011,9 @@ def api_update_install():
             if not asset or _version_key(tag) <= _version_key(_desktop_version()):
                 _set_update_state(phase="complete", progress=100, message="Đã là phiên bản mới nhất")
                 return
-            if sys.platform == "win32" and getattr(sys, "frozen", False):
+            # Bản Portable cập nhật bằng cách giải nén đè vào exe_dir → cần kiểm tra quyền ghi.
+            # Bản Installed tải Setup.exe vào LocalAppData/updates → không cần probe exe_dir.
+            if sys.platform == "win32" and getattr(sys, "frozen", False) and not _is_windows_installed_build():
                 exe_dir = Path(sys.executable).resolve().parent
                 probe = exe_dir / f".zmaio-update-write-{uuid.uuid4().hex}.tmp"
                 try:
@@ -1028,9 +1030,7 @@ def api_update_install():
                         "The app folder is not writable. Move the complete Portable folder to a "
                         "writable location (for example C:\\ZM_AI_TOOL) and retry."
                     ) from exc
-                updates = Path(os.environ.get("ZM_AI_TOOL_HOME") or DATA) / "updates"
-            else:
-                updates = Path(os.environ.get("ZM_AI_TOOL_HOME") or DATA) / "updates"
+            updates = Path(os.environ.get("ZM_AI_TOOL_HOME") or DATA) / "updates"
             updates.mkdir(parents=True, exist_ok=True)
             package = _download_update(asset, updates, version)
             _set_update_state(phase="ready", progress=100, message="Đã tải gói cập nhật", packagePath=str(package))
