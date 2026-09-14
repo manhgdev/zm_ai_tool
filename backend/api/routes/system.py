@@ -1114,12 +1114,19 @@ def api_update_apply():
     if not package.is_file():
         raise HTTPException(404, "Không tìm thấy gói cập nhật đã tải")
     if sys.platform == "darwin":
-        subprocess.Popen(["open", str(package)])
-        _set_update_state(phase="applying", progress=100, message="Đã mở macOS Installer — đang đóng app…")
-        # Tắt app ngay để sau khi Installer cài xong, user mở lại là bản mới.
-        # Nếu không tắt, bản cũ vẫn chạy trong RAM và Dock reopen bản cũ.
+        app_name = "ZM AI Tool"
+        pkg_path = str(package)
+        # osascript yêu cầu quyền admin qua dialog macOS (không cần sudo trong terminal)
+        # Sau khi cài xong tự mở lại app
+        script = "\n".join([
+            "sleep 1",
+            f"osascript -e 'do shell script \"installer -pkg {pkg_path} -target /\" with administrator privileges'",
+            f"open -a '{app_name}'",
+        ])
+        subprocess.Popen(["bash", "-c", script], close_fds=True)
+        _set_update_state(phase="applying", progress=100, message="Đang cài — app sẽ tự khởi động lại…")
         threading.Timer(0.8, lambda: os._exit(0)).start()
-        return {"ok": True, "message": "Đã mở macOS Installer — app sẽ đóng để cập nhật"}
+        return {"ok": True, "message": "Đang cài — app sẽ tự khởi động lại"}
 
     try:
         _launch_windows_updater(package)
