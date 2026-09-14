@@ -670,13 +670,25 @@ class FlowService:
             await asyncio.sleep(2.0)
             is_auth, project_id = await _is_flow_authenticated()
 
-            if not project_id or not is_auth:
-                # If redirected to /about, click "Sign in" to guide the user to Google login prompt
+            # Nếu chưa đăng nhập và bị redirect vào accounts.google.com → chờ user login rồi tự navigate về Flow
+            if not is_auth:
                 if "/about" in str(page.url or ""):
+                    # Trang giới thiệu Flow → click Sign In để vào Google login
                     try:
                         sign_in_link = page.locator('a:has-text("Sign in"), a[href*="ServiceLogin"]').first
                         if await sign_in_link.count() > 0:
                             await sign_in_link.click()
+                            await asyncio.sleep(2.0)
+                    except Exception:
+                        pass
+                elif "accounts.google.com" in str(page.url or ""):
+                    # Đã ở trang đăng nhập Google — không cần navigate thêm
+                    pass
+                else:
+                    # Chưa login, thử navigate đến Flow login
+                    try:
+                        await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
+                        await asyncio.sleep(2.0)
                     except Exception:
                         pass
 
@@ -726,6 +738,14 @@ class FlowService:
                     await asyncio.sleep(1.5)
 
             if not project_id:
+                # Phân biệt user tắt Chrome vs timeout thực sự
+                try:
+                    _ = page.url
+                    is_closed = False
+                except Exception:
+                    is_closed = True
+                if is_closed:
+                    raise RuntimeError("Chrome bị đóng trước khi đăng nhập xong")
                 raise RuntimeError("Login timed out or Chrome was closed before sign-in completed")
 
             # Verify session and fetch credits
@@ -763,7 +783,7 @@ class FlowService:
         finally:
             if browser is not None:
                 try:
-                    await browser.stop()
+                    await asyncio.wait_for(browser.stop(), timeout=8.0)
                 except Exception:
                     pass
             with self._guard:
