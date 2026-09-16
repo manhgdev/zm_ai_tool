@@ -165,12 +165,18 @@ def _release_asset(release: dict[str, Any]) -> dict[str, Any] | None:
         import platform as _platform
         machine = _platform.machine().lower()
         if machine in {"arm64", "aarch64"}:
-            suffix = "-macos-arm64.zip"
+            arch_tags = ("arm64",)
         elif machine in {"x86_64", "amd64"}:
-            suffix = "-macos-x64.zip"
+            # CI/local pkg uses uname -m (x86_64); older builds used x64.
+            arch_tags = ("x86_64", "x64")
         else:
             return None
-        candidates = [f"ZM_AI_TOOL_v{version}{suffix}"]
+        # Release ships .pkg only; keep .zip as fallback for older releases.
+        candidates = []
+        for arch in arch_tags:
+            candidates.append(f"ZM_AI_TOOL_v{version}-macos-{arch}.pkg")
+        for arch in arch_tags:
+            candidates.append(f"ZM_AI_TOOL_v{version}-macos-{arch}.zip")
     else:
         return None
     for name in candidates:
@@ -1249,8 +1255,36 @@ fi
 
 /bin/rm -rf "$TMP_DIR"
 /bin/mkdir -p "$TMP_DIR" || { show_error "Không tạo được thư mục tạm."; exit 1; }
-/usr/bin/ditto -x -k "$PACKAGE" "$TMP_DIR" || { show_error "Không giải nén được gói cập nhật."; exit 1; }
-SOURCE_APP="$(/usr/bin/find "$TMP_DIR" -maxdepth 3 -type d -name '*.app' -print -quit)"
+
+case "$PACKAGE" in
+  *.pkg)
+    EXPAND_DIR="$TMP_DIR/expanded"
+    if /usr/sbin/pkgutil --expand-full "$PACKAGE" "$EXPAND_DIR" >/dev/null 2>&1; then
+      :
+    elif /usr/sbin/pkgutil --expand "$PACKAGE" "$EXPAND_DIR" >/dev/null 2>&1; then
+      PAYLOAD="$(/usr/bin/find "$EXPAND_DIR" -name Payload -print -quit)"
+      if [ -n "$PAYLOAD" ]; then
+        /bin/mkdir -p "$EXPAND_DIR/PayloadRoot"
+        (cd "$EXPAND_DIR/PayloadRoot" && /usr/bin/tar -xvf "$PAYLOAD") >/dev/null 2>&1 \
+          || (cd "$EXPAND_DIR/PayloadRoot" && /usr/bin/ditto -x "$PAYLOAD" .) >/dev/null 2>&1 \
+          || { show_error "Không giải nén được Payload trong gói .pkg."; exit 1; }
+      fi
+    else
+      show_error "Không giải nén được gói .pkg."
+      exit 1
+    fi
+    SOURCE_APP="$(/usr/bin/find "$EXPAND_DIR" -maxdepth 6 -type d -name '*.app' -print -quit)"
+    ;;
+  *.zip)
+    /usr/bin/ditto -x -k "$PACKAGE" "$TMP_DIR" || { show_error "Không giải nén được gói cập nhật."; exit 1; }
+    SOURCE_APP="$(/usr/bin/find "$TMP_DIR" -maxdepth 3 -type d -name '*.app' -print -quit)"
+    ;;
+  *)
+    show_error "Định dạng gói cập nhật không hỗ trợ."
+    exit 1
+    ;;
+esac
+
 if [ -z "$SOURCE_APP" ] || [ ! -x "$SOURCE_APP/Contents/MacOS/ZM AI TOOL" ]; then
   show_error "Gói cập nhật không hợp lệ."
   exit 1
@@ -1391,7 +1425,7 @@ def api_update_apply():
     if not package.is_file():
         raise HTTPException(404, "Không tìm thấy gói cập nhật đã tải")
     if sys.platform == "darwin":
-        if package.suffix.lower() != ".zip":
+        if package.suffix.lower() not in {".pkg", ".zip"}:
             raise HTTPException(400, "Gói cập nhật macOS không hợp lệ")
         try:
             _launch_macos_updater(package)

@@ -145,12 +145,13 @@ class PortableLayoutTest(unittest.TestCase):
         self.assertIn("Ban moi khong bao san sang sau 90 giay", script)
         self.assertNotIn("-Verb RunAs", script)
 
-    def test_macos_updater_uses_zip_relaunch_and_rollback(self) -> None:
+    def test_macos_updater_uses_pkg_or_zip_relaunch_and_rollback(self) -> None:
         from api.routes.system import _macos_update_script
 
         with tempfile.TemporaryDirectory() as raw:
             script = _macos_update_script(Path(raw)).read_text(encoding="utf-8")
 
+        self.assertIn("pkgutil --expand-full", script)
         self.assertIn("ditto -x -k", script)
         self.assertIn("launch_and_wait", script)
         self.assertIn("restore_backup", script)
@@ -182,9 +183,19 @@ class PortableLayoutTest(unittest.TestCase):
         ):
             self.assertEqual(
                 system._release_asset(release)["name"],
-                "ZM_AI_TOOL_v8.0.6-macos-arm64.zip",
+                "ZM_AI_TOOL_v8.0.6-macos-arm64.pkg",
             )
-
+        with patch.object(system.sys, "platform", "darwin"), patch(
+            "platform.machine", return_value="x86_64"
+        ):
+            release_intel = {
+                "tag_name": "v8.0.6",
+                "assets": [{"name": "ZM_AI_TOOL_v8.0.6-macos-x86_64.pkg"}],
+            }
+            self.assertEqual(
+                system._release_asset(release_intel)["name"],
+                "ZM_AI_TOOL_v8.0.6-macos-x86_64.pkg",
+            )
     def test_versioned_update_moves_state_and_rebases_default_output(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
