@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -465,6 +466,71 @@ try {
         }
     } elseif (Test-Path -LiteralPath (Join-Path $Target $exeName) -PathType Leaf) {
         Start-Process -FilePath (Join-Path $Target $exeName) -WorkingDirectory $Target -ErrorAction SilentlyContinue
+    }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show("Cap nhat that bai / Update failed:`n$err`n`nLog: $LogFile", "Loi cap nhat / Update error - ZM AI TOOL", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } catch {}
+}
+""",
+        encoding="utf-8-sig",
+    )
+    return script
+
+
+def _windows_setup_update_script(updates: Path) -> Path:
+    script = updates / "apply-setup-update.ps1"
+    script.write_text(
+        """# ZM AI TOOL Windows Setup Auto-Updater
+param([string]$ParamsFile)
+
+$ErrorActionPreference = 'Stop'
+$paramsPath = if ($ParamsFile) { $ParamsFile } else { Join-Path $PSScriptRoot 'setup-update-params.json' }
+$p          = Get-Content -LiteralPath $paramsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$Setup      = [string]$p.Setup
+$Target     = [string]$p.Target
+$Exe        = [string]$p.Exe
+$AppPid     = [int]$p.AppPid
+$LogFile    = Join-Path (Split-Path $Setup -Parent) 'setup-update.log'
+
+function Log($msg) {
+    $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "[$time] $msg" | Out-File -FilePath $LogFile -Append -Encoding utf8
+}
+
+try {
+    Log "=== Bat dau cap nhat Setup ZM AI TOOL ==="
+    Log "Setup:  $Setup"
+    Log "Target: $Target"
+    Log "Exe:    $Exe"
+    if ($AppPid -gt 0) {
+        Log "Cho app cu $AppPid thoat..."
+        Wait-Process -Id $AppPid -Timeout 20 -ErrorAction SilentlyContinue
+    }
+
+    $setupArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$Target")
+    Log "Chay Setup..."
+    $proc = Start-Process -FilePath $Setup -ArgumentList $setupArgs -Wait -PassThru
+    Log "Setup exit code: $($proc.ExitCode)"
+    if ($proc.ExitCode -ne 0) {
+        throw "Setup that bai voi ma $($proc.ExitCode)"
+    }
+
+    $newExe = Join-Path $Target $Exe
+    if (-not (Test-Path -LiteralPath $newExe -PathType Leaf)) {
+        throw "Khong tim thay EXE sau cap nhat: $newExe"
+    }
+    Start-Sleep -Milliseconds 800
+    Log "Mo lai app: $newExe"
+    Start-Process -FilePath $newExe -WorkingDirectory $Target
+    Log "=== Cap nhat Setup thanh cong ==="
+} catch {
+    $err = $_.Exception.Message
+    Log "LOI CAP NHAT SETUP: $err"
+    $fallback = Join-Path $Target $Exe
+    if (Test-Path -LiteralPath $fallback -PathType Leaf) {
+        Start-Process -FilePath $fallback -WorkingDirectory $Target -ErrorAction SilentlyContinue
+        Log "Da thu mo lai app hien co."
     }
     try {
         Add-Type -AssemblyName System.Windows.Forms
@@ -1055,9 +1121,37 @@ def _launch_windows_updater(package: Path) -> None:
     flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
 
     if package.suffix.lower() == ".exe":
-        # Bản Installed: chạy Setup silent, Inno Setup tự xử lý update rồi restart.
+        # Bản Installed: silent Setup bỏ qua [Run] postinstall, nên phải có
+        # wrapper đợi installer xong rồi mở lại đúng EXE trong thư mục hiện tại.
+        exe = Path(sys.executable).resolve()
+        target = exe.parent
+        script = _windows_setup_update_script(package.parent)
+        params = package.parent / "setup-update-params.json"
+        params.write_text(
+            json.dumps(
+                {
+                    "AppPid": os.getpid(),
+                    "Setup": str(package.resolve()),
+                    "Target": str(target.resolve()),
+                    "Exe": exe.name,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         subprocess.Popen(
-            [str(package), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+                "-ParamsFile",
+                str(params),
+            ],
+            cwd=str(package.parent),
             creationflags=flags,
             close_fds=True,
         )
@@ -1114,7 +1208,8 @@ def api_update_apply():
     if not package.is_file():
         raise HTTPException(404, "Không tìm thấy gói cập nhật đã tải")
     if sys.platform == "darwin":
-        app_name = "ZM AI Tool"
+        app_path = Path("/Applications/ZM AI TOOL.app")
+        app_name = "ZM AI TOOL"
         pkg_path = str(package)
 
         def _install_and_relaunch() -> None:
@@ -1123,12 +1218,15 @@ def api_update_apply():
                 result = subprocess.run(
                     [
                         "osascript", "-e",
-                        f'do shell script "installer -pkg {pkg_path} -target /" with administrator privileges',
+                        f'do shell script "installer -pkg {shlex.quote(pkg_path)} -target /" with administrator privileges',
                     ],
                     timeout=180,
                 )
                 if result.returncode == 0:
-                    subprocess.Popen(["open", "-a", app_name])
+                    if app_path.is_dir():
+                        subprocess.Popen(["open", str(app_path)])
+                    else:
+                        subprocess.Popen(["open", "-a", app_name])
                 else:
                     _set_update_state(phase="error", error="Cài đặt thất bại", message="Cài đặt thất bại — thử lại hoặc cài thủ công")
                     return
