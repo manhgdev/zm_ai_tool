@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -15,7 +16,11 @@ const releaseVersionFilePath = path.join(root, 'build_app', 'VERSION')
 // onedir = nhanh (Windows mặc định). ONEFILE=1 để gói 1 file (chậm vì bước PKG).
 const oneFile = process.env.ONEFILE === '1' || process.env.ONEFILE === 'true'
 const clean = process.env.CLEAN === '1' || process.env.CLEAN === 'true'
-const skipArchive = process.env.SKIP_ARCHIVE === '1' || process.env.SKIP_ARCHIVE === 'true'
+// macOS: chỉ phát hành .pkg — không tạo zip. Windows: Portable.zip trừ khi SKIP_ARCHIVE=1.
+const skipArchive =
+  isMac ||
+  process.env.SKIP_ARCHIVE === '1' ||
+  process.env.SKIP_ARCHIVE === 'true'
 const npmCommand = isWin ? process.env.ComSpec || 'cmd.exe' : 'npm'
 const APP_DISPLAY_NAME = 'ZM AI TOOL'
 const APP_ARTIFACT_NAME = 'ZM_AI_TOOL'
@@ -72,6 +77,17 @@ function ensurePip(pkgs) {
   }
 }
 
+/** Match CI: requirements-app.txt + pyinstaller, pywebview, uv (only when missing). */
+function ensureAppBuildDeps() {
+  const reqFile = path.join(root, 'backend', 'requirements-app.txt')
+  const needBase = !pyOk('import fastapi')
+  const needTools = !pyOk('import PyInstaller') || !pyOk('import webview')
+  if (needBase || needTools) {
+    run(python, ['-m', 'pip', 'install', '-r', reqFile, 'pyinstaller', 'pywebview', 'uv'])
+  }
+  ensurePip(['yt-dlp'])
+}
+
 function readPackage() {
   return JSON.parse(readFileSync(packageJsonPath, 'utf8'))
 }
@@ -84,6 +100,83 @@ function parseSemver(v) {
 
 function formatSemver({ major, minor, patch }) {
   return `${major}.${minor}.${patch}`
+}
+
+function bumpPatch(version) {
+  const parsed = parseSemver(version)
+  return formatSemver({ ...parsed, patch: parsed.patch + 1 })
+}
+
+function writeSyncedVersion(version) {
+  writeFileSync(releaseVersionFilePath, `${version}\n`, 'utf8')
+  const nextPkg = readPackage()
+  nextPkg.version = version
+  writeFileSync(packageJsonPath, `${JSON.stringify(nextPkg, null, 2)}\n`, 'utf8')
+}
+
+/** Local builds bump patch each run; CI keeps the tag/VERSION (no bump). */
+function resolveAppVersion() {
+  const pkg = readPackage()
+  const fileVersion = existsSync(releaseVersionFilePath)
+    ? readFileSync(releaseVersionFilePath, 'utf8').trim()
+    : ''
+  if (process.env.CI) {
+    return formatSemver(parseSemver(fileVersion || pkg.version || '1.0.0'))
+  }
+  if (process.env.BUMP_VERSION === '0' || process.env.BUMP_VERSION === 'false') {
+    return formatSemver(parseSemver(pkg.version || fileVersion || '1.0.0'))
+  }
+  const current = formatSemver(parseSemver(pkg.version || fileVersion || '1.0.0'))
+  const next = bumpPatch(current)
+  writeSyncedVersion(next)
+  console.log(`Version bump: ${current} → ${next}`)
+  return next
+}
+
+/** Overwrite installed ZM AI TOOL.app (same name — version only in Info.plist). */
+function installMacOverwrite(appPath) {
+  if (process.env.SKIP_INSTALL === '1' || process.env.SKIP_INSTALL === 'true') return
+  const appName = `${APP_EXECUTABLE_NAME}.app`
+  const targets = [
+    path.join(homedir(), 'Applications', appName),
+    path.join('/Applications', appName),
+  ]
+  spawnSync('osascript', ['-e', 'tell application id "com.zmaio.tool" to quit'], {
+    stdio: 'ignore',
+    timeout: 5000,
+  })
+  spawnSync('osascript', ['-e', `tell application "${APP_EXECUTABLE_NAME}" to quit`], {
+    stdio: 'ignore',
+    timeout: 5000,
+  })
+
+  for (const dest of targets) {
+    const parent = path.dirname(dest)
+    try {
+      if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
+    } catch {
+      // /Applications may need elevated create
+    }
+    try {
+      for (const name of readdirSync(parent)) {
+        if (name.startsWith(`${APP_ARTIFACT_NAME}_v`) && name.endsWith('.app')) {
+          rmSync(path.join(parent, name), { recursive: true, force: true })
+        }
+      }
+    } catch {
+      // ignore
+    }
+    const result = spawnSync('/usr/bin/ditto', [appPath, dest], { encoding: 'utf8' })
+    if (result.status === 0) {
+      spawnSync('/usr/bin/xattr', ['-cr', dest], { stdio: 'ignore' })
+      console.log(`Đã cài đè: ${dest}`)
+    } else {
+      const err = (result.stderr || result.stdout || '').trim()
+      console.warn(
+        `Không cài được ${dest}${err ? `: ${err}` : ''} — chạy: sudo ditto "${appPath}" "${dest}"`,
+      )
+    }
+  }
 }
 
 const FF_MIN_BYTES = 2_000_000 // Chocolatey ShimGen ~400KB; Gyan/full là chục–trăm MB.
@@ -153,16 +246,19 @@ if (!existsSync(python)) {
   process.exit(1)
 }
 
-const pkg = readPackage()
-// CI writes build_app/VERSION from the release tag. Local builds retain the
-// package version so a stale release file cannot rename a developer build.
-const ciReleaseVersion = process.env.CI && existsSync(releaseVersionFilePath)
-  ? readFileSync(releaseVersionFilePath, "utf8").trim()
-  : ''
-const appVersion = formatSemver(parseSemver(ciReleaseVersion || pkg.version || '1.0.0'))
+const appVersion = resolveAppVersion()
 if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true })
 writeFileSync(versionFilePath, `${appVersion}\n`, 'utf8')
 console.log(`Building ${APP_DISPLAY_NAME} v${appVersion} (${oneFile ? 'onefile' : 'onedir'}${clean ? ', clean' : ''})`)
+
+// Drop stale versioned pkgs so release/ only keeps the current build artifact.
+if (isMac && existsSync(releaseDir)) {
+  for (const name of readdirSync(releaseDir)) {
+    if (name.startsWith(`${APP_ARTIFACT_NAME}_v`) && name.endsWith('.pkg') && !name.includes(`_v${appVersion}-`)) {
+      rmSync(path.join(releaseDir, name), { force: true })
+    }
+  }
+}
 
 if (
   !existsSync(path.join(root, 'node_modules', '.bin', isWin ? 'tsc.cmd' : 'tsc')) ||
@@ -186,8 +282,8 @@ if (!ffmpegCheck) {
   console.warn('Cảnh báo: ffmpeg thật không tìm thấy trên PATH (bỏ qua Chocolatey shim).')
 }
 
-// Chỉ cài khi thiếu — không reinstall mỗi lần
-ensurePip(['pyinstaller', 'uv', 'pywebview', 'yt-dlp'])
+// Match CI install set; only pip when missing
+ensureAppBuildDeps()
 
 const iconIco = path.join(root, 'build_app', 'app.ico')
 const iconIcns = path.join(root, 'build_app', 'app.icns')
@@ -340,9 +436,30 @@ run(python, args, {
 const verName = `${APP_ARTIFACT_NAME}_v${appVersion}`
 let output
 let packageTarget = ''
-if (oneFile || isMac) {
-  const built = path.join(releaseDir, isWin ? `${APP_EXECUTABLE_NAME}.exe` : isMac ? `${APP_EXECUTABLE_NAME}.app` : APP_EXECUTABLE_NAME)
-  output = path.join(releaseDir, isWin ? `${verName}.exe` : isMac ? `${verName}.app` : verName)
+if (isMac) {
+  // App bundle name is display name only — version lives in Info.plist / .pkg filename.
+  output = path.join(releaseDir, `${APP_EXECUTABLE_NAME}.app`)
+  packageTarget = output
+  for (const name of readdirSync(releaseDir)) {
+    if (!name.endsWith('.app')) continue
+    const full = path.join(releaseDir, name)
+    if (full === output) continue
+    if (name.startsWith(`${APP_ARTIFACT_NAME}_v`) || name === `${APP_EXECUTABLE_NAME}.app`) {
+      rmSync(full, { recursive: true, force: true })
+    }
+  }
+  // PyInstaller also leaves an onedir COLLECT folder; drop it so only the .app remains.
+  const collectDir = path.join(releaseDir, APP_EXECUTABLE_NAME)
+  if (existsSync(collectDir) && statSync(collectDir).isDirectory()) {
+    rmSync(collectDir, { recursive: true, force: true })
+  }
+  if (!existsSync(output)) {
+    console.error(`Thiếu bundle macOS: ${output}`)
+    process.exit(1)
+  }
+} else if (oneFile) {
+  const built = path.join(releaseDir, isWin ? `${APP_EXECUTABLE_NAME}.exe` : APP_EXECUTABLE_NAME)
+  output = path.join(releaseDir, isWin ? `${verName}.exe` : verName)
   if (existsSync(output)) rmSync(output, { recursive: true, force: true })
   if (existsSync(built)) renameSync(built, output)
   packageTarget = output
@@ -401,20 +518,29 @@ if (packageTarget && !skipArchive) {
   console.log(`Bản ZIP Portable: ${archivePath}`)
 }
 
+// macOS .pkg installer — same path as CI (local + GitHub)
+if (isMac && !oneFile && process.env.SKIP_PKG !== '1') {
+  run(process.execPath, [path.join(root, 'build_app', 'package_macos.mjs')])
+}
+
+// Windows Portable.zip + Setup.exe — same path as CI (local + GitHub); fail if Setup missing
 if (isWin && !oneFile && process.env.BUILD_INSTALLER !== '0') {
-  try {
-    const { buildInstaller } = await import('./build_installer.mjs')
-    buildInstaller(appVersion)
-  } catch (err) {
-    console.warn(`[build] Không thể tự động chạy Inno Setup: ${err?.message || err}`)
-  }
+  run(process.execPath, [path.join(root, 'build_app', 'package_windows.mjs')])
+}
+
+// macOS: cài đè bản cũ (cùng tên ZM AI TOOL.app)
+if (isMac && !oneFile && packageTarget) {
+  installMacOverwrite(packageTarget)
 }
 
 console.log(`\nBuild hoàn tất: ${output}`)
 console.log(`Version: v${appVersion}`)
 if (isWin && !oneFile) {
-  console.log(`- Bản Portable (không cài đặt): release/${verName}/ hoặc ${verName}-windows-x64-Portable.zip`)
-  console.log(`- Bản Cài đặt (Inno Setup): release/${verName}-windows-x64-Setup.exe (hoặc chạy: npm run build:installer)`)
+  console.log(`- Bản Portable: release/${verName}-windows-x64-Portable.zip`)
+  console.log(`- Bản Cài đặt: release/${verName}-windows-x64-Setup.exe`)
+} else if (isMac && !oneFile) {
+  console.log(`- Bản .app: release/${APP_EXECUTABLE_NAME}.app`)
+  console.log(`- Bản Cài đặt (.pkg): release/${APP_ARTIFACT_NAME}_v${appVersion}-macos-*.pkg`)
 } else if (!oneFile) {
   console.log(`Chạy cả thư mục release/${verName}/ (không copy riêng .exe).`)
 }

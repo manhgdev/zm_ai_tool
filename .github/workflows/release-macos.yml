@@ -43,32 +43,13 @@ jobs:
         env:
           ONEFILE: '0'
           CLEAN: '1'
-          SKIP_ARCHIVE: '1'
         run: |
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           npm run build:app
-
       - name: Create APP and PKG packages
         id: package
         shell: bash
-        run: |
-          set -euo pipefail
-          app="$(find build_app/release -maxdepth 1 -type d -name 'ZM_AIO_TOOL_v*.app' -print -quit)"
-          test -n "$app" || { echo 'Không tìm thấy ZM AIO TOOL.app'; exit 1; }
-          icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")"
-          test -n "$icon_name" || { echo 'Info.plist thiếu CFBundleIconFile'; exit 1; }
-          test -f "$app/Contents/Resources/$icon_name" || {
-            echo "Không tìm thấy app icon: $app/Contents/Resources/$icon_name"
-            exit 1
-          }
-          version="$(basename "$app" | sed -E 's/^ZM_AIO_TOOL_v|\.app$//g')"
-          arch="$(uname -m)"
-          codesign --force --deep --sign - "$app"
-          pkg="build_app/release/ZM_AIO_TOOL_v${version}-macos-${arch}.pkg"
-          pkgbuild --component "$app" --install-location /Applications "$pkg"
-          echo "app=$app" >> "$GITHUB_OUTPUT"
-          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
-          echo "arch=$arch" >> "$GITHUB_OUTPUT"
+        run: node build_app/package_macos.mjs
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -81,7 +62,7 @@ jobs:
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$PKG" --clobber
-          elif ! gh release create "$TAG" "$PKG" --generate-notes --title "ZM AIO TOOL $TAG"; then
+          elif ! gh release create "$TAG" "$PKG" --generate-notes --title "ZM AI TOOL $TAG"; then
             sleep 5
             gh release upload "$TAG" "$PKG" --clobber
           fi

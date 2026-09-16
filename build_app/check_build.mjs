@@ -18,8 +18,8 @@ const APP_ARTIFACT_NAME = 'ZM_AI_TOOL'
 const APP_EXECUTABLE_NAME = 'ZM AI TOOL'
 const verName = `${APP_ARTIFACT_NAME}_v${version}`
 // PyInstaller on macOS emits one .app bundle rather than the Windows/Linux
-// onedir folder. Keep all later checks pointed at the equivalent bundle paths.
-const distDir = path.join(releaseDir, isMac ? `${verName}.app` : verName)
+// onedir folder. App name has no version — version is in Info.plist / .pkg only.
+const distDir = path.join(releaseDir, isMac ? `${APP_EXECUTABLE_NAME}.app` : verName)
 const executableDir = isMac ? path.join(distDir, 'Contents', 'MacOS') : distDir
 const resourceDir = isMac ? path.join(distDir, 'Contents', 'Resources') : distDir
 const frameworkDir = isMac ? path.join(distDir, 'Contents', 'Frameworks') : resourceDir
@@ -152,12 +152,19 @@ const versionFile = path.join(internalDir, 'VERSION')
 check('VERSION file', existsSync(versionFile),
   existsSync(versionFile) ? readFileSync(versionFile, 'utf8').trim() : '')
 
-// 10. ZIP archive (Portable)
+// 10. Windows Portable ZIP — macOS chỉ phát hành .pkg
 const platform = isWin ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
 const portableZip = path.join(releaseDir, `${verName}-windows-x64-Portable.zip`)
 const legacyZip = path.join(releaseDir, `${verName}-${platform}-${process.arch}.zip`)
 const zipPath = isWin && existsSync(portableZip) ? portableZip : legacyZip
-check(isWin ? 'ZIP archive (Portable)' : 'ZIP archive', existsSync(zipPath), size(zipPath))
+if (isMac) {
+  const pkgs = existsSync(releaseDir)
+    ? readdirSync(releaseDir).filter((n) => n.startsWith(`${verName}-macos-`) && n.endsWith('.pkg'))
+    : []
+  check('PKG package', pkgs.length > 0, pkgs[0] ? size(path.join(releaseDir, pkgs[0])) : '')
+} else {
+  check(isWin ? 'ZIP archive (Portable)' : 'ZIP archive', existsSync(zipPath), size(zipPath))
+}
 
 // 11. Inno Setup installer (Windows optional / CI)
 if (isWin) {

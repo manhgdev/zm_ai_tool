@@ -3,7 +3,7 @@
 Ứng dụng desktop/web để dịch, lồng tiếng, biên tập timeline và tạo video review phim. ZM AI TOOL ưu tiên xử lý cục bộ; dịch vụ cloud chỉ được dùng khi bạn chủ động chọn và cấu hình chúng.
 
 [![Version](https://img.shields.io/github/package-json/v/manhgdev/zm_ai_tool)](package.json)
-[![Node](https://img.shields.io/badge/node-20%2B-green.svg)](https://nodejs.org/)
+[![Node](https://img.shields.io/badge/node-24-green.svg)](https://nodejs.org/)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -138,7 +138,7 @@ Ghép ảnh/video với audio và phụ đề, phù hợp để tạo video theo
 
 ### Yêu cầu
 
-- Node.js 20+ (workflow release dùng Node 24).
+- Node.js 24 (khớp GitHub Actions release).
 - Python 3.12.
 - FFmpeg và FFprobe trong `PATH`.
 - macOS hoặc Windows được hỗ trợ chính thức bởi workflow build hiện tại.
@@ -167,8 +167,10 @@ npm run dev:all
 | `npm run dev` | Chạy riêng Vite. |
 | `npm run build` | Type-check TypeScript và build frontend. |
 | `npm run test:i18n` | Kiểm tra catalog Việt/Anh. |
-| `npm run build:app` | Đóng gói desktop app (Portable). |
-| `npm run build:installer` | Đóng gói bộ cài Windows bằng Inno Setup (Setup.exe). |
+| `npm run build:app` | Tăng patch version, đóng gói desktop; macOS cài đè `ZM AI TOOL.app`. |
+| `npm run build:release:macos` | macOS giống CI: `CLEAN=1` → `.pkg`. |
+| `npm run build:release:windows` | Windows local giống `build:app` (Portable.zip + Setup.exe; cần Inno Setup). |
+| `npm run build:installer` | Chỉ chạy lại Inno Setup (Setup.exe) khi đã có thư mục portable. |
 | `npm run check:build` | Kiểm tra artifact desktop. |
 | `npm run release -- patch` | Bump patch version, tạo tag và push lên GitHub (trigger CI build). |
 
@@ -196,12 +198,18 @@ npm run release -- patch
 npm run release -- 3.8.0
 ```
 
-Artifact local được tạo trong `build_app/release/`. GitHub Actions build macOS và Windows khi push tag theo dạng `v*` và đính kèm các gói phát hành vào GitHub Release:
+Artifact local được tạo trong `build_app/release/`. GitHub Actions build macOS và Windows khi push tag theo dạng `v*` và đính kèm các gói phát hành vào GitHub Release.
 
-- **Windows:**
+`npm run build:app` trên từng OS tạo đủ bản phát hành (giống CI):
+
+- **Local:** mỗi lần build tự tăng **patch** (`package.json` + `build_app/VERSION`). Tắt: `BUMP_VERSION=0`. CI không bump (dùng version từ tag).
+- **macOS:** `ZM AI TOOL.app` + `.pkg`; sau build **cài đè** `~/Applications` và `/Applications` (cùng tên app). Bỏ cài: `SKIP_INSTALL=1`.
+- **Windows:** `…-windows-x64-Portable.zip` + `…-windows-x64-Setup.exe` (cần Inno Setup 6 / `ISCC` trên máy).
+
+- **Windows (chi tiết):**
   - 📦 **Bản Cài đặt (Setup / Installer):** `ZM_AI_TOOL_v{version}-windows-x64-Setup.exe` — Bộ cài Wizard tiêu chuẩn (Inno Setup), tự động tạo shortcut Desktop/Start Menu, hỗ trợ gỡ cài đặt và lưu runtime/dữ liệu tại `%LOCALAPPDATA%\ZM_AI_TOOL`.
   - 💼 **Bản Portable (Chạy ngay không cần cài đặt):** `ZM_AI_TOOL_v{version}-windows-x64-Portable.zip` — Giải nén và chạy ngay `ZM AI TOOL.exe`, dữ liệu và cache lưu trực tiếp trong thư mục ứng dụng (tiện lưu trữ trên ổ cứng di động/USB).
-- **macOS:** `ZM_AI_TOOL_v{version}-macos-arm64.pkg` / `ZM_AI_TOOL_v{version}-macos-x64.pkg`.
+- **macOS:** `ZM_AI_TOOL_v{version}-macos-arm64.pkg` / `ZM_AI_TOOL_v{version}-macos-x86_64.pkg` → cài thành `ZM AI TOOL.app`.
 
 Trước khi release:
 

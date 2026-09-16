@@ -127,28 +127,8 @@ jobs:
         id: package
         shell: pwsh
         run: |
-          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AI_TOOL_v*' |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if (-not $package) { throw 'Không tìm thấy thư mục bản build.' }
-          $exe = Join-Path $package.FullName 'ZM AI TOOL.exe'
-          if (-not (Test-Path $exe)) { throw "Không tìm thấy EXE: $exe" }
-
-          # 1. Bản Portable (.zip)
-          $portableZip = Join-Path (Split-Path $package.FullName) "$($package.Name)-windows-x64-Portable.zip"
-          if (-not (Test-Path $portableZip)) {
-            Compress-Archive -Path "$($package.FullName)\*" -DestinationPath $portableZip -CompressionLevel Optimal
-          }
-
-          # 2. Bản Cài đặt Inno Setup (.exe)
-          node build_app/build_installer.mjs
-          $setupExe = Join-Path (Split-Path $package.FullName) "$($package.Name)-windows-x64-Setup.exe"
-          if (-not (Test-Path $setupExe)) { throw "Không tìm thấy file Setup: $setupExe" }
-
-          "directory=$($package.FullName)" >> $env:GITHUB_OUTPUT
-          "zip=$portableZip" >> $env:GITHUB_OUTPUT
-          "installer=$setupExe" >> $env:GITHUB_OUTPUT
-
+          node build_app/package_windows.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Smoke test Windows Setup install, launch, and uninstall
         shell: pwsh
         env:
