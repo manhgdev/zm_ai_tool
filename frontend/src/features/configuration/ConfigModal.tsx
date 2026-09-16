@@ -173,10 +173,7 @@ export default function ConfigModal({
         if (state.phase === 'error') {
           setUpdateDialog({ kind: 'error', title: isApplying ? t('Không thể cài cập nhật', 'Could not install update') : t('Không thể tải cập nhật', 'Could not download update'), detail: state.error || state.message })
         } else if (state.phase === 'complete') {
-          const isMac = /Mac|iPhone|iPad/i.test(navigator.userAgent)
-          const completeDetail = isMac
-            ? t('Đang cài đặt — app sẽ tự khởi động lại sau khi hoàn tất.', 'Installing — the app will restart automatically when done.')
-            : t('Thư mục bản mới đã được mở. Vui lòng chạy EXE trong thư mục đó để hoàn tất cập nhật.', 'The new version folder has opened. Please run the EXE inside to complete the update.')
+          const completeDetail = state.message || t('Đã cập nhật xong.', 'Update completed.')
           setUpdateDialog({ kind: 'complete', title: t('Cập nhật đã sẵn sàng', 'Update is ready'), detail: completeDetail, progress: 100 })
         } else if (!isApplying && state.phase === 'ready') {
           setUpdateDialog({ kind: 'ready', title: t('Đã tải xong', 'Download complete'), detail: t('Gói cập nhật đã sẵn sàng để cài.', 'The update package is ready to install.'), progress: 100 })

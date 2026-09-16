@@ -7,7 +7,7 @@
 #endif
 
 #define MyAppName "ZM AI TOOL"
-#define MyAppPublisher "ZM AIO Tools"
+#define MyAppPublisher "ZM AI TOOL"
 #define MyAppURL "https://github.com/manhgdev/zm_ai_tool"
 #define MyAppExeName "ZM AI TOOL.exe"
 
@@ -34,7 +34,8 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={localappdata}\Programs\{#MyAppName}
+UsePreviousAppDir=no
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir={#MyAppOutputDir}
@@ -46,7 +47,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequired=lowest
 CloseApplications=yes
 RestartApplications=no
 DisableDirPage=no
@@ -71,8 +72,8 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Never start the first run with Setup's elevated token. Otherwise runtime is
-; created under Program Files and appears missing on the next normal launch.
+; Manual installs launch normally. Silent in-app updates are relaunched by the
+; detached updater after Setup exits successfully.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallDelete]

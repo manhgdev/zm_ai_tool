@@ -125,7 +125,7 @@ def _desktop_version() -> str:
 def _latest_release() -> dict[str, Any]:
     request = urllib.request.Request(
         f"https://api.github.com/repos/{_UPDATE_REPOSITORY}/releases/latest",
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AIO-TOOL"},
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AI-TOOL"},
     )
     with urllib.request.urlopen(request, timeout=15) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -165,9 +165,9 @@ def _release_asset(release: dict[str, Any]) -> dict[str, Any] | None:
         import platform as _platform
         machine = _platform.machine().lower()
         if machine in {"arm64", "aarch64"}:
-            suffix = "-macos-arm64.pkg"
+            suffix = "-macos-arm64.zip"
         elif machine in {"x86_64", "amd64"}:
-            suffix = "-macos-x64.pkg"
+            suffix = "-macos-x64.zip"
         else:
             return None
         candidates = [f"ZM_AI_TOOL_v{version}{suffix}"]
@@ -220,7 +220,7 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
     for attempt in range(3):
         try:
             offset = partial.stat().st_size if partial.is_file() else 0
-            request = urllib.request.Request(url, headers={"User-Agent": "ZM-AIO-TOOL"})
+            request = urllib.request.Request(url, headers={"User-Agent": "ZM-AI-TOOL"})
             if offset:
                 request.add_header("Range", f"bytes={offset}-")
             # Large desktop bundles can take several minutes on a slow connection;
@@ -465,6 +465,85 @@ try {
         }
     } elseif (Test-Path -LiteralPath (Join-Path $Target $exeName) -PathType Leaf) {
         Start-Process -FilePath (Join-Path $Target $exeName) -WorkingDirectory $Target -ErrorAction SilentlyContinue
+    }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show("Cap nhat that bai / Update failed:`n$err`n`nLog: $LogFile", "Loi cap nhat / Update error - ZM AI TOOL", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    } catch {}
+}
+""",
+        encoding="utf-8-sig",
+    )
+    return script
+
+
+def _windows_setup_update_script(updates: Path) -> Path:
+    script = updates / "apply-setup-update.ps1"
+    script.write_text(
+        """# ZM AI TOOL Windows installed updater
+param([string]$ParamsFile)
+
+$ErrorActionPreference = 'Stop'
+$paramsPath = if ($ParamsFile) { $ParamsFile } else { Join-Path $PSScriptRoot 'setup-update-params.json' }
+$p       = Get-Content -LiteralPath $paramsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$AppPid  = [int]$p.AppPid
+$Setup   = [string]$p.Setup
+$Target  = [string]$p.Target
+$Exe     = [string]$p.Exe
+$OldExe  = [string]$p.OldExe
+$ReadyFile = [string]$p.ReadyFile
+$LogFile = Join-Path (Split-Path $Setup -Parent) 'setup-update.log'
+
+function Log($msg) {
+    $time = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    "[$time] $msg" | Out-File -FilePath $LogFile -Append -Encoding utf8
+}
+
+try {
+    Log '=== Bat dau cap nhat ZM AI TOOL installed ==='
+    if ($AppPid -gt 0) {
+        Wait-Process -Id $AppPid -Timeout 20 -ErrorAction SilentlyContinue
+    }
+
+    # Setup is built with PrivilegesRequired=lowest and installs below
+    # LocalAppData. Updates must never request elevation.
+    $setupArgs = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="' + $Target + '"'
+    $process = Start-Process -FilePath $Setup -ArgumentList $setupArgs -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "Setup that bai voi ma $($process.ExitCode)."
+    }
+
+    $newExe = Join-Path $Target $Exe
+    if (-not (Test-Path -LiteralPath $newExe -PathType Leaf)) {
+        throw "Khong tim thay app sau cap nhat: $newExe"
+    }
+    Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
+    $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ReadyFile
+    $env:ZM_AI_TOOL_SUPERVISOR_CHILD = $null
+    $newProcess = Start-Process -FilePath $newExe -WorkingDirectory $Target -PassThru
+    $deadline = (Get-Date).AddSeconds(90)
+    while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
+        if ($newProcess.HasExited) {
+            throw "Ban moi thoat som voi ma $($newProcess.ExitCode)."
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
+        Stop-Process -Id $newProcess.Id -Force -ErrorAction SilentlyContinue
+        throw 'Ban moi khong bao san sang sau 90 giay.'
+    }
+    $env:ZM_AI_TOOL_UPDATE_READY_FILE = $null
+    Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
+    Log "Da mo lai app: $newExe"
+    Remove-Item -LiteralPath $Setup -Force -ErrorAction SilentlyContinue
+} catch {
+    $err = $_.Exception.Message
+    Log "LOI CAP NHAT: $err"
+    $env:ZM_AI_TOOL_UPDATE_READY_FILE = $null
+    if ($ReadyFile) { Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue }
+    if ($OldExe -and (Test-Path -LiteralPath $OldExe -PathType Leaf)) {
+        Start-Process -FilePath $OldExe -WorkingDirectory (Split-Path $OldExe -Parent) -ErrorAction SilentlyContinue
+        Log 'Da mo lai ban cu.'
     }
     try {
         Add-Type -AssemblyName System.Windows.Forms
@@ -1049,15 +1128,213 @@ def api_update_status():
     return {"desktop": desktop == "1", **_update_snapshot()}
 
 
+def _windows_user_install_dir() -> Path:
+    local = os.environ.get("LOCALAPPDATA")
+    base = Path(local) if local else Path.home() / "AppData" / "Local"
+    return base / "Programs" / "ZM AI TOOL"
+
+
+def _macos_app_bundle() -> Path:
+    executable = Path(sys.executable).resolve()
+    for parent in executable.parents:
+        if parent.suffix.lower() == ".app":
+            return parent
+    return Path.home() / "Applications" / "ZM AI TOOL.app"
+
+
+def _macos_update_script(updates: Path) -> Path:
+    script = updates / "apply-macos-update.sh"
+    script.write_text(
+        """#!/bin/bash
+set -u
+
+APP_PID="$1"
+PACKAGE="$2"
+TARGET_APP="$3"
+LOG_FILE="$(/usr/bin/dirname "$PACKAGE")/macos-update.log"
+TMP_DIR="$(/usr/bin/dirname "$PACKAGE")/macos-extracted-$(/bin/date +%Y%m%d%H%M%S)-$$"
+
+log() {
+  /bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+show_error() {
+  /usr/bin/osascript -e "display dialog \"Cập nhật thất bại / Update failed:\\n$1\\n\\nLog: $LOG_FILE\" with title \"ZM AI TOOL\" buttons {\"OK\"} default button \"OK\"" >/dev/null 2>&1 || true
+}
+
+launch_and_wait() {
+  app="$1"
+  executable="$app/Contents/MacOS/ZM AI TOOL"
+  /usr/bin/open -n "$app" >/dev/null 2>&1 || return 1
+  attempts=0
+  while [ "$attempts" -lt 90 ]; do
+    /usr/bin/pgrep -f -- "$executable" >/dev/null 2>&1 && return 0
+    /bin/sleep 1
+    attempts=$((attempts + 1))
+  done
+  return 1
+}
+
+restore_backup() {
+  destination="$1"
+  backup="$2"
+  parent="$(/usr/bin/dirname "$destination")"
+  if [ -w "$parent" ]; then
+    /bin/rm -rf "$destination"
+    /bin/mv "$backup" "$destination" || return 1
+  elif [ -w "$destination" ]; then
+    /bin/rm -rf "$destination/Contents"
+    /usr/bin/ditto "$backup/Contents" "$destination/Contents" || return 1
+    /bin/rm -rf "$backup"
+  else
+    return 1
+  fi
+}
+
+install_app() {
+  destination="$1"
+  parent="$(/usr/bin/dirname "$destination")"
+  name="$(/usr/bin/basename "$destination")"
+  backup="$(/usr/bin/dirname "$PACKAGE")/$name.backup.$(/bin/date +%s).$$"
+
+  /bin/mkdir -p "$parent" 2>/dev/null || return 1
+  /bin/rm -rf "$backup"
+  if [ -d "$destination" ]; then
+    /usr/bin/ditto "$destination" "$backup" || return 1
+  fi
+
+  if [ -d "$destination" ] && [ -w "$destination" ]; then
+    /bin/rm -rf "$destination/Contents" || return 1
+    /usr/bin/ditto "$SOURCE_APP/Contents" "$destination/Contents" || {
+      restore_backup "$destination" "$backup" || true
+      return 1
+    }
+  elif [ -w "$parent" ]; then
+    staged="$parent/.$name.updating.$$"
+    /bin/rm -rf "$staged"
+    /usr/bin/ditto "$SOURCE_APP" "$staged" || return 1
+    /bin/rm -rf "$destination"
+    /bin/mv "$staged" "$destination" || {
+      restore_backup "$destination" "$backup" || true
+      return 1
+    }
+  else
+    /bin/rm -rf "$backup"
+    return 1
+  fi
+
+  if launch_and_wait "$destination"; then
+    /bin/rm -rf "$backup"
+    return 0
+  fi
+
+  log "Ban moi khong khoi dong; dang khoi phuc $destination"
+  restore_backup "$destination" "$backup" || true
+  [ -d "$destination" ] && /usr/bin/open -n "$destination" >/dev/null 2>&1 || true
+  return 1
+}
+
+case "$TARGET_APP" in
+  *.app) ;;
+  *) show_error "Đường dẫn ứng dụng không hợp lệ."; exit 1 ;;
+esac
+
+log "=== Bat dau cap nhat macOS ZM AI TOOL ==="
+if [ "$APP_PID" -gt 0 ] 2>/dev/null; then
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    /bin/kill -0 "$APP_PID" >/dev/null 2>&1 || break
+    /bin/sleep 1
+  done
+fi
+
+/bin/rm -rf "$TMP_DIR"
+/bin/mkdir -p "$TMP_DIR" || { show_error "Không tạo được thư mục tạm."; exit 1; }
+/usr/bin/ditto -x -k "$PACKAGE" "$TMP_DIR" || { show_error "Không giải nén được gói cập nhật."; exit 1; }
+SOURCE_APP="$(/usr/bin/find "$TMP_DIR" -maxdepth 3 -type d -name '*.app' -print -quit)"
+if [ -z "$SOURCE_APP" ] || [ ! -x "$SOURCE_APP/Contents/MacOS/ZM AI TOOL" ]; then
+  show_error "Gói cập nhật không hợp lệ."
+  exit 1
+fi
+
+if install_app "$TARGET_APP"; then
+  log "Cap nhat thanh cong vao $TARGET_APP"
+  /bin/rm -rf "$TMP_DIR" "$PACKAGE"
+  exit 0
+fi
+
+USER_APP="$HOME/Applications/ZM AI TOOL.app"
+if [ "$TARGET_APP" != "$USER_APP" ] && install_app "$USER_APP"; then
+  log "Da chuyen ban moi sang $USER_APP vi target cu khong cho ghi"
+  /usr/bin/osascript -e 'display notification "Đã mở bản mới từ thư mục Applications của tài khoản." with title "ZM AI TOOL"' >/dev/null 2>&1 || true
+  /bin/rm -rf "$TMP_DIR" "$PACKAGE"
+  exit 0
+fi
+
+show_error "Không thể ghi bản cập nhật hoặc bản mới không khởi động được."
+[ -d "$TARGET_APP" ] && /usr/bin/open -n "$TARGET_APP" >/dev/null 2>&1 || true
+exit 1
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def _launch_macos_updater(package: Path) -> None:
+    script = _macos_update_script(package.parent)
+    subprocess.Popen(
+        [
+            "/bin/bash",
+            str(script),
+            str(os.getpid()),
+            str(package.resolve()),
+            str(_macos_app_bundle()),
+        ],
+        cwd=str(package.parent),
+        close_fds=True,
+        start_new_session=True,
+    )
+
+
 def _launch_windows_updater(package: Path) -> None:
     """Start the detached staged updater; it waits for this app before swapping."""
     flags = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
     flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
 
     if package.suffix.lower() == ".exe":
-        # Bản Installed: chạy Setup silent, Inno Setup tự xử lý update rồi restart.
+        exe = Path(sys.executable).resolve()
+        target = _windows_user_install_dir()
+        script = _windows_setup_update_script(package.parent)
+        params = package.parent / "setup-update-params.json"
+        ready = package.parent / f"setup-update-ready-{uuid.uuid4().hex}.txt"
+        ready.unlink(missing_ok=True)
+        params.write_text(
+            json.dumps(
+                {
+                    "AppPid": os.getpid(),
+                    "Setup": str(package.resolve()),
+                    "Target": str(target.resolve()),
+                    "Exe": exe.name,
+                    "OldExe": str(exe),
+                    "ReadyFile": str(ready.resolve()),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         subprocess.Popen(
-            [str(package), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+                "-ParamsFile",
+                str(params),
+            ],
+            cwd=str(package.parent),
             creationflags=flags,
             close_fds=True,
         )
@@ -1114,36 +1391,19 @@ def api_update_apply():
     if not package.is_file():
         raise HTTPException(404, "Không tìm thấy gói cập nhật đã tải")
     if sys.platform == "darwin":
-        app_name = "ZM AI Tool"
-        pkg_path = str(package)
+        if package.suffix.lower() != ".zip":
+            raise HTTPException(400, "Gói cập nhật macOS không hợp lệ")
+        try:
+            _launch_macos_updater(package)
+        except Exception as exc:
+            _set_update_state(phase="error", error=str(exc), message="Không thể mở trình cập nhật")
+            raise HTTPException(500, f"Không thể mở trình cập nhật: {exc}") from exc
+        _set_update_state(phase="applying", progress=100, message="Đang đóng app để cập nhật và mở lại…")
+        threading.Timer(0.8, lambda: os._exit(0)).start()
+        return {"ok": True, "message": "Đang đóng app để cập nhật và mở lại…"}
 
-        def _install_and_relaunch() -> None:
-            """Cài PKG trong nền — app vẫn sống để dialog admin hiện tự nhiên."""
-            try:
-                result = subprocess.run(
-                    [
-                        "osascript", "-e",
-                        f'do shell script "installer -pkg {pkg_path} -target /" with administrator privileges',
-                    ],
-                    timeout=180,
-                )
-                if result.returncode == 0:
-                    subprocess.Popen(["open", "-a", app_name])
-                else:
-                    _set_update_state(phase="error", error="Cài đặt thất bại", message="Cài đặt thất bại — thử lại hoặc cài thủ công")
-                    return
-            except subprocess.TimeoutExpired:
-                _set_update_state(phase="error", error="Timeout", message="Cài đặt quá lâu — thử lại")
-                return
-            except Exception as exc:
-                _set_update_state(phase="error", error=str(exc), message="Lỗi cài đặt")
-                return
-            finally:
-                os._exit(0)
-
-        _set_update_state(phase="applying", progress=50, message="Đang cài — nhập mật khẩu nếu được hỏi…")
-        threading.Thread(target=_install_and_relaunch, daemon=True).start()
-        return {"ok": True, "message": "Đang cài — app sẽ tự khởi động lại"}
+    if sys.platform != "win32":
+        raise HTTPException(400, "Hệ điều hành này chưa hỗ trợ cập nhật tự động")
 
     try:
         _launch_windows_updater(package)

@@ -66,7 +66,7 @@ jobs:
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           npm run build:app
 
-      - name: Create APP and PKG packages
+      - name: Create APP, PKG, and ZIP packages
         id: package
         shell: bash
         run: |
@@ -127,6 +127,9 @@ jobs:
           app="/Applications/ZM AI TOOL.app"
           console_user="$(/usr/bin/stat -f '%Su' /dev/console)"
           if [ -d "$app" ] && [ "$console_user" != "root" ] && [ "$console_user" != "loginwindow" ]; then
+            console_group="$(/usr/bin/id -gn "$console_user" || echo staff)"
+            /usr/sbin/chown -R "$console_user:$console_group" "$app" || true
+            /bin/chmod -R u+rwX "$app" || true
             user_id="$(/usr/bin/id -u "$console_user" || true)"
             if [ -n "$user_id" ]; then
               /bin/launchctl asuser "$user_id" /usr/bin/open "$app" >/dev/null 2>&1 || true
@@ -136,9 +139,16 @@ jobs:
           SCRIPT
           chmod 755 "$scripts/postinstall"
           pkg="build_app/release/ZM_AI_TOOL_v${version}-macos-${ARCH}.pkg"
+          zip="build_app/release/ZM_AI_TOOL_v${version}-macos-${ARCH}.zip"
           pkgbuild --component "$payload" --scripts "$scripts" --install-location /Applications "$pkg"
+          ditto -c -k --sequesterRsrc --keepParent "$payload" "$zip"
+          verify_dir="$(mktemp -d)"
+          ditto -x -k "$zip" "$verify_dir"
+          test -x "$verify_dir/ZM AI TOOL.app/Contents/MacOS/ZM AI TOOL"
+          rm -rf "$verify_dir"
           echo "app=$app" >> "$GITHUB_OUTPUT"
           echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
         env:
           ARCH: ${{ matrix.arch }}
 
@@ -148,6 +158,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           PKG: ${{ steps.package.outputs.pkg }}
+          ZIP: ${{ steps.package.outputs.zip }}
         shell: bash
         run: |
           set -euo pipefail
@@ -169,8 +180,8 @@ jobs:
           BODY=$(printf '## Thay đổi trong %s\n\n%s' "$TAG" "$NOTES")
 
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$PKG" --clobber
-          elif ! gh release create "$TAG" "$PKG" --title "ZM AI TOOL $TAG" --notes "$BODY"; then
+            gh release upload "$TAG" "$PKG" "$ZIP" --clobber
+          elif ! gh release create "$TAG" "$PKG" "$ZIP" --title "ZM AI TOOL $TAG" --notes "$BODY"; then
             sleep 5
-            gh release upload "$TAG" "$PKG" --clobber
+            gh release upload "$TAG" "$PKG" "$ZIP" --clobber
           fi

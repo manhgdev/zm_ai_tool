@@ -57,6 +57,10 @@ class PortableLayoutTest(unittest.TestCase):
         script = (ROOT / "build_app" / "installer.iss").read_text(encoding="utf-8")
 
         self.assertIn('DestName: ".zmaio-installed"', script)
+        self.assertIn(r"DefaultDirName={localappdata}\Programs\{#MyAppName}", script)
+        self.assertIn("UsePreviousAppDir=no", script)
+        self.assertIn("PrivilegesRequired=lowest", script)
+        self.assertNotIn("PrivilegesRequiredOverridesAllowed=dialog", script)
         self.assertIn("runasoriginaluser", script)
 
     def test_output_root_falls_back_when_saved_path_is_not_writable(self) -> None:
@@ -127,6 +131,59 @@ class PortableLayoutTest(unittest.TestCase):
         self.assertNotIn("Remove-Item -LiteralPath $OldTarget", script)
         for variable in ("ZM_AI_TOOL_HOME", "ZM_AI_TOOL_BUNDLE", "ZM_AI_TOOL_VERSION"):
             self.assertIn(f'set_desktop_path("{variable}"', launcher)
+
+    def test_installed_windows_updater_relaunches_without_elevation(self) -> None:
+        from api.routes.system import _windows_setup_update_script
+
+        with tempfile.TemporaryDirectory() as raw:
+            script = _windows_setup_update_script(Path(raw)).read_text(encoding="utf-8-sig")
+
+        self.assertIn("PrivilegesRequired=lowest", script)
+        self.assertIn("Start-Process -FilePath $newExe", script)
+        self.assertIn("/DIR=\"", script)
+        self.assertIn("ZM_AI_TOOL_UPDATE_READY_FILE", script)
+        self.assertIn("Ban moi khong bao san sang sau 90 giay", script)
+        self.assertNotIn("-Verb RunAs", script)
+
+    def test_macos_updater_uses_zip_relaunch_and_rollback(self) -> None:
+        from api.routes.system import _macos_update_script
+
+        with tempfile.TemporaryDirectory() as raw:
+            script = _macos_update_script(Path(raw)).read_text(encoding="utf-8")
+
+        self.assertIn("ditto -x -k", script)
+        self.assertIn("launch_and_wait", script)
+        self.assertIn("restore_backup", script)
+        self.assertIn('$HOME/Applications/ZM AI TOOL.app', script)
+        self.assertNotIn("administrator privileges", script)
+        self.assertNotIn("installer -pkg", script)
+
+    def test_release_assets_match_unelevated_update_packages(self) -> None:
+        from api.routes import system
+
+        release = {
+            "tag_name": "v8.0.6",
+            "assets": [
+                {"name": "ZM_AI_TOOL_v8.0.6-windows-x64-Setup.exe"},
+                {"name": "ZM_AI_TOOL_v8.0.6-windows-x64-Portable.zip"},
+                {"name": "ZM_AI_TOOL_v8.0.6-macos-arm64.pkg"},
+                {"name": "ZM_AI_TOOL_v8.0.6-macos-arm64.zip"},
+            ],
+        }
+        with patch.object(system.sys, "platform", "win32"), patch.object(
+            system, "_is_windows_installed_build", return_value=True
+        ):
+            self.assertEqual(
+                system._release_asset(release)["name"],
+                "ZM_AI_TOOL_v8.0.6-windows-x64-Setup.exe",
+            )
+        with patch.object(system.sys, "platform", "darwin"), patch(
+            "platform.machine", return_value="arm64"
+        ):
+            self.assertEqual(
+                system._release_asset(release)["name"],
+                "ZM_AI_TOOL_v8.0.6-macos-arm64.zip",
+            )
 
     def test_versioned_update_moves_state_and_rebases_default_output(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

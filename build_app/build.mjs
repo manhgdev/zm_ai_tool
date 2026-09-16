@@ -372,6 +372,9 @@ if (isMac && packageTarget) {
       process.exit(1)
     }
   }
+  // PlistBuddy changes signed bundle contents. Re-sign only after every
+  // bundle mutation so local archives and CI packages contain a valid app.
+  run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', packageTarget])
 }
 
 if (packageTarget && !skipArchive) {

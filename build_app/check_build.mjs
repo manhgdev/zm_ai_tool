@@ -60,6 +60,14 @@ check('Release dir exists', existsSync(distDir))
 
 // 2. EXE chính
 check(`${APP_EXECUTABLE_NAME}${isWin ? '.exe' : ''}`, existsSync(exePath), size(exePath))
+if (isMac && existsSync(distDir)) {
+  const signature = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', distDir], {
+    encoding: 'utf8',
+    timeout: 15_000,
+  })
+  const detail = `${signature.stderr || signature.stdout || ''}`.trim().split(/\r?\n/)[0]
+  check('macOS bundle signature', signature.status === 0, detail)
+}
 
 // 3. dist/index.html (frontend build đã được pack)
 const internalDir = isMac
