@@ -136,9 +136,12 @@ jobs:
           SCRIPT
           chmod 755 "$scripts/postinstall"
           pkg="build_app/release/ZM_AI_TOOL_v${version}-macos-${ARCH}.pkg"
+          zip="build_app/release/ZM_AI_TOOL_v${version}-macos-${ARCH}.zip"
           pkgbuild --component "$payload" --scripts "$scripts" --install-location /Applications "$pkg"
+          ditto -c -k --keepParent "$payload" "$zip"
           echo "app=$app" >> "$GITHUB_OUTPUT"
           echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
         env:
           ARCH: ${{ matrix.arch }}
 
@@ -148,6 +151,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           PKG: ${{ steps.package.outputs.pkg }}
+          ZIP: ${{ steps.package.outputs.zip }}
         shell: bash
         run: |
           set -euo pipefail
@@ -169,8 +173,8 @@ jobs:
           BODY=$(printf '## Thay đổi trong %s\n\n%s' "$TAG" "$NOTES")
 
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$PKG" --clobber
-          elif ! gh release create "$TAG" "$PKG" --title "ZM AI TOOL $TAG" --notes "$BODY"; then
+            gh release upload "$TAG" "$PKG" "$ZIP" --clobber
+          elif ! gh release create "$TAG" "$PKG" "$ZIP" --title "ZM AI TOOL $TAG" --notes "$BODY"; then
             sleep 5
-            gh release upload "$TAG" "$PKG" --clobber
+            gh release upload "$TAG" "$PKG" "$ZIP" --clobber
           fi

@@ -7,7 +7,7 @@
 #endif
 
 #define MyAppName "ZM AI TOOL"
-#define MyAppPublisher "ZM AIO Tools"
+#define MyAppPublisher "ZM AI TOOL"
 #define MyAppURL "https://github.com/manhgdev/zm_ai_tool"
 #define MyAppExeName "ZM AI TOOL.exe"
 
@@ -34,7 +34,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir={#MyAppOutputDir}
@@ -46,7 +46,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequired=lowest
 CloseApplications=yes
 RestartApplications=no
 DisableDirPage=no
