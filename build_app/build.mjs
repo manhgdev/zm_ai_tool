@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, accessSync, constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -103,7 +103,11 @@ function formatSemver({ major, minor, patch }) {
 }
 
 function bumpPatch(version) {
+  // Patch chỉ 0–9; sau .9 tăng minor (8.0.9 → 8.1.0, không dùng 8.0.10).
   const parsed = parseSemver(version)
+  if (parsed.patch >= 9) {
+    return formatSemver({ major: parsed.major, minor: parsed.minor + 1, patch: 0 })
+  }
   return formatSemver({ ...parsed, patch: parsed.patch + 1 })
 }
 
@@ -114,33 +118,47 @@ function writeSyncedVersion(version) {
   writeFileSync(packageJsonPath, `${JSON.stringify(nextPkg, null, 2)}\n`, 'utf8')
 }
 
-/** Local builds bump patch each run; CI keeps the tag/VERSION (no bump). */
+/** Keep package.json / VERSION unless BUMP_VERSION=1 (patch +1). CI never bumps. */
 function resolveAppVersion() {
   const pkg = readPackage()
   const fileVersion = existsSync(releaseVersionFilePath)
     ? readFileSync(releaseVersionFilePath, 'utf8').trim()
     : ''
-  if (process.env.CI) {
-    return formatSemver(parseSemver(fileVersion || pkg.version || '1.0.0'))
-  }
-  if (process.env.BUMP_VERSION === '0' || process.env.BUMP_VERSION === 'false') {
-    return formatSemver(parseSemver(pkg.version || fileVersion || '1.0.0'))
-  }
-  const current = formatSemver(parseSemver(pkg.version || fileVersion || '1.0.0'))
+  const current = formatSemver(parseSemver(fileVersion || pkg.version || '1.0.0'))
+  if (process.env.CI) return current
+  const wantBump = process.env.BUMP_VERSION === '1' || process.env.BUMP_VERSION === 'true'
+  if (!wantBump) return current
   const next = bumpPatch(current)
   writeSyncedVersion(next)
   console.log(`Version bump: ${current} → ${next}`)
   return next
 }
 
-/** Overwrite installed ZM AI TOOL.app (same name — version only in Info.plist). */
-function installMacOverwrite(appPath) {
+function canWritePath(target) {
+  try {
+    if (!existsSync(target)) {
+      const parent = path.dirname(target)
+      accessSync(parent, constants.W_OK)
+      return true
+    }
+    accessSync(target, constants.W_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Overwrite installed ZM AI TOOL.app.
+ * ~/Applications: always ditto (user-owned).
+ * /Applications: only ditto if writable; else install .pkg (root-owned apps cannot be ditto'd).
+ */
+function installMacOverwrite(appPath, pkgPath = '') {
   if (process.env.SKIP_INSTALL === '1' || process.env.SKIP_INSTALL === 'true') return
   const appName = `${APP_EXECUTABLE_NAME}.app`
-  const targets = [
-    path.join(homedir(), 'Applications', appName),
-    path.join('/Applications', appName),
-  ]
+  const homeApp = path.join(homedir(), 'Applications', appName)
+  const systemApp = path.join('/Applications', appName)
+
   spawnSync('osascript', ['-e', 'tell application id "com.zmaio.tool" to quit'], {
     stdio: 'ignore',
     timeout: 5000,
@@ -150,33 +168,40 @@ function installMacOverwrite(appPath) {
     timeout: 5000,
   })
 
-  for (const dest of targets) {
-    const parent = path.dirname(dest)
-    try {
-      if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
-    } catch {
-      // /Applications may need elevated create
-    }
-    try {
-      for (const name of readdirSync(parent)) {
-        if (name.startsWith(`${APP_ARTIFACT_NAME}_v`) && name.endsWith('.app')) {
-          rmSync(path.join(parent, name), { recursive: true, force: true })
-        }
-      }
-    } catch {
-      // ignore
-    }
-    const result = spawnSync('/usr/bin/ditto', [appPath, dest], { encoding: 'utf8' })
-    if (result.status === 0) {
-      spawnSync('/usr/bin/xattr', ['-cr', dest], { stdio: 'ignore' })
-      console.log(`Đã cài đè: ${dest}`)
-    } else {
-      const err = (result.stderr || result.stdout || '').trim()
-      console.warn(
-        `Không cài được ${dest}${err ? `: ${err}` : ''} — chạy: sudo ditto "${appPath}" "${dest}"`,
-      )
+  mkdirSync(path.dirname(homeApp), { recursive: true })
+  const home = spawnSync('/usr/bin/ditto', [appPath, homeApp], { encoding: 'utf8' })
+  if (home.status === 0) {
+    spawnSync('/usr/bin/xattr', ['-cr', homeApp], { stdio: 'ignore' })
+    console.log(`Đã cài đè: ${homeApp}`)
+  } else {
+    console.warn(`Không cài được ${homeApp}`)
+  }
+
+  if (canWritePath(systemApp)) {
+    const sys = spawnSync('/usr/bin/ditto', [appPath, systemApp], { encoding: 'utf8' })
+    if (sys.status === 0) {
+      spawnSync('/usr/bin/xattr', ['-cr', systemApp], { stdio: 'ignore' })
+      console.log(`Đã cài đè: ${systemApp}`)
+      return
     }
   }
+
+  // Root-owned /Applications copy (from prior pkg install) — use installer, not ditto.
+  if (pkgPath && existsSync(pkgPath)) {
+    const elevated = spawnSync('sudo', ['-n', 'installer', '-pkg', pkgPath, '-target', '/'], {
+      encoding: 'utf8',
+    })
+    if (elevated.status === 0) {
+      console.log(`Đã cài đè /Applications bằng pkg: ${path.basename(pkgPath)}`)
+      return
+    }
+    console.warn(
+      `/Applications/${appName} thuộc root — không ditto được. Chạy:\n` +
+        `  sudo installer -pkg "${pkgPath}" -target /`,
+    )
+    return
+  }
+  console.warn(`Bỏ qua /Applications (không ghi được, thiếu .pkg).`)
 }
 
 const FF_MIN_BYTES = 2_000_000 // Chocolatey ShimGen ~400KB; Gyan/full là chục–trăm MB.
@@ -519,8 +544,11 @@ if (packageTarget && !skipArchive) {
 }
 
 // macOS .pkg installer — same path as CI (local + GitHub)
+let macPkgPath = ''
 if (isMac && !oneFile && process.env.SKIP_PKG !== '1') {
   run(process.execPath, [path.join(root, 'build_app', 'package_macos.mjs')])
+  const arch = spawnSync('uname', ['-m'], { encoding: 'utf8' }).stdout.trim() || 'arm64'
+  macPkgPath = path.join(releaseDir, `${APP_ARTIFACT_NAME}_v${appVersion}-macos-${arch}.pkg`)
 }
 
 // Windows Portable.zip + Setup.exe — same path as CI (local + GitHub); fail if Setup missing
@@ -530,7 +558,7 @@ if (isWin && !oneFile && process.env.BUILD_INSTALLER !== '0') {
 
 // macOS: cài đè bản cũ (cùng tên ZM AI TOOL.app)
 if (isMac && !oneFile && packageTarget) {
-  installMacOverwrite(packageTarget)
+  installMacOverwrite(packageTarget, macPkgPath)
 }
 
 console.log(`\nBuild hoàn tất: ${output}`)

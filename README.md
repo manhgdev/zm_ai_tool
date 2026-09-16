@@ -167,7 +167,7 @@ npm run dev:all
 | `npm run dev` | Chạy riêng Vite. |
 | `npm run build` | Type-check TypeScript và build frontend. |
 | `npm run test:i18n` | Kiểm tra catalog Việt/Anh. |
-| `npm run build:app` | Tăng patch version, đóng gói desktop; macOS cài đè `ZM AI TOOL.app`. |
+| `npm run build:app` | Đóng gói desktop; macOS cài đè `~/Applications`. Tăng patch: `BUMP_VERSION=1`. |
 | `npm run build:release:macos` | macOS giống CI: `CLEAN=1` → `.pkg`. |
 | `npm run build:release:windows` | Windows local giống `build:app` (Portable.zip + Setup.exe; cần Inno Setup). |
 | `npm run build:installer` | Chỉ chạy lại Inno Setup (Setup.exe) khi đã có thư mục portable. |
@@ -202,8 +202,8 @@ Artifact local được tạo trong `build_app/release/`. GitHub Actions build m
 
 `npm run build:app` trên từng OS tạo đủ bản phát hành (giống CI):
 
-- **Local:** mỗi lần build tự tăng **patch** (`package.json` + `build_app/VERSION`). Tắt: `BUMP_VERSION=0`. CI không bump (dùng version từ tag).
-- **macOS:** `ZM AI TOOL.app` + `.pkg`; sau build **cài đè** `~/Applications` và `/Applications` (cùng tên app). Bỏ cài: `SKIP_INSTALL=1`.
+- **Version:** mặc định giữ nguyên. Tăng số thứ 3 (0–9): `BUMP_VERSION=1` → sau `.9` nhảy minor (`8.0.9` → `8.1.0`). CI dùng version từ tag.
+- **macOS:** `ZM AI TOOL.app` + `.pkg`; sau build cài đè `~/Applications`. `/Applications` (nếu root) dùng `sudo installer -pkg …`.
 - **Windows:** `…-windows-x64-Portable.zip` + `…-windows-x64-Setup.exe` (cần Inno Setup 6 / `ISCC` trên máy).
 
 - **Windows (chi tiết):**

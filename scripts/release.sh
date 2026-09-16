@@ -19,7 +19,14 @@ else
   case "$arg" in
     major) NEW="$((maj+1)).0.0" ;;
     minor) NEW="$maj.$((min+1)).0" ;;
-    patch) NEW="$maj.$min.$((pat+1))" ;;
+    # Patch 0–9 only; 8.0.9 → 8.1.0 (never 8.0.10)
+    patch)
+      if [ "$pat" -ge 9 ]; then
+        NEW="$maj.$((min+1)).0"
+      else
+        NEW="$maj.$min.$((pat+1))"
+      fi
+      ;;
     *) echo "Dùng: $0 <x.y.z|patch|minor|major>"; exit 1 ;;
   esac
 fi
