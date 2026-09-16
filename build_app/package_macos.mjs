@@ -33,6 +33,20 @@ function runCapture(command, args) {
   return (result.stdout || '').trim()
 }
 
+/** macOS 15+/26+/27 pkgbuild prints spurious "write: Permission denied" but still succeeds. */
+function runPkgbuild(args) {
+  const result = spawnSync('pkgbuild', args, { cwd: root, encoding: 'utf8', shell: false })
+  const text = `${result.stdout || ''}${result.stderr || ''}`
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed === 'write: Permission denied') continue
+    console.log(line)
+  }
+  if (result.status !== 0) {
+    fail(`pkgbuild thất bại (exit ${result.status})`)
+  }
+}
+
 if (process.platform !== 'darwin') {
   fail('package_macos.mjs chỉ chạy trên macOS.')
 }
@@ -67,7 +81,10 @@ const arch = runCapture('uname', ['-m'])
 const pkg = path.join(releaseDir, `${APP_ARTIFACT_NAME}_v${version}-macos-${arch}.pkg`)
 
 run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', app])
-run('pkgbuild', ['--component', app, '--install-location', '/Applications', pkg])
+runPkgbuild(['--component', app, '--install-location', '/Applications', '--ownership', 'recommended', pkg])
+if (!existsSync(pkg)) {
+  fail(`pkgbuild không tạo được file: ${pkg}`)
+}
 
 console.log(`PKG: ${pkg}`)
 
