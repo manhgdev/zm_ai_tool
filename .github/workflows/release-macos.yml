@@ -5,30 +5,25 @@ on:
   push:
     tags:
       - 'v*'
-      - 'action/*'
 
 permissions:
   contents: write
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           package-manager-cache: false
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -37,25 +32,12 @@ jobs:
           npm install
           python -m venv backend/.venv
           backend/.venv/bin/python -m pip install --upgrade pip
-          backend/.venv/bin/python -m pip install -r backend/requirements-app.txt pyinstaller pywebview uv pytest
+          backend/.venv/bin/python -m pip install -r backend/requirements-app.txt pyinstaller pywebview uv
           echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
           echo "/usr/local/bin" >> "$GITHUB_PATH"
           brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
           which ffmpeg
           ffmpeg -version | head -n 1
-
-      - name: Write version from tag
-        run: |
-          TAG="${GITHUB_REF_NAME:-}"
-          # Strip prefix: v5.2.0 → 5.2.0 ; action/5.2.0 → 5.2.0
-          VERSION="${TAG#v}"
-          VERSION="${VERSION#action/}"
-          if [ -z "$VERSION" ] || echo "$VERSION" | grep -q '[^0-9.]'; then
-            VERSION="$(cat build_app/VERSION 2>/dev/null || echo '0.0.0')"
-          fi
-          echo "$VERSION" > build_app/VERSION
-          echo "Building version: $VERSION"
-
 
       - name: Build macOS app
         env:
@@ -66,122 +48,40 @@ jobs:
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           npm run build:app
 
-      - name: Create APP, PKG, and ZIP packages
+      - name: Create APP and PKG packages
         id: package
         shell: bash
         run: |
           set -euo pipefail
-          app="$(find build_app/release -maxdepth 1 -type d -name 'ZM_AI_TOOL_v*.app' -print -quit)"
-          test -n "$app" || { echo 'Không tìm thấy ZM AI TOOL.app'; exit 1; }
+          app="$(find build_app/release -maxdepth 1 -type d -name 'ZM_AIO_TOOL_v*.app' -print -quit)"
+          test -n "$app" || { echo 'Không tìm thấy ZM AIO TOOL.app'; exit 1; }
           icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")"
           test -n "$icon_name" || { echo 'Info.plist thiếu CFBundleIconFile'; exit 1; }
           test -f "$app/Contents/Resources/$icon_name" || {
             echo "Không tìm thấy app icon: $app/Contents/Resources/$icon_name"
             exit 1
           }
-          version="$(basename "$app" | sed -E 's/^ZM_AI_TOOL_v|\.app$//g')"
-          stage="build_app/release/pkg-stage"
-          payload="$stage/ZM AI TOOL.app"
-          scripts="$stage/scripts"
-          rm -rf "$stage"
-          mkdir -p "$scripts"
-          ditto "$app" "$payload"
-          # The installed bundle must keep a stable name; versioned bundle
-          # names make Installer leave every previous app beside the new one.
-          codesign --force --deep --sign - "$payload"
-          cat > "$scripts/preinstall" <<'SCRIPT'
-          #!/bin/bash
-          set -u
-          close_running_bundle() {
-            local executable="$1/Contents/MacOS/ZM AI TOOL"
-            local pids
-            pids="$(/usr/bin/pgrep -f "$executable" || true)"
-            if [ -n "$pids" ]; then
-              /bin/kill -TERM $pids || true
-              for _ in 1 2 3 4 5; do
-                /usr/bin/pgrep -f "$executable" >/dev/null || break
-                /bin/sleep 1
-              done
-            fi
-          }
-
-          # Stop the existing app first. Installer otherwise replaces files on
-          # disk while the old process remains open in the user's session.
-          close_running_bundle "/Applications/ZM AI TOOL.app"
-
-          # Clean only legacy versioned bundles produced by earlier releases.
-          for legacy in /Applications/ZM_AI_TOOL_v*.app; do
-            if [ -d "$legacy" ]; then
-              close_running_bundle "$legacy"
-              # Keep cleanup non-fatal: a locked legacy file must not prevent
-              # the stable replacement from installing.
-              /bin/rm -rf "$legacy" || true
-            fi
-          done
-          exit 0
-          SCRIPT
-          chmod 755 "$scripts/preinstall"
-          cat > "$scripts/postinstall" <<'SCRIPT'
-          #!/bin/bash
-          set -u
-          app="/Applications/ZM AI TOOL.app"
-          console_user="$(/usr/bin/stat -f '%Su' /dev/console)"
-          if [ -d "$app" ] && [ "$console_user" != "root" ] && [ "$console_user" != "loginwindow" ]; then
-            console_group="$(/usr/bin/id -gn "$console_user" || echo staff)"
-            /usr/sbin/chown -R "$console_user:$console_group" "$app" || true
-            /bin/chmod -R u+rwX "$app" || true
-            user_id="$(/usr/bin/id -u "$console_user" || true)"
-            if [ -n "$user_id" ]; then
-              /bin/launchctl asuser "$user_id" /usr/bin/open "$app" >/dev/null 2>&1 || true
-            fi
-          fi
-          exit 0
-          SCRIPT
-          chmod 755 "$scripts/postinstall"
-          pkg="build_app/release/ZM_AI_TOOL_v${version}-macos-${ARCH}.pkg"
-          zip="build_app/release/ZM_AI_TOOL_v${version}-macos-${ARCH}.zip"
-          pkgbuild --component "$payload" --scripts "$scripts" --install-location /Applications "$pkg"
-          ditto -c -k --sequesterRsrc --keepParent "$payload" "$zip"
-          verify_dir="$(mktemp -d)"
-          ditto -x -k "$zip" "$verify_dir"
-          test -x "$verify_dir/ZM AI TOOL.app/Contents/MacOS/ZM AI TOOL"
-          rm -rf "$verify_dir"
+          version="$(basename "$app" | sed -E 's/^ZM_AIO_TOOL_v|\.app$//g')"
+          arch="$(uname -m)"
+          codesign --force --deep --sign - "$app"
+          pkg="build_app/release/ZM_AIO_TOOL_v${version}-macos-${arch}.pkg"
+          pkgbuild --component "$app" --install-location /Applications "$pkg"
           echo "app=$app" >> "$GITHUB_OUTPUT"
           echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
-          echo "zip=$zip" >> "$GITHUB_OUTPUT"
-        env:
-          ARCH: ${{ matrix.arch }}
+          echo "arch=$arch" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/action/')
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           PKG: ${{ steps.package.outputs.pkg }}
-          ZIP: ${{ steps.package.outputs.zip }}
         shell: bash
         run: |
           set -euo pipefail
-
-          # Build bullet-point release notes from commits since previous tag
-          PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]' | sed -n '2p' || true)
-          if [ -n "$PREV_TAG" ]; then
-            RANGE="$PREV_TAG..$TAG"
-          else
-            RANGE="$TAG"
-          fi
-
-          NOTES=$(git log "$RANGE" --pretty=format:'%s' --no-merges \
-            | grep -v '^chore: release' \
-            | sed 's/^feat: /🚀 /; s/^fix: /🐛 /; s/^chore: /🔧 /; s/^perf: /⚡ /; s/^refactor: /♻️ /; s/^docs: /📝 /; s/^test: /✅ /' \
-            | awk '{print "- " $0}' \
-            || echo '- Cải tiến và sửa lỗi')
-
-          BODY=$(printf '## Thay đổi trong %s\n\n%s' "$TAG" "$NOTES")
-
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$PKG" "$ZIP" --clobber
-          elif ! gh release create "$TAG" "$PKG" "$ZIP" --title "ZM AI TOOL $TAG" --notes "$BODY"; then
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$PKG" --clobber
+          elif ! gh release create "$TAG" "$PKG" --generate-notes --title "ZM AIO TOOL $TAG"; then
             sleep 5
-            gh release upload "$TAG" "$PKG" "$ZIP" --clobber
+            gh release upload "$TAG" "$PKG" --clobber
           fi
