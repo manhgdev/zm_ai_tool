@@ -57,9 +57,6 @@ class PortableLayoutTest(unittest.TestCase):
         script = (ROOT / "build_app" / "installer.iss").read_text(encoding="utf-8")
 
         self.assertIn('DestName: ".zmaio-installed"', script)
-        self.assertIn(r"DefaultDirName={localappdata}\Programs\{#MyAppName}", script)
-        self.assertIn("PrivilegesRequired=lowest", script)
-        self.assertNotIn("PrivilegesRequiredOverridesAllowed=dialog", script)
         self.assertIn("runasoriginaluser", script)
 
     def test_output_root_falls_back_when_saved_path_is_not_writable(self) -> None:
@@ -122,9 +119,6 @@ class PortableLayoutTest(unittest.TestCase):
         launcher = (ROOT / "build_app" / "launcher.py").read_text(encoding="utf-8")
 
         self.assertIn("$payloadNames = @($exeName, 'app', '_internal')", script)
-        self.assertIn("$OldTarget", script)
-        self.assertIn("$InstallMarker", script)
-        self.assertIn("New-Item -ItemType Directory -Path $Target", script)
         self.assertIn("Restore-Backup", script)
         self.assertIn("$newProcess.HasExited", script)
         self.assertIn("ZM_AI_TOOL_UPDATE_READY_FILE", script)
@@ -133,17 +127,6 @@ class PortableLayoutTest(unittest.TestCase):
         self.assertNotIn("Remove-Item -LiteralPath $OldTarget", script)
         for variable in ("ZM_AI_TOOL_HOME", "ZM_AI_TOOL_BUNDLE", "ZM_AI_TOOL_VERSION"):
             self.assertIn(f'set_desktop_path("{variable}"', launcher)
-
-    def test_macos_zip_updater_does_not_request_admin_password(self) -> None:
-        from api.routes.system import _macos_update_script
-
-        with tempfile.TemporaryDirectory() as raw:
-            script = _macos_update_script(Path(raw)).read_text(encoding="utf-8")
-
-        self.assertIn("ditto -x -k", script)
-        self.assertIn("$HOME/Applications/ZM AI TOOL.app", script)
-        self.assertNotIn("administrator privileges", script)
-        self.assertNotIn("installer -pkg", script)
 
     def test_versioned_update_moves_state_and_rebases_default_output(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

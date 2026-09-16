@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -125,7 +126,7 @@ def _desktop_version() -> str:
 def _latest_release() -> dict[str, Any]:
     request = urllib.request.Request(
         f"https://api.github.com/repos/{_UPDATE_REPOSITORY}/releases/latest",
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AI-TOOL"},
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AIO-TOOL"},
     )
     with urllib.request.urlopen(request, timeout=15) as response:
         payload = json.loads(response.read().decode("utf-8"))
@@ -149,25 +150,28 @@ def _release_asset(release: dict[str, Any]) -> dict[str, Any] | None:
         return None
     assets = release.get("assets") or []
     if sys.platform == "win32":
-        # In-app updates must stay unelevated. Use the Portable payload
-        # for both Setup and Portable installs; Setup.exe remains a manual asset.
-        candidates = [
-            f"ZM_AI_TOOL_v{version}-windows-x64-Portable.zip",
-            f"ZM_AI_TOOL_v{version}-windows-x64.zip",
-        ]
+        # Bản Installed → ưu tiên Setup.exe; bản Portable → ưu tiên Portable.zip
+        if _is_windows_installed_build():
+            candidates = [
+                f"ZM_AI_TOOL_v{version}-windows-x64-Setup.exe",
+                f"ZM_AI_TOOL_v{version}-windows-x64-Portable.zip",
+                f"ZM_AI_TOOL_v{version}-windows-x64.zip",
+            ]
+        else:
+            candidates = [
+                f"ZM_AI_TOOL_v{version}-windows-x64-Portable.zip",
+                f"ZM_AI_TOOL_v{version}-windows-x64.zip",
+            ]
     elif sys.platform == "darwin":
         import platform as _platform
         machine = _platform.machine().lower()
         if machine in {"arm64", "aarch64"}:
-            suffix = "-macos-arm64"
+            suffix = "-macos-arm64.pkg"
         elif machine in {"x86_64", "amd64"}:
-            suffix = "-macos-x64"
+            suffix = "-macos-x64.pkg"
         else:
             return None
-        candidates = [
-            f"ZM_AI_TOOL_v{version}{suffix}.zip",
-            f"ZM_AI_TOOL_v{version}{suffix}.pkg",
-        ]
+        candidates = [f"ZM_AI_TOOL_v{version}{suffix}"]
     else:
         return None
     for name in candidates:
@@ -217,7 +221,7 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
     for attempt in range(3):
         try:
             offset = partial.stat().st_size if partial.is_file() else 0
-            request = urllib.request.Request(url, headers={"User-Agent": "ZM-AI-TOOL"})
+            request = urllib.request.Request(url, headers={"User-Agent": "ZM-AIO-TOOL"})
             if offset:
                 request.add_header("Range", f"bytes={offset}-")
             # Large desktop bundles can take several minutes on a slow connection;
@@ -279,10 +283,8 @@ $p         = Get-Content -LiteralPath $paramsPath -Raw -Encoding UTF8 | ConvertF
 $AppPid    = [int]$p.AppPid
 $Zip       = [string]$p.Zip
 $Target    = [string]$p.Target
-$OldTarget = [string]$p.OldTarget
 $Exe       = [string]$p.Exe
 $ReadyFile = [string]$p.ReadyFile
-$InstallMarker = [bool]$p.InstallMarker
 
 $LogFile = Join-Path (Split-Path $Zip -Parent) 'update.log'
 
@@ -295,10 +297,8 @@ Log "=== Bat dau cap nhat ZM AI TOOL portable ==="
 Log "AppPid:    $AppPid"
 Log "Zip:       $Zip"
 Log "Target:    $Target"
-Log "OldTarget: $OldTarget"
 Log "Exe:       $Exe"
 Log "ReadyFile: $ReadyFile"
-Log "Installed marker: $InstallMarker"
 
 try {
     # 1. Cho process goi cap nhat thoat
@@ -308,7 +308,7 @@ try {
     }
 
     # 2. Dong cac process dang chay tu thu muc cu
-    $killDir = if ($OldTarget) { $OldTarget } else { $Target }
+    $killDir = $Target
     $exeName  = [System.IO.Path]::GetFileName($Exe)
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($Exe)
     Log "Dong process $baseName trong $killDir..."
@@ -398,7 +398,6 @@ try {
         }
     }
 
-    New-Item -ItemType Directory -Path $Target -Force | Out-Null
     New-Item -ItemType Directory -Path $backup -Force | Out-Null
     foreach ($name in $payloadNames) {
         $old = Join-Path $Target $name
@@ -413,9 +412,6 @@ try {
         }
         Move-WithRetry $source (Join-Path $Target $name)
         $installedNames.Add($name)
-    }
-    if ($InstallMarker) {
-        "ZM AI TOOL Windows user installation marker." | Out-File -FilePath (Join-Path $Target '.zmaio-installed') -Encoding utf8
     }
 
     # 5. Khoi dong va giu backup den khi app moi song qua giai doan bootstrap.
@@ -1082,7 +1078,7 @@ def api_update_install():
                 _set_update_state(phase="complete", progress=100, message="Đã là phiên bản mới nhất")
                 return
             # Bản Portable cập nhật bằng cách giải nén đè vào exe_dir → cần kiểm tra quyền ghi.
-            # Bản Setup được bung vào thư mục user-writable nên không probe exe_dir hiện tại.
+            # Bản Installed tải Setup.exe vào LocalAppData/updates → không cần probe exe_dir.
             if sys.platform == "win32" and getattr(sys, "frozen", False) and not _is_windows_installed_build():
                 exe_dir = Path(sys.executable).resolve().parent
                 probe = exe_dir / f".zmaio-update-write-{uuid.uuid4().hex}.tmp"
@@ -1117,145 +1113,6 @@ def api_update_install():
 def api_update_status():
     desktop = os.environ.get("ZM_AI_TOOL_DESKTOP")
     return {"desktop": desktop == "1", **_update_snapshot()}
-
-
-def _windows_user_install_dir() -> Path:
-    local = os.environ.get("LOCALAPPDATA")
-    base = Path(local) if local else Path.home() / "AppData" / "Local"
-    return base / "Programs" / "ZM AI TOOL"
-
-
-def _macos_app_bundle() -> Path:
-    exe = Path(sys.executable).resolve()
-    for parent in exe.parents:
-        if parent.suffix.lower() == ".app":
-            return parent
-    return Path("/Applications/ZM AI TOOL.app")
-
-
-def _macos_update_script(updates: Path) -> Path:
-    script = updates / "apply-macos-update.sh"
-    script.write_text(
-        """#!/bin/bash
-set -u
-
-APP_PID="$1"
-PACKAGE="$2"
-TARGET_APP="$3"
-APP_NAME="$4"
-LOG_FILE="$(/usr/bin/dirname "$PACKAGE")/macos-update.log"
-
-log() {
-  /bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
-}
-
-show_error() {
-  /usr/bin/osascript -e "display dialog \"Cập nhật thất bại / Update failed:\\n$1\\n\\nLog: $LOG_FILE\" with title \"ZM AI TOOL\" buttons {\"OK\"} default button \"OK\"" >/dev/null 2>&1 || true
-}
-
-install_app() {
-  destination="$1"
-  parent="$(/usr/bin/dirname "$destination")"
-  name="$(/usr/bin/basename "$destination")"
-  staged="$parent/.$name.updating.$$"
-  backup="$(/usr/bin/dirname "$PACKAGE")/$name.backup.$(/bin/date +%s)"
-
-  /bin/mkdir -p "$parent" || return 1
-  /bin/rm -rf "$staged"
-  /usr/bin/ditto "$SOURCE_APP" "$staged" || {
-    /bin/rm -rf "$staged"
-    return 1
-  }
-
-  if [ -d "$destination" ]; then
-    /bin/mv "$destination" "$backup" || {
-      /bin/rm -rf "$staged"
-      return 1
-    }
-  fi
-
-  if /bin/mv "$staged" "$destination"; then
-    /usr/bin/open "$destination" >/dev/null 2>&1 || /usr/bin/open -a "$APP_NAME" >/dev/null 2>&1 || true
-    /bin/rm -rf "$backup" "$TMP_DIR" "$PACKAGE"
-    return 0
-  fi
-
-  if [ -d "$backup" ]; then
-    /bin/mv "$backup" "$destination" || true
-  fi
-  /bin/rm -rf "$staged"
-  return 1
-}
-
-log "=== Bat dau cap nhat macOS ZM AI TOOL ==="
-log "Package: $PACKAGE"
-log "Target:  $TARGET_APP"
-
-if [ "$APP_PID" -gt 0 ] 2>/dev/null; then
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
-    /bin/kill -0 "$APP_PID" >/dev/null 2>&1 || break
-    /bin/sleep 1
-  done
-fi
-
-TMP_DIR="$(/usr/bin/dirname "$PACKAGE")/macos-extracted-$(/bin/date +%Y%m%d%H%M%S)-$$"
-/bin/rm -rf "$TMP_DIR"
-/bin/mkdir -p "$TMP_DIR" || {
-  show_error "Không tạo được thư mục tạm."
-  exit 1
-}
-
-if ! /usr/bin/ditto -x -k "$PACKAGE" "$TMP_DIR"; then
-  show_error "Không giải nén được gói cập nhật."
-  exit 1
-fi
-
-SOURCE_APP="$(/usr/bin/find "$TMP_DIR" -maxdepth 3 -type d -name '*.app' -print -quit)"
-if [ -z "$SOURCE_APP" ] || [ ! -d "$SOURCE_APP" ]; then
-  show_error "Gói cập nhật không có file .app."
-  exit 1
-fi
-log "Source app: $SOURCE_APP"
-
-if install_app "$TARGET_APP"; then
-  log "Cap nhat thanh cong vao $TARGET_APP"
-  exit 0
-fi
-
-USER_APP="$HOME/Applications/ZM AI TOOL.app"
-if [ "$TARGET_APP" != "$USER_APP" ] && install_app "$USER_APP"; then
-  log "Khong ghi duoc target cu; da chay ban moi tu $USER_APP"
-  /usr/bin/osascript -e 'display notification "Đã mở bản mới từ ~/Applications vì vị trí cũ không cho ghi." with title "ZM AI TOOL"' >/dev/null 2>&1 || true
-  exit 0
-fi
-
-show_error "Không ghi được thư mục ứng dụng. Hãy chuyển app vào thư mục bạn có quyền ghi rồi thử lại."
-if [ -d "$TARGET_APP" ]; then
-  /usr/bin/open "$TARGET_APP" >/dev/null 2>&1 || true
-fi
-exit 1
-""",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    return script
-
-
-def _launch_macos_zip_updater(package: Path) -> None:
-    script = _macos_update_script(package.parent)
-    subprocess.Popen(
-        [
-            "/bin/bash",
-            str(script),
-            str(os.getpid()),
-            str(package.resolve()),
-            str(_macos_app_bundle()),
-            "ZM AI TOOL",
-        ],
-        cwd=str(package.parent),
-        close_fds=True,
-        start_new_session=True,
-    )
 
 
 def _launch_windows_updater(package: Path) -> None:
@@ -1302,9 +1159,7 @@ def _launch_windows_updater(package: Path) -> None:
 
     # Bản Portable: zip extractor script.
     exe = Path(sys.executable).resolve()
-    old_target = exe.parent
-    installed = _is_windows_installed_build()
-    target = _windows_user_install_dir() if installed else old_target
+    target = exe.parent
     script = _windows_update_script(package.parent)
     params = package.parent / "update-params.json"
     ready = package.parent / f"update-ready-{uuid.uuid4().hex}.txt"
@@ -1315,10 +1170,8 @@ def _launch_windows_updater(package: Path) -> None:
                 "AppPid": os.getpid(),
                 "Zip": str(package.resolve()),
                 "Target": str(target.resolve()),
-                "OldTarget": str(old_target.resolve()),
                 "Exe": exe.name,
                 "ReadyFile": str(ready.resolve()),
-                "InstallMarker": installed,
             },
             ensure_ascii=False,
         ),
@@ -1355,25 +1208,40 @@ def api_update_apply():
     if not package.is_file():
         raise HTTPException(404, "Không tìm thấy gói cập nhật đã tải")
     if sys.platform == "darwin":
-        if package.suffix.lower() == ".zip":
-            try:
-                _launch_macos_zip_updater(package)
-            except Exception as exc:
-                _set_update_state(phase="error", error=str(exc), message="Không thể mở trình cập nhật")
-                raise HTTPException(500, f"Không thể mở trình cập nhật: {exc}") from exc
-            _set_update_state(phase="applying", progress=100, message="Đang đóng app để cập nhật và mở lại…")
-            threading.Timer(0.8, lambda: os._exit(0)).start()
-            return {"ok": True, "message": "Đang đóng app để cập nhật và mở lại…"}
+        app_path = Path("/Applications/ZM AI TOOL.app")
+        app_name = "ZM AI TOOL"
+        pkg_path = str(package)
 
-        # Fallback cho release cũ chỉ có PKG: không chạy installer bằng quyền
-        # nâng cao trong app nữa; chỉ mở gói để người dùng tự xử lý.
-        subprocess.Popen(["open", str(package)])
-        _set_update_state(
-            phase="complete",
-            progress=100,
-            message="Đã mở gói cài đặt. App không tự yêu cầu mật khẩu.",
-        )
-        return {"ok": True, "message": "Đã mở gói cài đặt"}
+        def _install_and_relaunch() -> None:
+            """Cài PKG trong nền — app vẫn sống để dialog admin hiện tự nhiên."""
+            try:
+                result = subprocess.run(
+                    [
+                        "osascript", "-e",
+                        f'do shell script "installer -pkg {shlex.quote(pkg_path)} -target /" with administrator privileges',
+                    ],
+                    timeout=180,
+                )
+                if result.returncode == 0:
+                    if app_path.is_dir():
+                        subprocess.Popen(["open", str(app_path)])
+                    else:
+                        subprocess.Popen(["open", "-a", app_name])
+                else:
+                    _set_update_state(phase="error", error="Cài đặt thất bại", message="Cài đặt thất bại — thử lại hoặc cài thủ công")
+                    return
+            except subprocess.TimeoutExpired:
+                _set_update_state(phase="error", error="Timeout", message="Cài đặt quá lâu — thử lại")
+                return
+            except Exception as exc:
+                _set_update_state(phase="error", error=str(exc), message="Lỗi cài đặt")
+                return
+            finally:
+                os._exit(0)
+
+        _set_update_state(phase="applying", progress=50, message="Đang cài — nhập mật khẩu nếu được hỏi…")
+        threading.Thread(target=_install_and_relaunch, daemon=True).start()
+        return {"ok": True, "message": "Đang cài — app sẽ tự khởi động lại"}
 
     try:
         _launch_windows_updater(package)
