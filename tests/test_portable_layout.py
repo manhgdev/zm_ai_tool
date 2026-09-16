@@ -220,7 +220,7 @@ class PortableLayoutTest(unittest.TestCase):
             )
 
             self.assertFalse(errors)
-            self.assertTrue((current / "data" / "settings.json").is_file())
+            self.assertFalse((current / "data" / "settings.json").is_file())
             self.assertTrue((old / "data" / "settings.json").is_file())
 
     def test_moving_fixed_folder_rebases_saved_internal_output(self) -> None:

@@ -95,8 +95,8 @@ def app_output_root() -> Path:
 
 def downloads_folder(tab: str) -> Path:
     """Return one feature subfolder inside the shared APP output root."""
-    key = str(tab or "clone").strip().lower()
-    parts = _OUTPUT_SUBFOLDERS.get(key, (safe_output_part(key, "clone"),))
+    key = str(tab or "video-clone").strip().lower()
+    parts = _OUTPUT_SUBFOLDERS.get(key, (safe_output_part(key, "video-clone"),))
     folder = app_output_root().joinpath(*parts)
     folder.mkdir(parents=True, exist_ok=True)
     return folder

@@ -1120,7 +1120,7 @@ export default function App() {
                   <a
                     className="export-dl"
                     href={`/api/projects/${projectId}/output?download=1`}
-                    download={`video-clone-${projectId}.mp4`}
+                    download={`zm-ai-tool-${projectId}.mp4`}
                   >
                     Tải xuống
                   </a>

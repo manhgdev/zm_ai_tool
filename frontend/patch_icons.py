@@ -1,6 +1,6 @@
 import sys
 
-path = 'd:/DEV/video-clone/frontend/src/shared/components/Icons.tsx'
+path = 'd:/DEV/zm_ai_tool/frontend/src/shared/components/Icons.tsx'
 with open(path + '.bk1', 'r', encoding='utf-8') as f:
     content = f.read()
 

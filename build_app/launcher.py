@@ -168,7 +168,7 @@ def acquire_single_instance() -> bool:
     import ctypes
 
     kernel32 = ctypes.windll.kernel32
-    handle = kernel32.CreateMutexW(None, False, "Local\\ZMAIOTool.Desktop")
+    handle = kernel32.CreateMutexW(None, False, "Local\\ZMAITool.Desktop")
     if not handle:
         return True
     if kernel32.GetLastError() == 183:
@@ -869,7 +869,7 @@ def run_desktop() -> int:
         if icon:
             win_kw["icon"] = icon
         try:
-            webview.create_window(
+            window = webview.create_window(
                 f"{APP_DISPLAY_NAME} v{APP_VERSION}",
                 f"{base}/?v={APP_VERSION}",
                 **win_kw,
@@ -878,11 +878,26 @@ def run_desktop() -> int:
             # pywebview cũ có thể không hỗ trợ icon= hoặc text_select=.
             win_kw.pop("icon", None)
             win_kw.pop("text_select", None)
-            webview.create_window(
+            window = webview.create_window(
                 f"{APP_DISPLAY_NAME} v{APP_VERSION}",
                 f"{base}/?v={APP_VERSION}",
                 **win_kw,
             )
+        try:
+            from pipeline.core.desktop_window import register_restore_callback
+
+            def _restore_desktop_window() -> None:
+                for method in ("restore", "show", "focus"):
+                    fn = getattr(window, method, None)
+                    if callable(fn):
+                        try:
+                            fn()
+                        except Exception:
+                            pass
+
+            register_restore_callback(_restore_desktop_window)
+        except Exception:
+            traceback.print_exc()
         # webview.start() chặn đến khi user đóng cửa sổ — không thoát vì lỗi job nền
         try:
             webview.start(mark_update_ready, gui="edgechromium", debug=False)

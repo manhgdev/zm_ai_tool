@@ -344,7 +344,7 @@ def api_output(project_id: str, download: bool = False):
             path = easy
         else:
             raise HTTPException(404)
-    name = f"video-clone-{project_id}.mp4"
+    name = f"zm-ai-tool-{project_id}.mp4"
     # download=1 → attachment; mặc định inline để trình duyệt phát được
     if download:
         return FileResponse(path, filename=name, media_type="video/mp4")

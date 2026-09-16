@@ -245,7 +245,7 @@ export function loadFlowSnapshot(): Promise<FlowSnapshot> {
 // ── Web File System API helpers ───────────────────────────────────────────────
 function openWebOutputDatabase() {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open("zm-aio-web-output", 1);
+    const req = indexedDB.open("zm-ai-web-output", 1);
     req.onupgradeneeded = () => req.result.createObjectStore("directories");
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);

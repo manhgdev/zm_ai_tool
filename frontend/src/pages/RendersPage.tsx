@@ -290,7 +290,7 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
                 {canReveal ? (
                   <button type="button" onClick={() => void reveal(item.renderId)}>Mở thư mục</button>
                 ) : (
-                  <a href={item.downloadUrl} download={`video-clone-${item.renderId}.mp4`}><IconDownload size={14} /> Tải xuống</a>
+                  <a href={item.downloadUrl} download={`zm-ai-tool-${item.renderId}.mp4`}><IconDownload size={14} /> Tải xuống</a>
                 )}
                 {item.canEdit !== false && item.projectId && item.projectId !== 'srt' && <button type="button" disabled={openingId === item.renderId} onClick={() => void editRender(item)}>
                   {openingId === item.renderId ? 'Đang mở…' : 'Sửa'}

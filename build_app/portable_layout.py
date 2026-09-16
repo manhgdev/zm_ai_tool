@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 _VERSIONED_APP = re.compile(
-    r"^ZM[_ ]AIO[_ ]TOOL[_ ]?v(\d+)\.(\d+)\.(\d+)(?:-|$)", re.IGNORECASE
+    r"^ZM[_ ]AI[_ ]TOOL[_ ]?v(\d+)\.(\d+)\.(\d+)(?:-|$)", re.IGNORECASE
 )
 _APP_EXECUTABLES = ("ZM AI TOOL.exe",)
 _INSTALLED_MARKER = ".zmaio-installed"
@@ -115,10 +115,12 @@ def _legacy_homes(
     result: list[tuple[Path, bool]] = []
     if not _same_path(executable_dir, home):
         result.append((executable_dir, False))
-    result += [
-        (candidate, confirmed_old_target is not None and _same_path(candidate, confirmed_old_target))
-        for candidate in siblings
-    ]
+    if confirmed_old_target is not None:
+        result += [
+            (candidate, _same_path(candidate, confirmed_old_target))
+            for candidate in siblings
+            if _same_path(candidate, confirmed_old_target)
+        ]
     return result
 
 

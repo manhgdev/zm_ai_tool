@@ -226,7 +226,7 @@ def assign_speakers(segments: list[dict[str, Any]], turns: list[dict[str, Any]])
 
 
 def diarization_provider_for_device(device: dict[str, Any]) -> str:
-    """Map the shared video-clone hardware result to a Sherpa provider."""
+    """Map the shared ZM AI TOOL hardware result to a Sherpa provider."""
     accel = str(device.get("accel") or "").lower()
     gpu_kind = str(device.get("gpuKind") or "").lower()
     if accel == "cuda" or gpu_kind == "nvidia":

@@ -10,9 +10,9 @@ export function normalizeWebOutputName(value: string, appFolder: string) {
   if (!/^(?:[A-Za-z]:[\\/]|[\\/])/.test(trimmed)) return value
   // Absolute path: strip any known prefix (any user's home/Downloads/ZM_AI_TOOL/appFolder)
   const normalized = trimmed.replace(/\\/g, '/')
-  const idx = normalized.toLowerCase().indexOf('/zm_aio_tool/')
+  const idx = normalized.toLowerCase().indexOf('/zm_ai_tool/')
   if (idx >= 0) {
-    const after = normalized.slice(idx + '/zm_aio_tool/'.length)
+    const after = normalized.slice(idx + '/zm_ai_tool/'.length)
     const folder = appFolder.replace(/^[\/\\]+|[\/\\]+$/g, '')
     return after.startsWith(folder + '/') ? after.slice(folder.length + 1) : after
   }

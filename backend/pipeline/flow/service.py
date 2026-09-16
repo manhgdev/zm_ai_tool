@@ -845,6 +845,12 @@ class FlowService:
                     await asyncio.wait_for(browser.stop(), timeout=8.0)
                 except Exception:
                     pass
+            try:
+                from pipeline.core.desktop_window import request_desktop_foreground
+
+                request_desktop_foreground()
+            except Exception:
+                pass
             with self._guard:
                 self._connecting_accounts.discard(account_id)
 
