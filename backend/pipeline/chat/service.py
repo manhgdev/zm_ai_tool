@@ -364,11 +364,11 @@ class ChatService:
         self._auth.pop(account_id, None)
         return self.store.delete_account(account_id, delete_history=delete_history)
 
-    def open_browser_login(self, account_id):
+    def open_browser_login(self, account_id, *, open_browser: bool = True):
         account = self.store.get_account(account_id)
         if not account:
             raise KeyError(account_id)
-        if chrome_executable() is None:
+        if open_browser and chrome_executable() is None:
             raise RuntimeError("CHAT_CHROME_REQUIRED: Google Chrome was not found. Install Google Chrome, then sign in again.")
 
         # Fast path: if a valid (or refreshable) token is already saved in the
@@ -397,7 +397,7 @@ class ChatService:
             # persisted ``connecting`` row is stale; retry with its existing
             # Chrome profile instead of creating a new account/profile.
             self.store.update_account(account_id, status="connecting", error="", error_code="")
-            result = auth.start_login(open_browser=True)
+            result = auth.start_login(open_browser=open_browser)
             return {"accountId": account_id, **result}
         except Exception:
             self.store.update_account(account_id, status="signed_out", error="", error_code="CHATGPT_LOGIN_FAILED")

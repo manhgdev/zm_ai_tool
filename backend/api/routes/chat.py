@@ -56,9 +56,9 @@ def create_account(body: dict[str, Any] = Body(...)):
 
 
 @router.post("/accounts/{account_id}/login")
-def oauth_login(account_id: str):
+def oauth_login(account_id: str, open_browser: bool = True):
     try:
-        return service.open_browser_login(account_id)
+        return service.open_browser_login(account_id, open_browser=open_browser)
     except KeyError as exc:
         raise HTTPException(404, _t("Không tìm thấy tài khoản.", "Account not found.")) from exc
     except Exception as exc:

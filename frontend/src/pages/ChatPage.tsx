@@ -383,21 +383,27 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
       const saved = await response.json(); setAttachmentIds(value => [...value, saved.id]); setAttachmentNames(value => [...value, file.name])
     }
   }
+  const [loginMode, setLoginMode] = useState<'browser' | 'link'>('browser')
+  const [loginUrl, setLoginUrl] = useState('')
   const signIn = async (accountId = account) => {
+    setLoginUrl('')
     setError(''); setNotice('')
     try {
-      const response = await fetch(`${API}/accounts/${accountId}/login`, { method: 'POST' })
+      const response = await fetch(`${API}/accounts/${accountId}/login?open_browser=${loginMode === 'browser'}`, { method: 'POST' })
       const data = await response.json()
       if (!response.ok) throw new Error(data.detail?.message || data.detail || t('Không mở được đăng nhập.', 'Could not open sign-in.'))
+      if (data.status === 'connected') { await refreshAccounts(); return }
+      if (loginMode === 'link') setLoginUrl(data.authorizationUrl || '')
       if (!data.loginId) throw new Error(t('Không tạo được phiên đăng nhập ChatGPT Codex.', 'Could not create a ChatGPT Codex sign-in session.'))
       await refreshAccounts()
-      setNotice(t('Đã mở Chrome để đăng nhập ChatGPT Codex. Hoàn tất trong cửa sổ đó để tiếp tục.', 'Chrome is open for ChatGPT Codex sign-in. Finish it in that window to continue.'))
+      setNotice(loginMode === 'link' ? t('Mở liên kết trên trình duyệt cùng máy này; giữ ứng dụng mở để nhận kết quả.', 'Open the link in a browser on this computer; keep the app open to receive the result.') : t('Đã mở cửa sổ đăng nhập riêng.', 'A separate sign-in window is open.'))
       for (let attempt = 0; attempt < 300; attempt += 1) {
         await new Promise(resolve => window.setTimeout(resolve, 2000))
         const poll = await fetch(`${API}/accounts/${accountId}/login/${data.loginId}/poll`, { method: 'POST' })
         const result = await poll.json()
         if (!poll.ok) throw new Error(result.detail?.message || result.detail || t('Đăng nhập ChatGPT Codex thất bại.', 'ChatGPT Codex sign-in failed.'))
         if (result.status === 'connected') {
+          setLoginUrl('')
           await Promise.all([refreshAccounts(), refreshProviders(true)])
           setNotice(t('Đăng nhập ChatGPT Codex thành công.', 'ChatGPT Codex sign-in completed.'))
           return
@@ -408,6 +414,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
       }
       throw new Error(t('Đăng nhập ChatGPT Codex hết thời gian chờ.', 'ChatGPT Codex sign-in timed out.'))
     } catch (e) {
+      setLoginUrl('')
       setNotice('')
       setError(errorText(e instanceof Error ? e.message : e))
       void refreshAccounts().catch(() => undefined)
@@ -450,6 +457,8 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
         <div className="chat-account-dock-head"><span className="chat-account-avatar">C</span><div><strong>{activeAccount ? accountName(activeAccount) : t('ChatGPT Codex', 'ChatGPT Codex')}</strong><small>{activeAccount ? accountState(activeAccount) : t('Chưa đăng nhập', 'Not signed in')}</small></div><button type="button" className="chat-account-check" onClick={() => refreshHealth()} disabled={!activeAccount || activeAccount.status === 'connecting'} aria-label={t('Kiểm tra phiên', 'Check session')}>↻</button></div>
         {activeAccount?.email ? <small className="chat-account-email">{activeAccount.email}</small> : null}
         {activeAccount && accountError(activeAccount) ? <p className="chat-account-error">{accountError(activeAccount)}</p> : null}
+        {!activeAccount?.configured && <label>{t('Cách đăng nhập', 'Sign-in method')}<select value={loginMode} disabled={activeAccount?.status === 'connecting'} onChange={event => setLoginMode(event.target.value as 'browser' | 'link')}><option value="browser">{t('Mở cửa sổ riêng', 'Open separate window')}</option><option value="link">{t('Sao chép liên kết', 'Copy sign-in link')}</option></select></label>}
+        {loginUrl && <div><input readOnly value={loginUrl} aria-label={t('Liên kết đăng nhập', 'Sign-in link')} onFocus={event => event.target.select()} /><button type="button" onClick={async () => { try { await navigator.clipboard.writeText(loginUrl); setNotice(t('Đã sao chép. Mở trên trình duyệt cùng máy này.', 'Copied. Open it in a browser on this computer.')) } catch { setNotice(t('Hãy chọn và sao chép liên kết trong ô.', 'Select and copy the link from the field.')) } }}>{t('Sao chép liên kết', 'Copy link')}</button></div>}
         <div className="chat-account-actions">{!activeAccount ? <button type="button" onClick={() => void addAccount()}>{t('Đăng nhập ChatGPT Codex', 'Sign in to ChatGPT Codex')}</button> : activeAccount.configured ? <button type="button" onClick={() => void signOut(activeAccount.id)}>{t('Đăng xuất', 'Sign out')}</button> : <button type="button" disabled={activeAccount.status === 'connecting'} onClick={() => void signIn(activeAccount.id)}>{activeAccount.status === 'connecting' ? t('Đang đăng nhập…', 'Signing in…') : t('Đăng nhập lại', 'Sign in again')}</button>}</div>
       </section>
     </aside>
