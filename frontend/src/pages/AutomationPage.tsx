@@ -224,9 +224,10 @@ export default function AutomationPage() {
   }
   const [builderWidth, setBuilderWidth] = useState(() => {
     try {
-      const saved = Number(window.localStorage.getItem(AUTOMATION_PANEL_WIDTH_KEY))
-      return Number.isFinite(saved) ? Math.max(320, Math.min(520, saved)) : 400
-    } catch { return 400 }
+      const raw = window.localStorage.getItem(AUTOMATION_PANEL_WIDTH_KEY)
+      const saved = raw ? Number(raw) : NaN
+      return Number.isFinite(saved) && saved > 0 ? Math.max(320, Math.min(520, saved)) : 520
+    } catch { return 520 }
   })
   const panelDrag = useRef<{ startX: number; startWidth: number } | null>(null)
 

@@ -95,7 +95,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
   const accountState = (item: Account) => item.status === 'connected' && item.configured
     ? t('Phiên Codex đang hoạt động', 'Codex session active')
     : item.status === 'connecting'
-      ? t('Đang chờ đăng nhập trong Chrome', 'Waiting for Chrome sign-in')
+      ? t('Đang chờ xác nhận đăng nhập', 'Waiting for sign-in')
       : item.status === 'reauth_required'
       ? t('Chưa đăng nhập hoặc phiên đã hết hạn', 'Not signed in or session expired')
       : item.status === 'unavailable'
@@ -385,22 +385,37 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
   }
   const [loginMode, setLoginMode] = useState<'browser' | 'link'>('browser')
   const [loginUrl, setLoginUrl] = useState('')
-  const signIn = async (accountId = account) => {
+  const [linkCopied, setLinkCopied] = useState(false)
+  const loginAttempt = useRef(0)
+  const pendingLogin = useRef<{ accountId: string; loginId: string } | null>(null)
+  const [switchingLogin, setSwitchingLogin] = useState(false)
+  const loginStarting = useRef(false)
+  const [loginBusy, setLoginBusy] = useState(false)
+  const signIn = async (accountId = account, mode = loginMode) => {
+    const attemptId = ++loginAttempt.current
     setLoginUrl('')
+    setLinkCopied(false)
     setError(''); setNotice('')
     try {
-      const response = await fetch(`${API}/accounts/${accountId}/login?open_browser=${loginMode === 'browser'}`, { method: 'POST' })
+      const endpoint = mode === 'link' ? 'login-link' : 'login?open_browser=true'
+      const response = await fetch(`${API}/accounts/${accountId}/${endpoint}`, { method: 'POST' })
       const data = await response.json()
       if (!response.ok) throw new Error(data.detail?.message || data.detail || t('Không mở được đăng nhập.', 'Could not open sign-in.'))
       if (data.status === 'connected') { await refreshAccounts(); return }
-      if (loginMode === 'link') setLoginUrl(data.authorizationUrl || '')
+      if (mode === 'link') {
+        if (!data.authorizationUrl) throw new Error(t('Máy chủ chưa trả liên kết đăng nhập.', 'The server did not return a sign-in link.'))
+        setLoginUrl(data.authorizationUrl)
+      }
       if (!data.loginId) throw new Error(t('Không tạo được phiên đăng nhập ChatGPT Codex.', 'Could not create a ChatGPT Codex sign-in session.'))
+      pendingLogin.current = { accountId, loginId: data.loginId }
       await refreshAccounts()
-      setNotice(loginMode === 'link' ? t('Mở liên kết trên trình duyệt cùng máy này; giữ ứng dụng mở để nhận kết quả.', 'Open the link in a browser on this computer; keep the app open to receive the result.') : t('Đã mở cửa sổ đăng nhập riêng.', 'A separate sign-in window is open.'))
+      setNotice(mode === 'link' ? t('Mở liên kết trên trình duyệt cùng máy này; giữ ứng dụng mở để nhận kết quả.', 'Open the link in a browser on this computer; keep the app open to receive the result.') : t('Đã mở cửa sổ đăng nhập riêng.', 'A separate sign-in window is open.'))
       for (let attempt = 0; attempt < 300; attempt += 1) {
         await new Promise(resolve => window.setTimeout(resolve, 2000))
+        if (attemptId !== loginAttempt.current) return
         const poll = await fetch(`${API}/accounts/${accountId}/login/${data.loginId}/poll`, { method: 'POST' })
         const result = await poll.json()
+        if (attemptId !== loginAttempt.current) return
         if (!poll.ok) throw new Error(result.detail?.message || result.detail || t('Đăng nhập ChatGPT Codex thất bại.', 'ChatGPT Codex sign-in failed.'))
         if (result.status === 'connected') {
           setLoginUrl('')
@@ -414,11 +429,33 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
       }
       throw new Error(t('Đăng nhập ChatGPT Codex hết thời gian chờ.', 'ChatGPT Codex sign-in timed out.'))
     } catch (e) {
+      if (attemptId !== loginAttempt.current) return
       setLoginUrl('')
       setNotice('')
       setError(errorText(e instanceof Error ? e.message : e))
       void refreshAccounts().catch(() => undefined)
     }
+  }
+  const switchLoginMode = async (mode: 'browser' | 'link') => {
+    if (mode === loginMode || switchingLogin) return
+    if (loginBusy && !pendingLogin.current) return
+    setSwitchingLogin(true)
+    try {
+      const pending = pendingLogin.current
+      if (pending) {
+        const response = await fetch(`${API}/accounts/${pending.accountId}/login/${pending.loginId}/cancel`, { method: 'POST' })
+        if (!response.ok) throw new Error(t('Không hủy được phiên cũ.', 'Could not cancel the previous session.'))
+      }
+      loginAttempt.current += 1
+      pendingLogin.current = null
+      loginStarting.current = false
+      setLoginBusy(false)
+      setLoginUrl('')
+      setLoginMode(mode)
+      // Switching selects a method. Only the explicit sign-in button starts it.
+      await refreshAccounts()
+    } catch (error) { setError(String(error)) }
+    finally { setSwitchingLogin(false) }
   }
   const signOut = async (accountId = account) => {
     const response = await fetch(`${API}/accounts/${accountId}/logout`, { method: 'POST' })
@@ -426,14 +463,24 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
     if (!response.ok) setError(t('Không đăng xuất được ChatGPT Codex.', 'Could not sign out from ChatGPT Codex.'))
     await Promise.all([refreshAccounts(), refreshProviders()])
   }
-  const addAccount = async () => {
+  const addAccount = async (mode = loginMode) => {
+    if (loginStarting.current) return
+    loginStarting.current = true
+    setLoginBusy(true)
+    try {
     setError('')
     const current = accounts[0]
-    if (current) { setAccount(current.id); setProvider('chatgpt_web'); await signIn(current.id); return }
+    if (current) { setAccount(current.id); setProvider('chatgpt_web'); await signIn(current.id, mode); return }
     const response = await fetch(`${API}/accounts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'chatgpt_account', label: t('Tài khoản ChatGPT Codex', 'ChatGPT Codex account') }) })
     const data = await response.json()
     if (!response.ok) { setError(data.detail?.message || data.detail || t('Không thêm được tài khoản.', 'Could not add account.')); return }
-    await refreshAccounts(); setAccount(data.id); setProvider('chatgpt_web'); await signIn(data.id)
+    await refreshAccounts(); setAccount(data.id); setProvider('chatgpt_web'); await signIn(data.id, mode)
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
+    } finally {
+      loginStarting.current = false
+      setLoginBusy(false)
+    }
   }
   const modelSelection = `${provider}::${model}`
   const providerName = (id: string) => ({
@@ -457,9 +504,27 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
         <div className="chat-account-dock-head"><span className="chat-account-avatar">C</span><div><strong>{activeAccount ? accountName(activeAccount) : t('ChatGPT Codex', 'ChatGPT Codex')}</strong><small>{activeAccount ? accountState(activeAccount) : t('Chưa đăng nhập', 'Not signed in')}</small></div><button type="button" className="chat-account-check" onClick={() => refreshHealth()} disabled={!activeAccount || activeAccount.status === 'connecting'} aria-label={t('Kiểm tra phiên', 'Check session')}>↻</button></div>
         {activeAccount?.email ? <small className="chat-account-email">{activeAccount.email}</small> : null}
         {activeAccount && accountError(activeAccount) ? <p className="chat-account-error">{accountError(activeAccount)}</p> : null}
-        {!activeAccount?.configured && <label>{t('Cách đăng nhập', 'Sign-in method')}<select value={loginMode} disabled={activeAccount?.status === 'connecting'} onChange={event => setLoginMode(event.target.value as 'browser' | 'link')}><option value="browser">{t('Mở cửa sổ riêng', 'Open separate window')}</option><option value="link">{t('Sao chép liên kết', 'Copy sign-in link')}</option></select></label>}
-        {loginUrl && <div><input readOnly value={loginUrl} aria-label={t('Liên kết đăng nhập', 'Sign-in link')} onFocus={event => event.target.select()} /><button type="button" onClick={async () => { try { await navigator.clipboard.writeText(loginUrl); setNotice(t('Đã sao chép. Mở trên trình duyệt cùng máy này.', 'Copied. Open it in a browser on this computer.')) } catch { setNotice(t('Hãy chọn và sao chép liên kết trong ô.', 'Select and copy the link from the field.')) } }}>{t('Sao chép liên kết', 'Copy link')}</button></div>}
-        <div className="chat-account-actions">{!activeAccount ? <button type="button" onClick={() => void addAccount()}>{t('Đăng nhập ChatGPT Codex', 'Sign in to ChatGPT Codex')}</button> : activeAccount.configured ? <button type="button" onClick={() => void signOut(activeAccount.id)}>{t('Đăng xuất', 'Sign out')}</button> : <button type="button" disabled={activeAccount.status === 'connecting'} onClick={() => void signIn(activeAccount.id)}>{activeAccount.status === 'connecting' ? t('Đang đăng nhập…', 'Signing in…') : t('Đăng nhập lại', 'Sign in again')}</button>}</div>
+        {!activeAccount?.configured && <fieldset className="chat-login-methods" disabled={switchingLogin || (loginBusy && !pendingLogin.current)}>
+          <legend>{t('Cách đăng nhập', 'Sign-in method')}</legend>
+          <div className="chat-login-options">
+            {(['browser', 'link'] as const).map(mode => <button key={mode} type="button"
+              aria-pressed={loginMode === mode} onClick={() => void switchLoginMode(mode)}>
+              {mode === 'browser' ? t('Cửa sổ riêng', 'Separate window') : t('Dùng liên kết', 'Use a link')}
+            </button>)}
+          </div>
+        </fieldset>}
+        {loginUrl && <div className="chat-login-link">
+          <label htmlFor="chat-login-url">{t('Liên kết đăng nhập', 'Sign-in link')}</label>
+          <div className="chat-login-link-row">
+            <input id="chat-login-url" readOnly value={loginUrl} onFocus={event => event.target.select()} />
+            <button type="button" onClick={async () => { try { await navigator.clipboard.writeText(loginUrl); setLinkCopied(true) } catch { setNotice(t('Hãy chọn và sao chép liên kết trong ô.', 'Select and copy the link from the field.')) } }}>
+              {linkCopied ? t('Đã chép ✓', 'Copied ✓') : t('Sao chép', 'Copy')}
+            </button>
+          </div>
+          <p>{t('Dán vào trình duyệt trên máy này. Giữ ứng dụng mở để hoàn tất đăng nhập.', 'Paste into a browser on this computer. Keep the app open to finish signing in.')}</p>
+          <small role="status">{t('Đang chờ xác nhận…', 'Waiting for confirmation…')}</small>
+        </div>}
+        {!loginUrl && <div className="chat-account-actions">{!activeAccount ? <button type="button" disabled={loginBusy} onClick={() => void addAccount()}>{loginBusy ? t('Đang tạo phiên…', 'Preparing sign-in…') : loginMode === 'link' ? t('Tạo liên kết đăng nhập', 'Create sign-in link') : t('Đăng nhập ChatGPT Codex', 'Sign in to ChatGPT Codex')}</button> : activeAccount.configured ? <button type="button" onClick={() => void signOut(activeAccount.id)}>{t('Đăng xuất', 'Sign out')}</button> : <button type="button" disabled={loginBusy || switchingLogin} onClick={() => void addAccount()}>{activeAccount.status === 'connecting' ? t('Đang đăng nhập…', 'Signing in…') : loginMode === 'link' ? t('Tạo liên kết đăng nhập', 'Create sign-in link') : t('Đăng nhập lại', 'Sign in again')}</button>}</div>}
       </section>
     </aside>
     <section className="chat-main">

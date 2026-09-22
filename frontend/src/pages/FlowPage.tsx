@@ -873,7 +873,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const deleteJob = (id: string) => {
     const job = jobs.find((item) => item.id === id);
     setConfirmAction({
-      message: t("Xóa job này khỏi danh sách?", "Delete this job from the list?"),
+      message: t("Xóa job và file đầu ra trên đĩa? Không thể hoàn tác.", "Delete this job and its output files from disk? This cannot be undone."),
       confirmLabel: t("Xóa job", "Delete job"),
       run: () => (async () => {
         await flowRequest(`/api/flow/jobs/${id}`, { method: "DELETE" });
@@ -930,7 +930,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const deleteAllJobs = () => {
     if (!jobs.length) return;
     setConfirmAction({
-      message: t(`Xóa toàn bộ ${jobs.length} job khỏi hàng đợi?`, `Delete all ${jobs.length} jobs from the queue?`),
+      message: t(`Xóa ${jobs.length} job cùng file đầu ra trên đĩa? Không thể hoàn tác.`, `Delete all ${jobs.length} jobs and their output files from disk? This cannot be undone.`),
       confirmLabel: t("Xóa tất cả", "Delete all"),
       run: () => (async () => {
         const { jobs: rows } = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", { method: "DELETE" });

@@ -169,7 +169,7 @@ export function loadSidebarWidth(): number {
   } catch {
     /* ignore */
   }
-  return SIDEBAR_DEFAULT
+  return SIDEBAR_MAX
 }
 
 export function applyEngineProfile(

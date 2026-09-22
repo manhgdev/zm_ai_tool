@@ -66,6 +66,22 @@ def oauth_login(account_id: str, open_browser: bool = True):
         raise HTTPException(502, detail={"code": "chatgpt_chrome_required" if chrome_required else "chatgpt_login_failed", "message": _t("Không tìm thấy Google Chrome. Hãy cài Google Chrome rồi đăng nhập lại.", "Google Chrome was not found. Install Google Chrome, then sign in again.") if chrome_required else _t("Không bắt đầu được đăng nhập ChatGPT Codex.", "Could not start ChatGPT Codex sign-in."), "reason": str(exc)}) from exc
 
 
+@router.post("/accounts/{account_id}/login-link")
+def oauth_login_link(account_id: str):
+    """Link-only endpoint: never launch a browser, regardless of query defaults."""
+    return oauth_login(account_id, open_browser=False)
+
+
+@router.post("/accounts/{account_id}/login/{login_id}/cancel")
+def oauth_cancel(account_id: str, login_id: str):
+    auth = service.auth_for(account_id)
+    login = auth._pending.get(login_id)
+    if login is not None:
+        login.error = 'LOGIN_CANCELLED'
+        auth.poll(login_id)
+    return {'ok': True}
+
+
 @router.post("/accounts/{account_id}/login/{login_id}/poll")
 def oauth_poll(account_id: str, login_id: str):
     try:

@@ -454,6 +454,12 @@ class FlowService:
         if job.get("status") not in _TERMINAL:
             self._cancelled.add(job_id)
             store.patch_row("jobs", job_id, {"status": "cancelled", "stage": "cancelled", "progress": 0, "updatedAt": time.time()})
+        # Delete artifacts first. Keep the row if Windows locks a file so the
+        # user can retry; never report success while output files remain.
+        for raw_output in job.get('outputs') or []:
+            output = Path(str(raw_output))
+            if output.is_file():
+                output.unlink()
         removed = store.delete_row("jobs", job_id)
         if removed:
             # Output folders can now be shared by multiple prompts. Only remove
@@ -499,6 +505,10 @@ class FlowService:
         with self._account_condition:
             self._cancelled.update(ids)
             self._account_condition.notify_all()
+        selected = [job for job in store.list_rows('jobs') if str(job['id']) in ids]
+        for job in selected:
+            for raw in job.get('outputs') or []:
+                Path(str(raw)).unlink(missing_ok=True)
         removed = store.delete_rows('jobs', ids)
         for job in removed:
             for raw in job.get('outputs') or []:
@@ -531,7 +541,11 @@ class FlowService:
                 count += 1
         # Remove untracked remnants too (for example an interrupted download),
         # but only after restricting the operation to the matched output path.
-        shutil.rmtree(folder, ignore_errors=True)
+        # Never remove another job's outputs when folders are shared.
+        shared = any(self._output_folder(job, create=False).resolve() == folder.resolve()
+                     for job in store.list_rows('jobs'))
+        if not shared and folder.is_dir():
+            shutil.rmtree(folder)
         return count
 
     def connect(self, account_id: str) -> dict[str, Any]:
