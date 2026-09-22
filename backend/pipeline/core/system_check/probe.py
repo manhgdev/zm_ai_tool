@@ -89,9 +89,8 @@ def _runtime_modules_batch_ok(names: list[str]) -> dict[str, tuple[bool, str]]:
         "      raise ImportError('cv2 thiếu VideoCapture')\n"
         "    if n == 'transformers':\n"
         "      from transformers import PretrainedConfig, PreTrainedModel, Qwen3Model\n"
-        "    if n == 'vieneu':\n"
-        "      from vieneu import Vieneu\n"
-        "      from vieneu._v3_turbo_engine.inference_v3_turbo import VieNeuTTSv3Turbo\n"
+    "    if n == 'vieneu':\n"
+    "      from vieneu import Vieneu\n"
         "    out[n] = [True, 'ok']\n"
         "  except Exception as e:\n"
         "    out[n] = [False, type(e).__name__ + ': ' + str(e)[-1500:]]\n"
@@ -166,6 +165,17 @@ _AI_RUNTIME_MODULES = (
     "sherpa_onnx",
     "cffi",
 )
+
+
+def _required_ai_runtime_modules() -> tuple[str, ...]:
+    """Torch is a required runtime layer only for NVIDIA CUDA on Windows.
+
+    AMD/Intel use ONNX/DirectML where supported; forcing CPU Torch there made
+    first-run downloads large without accelerating those machines.
+    """
+    if getattr(sys, "frozen", False) and sys.platform == "win32" and not _nvidia_present():
+        return tuple(name for name in _AI_RUNTIME_MODULES if name not in ("torch", "torchaudio"))
+    return _AI_RUNTIME_MODULES
 
 
 def _invalidate_probe_caches() -> None:
@@ -247,14 +257,19 @@ def _torch_cuda_ready() -> bool:
 
 def _runtime_python() -> Path:
     if getattr(sys, "frozen", False):
-        home = _zm_ai_tool_home()
-        venv = home / ".venv-runtime"
-        return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        from ..runtime_active import runtime_python
+
+        return runtime_python()
     return Path(sys.executable)
 
 
 def _ocr_python() -> Path:
     if getattr(sys, "frozen", False):
+        from ..runtime_active import runtime_python
+
+        active = runtime_python()
+        if active.is_file():
+            return active
         home = Path(os.environ.get("ZM_AI_TOOL_HOME") or "")
         for venv_name in (".venv-runtime", ".venv-ocr"):
             venv = home / venv_name
@@ -296,15 +311,17 @@ def _site_has_dist(sp: Path, prefix: str) -> bool:
 
 def _runtime_venv_fast() -> tuple[bool, str]:
     """Filesystem-only — no torch/whisper import subprocess."""
-    venv = _zm_ai_tool_home() / ".venv-runtime"
-    py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    from ..runtime_active import active_runtime_dir, runtime_python
+
+    venv = active_runtime_dir()
+    py = runtime_python()
     if not py.is_file():
         return False, "chưa cài"
     sp = _venv_site_packages(venv)
     missing = [n for n in _RUNTIME_FAST_DIST if not _site_has_dist(sp, n)]
     if missing:
         return False, f"thiếu: {', '.join(missing)}"
-    return True, "đã cài · .venv-runtime"
+    return True, f"đã cài · {venv.name}"
 
 
 def _ocr_venv_fast(accel: str = "cuda") -> tuple[bool, str]:
@@ -323,6 +340,10 @@ def _demucs_venv_fast() -> tuple[bool, str]:
     from pipeline.export.stem import _demucs_py_in, _demucs_root_candidates
 
     apple = _apple_silicon()
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        py = _runtime_python()
+        if py.is_file() and _site_has_dist(_venv_site_packages(py.parent.parent), "demucs"):
+            return True, "đã cài · runtime pack"
     for root in _demucs_root_candidates():
         py = _demucs_py_in(root)
         if not py.is_file():
@@ -440,6 +461,10 @@ def _demucs_venv_python() -> Path | None:
     from pipeline.export.stem import _demucs_py_in, _demucs_root_candidates
 
     candidates: list[Path] = []
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        active = _runtime_python()
+        if active.is_file():
+            candidates.append(active)
     for root in _demucs_root_candidates():
         py = _demucs_py_in(root)
         if py.is_file():

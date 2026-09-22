@@ -123,6 +123,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 
+      - name: Build immutable Windows AI runtime packs
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/action/')
+        shell: pwsh
+        run: |
+          $version = (Get-Content build_app/VERSION -Raw).Trim()
+          python scripts/build_runtime_packs.py `
+            --output build_app/runtime-release `
+            --runtime-version $version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $manifest = Get-Content build_app/runtime-release/runtime-manifest.json -Raw | ConvertFrom-Json
+          foreach ($pack in $manifest.packs.PSObject.Properties) {
+            $file = Join-Path build_app/runtime-release $pack.Value.url
+            if (-not (Test-Path $file)) { throw "Runtime pack missing: $file" }
+            $actual = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLowerInvariant()
+            if ($actual -ne $pack.Value.sha256) { throw "Runtime pack checksum mismatch: $($pack.Name)" }
+          }
+
+      - name: Test runtime installer transaction and failure handling
+        shell: pwsh
+        run: |
+          backend/.venv/Scripts/python.exe -m unittest discover -s tests -p 'test_runtime_packs.py' -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+
       - name: Create release package
         id: package
         shell: pwsh
@@ -222,7 +246,7 @@ jobs:
             "$TAG" "$INSTALLER_BASE" "$ZIP_BASE" "$TAG" "$NOTES")
 
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$INSTALLER" "$ZIP" --clobber
+            gh release upload "$TAG" "$INSTALLER" "$ZIP" build_app/runtime-release/* --clobber
           else
-            gh release create "$TAG" "$INSTALLER" "$ZIP" --title "ZM AI TOOL $TAG" --notes "$BODY"
+            gh release create "$TAG" "$INSTALLER" "$ZIP" build_app/runtime-release/* --title "ZM AI TOOL $TAG" --notes "$BODY"
           fi

@@ -115,14 +115,9 @@ def runtime_site_packages() -> Path | None:
     """Site-packages dir for the desktop runtime venv (frozen) or None in dev."""
     if not getattr(sys, "frozen", False):
         return None
-    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
-    if not home:
-        return None
-    venv = Path(home) / ".venv-runtime"
-    if sys.platform == "win32":
-        site = venv / "Lib" / "site-packages"
-    else:
-        site = venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    from .runtime_active import runtime_site
+
+    site = runtime_site()
     return site if site.is_dir() else None
 
 

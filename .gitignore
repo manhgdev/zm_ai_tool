@@ -3,6 +3,7 @@ dist/
 build_app/.work/
 build_app/.build-home/
 build_app/release/
+build_app/runtime-release/
 build_app/*.spec
 backend/data/
 backend/public/

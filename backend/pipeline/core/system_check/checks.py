@@ -26,6 +26,7 @@ from .probe import (
     _runtime_modules_batch_ok,
     _runtime_mod_ok,
     _runtime_venv_fast,
+    _required_ai_runtime_modules,
     _torch_cuda_ready_cached,
     _which,
 )
@@ -266,10 +267,10 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
         torch_cuda_ok = True
         if getattr(sys, "frozen", False):
             runtime_ok, runtime_detail = _runtime_venv_fast()
-            runtime_missing = [] if runtime_ok else list(_AI_RUNTIME_MODULES)
+            runtime_missing = [] if runtime_ok else list(_required_ai_runtime_modules())
         else:
             runtime_missing = [
-                mid for mid in _AI_RUNTIME_MODULES if not _mod_ok_fast(mid)[0]
+                mid for mid in _required_ai_runtime_modules() if not _mod_ok_fast(mid)[0]
             ]
             runtime_detail = (
                 "đã cài"
@@ -291,10 +292,11 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             torch_cuda_ok = fut_cuda.result() if fut_cuda else True
 
         if getattr(sys, "frozen", False):
-            runtime_status = _runtime_modules_batch_ok(list(_AI_RUNTIME_MODULES))
-            runtime_missing = [mid for mid in _AI_RUNTIME_MODULES if not runtime_status.get(mid, (False, ""))[0]]
+            required_runtime = _required_ai_runtime_modules()
+            runtime_status = _runtime_modules_batch_ok(list(required_runtime))
+            runtime_missing = [mid for mid in required_runtime if not runtime_status.get(mid, (False, ""))[0]]
         else:
-            runtime_missing = [mid for mid in _AI_RUNTIME_MODULES if not _mod_ok(mid, dist_map=dist)[0]]
+            runtime_missing = [mid for mid in _required_ai_runtime_modules() if not _mod_ok(mid, dist_map=dist)[0]]
         runtime_torch_cuda = _nvidia_present() and not torch_cuda_ok
         runtime_detail = (
             _ai_runtime_detail(torch_cuda=torch_cuda_ok)
@@ -352,14 +354,14 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             id="ai_runtime_diarization",
             name="Sherpa-ONNX (Tách người nói)",
             ok=diarization_ok,
-            required=True,
+            required=False,
             detail=(
                 f"đã cài · tự động: {provider_label}" if diarization_ok
                 else f"thiếu: {', '.join(diarization_missing)} · {diarization_package_detail[:160]}"
             ),
             hint="Dùng kết quả nhận diện phần cứng chung của ZM AI TOOL; nếu backend tăng tốc không tương thích sẽ fallback CPU.",
-            install="ai_runtime",
-            installLabel="Cài tách người nói",
+            install="",
+            installLabel="Tải khi bật Tách người nói",
         )
     )
 
@@ -380,7 +382,10 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
     )
 
     # Nhóm 3 — zmAI + VieNeu
-    _vieneu_mods = ("torch", "torchaudio", "transformers", "vieneu", "soundfile")
+    _vieneu_mods = (
+        ("torch", "torchaudio", "transformers", "vieneu", "soundfile")
+        if nvidia else ("transformers", "vieneu", "soundfile")
+    )
     _vieneu_missing = [m for m in _vieneu_mods if m in runtime_missing]
     _vieneu_torch_bad = runtime_torch_cuda
     items.append(

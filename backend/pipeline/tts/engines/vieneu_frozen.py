@@ -110,7 +110,8 @@ def main():
             if op == "init":
                 backend = msg.get("backend") or "pytorch"
                 device = msg.get("device") or "cuda"
-                _enable_torchaudio_soundfile_fallback()
+                if backend == "pytorch":
+                    _enable_torchaudio_soundfile_fallback()
                 _prepare_cuda_weight_load(backend, device)
                 if backend == "pytorch":
                     _register()

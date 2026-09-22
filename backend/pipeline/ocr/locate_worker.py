@@ -111,7 +111,9 @@ def _uv_run_cmd() -> list[str] | None:
             home = str(Path(os.environ.get("LOCALAPPDATA", "")) / "ZM_AI_TOOL")
         else:
             home = str(Path.home() / ".local" / "share" / "ZM_AI_TOOL")
-    venv = Path(home) / ".venv-runtime"
+    from pipeline.core.runtime_active import active_runtime_dir
+
+    venv = active_runtime_dir()
     if not venv.is_dir():
         return None
     meipass = getattr(sys, "_MEIPASS", None)

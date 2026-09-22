@@ -87,6 +87,14 @@ _install_state: dict[str, Any] = {
     "log": "",
     "startedAt": 0.0,
     "updatedAt": 0.0,
+    "stage": "",
+    "runtimePack": "",
+    "downloadedBytes": 0,
+    "totalBytes": 0,
+    "requiredDiskBytes": 0,
+    "errorCode": "",
+    "retryable": False,
+    "diagnostics": "",
 }
 _install_lock = threading.Lock()
 _checks_warm_lock = threading.Lock()
@@ -603,7 +611,11 @@ def _append_install_log(text: str) -> None:
         _install_state["updatedAt"] = time.time()
 
 
-def _set_install_progress(progress: int | float, message: str = "") -> None:
+def _set_install_progress(
+    progress: int | float,
+    message: str = "",
+    fields: dict[str, Any] | None = None,
+) -> None:
     """Publish monotonic, backend-owned install progress to polling clients."""
     try:
         value = max(0, min(99, round(float(progress))))
@@ -618,6 +630,12 @@ def _set_install_progress(progress: int | float, message: str = "") -> None:
         _install_state["progress"] = value
         if message:
             _install_state["message"] = message
+        for key in (
+            "stage", "runtimePack", "downloadedBytes", "totalBytes",
+            "requiredDiskBytes", "diagnostics",
+        ):
+            if fields and key in fields:
+                _install_state[key] = fields[key]
         _install_state["updatedAt"] = time.time()
 
 
@@ -660,6 +678,14 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
             log="",
             startedAt=started_at,
             updatedAt=started_at,
+            stage="detect_hardware" if kind in ("ai_runtime", "ocr_cuda") else "",
+            runtimePack="",
+            downloadedBytes=0,
+            totalBytes=0,
+            requiredDiskBytes=0,
+            errorCode="",
+            retryable=False,
+            diagnostics="",
         )
 
     def work() -> None:
@@ -677,10 +703,23 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                 _install_state["message"] = str(result.get("message") or "")
                 _install_state["progress"] = 100
                 _install_state["needsRestart"] = bool(result.get("needsRestart"))
+                for key in ("runtimePack", "diagnostics"):
+                    if key in result:
+                        _install_state[key] = result[key]
                 _install_state["updatedAt"] = time.time()
         except Exception as e:
+            from pipeline.core.runtime_packs import RuntimePackError
+
             with _install_lock:
                 _install_state["error"] = str(e)
+                if isinstance(e, RuntimePackError):
+                    _install_state["errorCode"] = e.code
+                    _install_state["retryable"] = e.retryable
+                    _install_state["diagnostics"] = e.diagnostics
+                elif kind in ("ai_runtime", "ocr_cuda", "demucs_cuda"):
+                    _install_state["errorCode"] = "RUNTIME_PROBE_FAILED"
+                    _install_state["retryable"] = True
+                    _install_state["diagnostics"] = repr(e)
                 _install_state["message"] = "Cài đặt thất bại / Installation failed"
                 _install_state["updatedAt"] = time.time()
         finally:
@@ -983,6 +1022,11 @@ def api_install_status():
         "startedAt": float(st.get("startedAt") or 0),
         "updatedAt": float(st.get("updatedAt") or 0),
     }
+    for key in (
+        "stage", "runtimePack", "downloadedBytes", "totalBytes",
+        "requiredDiskBytes", "errorCode", "retryable", "diagnostics",
+    ):
+        out[key] = st.get(key)
     if st.get("log"):
         # Trả 30 dòng cuối để tránh payload quá lớn.
         out["log"] = "\n".join(st["log"].splitlines()[-30:])
@@ -998,6 +1042,19 @@ def api_install_status():
             out["needsRestart"] = True
         return out
     return out
+
+
+@router.post("/api/system/install/rollback")
+def api_install_rollback():
+    from pipeline.core.runtime_packs import RuntimePackError, rollback_runtime
+
+    try:
+        return rollback_runtime()
+    except RuntimePackError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{exc} [{exc.code}] {exc.diagnostics}",
+        ) from exc
 
 
 @router.post("/api/system/install/ai_runtime")

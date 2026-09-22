@@ -433,6 +433,17 @@ def _demucs_python(project_id: str | None = None, *, report: bool = True) -> str
         )
         _pip_install_demucs_torch(exe, project_id)
 
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        from pipeline.core.runtime_active import runtime_python
+
+        active = runtime_python()
+        if _ready(active) and (wanted != "cuda" or _torch_device(active) == "cuda"):
+            return str(active)
+        raise RuntimeError(
+            "Demucs runtime chưa được cài. Mở Thiết lập → Cài Demucs; "
+            "APP không chạy pip trên máy người dùng nữa."
+        )
+
     # 1) Dùng venv đã có demucs (app home / server / LocalAppData)
     for root in _demucs_root_candidates():
         cand = _demucs_py_in(root)

@@ -63,15 +63,10 @@ def _runtime_python() -> str | None:
     """Python that owns torch in frozen app."""
     if not getattr(sys, "frozen", False):
         return sys.executable
-    home = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
-    if not home:
-        return None
-    py = (
-        os.path.join(home, ".venv-runtime", "Scripts", "python.exe")
-        if sys.platform == "win32"
-        else os.path.join(home, ".venv-runtime", "bin", "python")
-    )
-    return py if os.path.isfile(py) else None
+    from .runtime_active import runtime_python
+
+    py = runtime_python()
+    return str(py) if py.is_file() else None
 
 
 def _probe_torch_device_in(python: str) -> TorchDevice:

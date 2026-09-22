@@ -323,8 +323,13 @@ export default function ConfigModal({
         if (st.running && st.kind) {
           setInstalling(st.kind)
           setInstallProgress(Number(st.progress) || 1)
-          setInstallMessage(st.message || localize(locale, `Đang cài ${installLabel(st.kind)}…`, `Installing ${installLabel(st.kind)}…`))
+          const bytes = st.totalBytes && st.downloadedBytes != null
+            ? ` · ${(st.downloadedBytes / 1048576).toFixed(0)}/${(st.totalBytes / 1048576).toFixed(0)} MB`
+            : ''
+          const pack = st.runtimePack ? ` · ${st.runtimePack}` : ''
+          setInstallMessage(`${st.message || localize(locale, `Đang cài ${installLabel(st.kind)}…`, `Installing ${installLabel(st.kind)}…`)}${pack}${bytes}`)
           if (st.log) setInstallLog(st.log)
+          if (st.diagnostics) setInstallLog((previous) => previous.includes(st.diagnostics!) ? previous : `${previous}${previous ? '\n' : ''}${st.diagnostics}`)
           setMsg(st.message || localize(locale, `Đang cài ${installLabel(st.kind)}…`, `Installing ${installLabel(st.kind)}…`))
         } else {
           setInstalling(null)
@@ -332,6 +337,7 @@ export default function ConfigModal({
             observedInstallError.current = st.error
             setInstallPopupError(st.error)
             setChecksErr(st.error)
+            if (st.diagnostics) setInstallLog((previous) => previous.includes(st.diagnostics!) ? previous : `${previous}${previous ? '\n' : ''}${st.diagnostics}`)
           }
         }
       } catch {
@@ -367,7 +373,18 @@ export default function ConfigModal({
     const onStatus = (status: InstallStatus) => {
       if (status.log) setInstallLog(status.log)
       if (typeof status.progress === 'number') setInstallProgress(status.progress)
-      if (status.message) setInstallMessage(status.message)
+      if (status.message) {
+        const bytes = status.totalBytes && status.downloadedBytes != null
+          ? ` · ${(status.downloadedBytes / 1048576).toFixed(0)}/${(status.totalBytes / 1048576).toFixed(0)} MB`
+          : ''
+        const pack = status.runtimePack ? ` · ${status.runtimePack}` : ''
+        setInstallMessage(`${status.message}${pack}${bytes}`)
+      }
+      if (status.diagnostics) {
+        setInstallLog((previous) => previous.includes(status.diagnostics!)
+          ? previous
+          : `${previous}${previous ? '\n' : ''}${status.diagnostics}`)
+      }
     }
     try {
       const result = kind === 'ai_runtime'
@@ -424,6 +441,19 @@ export default function ConfigModal({
       setRestarting(false)
     }
   }, [])
+
+  const rollbackAiRuntime = useCallback(async () => {
+    setChecksErr('')
+    try {
+      const result = await api.rollbackAiRuntime()
+      setInstallPopupError('')
+      setMsg(localize(locale, 'Đã khôi phục runtime trước.', 'Previous runtime restored.'))
+      if (result.needsRestart) setPendingRestart(true)
+      await loadChecks(true, false)
+    } catch (e) {
+      setChecksErr(e instanceof Error ? e.message : localize(locale, 'Không thể khôi phục runtime.', 'Could not restore the runtime.'))
+    }
+  }, [loadChecks, locale])
 
   useEffect(() => {
     if (!open || section !== 'setup') return
@@ -833,7 +863,16 @@ export default function ConfigModal({
                 </button>
               </div>
             </div>
-            {checksErr ? <p className="cfg-msg cfg-msg-err">{checksErr}</p> : null}
+            {checksErr ? (
+              <div className="cfg-msg cfg-msg-err">
+                <p>{checksErr}</p>
+                {installPopupError ? (
+                  <button type="button" className="cfg-secondary" disabled={!!installing} onClick={() => void rollbackAiRuntime()}>
+                    {t('Khôi phục runtime trước', 'Restore previous runtime')}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             {pendingRestart ? (
               <p className="cfg-msg cfg-msg-restart">
                 Đã cài gói cần reload — cài tiếp các mục còn lại rồi bấm{' '}

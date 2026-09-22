@@ -25,6 +25,14 @@ export type InstallStatus = {
   progress?: number
   startedAt?: number
   updatedAt?: number
+  stage?: 'detect_hardware' | 'fetch_manifest' | 'download' | 'verify_checksum' | 'extract' | 'probe' | 'activate' | 'rollback' | ''
+  runtimePack?: string
+  downloadedBytes?: number
+  totalBytes?: number
+  requiredDiskBytes?: number
+  errorCode?: 'HARDWARE_UNSUPPORTED' | 'DRIVER_TOO_OLD' | 'DOWNLOAD_FAILED' | 'CHECKSUM_MISMATCH' | 'DISK_FULL' | 'EXTRACT_FAILED' | 'RUNTIME_PROBE_FAILED' | 'ACTIVATION_FAILED' | string
+  retryable?: boolean
+  diagnostics?: string
 }
 
 async function pollInstall(
@@ -126,6 +134,13 @@ export const api = {
 
   installStatus: () =>
     fetchJson<InstallStatus>(`${base}/system/install/status`, undefined, 30_000),
+
+  rollbackAiRuntime: () =>
+    fetchJson<{ ok: boolean; message: string; needsRestart?: boolean }>(
+      `${base}/system/install/rollback`,
+      { method: 'POST' },
+      30_000,
+    ),
 
   installAiRuntime: (onStatus?: (status: InstallStatus) => void) => pollInstall(`${base}/system/install/ai_runtime`, onStatus),
 

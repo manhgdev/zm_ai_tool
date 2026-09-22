@@ -441,13 +441,20 @@ try:
 except Exception:
     pass
 
-# Các gói AI nặng được cài ở lần chạy đầu, ngoài thư mục app để nâng cấp không cần build lại EXE.
-runtime_venv = home / ".venv-runtime"
-runtime_site = (
-    runtime_venv / "Lib" / "site-packages"
-    if sys.platform == "win32"
-    else runtime_venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
-)
+# Runtime pack được kích hoạt qua runtime/current.json; .venv-runtime chỉ là
+# fallback tương thích cho bản cũ trong lúc migration.
+try:
+    from pipeline.core.runtime_active import active_runtime_dir, runtime_site as _active_runtime_site
+
+    runtime_venv = active_runtime_dir()
+    runtime_site = _active_runtime_site()
+except Exception:
+    runtime_venv = home / ".venv-runtime"
+    runtime_site = (
+        runtime_venv / "Lib" / "site-packages"
+        if sys.platform == "win32"
+        else runtime_venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    )
 
 # Mở log ngay — trước mọi import nặng để crash lúc khởi động luôn được ghi.
 if getattr(sys, "frozen", False):

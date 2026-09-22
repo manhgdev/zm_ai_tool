@@ -44,10 +44,13 @@ _install_log_fn: Any = None  # Callable[[str], None] | None
 _install_progress_fn: Any = None  # Callable[[int, str], None] | None
 
 
-def _report_install(progress: int | float, message: str) -> None:
+def _report_install(progress: int | float, message: str, **fields: Any) -> None:
     if _install_progress_fn is None:
         return
     try:
+        _install_progress_fn(progress, message, fields)
+    except TypeError:
+        # Backward-compatible for tests/dev callbacks using the old 2-arg API.
         _install_progress_fn(progress, message)
     except Exception:
         pass
@@ -815,6 +818,13 @@ def ensure_torchaudio() -> None:
 
 def install_ai_runtime() -> dict[str, Any]:
     """Cài nhóm ASR/OCR nặng vào venv riêng của bản desktop."""
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        from ..runtime_packs import install_runtime_packs
+
+        return install_runtime_packs(
+            lambda value, message, fields: _report_install(value, message, **fields)
+        )
+
     from pipeline.asr.speaker import ensure_diarization_models
     from pipeline.core.config import DATA
 
@@ -1142,6 +1152,13 @@ def install_ai_runtime() -> dict[str, Any]:
 
 def install_ocr_cuda() -> dict[str, Any]:
     """Install the OCR GPU runtime into the Python running this API."""
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        from ..runtime_packs import install_runtime_packs
+
+        return install_runtime_packs(
+            lambda value, message, fields: _report_install(value, message, **fields)
+        )
+
     _report_install(5, "Đang kiểm tra OCR GPU… / Checking OCR GPU…")
     ok, detail = _ocr_cuda_check()
     if ok:
@@ -1244,6 +1261,13 @@ def install_ocr_cuda() -> dict[str, Any]:
 
 def install_demucs_cuda() -> dict[str, Any]:
     """Cài Demucs tối ưu: NVIDIA CUDA / Apple demucs-mlx / CPU."""
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        from ..runtime_packs import install_demucs_pack
+
+        return install_demucs_pack(
+            lambda value, message, fields: _report_install(value, message, **fields)
+        )
+
     ok, detail = _demucs_check()
     if ok:
         return {"ok": True, "message": "Demucs đã sẵn sàng", "detail": detail}
