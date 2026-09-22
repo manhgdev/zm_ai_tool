@@ -156,6 +156,7 @@ def _run(command: list[str], error: str, label: str) -> None:
         result = _pip_stream(command, timeout=2700, idle_timeout=300, environment={
             'UV_PYTHON_INSTALL_DIR': str(runtime_home() / 'runtime' / 'python'),
             'UV_CACHE_DIR': str(runtime_home() / 'runtime' / 'cache'),
+            'PIP_CACHE_DIR': str(runtime_home() / 'runtime' / 'pip-cache'),
         })
     except (OSError, RuntimeError) as exc:
         raise RuntimeInstallError(error, f'{label} failed', diagnostics=str(exc)) from exc
@@ -197,13 +198,20 @@ def _prepare(uv: str, root: Path) -> Path:
                 _install_log_fn('Windows blocked the optional Python minor-version link; verified patch interpreter will be used directly.\n')
         if not usable():
             raise RuntimeInstallError('PYTHON_PREPARE_FAILED', 'Downloaded Python failed its version/stdlib probe')
-    _run([uv, 'venv', '--python', str(python), '--no-python-downloads', '--seed', str(root)],
+    # CPython copies its Windows launchers and records the real patch home;
+    # uv's managed-minor junction is not involved in creating/querying this venv.
+    _run([str(python), '-I', '-m', 'venv', '--copies', str(root)],
          'PYTHON_PREPARE_FAILED', 'Python environment')
+    _run([str(_python(root)), '-I', '-c',
+          "import sys,ssl,pip; assert sys.version_info[:3] == (3,12,10)"],
+         'PYTHON_PREPARE_FAILED', 'Python environment verification')
     return _python(root)
 
 
 def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit) -> None:
-    base = [uv, 'pip', 'install', '--python', str(python), '--link-mode', 'copy']
+    base = [str(python), '-I', '-m', 'pip', '--isolated', 'install',
+            '--cache-dir', str(runtime_home() / 'runtime' / 'pip-cache'),
+            '--disable-pip-version-check', '--no-input']
     def install(specs, value, *, index=None, no_deps=False, source=False):
         label = ', '.join(specs)
         emit(value, 'install_packages', currentPackage=label)

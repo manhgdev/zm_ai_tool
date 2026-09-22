@@ -24,12 +24,12 @@ const errors: Record<string, [string, string]> = {
 
 export function runtimeStatusText(status: InstallStatus, locale: Locale): string {
   const stage = stages[status.stage || '']
-  if (!stage) return status.message || ''
+  if (!stage) return localize(locale, 'Đang chuẩn bị cài đặt…', 'Preparing installation…')
   const profile = status.runtimeProfile || status.runtimePack
   return [localize(locale, ...stage), profile, status.currentPackage].filter(Boolean).join(' · ')
 }
 
 export function runtimeErrorText(status: InstallStatus, locale: Locale): string {
   const label = errors[status.errorCode || '']
-  return label ? `${localize(locale, ...label)} [${status.errorCode}]` : status.error || ''
+  return label ? `${localize(locale, ...label)} [${status.errorCode}]` : localize(locale, 'Cài đặt thất bại. Xem log chi tiết.', 'Installation failed. See the diagnostic log.')
 }

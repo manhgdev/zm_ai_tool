@@ -15,7 +15,7 @@ import { runtimeStatusText, runtimeErrorText } from './runtimeStatus'
 import {
   type InstallKind, type Section, type CloudTab, type UpdateDialog, type CloudDraft,
   PROVIDERS, PROVIDER_PRESET_MODELS,
-  installLabel, nextAutoInstall, emptyCloud, providerKeyPlaceholder,
+  nextAutoInstall, emptyCloud, providerKeyPlaceholder,
 } from './configModal.helpers'
 
 interface ElKeySlot {
@@ -47,6 +47,11 @@ export default function ConfigModal({
   onLicenseStatusChange,
 }: Props) {
   const { locale } = useLocale()
+  const localeRef = useRef(locale)
+  localeRef.current = locale
+  const installLabel = (kind: string) => kind.startsWith('ai_runtime')
+    ? localize(locale, 'gói AI', 'AI packages')
+    : kind === 'ocr_cuda' ? 'OCR GPU' : kind === 'demucs_cuda' ? 'Demucs' : 'NVM + Node.js LTS'
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
   const systemCheckText = (id: string, value: string | undefined, kind: 'detail' | 'hint' | 'installLabel') => {
     if (!value) return ''
@@ -370,9 +375,10 @@ export default function ConfigModal({
     let lastInstallError = ''
     const onStatus = (status: InstallStatus) => {
       if (status.log) setInstallLog(status.log)
+      if (status.error) setInstallLog((previous) => previous + '\n' + status.error)
       if (typeof status.progress === 'number') setInstallProgress(status.progress)
-      setInstallMessage(runtimeStatusText(status, locale))
-      if (status.error) lastInstallError = runtimeErrorText(status, locale)
+      setInstallMessage(runtimeStatusText(status, localeRef.current))
+      if (status.error) lastInstallError = runtimeErrorText(status, localeRef.current)
       if (status.diagnostics) {
         setInstallLog((previous) => previous.includes(status.diagnostics!)
           ? previous
@@ -387,7 +393,7 @@ export default function ConfigModal({
           : kind === 'demucs_cuda'
             ? await api.installDemucsCuda(onStatus)
             : await api.installNvm(onStatus)
-      const doneMsg = kind === 'nvm' ? result.detail || result.message : localize(locale, 'Runtime đã sẵn sàng.', 'Runtime is ready.')
+      const doneMsg = localize(localeRef.current, 'Cài đặt hoàn tất.', 'Installation complete.')
       setInstallProgress(100)
       setInstallMessage(doneMsg)
       setInstallLog((prev) => prev ? `${prev}\n\n✓ ${doneMsg}` : `✓ ${doneMsg}`)
@@ -398,15 +404,8 @@ export default function ConfigModal({
       // Giữ popup hiện tối thiểu 1.5s để user thấy kết quả
       await new Promise((r) => window.setTimeout(r, 1500))
     } catch (e) {
-      const message = lastInstallError || (e instanceof Error
-        ? e.message
-        : kind === 'ai_runtime'
-          ? 'Cài gói AI thất bại'
-          : kind === 'ocr_cuda'
-            ? 'Cài GPU OCR thất bại'
-            : kind === 'demucs_cuda'
-              ? 'Cài Demucs thất bại'
-              : 'Cài NVM + Node.js LTS thất bại')
+      if (e instanceof Error) setInstallLog((previous) => previous + '\\n' + e.message)
+      const message = lastInstallError || runtimeErrorText({ running: false }, localeRef.current)
       setChecksErr(message)
       setInstallPopupError(message)
       observedInstallError.current = message
@@ -704,9 +703,9 @@ export default function ConfigModal({
             <h2>{t('Cấu hình', 'Settings')}</h2>
             <p>
               {installing
-                ? `Đang cài ${installLabel(installing)}…`
+                ? t(`Đang cài ${installLabel(installing)}…`, `Installing ${installLabel(installing)}…`)
                 : forceSetup && !checks?.ok
-                  ? 'Cài đủ thành phần bắt buộc để bắt đầu'
+                  ? t('Cài đủ thành phần bắt buộc để bắt đầu', 'Install the required components to get started')
                   : t('Thiết lập hệ thống · Cloud AI · ElevenLabs', 'System settings · Cloud AI · ElevenLabs')}
             </p>
           </div>
@@ -801,8 +800,8 @@ export default function ConfigModal({
               <div className="cfg-setup-info">
                 <strong>
                   {installing
-                    ? `Đang cài ${installLabel(installing)}…`
-                    : checks?.summary || (checksLoading ? 'Đang tải…' : '—')}
+                    ? t(`Đang cài ${installLabel(installing)}…`, `Installing ${installLabel(installing)}…`)
+                    : checksLoading ? t('Đang kiểm tra…', 'Checking…') : checks?.ok ? t('Đã sẵn sàng', 'Ready') : t('Cần cài thành phần bắt buộc', 'Required components need installation')}
                 </strong>
                 {checks ? (
                   <span className="cfg-setup-meta">
@@ -818,6 +817,8 @@ export default function ConfigModal({
               <div className="cfg-setup-actions">
                 {(checks?.device?.install?.actions?.length ?? 0) > 0
                   ? checks?.device?.install?.actions!.map((a) => {
+                    const actionLabel = a.id === 'demucs_cuda'
+                      ? t('Cài Demucs', 'Install Demucs') : t('Cài OCR GPU', 'Install OCR GPU')
                     const done = (checks?.items || []).some(
                       (it) =>
                         it.ok &&
@@ -827,7 +828,7 @@ export default function ConfigModal({
                     )
                     return done ? (
                       <span key={a.id} className="cfg-check-installed cfg-setup-chip">
-                        {a.label} ✓
+                        {actionLabel} ✓
                       </span>
                     ) : (
                       <button
@@ -841,7 +842,7 @@ export default function ConfigModal({
                           void installAction(a.id as 'ocr_cuda' | 'demucs_cuda')
                         }}
                       >
-                        {installing === a.id ? '…' : a.label}
+                        {installing === a.id ? '…' : actionLabel}
                       </button>
                     )
                   })
@@ -868,8 +869,7 @@ export default function ConfigModal({
             ) : null}
             {pendingRestart ? (
               <p className="cfg-msg cfg-msg-restart">
-                Đã cài gói cần reload — cài tiếp các mục còn lại rồi bấm{' '}
-                <strong>Khởi động lại</strong>.
+                {t('Đã cài xong. Khởi động lại ứng dụng để áp dụng.', 'Installation complete. Restart the application to apply changes.')}
               </p>
             ) : null}
             {msg && section === 'setup' ? <p className="cfg-msg">{msg}</p> : null}

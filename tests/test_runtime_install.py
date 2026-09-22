@@ -29,8 +29,8 @@ class HardwareTests(unittest.TestCase):
                         diagnostics='Failed to create Python minor version link directory (os error 448)')
             with patch.object(runtime, '_run', side_effect=run), patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, '', '')):
                 runtime._prepare('uv', Path(raw) / 'candidate')
-            self.assertIn(str(python), commands[-1])
-            self.assertIn('--no-python-downloads', commands[-1])
+            self.assertEqual(commands[1][:5], [str(python), '-I', '-m', 'venv', '--copies'])
+            self.assertTrue(commands[-1][0].endswith('python.exe'))
 
     def test_minor_link_failure_does_not_hide_broken_python(self):
         with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {'ZM_AI_TOOL_HOME': raw}), patch.object(
@@ -76,6 +76,8 @@ class HardwareTests(unittest.TestCase):
                 self.assertTrue(ort[0].startswith('onnxruntime-directml=='))
             for command in commands:
                 self.assertIn(str(Path('candidate/python.exe')), command)
+                self.assertEqual(command[:4], [str(Path('candidate/python.exe')), '-I', '-m', 'pip'])
+                self.assertNotIn('--python', command)
             self.assertIn('--no-deps', commands[-1])
             self.assertIn('--no-binary', commands[-1])
             self.assertTrue(all('--only-binary' in c for c in commands))

@@ -22,6 +22,35 @@ from portable_layout import (
 
 
 class PortableLayoutTest(unittest.TestCase):
+    def test_updater_early_exit_is_reported_before_app_shutdown(self):
+        from api.routes.system import _spawn_windows_updater
+        from unittest.mock import Mock
+        process = Mock()
+        process.poll.return_value = 1
+        with tempfile.TemporaryDirectory() as raw, patch('api.routes.system.subprocess.Popen', return_value=process):
+            with self.assertRaisesRegex(RuntimeError, 'App kept open'):
+                _spawn_windows_updater(['powershell.exe'], started=Path(raw) / 'started', log_path=Path(raw) / 'log')
+
+    def test_updater_acknowledges_before_waiting_for_app(self):
+        from api.routes.system import _windows_setup_update_script, _windows_update_script, _spawn_windows_updater
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for factory in (_windows_setup_update_script, _windows_update_script):
+                source = factory(root).read_text(encoding='utf-8-sig')
+                self.assertLess(source.index('Set-Content -LiteralPath $StartedFile'), source.index('Wait-Process'))
+                self.assertIn("$env:PYINSTALLER_RESET_ENVIRONMENT = '1'", source)
+            process = Mock()
+            process.poll.return_value = None
+            started = root / 'started'
+            def spawn(*args, **kwargs):
+                started.write_text('ready')
+                self.assertEqual(kwargs['env']['PYINSTALLER_RESET_ENVIRONMENT'], '1')
+                return process
+            with patch('api.routes.system.subprocess.Popen', side_effect=spawn):
+                _spawn_windows_updater(['powershell.exe'], started=started, log_path=root / 'log')
+            process.terminate.assert_not_called()
+
     def test_setup_marker_always_uses_local_app_data(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

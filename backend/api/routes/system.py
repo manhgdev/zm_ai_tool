@@ -300,6 +300,7 @@ $Zip       = [string]$p.Zip
 $Target    = [string]$p.Target
 $Exe       = [string]$p.Exe
 $ReadyFile = [string]$p.ReadyFile
+$StartedFile = [string]$p.StartedFile
 
 $LogFile = Join-Path (Split-Path $Zip -Parent) 'update.log'
 
@@ -316,6 +317,8 @@ Log "Exe:       $Exe"
 Log "ReadyFile: $ReadyFile"
 
 try {
+    if (-not (Test-Path -LiteralPath $Zip -PathType Leaf)) { throw 'Update ZIP missing' }
+    if ($StartedFile) { Set-Content -LiteralPath $StartedFile -Value 'ready' -Encoding ASCII }
     # 1. Cho process goi cap nhat thoat
     if ($AppPid -gt 0) {
         Log "Cho process $AppPid thoat..."
@@ -435,6 +438,7 @@ try {
     Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
     $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ReadyFile
     $env:ZM_AI_TOOL_SUPERVISOR_CHILD = $null
+    $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
     $newProcess = Start-Process -FilePath $newExe -WorkingDirectory $Target -PassThru
     $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
@@ -508,6 +512,7 @@ $Target  = [string]$p.Target
 $Exe     = [string]$p.Exe
 $OldExe  = [string]$p.OldExe
 $ReadyFile = [string]$p.ReadyFile
+$StartedFile = [string]$p.StartedFile
 $LogFile = Join-Path (Split-Path $Setup -Parent) 'setup-update.log'
 
 function Log($msg) {
@@ -517,13 +522,15 @@ function Log($msg) {
 
 try {
     Log '=== Bat dau cap nhat ZM AI TOOL installed ==='
+    if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) { throw 'Update Setup missing' }
+    if ($StartedFile) { Set-Content -LiteralPath $StartedFile -Value 'ready' -Encoding ASCII }
     if ($AppPid -gt 0) {
         Wait-Process -Id $AppPid -Timeout 20 -ErrorAction SilentlyContinue
     }
 
     # Setup is built with PrivilegesRequired=lowest and installs below
     # LocalAppData. Updates must never request elevation.
-    $setupArgs = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="' + $Target + '"'
+    $setupArgs = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="' + (Join-Path $PSScriptRoot 'setup-install.log') + '" /DIR="' + $Target + '"'
     $process = Start-Process -FilePath $Setup -ArgumentList $setupArgs -Wait -PassThru
     if ($process.ExitCode -ne 0) {
         throw "Setup that bai voi ma $($process.ExitCode)."
@@ -536,6 +543,7 @@ try {
     Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
     $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ReadyFile
     $env:ZM_AI_TOOL_SUPERVISOR_CHILD = $null
+    $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
     $newProcess = Start-Process -FilePath $newExe -WorkingDirectory $Target -PassThru
     $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
@@ -1387,6 +1395,29 @@ def _launch_macos_updater(package: Path) -> None:
     )
 
 
+def _spawn_windows_updater(command: list[str], *, started: Path, log_path: Path, **kwargs) -> None:
+    """Do not close the app until the detached updater acknowledges startup."""
+    started.unlink(missing_ok=True)
+    env = os.environ.copy()
+    env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+    env.pop('ZM_AI_TOOL_SUPERVISOR_CHILD', None)
+    with log_path.open('ab') as log:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                   env=env, close_fds=True, **kwargs)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            break
+        if started.is_file():
+            started.unlink(missing_ok=True)
+            return
+        time.sleep(0.1)
+    if process.poll() is None:
+        process.terminate()
+    detail = log_path.read_text(encoding='utf-8', errors='replace')[-4000:]
+    raise RuntimeError(f'Updater did not acknowledge startup. App kept open. Log: {log_path}\n{detail}')
+
+
 def _launch_windows_updater(package: Path) -> None:
     """Start the detached staged updater; it waits for this app before swapping."""
     flags = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
@@ -1394,7 +1425,7 @@ def _launch_windows_updater(package: Path) -> None:
 
     if package.suffix.lower() == ".exe":
         exe = Path(sys.executable).resolve()
-        target = _windows_user_install_dir()
+        target = exe.parent if (exe.parent / ".zmaio-installed").is_file() else _windows_user_install_dir()
         script = _windows_setup_update_script(package.parent)
         params = package.parent / "setup-update-params.json"
         ready = package.parent / f"setup-update-ready-{uuid.uuid4().hex}.txt"
@@ -1408,12 +1439,13 @@ def _launch_windows_updater(package: Path) -> None:
                     "Exe": exe.name,
                     "OldExe": str(exe),
                     "ReadyFile": str(ready.resolve()),
+                    "StartedFile": str(ready.with_suffix(".started").resolve()),
                 },
                 ensure_ascii=False,
             ),
             encoding="utf-8",
         )
-        subprocess.Popen(
+        _spawn_windows_updater(
             [
                 "powershell.exe",
                 "-NoProfile",
@@ -1427,7 +1459,8 @@ def _launch_windows_updater(package: Path) -> None:
             ],
             cwd=str(package.parent),
             creationflags=flags,
-            close_fds=True,
+            started=ready.with_suffix('.started'),
+            log_path=package.parent / 'updater-bootstrap.log',
         )
         return
 
@@ -1446,12 +1479,13 @@ def _launch_windows_updater(package: Path) -> None:
                 "Target": str(target.resolve()),
                 "Exe": exe.name,
                 "ReadyFile": str(ready.resolve()),
+                    "StartedFile": str(ready.with_suffix(".started").resolve()),
             },
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
-    subprocess.Popen(
+    _spawn_windows_updater(
         [
             "powershell.exe",
             "-NoProfile",
@@ -1465,7 +1499,8 @@ def _launch_windows_updater(package: Path) -> None:
         ],
         cwd=str(package.parent),
         creationflags=flags,
-        close_fds=True,
+        started=ready.with_suffix('.started'),
+        log_path=package.parent / 'updater-bootstrap.log',
     )
 
 
