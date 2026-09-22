@@ -22,6 +22,7 @@ _LEGACY_STATE: tuple[tuple[str, str], ...] = (
     ("capcut_device.json", "data/capcut_device.json"),
     ("output", "output"),
     (".venv-runtime", ".venv-runtime"),
+    ("runtime", "runtime"),
     (".venv-ocr", ".venv-ocr"),
     ("resources", "resources"),
     ("app.log", "app.log"),

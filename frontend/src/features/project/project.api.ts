@@ -25,7 +25,9 @@ export type InstallStatus = {
   progress?: number
   startedAt?: number
   updatedAt?: number
-  stage?: 'detect_hardware' | 'fetch_manifest' | 'download' | 'verify_checksum' | 'extract' | 'probe' | 'activate' | 'rollback' | ''
+  stage?: 'detect_hardware' | 'prepare_python' | 'install_packages' | 'probe' | 'activate' | 'rollback' | ''
+  runtimeProfile?: string
+  currentPackage?: string
   runtimePack?: string
   downloadedBytes?: number
   totalBytes?: number
@@ -135,12 +137,7 @@ export const api = {
   installStatus: () =>
     fetchJson<InstallStatus>(`${base}/system/install/status`, undefined, 30_000),
 
-  rollbackAiRuntime: () =>
-    fetchJson<{ ok: boolean; message: string; needsRestart?: boolean }>(
-      `${base}/system/install/rollback`,
-      { method: 'POST' },
-      30_000,
-    ),
+  rollbackAiRuntime: () => pollInstall(`${base}/system/install/rollback`),
 
   installAiRuntime: (onStatus?: (status: InstallStatus) => void) => pollInstall(`${base}/system/install/ai_runtime`, onStatus),
 

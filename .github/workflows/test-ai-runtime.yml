@@ -1,0 +1,38 @@
+name: Test Windows AI profile (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        type: choice
+        options: [cpu, directml, nvidia-cu124, nvidia-cu128]
+        default: cpu
+      runner:
+        description: Use a registered Windows GPU runner for CUDA/DirectML inference
+        type: choice
+        options: [windows-latest, windows-ai-gpu]
+        default: windows-latest
+      demucs:
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12.10'
+      - run: python -m pip install uv==0.8.22 -r backend/requirements-app.txt
+      - name: Install and probe selected profile
+        shell: pwsh
+        env:
+          PYTHONPATH: backend
+          TEST_PROFILE: ${{ inputs.profile }}
+          TEST_DEMUCS: ${{ inputs.demucs }}
+        run: |
+          $env:ZM_AI_TOOL_HOME = Join-Path $env:RUNNER_TEMP ('ai-profile-' + [guid]::NewGuid())
+          python -c "import os; from unittest.mock import patch; from pipeline.core.runtime_install import install_runtime, detect_profile; profile=os.environ['TEST_PROFILE']; assert profile == 'cpu' or detect_profile() == profile, 'Runner hardware does not match selected profile'; ctx=patch('pipeline.core.runtime_install.detect_profile', return_value=profile); ctx.start(); print(install_runtime(lambda value, message, fields: print(value, fields, flush=True), demucs=os.environ['TEST_DEMUCS']=='true'))"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

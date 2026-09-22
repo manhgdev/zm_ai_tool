@@ -10,6 +10,7 @@ import { copyText } from '@/shared/lib/clipboard'
 import { toast } from 'sonner'
 import { IconEye, IconEyeOff } from '@/shared/components/Icons'
 import './ConfigModal.css'
+import { runtimeStatusText, runtimeErrorText } from './runtimeStatus'
 
 import {
   type InstallKind, type Section, type CloudTab, type UpdateDialog, type CloudDraft,
@@ -323,20 +324,16 @@ export default function ConfigModal({
         if (st.running && st.kind) {
           setInstalling(st.kind)
           setInstallProgress(Number(st.progress) || 1)
-          const bytes = st.totalBytes && st.downloadedBytes != null
-            ? ` · ${(st.downloadedBytes / 1048576).toFixed(0)}/${(st.totalBytes / 1048576).toFixed(0)} MB`
-            : ''
-          const pack = st.runtimePack ? ` · ${st.runtimePack}` : ''
-          setInstallMessage(`${st.message || localize(locale, `Đang cài ${installLabel(st.kind)}…`, `Installing ${installLabel(st.kind)}…`)}${pack}${bytes}`)
+          setInstallMessage(runtimeStatusText(st, locale))
           if (st.log) setInstallLog(st.log)
           if (st.diagnostics) setInstallLog((previous) => previous.includes(st.diagnostics!) ? previous : `${previous}${previous ? '\n' : ''}${st.diagnostics}`)
-          setMsg(st.message || localize(locale, `Đang cài ${installLabel(st.kind)}…`, `Installing ${installLabel(st.kind)}…`))
+          setMsg(runtimeStatusText(st, locale))
         } else {
           setInstalling(null)
           if (st.error && st.error !== observedInstallError.current) {
             observedInstallError.current = st.error
-            setInstallPopupError(st.error)
-            setChecksErr(st.error)
+            setInstallPopupError(runtimeErrorText(st, locale))
+            setChecksErr(runtimeErrorText(st, locale))
             if (st.diagnostics) setInstallLog((previous) => previous.includes(st.diagnostics!) ? previous : `${previous}${previous ? '\n' : ''}${st.diagnostics}`)
           }
         }
@@ -370,16 +367,12 @@ export default function ConfigModal({
     setInstallProgress(1)
     setInstallMessage(localize(locale, 'Đang chuẩn bị cài đặt…', 'Preparing installation…'))
     setChecksErr('')
+    let lastInstallError = ''
     const onStatus = (status: InstallStatus) => {
       if (status.log) setInstallLog(status.log)
       if (typeof status.progress === 'number') setInstallProgress(status.progress)
-      if (status.message) {
-        const bytes = status.totalBytes && status.downloadedBytes != null
-          ? ` · ${(status.downloadedBytes / 1048576).toFixed(0)}/${(status.totalBytes / 1048576).toFixed(0)} MB`
-          : ''
-        const pack = status.runtimePack ? ` · ${status.runtimePack}` : ''
-        setInstallMessage(`${status.message}${pack}${bytes}`)
-      }
+      setInstallMessage(runtimeStatusText(status, locale))
+      if (status.error) lastInstallError = runtimeErrorText(status, locale)
       if (status.diagnostics) {
         setInstallLog((previous) => previous.includes(status.diagnostics!)
           ? previous
@@ -394,7 +387,7 @@ export default function ConfigModal({
           : kind === 'demucs_cuda'
             ? await api.installDemucsCuda(onStatus)
             : await api.installNvm(onStatus)
-      const doneMsg = result.detail || result.message || 'Hoàn thành'
+      const doneMsg = kind === 'nvm' ? result.detail || result.message : localize(locale, 'Runtime đã sẵn sàng.', 'Runtime is ready.')
       setInstallProgress(100)
       setInstallMessage(doneMsg)
       setInstallLog((prev) => prev ? `${prev}\n\n✓ ${doneMsg}` : `✓ ${doneMsg}`)
@@ -405,7 +398,7 @@ export default function ConfigModal({
       // Giữ popup hiện tối thiểu 1.5s để user thấy kết quả
       await new Promise((r) => window.setTimeout(r, 1500))
     } catch (e) {
-      const message = e instanceof Error
+      const message = lastInstallError || (e instanceof Error
         ? e.message
         : kind === 'ai_runtime'
           ? 'Cài gói AI thất bại'
@@ -413,7 +406,7 @@ export default function ConfigModal({
             ? 'Cài GPU OCR thất bại'
             : kind === 'demucs_cuda'
               ? 'Cài Demucs thất bại'
-              : 'Cài NVM + Node.js LTS thất bại'
+              : 'Cài NVM + Node.js LTS thất bại')
       setChecksErr(message)
       setInstallPopupError(message)
       observedInstallError.current = message
@@ -1399,6 +1392,8 @@ export default function ConfigModal({
           title={
             installPopupError
               ? t('Cài đặt thất bại', 'Installation failed')
+              : installing === 'rollback'
+                ? t('Khôi phục runtime trước', 'Restoring previous runtime')
               : installing === 'ai_runtime'
                 ? t('Đang cài gói AI', 'Installing AI packages')
                 : installing === 'ocr_cuda'

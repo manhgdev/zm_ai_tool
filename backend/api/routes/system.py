@@ -89,6 +89,8 @@ _install_state: dict[str, Any] = {
     "updatedAt": 0.0,
     "stage": "",
     "runtimePack": "",
+    "runtimeProfile": "",
+    "currentPackage": "",
     "downloadedBytes": 0,
     "totalBytes": 0,
     "requiredDiskBytes": 0,
@@ -631,7 +633,7 @@ def _set_install_progress(
         if message:
             _install_state["message"] = message
         for key in (
-            "stage", "runtimePack", "downloadedBytes", "totalBytes",
+            "stage", "runtimeProfile", "currentPackage", "runtimePack", "downloadedBytes", "totalBytes",
             "requiredDiskBytes", "diagnostics",
         ):
             if fields and key in fields:
@@ -660,6 +662,8 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
     started_at = time.time()
     with _install_lock:
         if _install_state["running"]:
+            if kind == 'rollback' or _install_state.get('kind') == 'rollback':
+                raise HTTPException(status_code=409, detail='RUNTIME_BUSY')
             return {
                 "ok": True,
                 "running": True,
@@ -680,6 +684,8 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
             updatedAt=started_at,
             stage="detect_hardware" if kind in ("ai_runtime", "ocr_cuda") else "",
             runtimePack="",
+            runtimeProfile="",
+            currentPackage="",
             downloadedBytes=0,
             totalBytes=0,
             requiredDiskBytes=0,
@@ -703,16 +709,16 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                 _install_state["message"] = str(result.get("message") or "")
                 _install_state["progress"] = 100
                 _install_state["needsRestart"] = bool(result.get("needsRestart"))
-                for key in ("runtimePack", "diagnostics"):
+                for key in ("runtimePack", "runtimeProfile", "diagnostics"):
                     if key in result:
                         _install_state[key] = result[key]
                 _install_state["updatedAt"] = time.time()
         except Exception as e:
-            from pipeline.core.runtime_packs import RuntimePackError
+            from pipeline.core.runtime_install import RuntimeInstallError
 
             with _install_lock:
                 _install_state["error"] = str(e)
-                if isinstance(e, RuntimePackError):
+                if isinstance(e, RuntimeInstallError):
                     _install_state["errorCode"] = e.code
                     _install_state["retryable"] = e.retryable
                     _install_state["diagnostics"] = e.diagnostics
@@ -1023,7 +1029,7 @@ def api_install_status():
         "updatedAt": float(st.get("updatedAt") or 0),
     }
     for key in (
-        "stage", "runtimePack", "downloadedBytes", "totalBytes",
+        "stage", "runtimeProfile", "currentPackage", "runtimePack", "downloadedBytes", "totalBytes",
         "requiredDiskBytes", "errorCode", "retryable", "diagnostics",
     ):
         out[key] = st.get(key)
@@ -1046,15 +1052,9 @@ def api_install_status():
 
 @router.post("/api/system/install/rollback")
 def api_install_rollback():
-    from pipeline.core.runtime_packs import RuntimePackError, rollback_runtime
+    from pipeline.core.runtime_install import rollback_runtime
 
-    try:
-        return rollback_runtime()
-    except RuntimePackError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{exc} [{exc.code}] {exc.diagnostics}",
-        ) from exc
+    return _start_install_job("rollback", lambda: rollback_runtime(_set_install_progress))
 
 
 @router.post("/api/system/install/ai_runtime")

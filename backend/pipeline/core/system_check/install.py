@@ -112,12 +112,15 @@ def _pip_stream(
     timeout: float = 1800,
     idle_timeout: float | None = 900,
     progress: tuple[int, int, str] | None = None,
+    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Stream installer output without waiting forever on a silent Windows pipe."""
     import queue as _queue
     output = ""
     q: _queue.Queue[str | None] = _queue.Queue()
     env = _runtime_subprocess_env()
+    if environment:
+        env.update(environment)
 
     def _reader(stdout) -> None:  # chạy trong thread riêng
         import codecs
@@ -498,12 +501,12 @@ def _find_uv() -> str | None:
     ):
         if raw:
             bundle_candidates.append(Path(raw) / ("uv.exe" if sys.platform == "win32" else "uv"))
-    found = shutil.which("uv")
-    if found:
-        return found
     for candidate in bundle_candidates:
         if candidate.is_file():
             return str(candidate)
+    found = shutil.which("uv")
+    if found:
+        return found
     home = Path.home()
     if sys.platform == "win32":
         localappdata = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
@@ -546,7 +549,7 @@ def _ensure_frozen_runtime_venv(uv: str, venv: Path) -> Path:
     if venv.exists():
         backup = venv.with_name(f"{venv.name}.repair-{time.time_ns()}")
         venv.replace(backup)
-    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    version = "3.12.10" if sys.platform == "win32" else f"{sys.version_info.major}.{sys.version_info.minor}"
     try:
         managed = _pip_stream(
             [uv, "python", "install", version],
@@ -593,8 +596,8 @@ def _ensure_frozen_runtime_venv(uv: str, venv: Path) -> Path:
 
 def _runtime_pip_cmd(*extra: str) -> list[str]:
     if getattr(sys, "frozen", False):
-        home = _zm_ai_tool_home()
-        venv = home / ".venv-runtime"
+        from ..runtime_active import active_runtime_dir
+        venv = active_runtime_dir()
         py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         uv = _find_uv()
         if not uv:
@@ -611,8 +614,8 @@ def _runtime_pip_cmd(*extra: str) -> list[str]:
 
 def _runtime_pip_uninstall_cmd(*packages: str) -> list[str]:
     if getattr(sys, "frozen", False):
-        home = _zm_ai_tool_home()
-        venv = home / ".venv-runtime"
+        from ..runtime_active import active_runtime_dir
+        venv = active_runtime_dir()
         py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         uv = _find_uv()
         if not uv:
@@ -720,6 +723,10 @@ def _runtime_torch_needs_install() -> bool:
 def ensure_runtime_torch() -> None:
     """VieNeu zmAI/clone cần torch(+audio); NVIDIA cần bản CUDA (không phải PyPI CPU)."""
     global _torch_warm_done
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        if _runtime_torch_needs_install():
+            raise RuntimeError("AI_RUNTIME_REQUIRED: Install AI runtime in Settings")
+        return
     if _torch_warm_done:
         return
     if getattr(sys, "frozen", False):
@@ -789,6 +796,8 @@ def ensure_runtime_transformers() -> None:
             "Thiếu thư viện Python chuẩn; cập nhật APP/runtime, cài lại transformers không sửa được. / "
             "Python standard library is missing; update the app/runtime instead of reinstalling transformers."
         )
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        raise RuntimeError(f"AI_RUNTIME_REQUIRED: Install AI runtime in Settings: {_detail}")
     packages = ("transformers==4.57.6", "safetensors") if getattr(sys, "frozen", False) else (
         "transformers>=4.46.0", "huggingface-hub>=0.34", "safetensors",
     )
@@ -819,9 +828,9 @@ def ensure_torchaudio() -> None:
 def install_ai_runtime() -> dict[str, Any]:
     """Cài nhóm ASR/OCR nặng vào venv riêng của bản desktop."""
     if sys.platform == "win32" and getattr(sys, "frozen", False):
-        from ..runtime_packs import install_runtime_packs
+        from ..runtime_install import install_runtime
 
-        return install_runtime_packs(
+        return install_runtime(
             lambda value, message, fields: _report_install(value, message, **fields)
         )
 
@@ -901,8 +910,8 @@ def install_ai_runtime() -> dict[str, Any]:
         }
 
     if getattr(sys, "frozen", False):
-        home = _zm_ai_tool_home()
-        venv = home / ".venv-runtime"
+        from ..runtime_active import active_runtime_dir
+        venv = active_runtime_dir()
         py = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
         uv = _find_uv()
         if not uv:
@@ -1153,9 +1162,9 @@ def install_ai_runtime() -> dict[str, Any]:
 def install_ocr_cuda() -> dict[str, Any]:
     """Install the OCR GPU runtime into the Python running this API."""
     if sys.platform == "win32" and getattr(sys, "frozen", False):
-        from ..runtime_packs import install_runtime_packs
+        from ..runtime_install import install_runtime
 
-        return install_runtime_packs(
+        return install_runtime(
             lambda value, message, fields: _report_install(value, message, **fields)
         )
 
@@ -1262,10 +1271,10 @@ def install_ocr_cuda() -> dict[str, Any]:
 def install_demucs_cuda() -> dict[str, Any]:
     """Cài Demucs tối ưu: NVIDIA CUDA / Apple demucs-mlx / CPU."""
     if sys.platform == "win32" and getattr(sys, "frozen", False):
-        from ..runtime_packs import install_demucs_pack
+        from ..runtime_install import install_runtime
 
-        return install_demucs_pack(
-            lambda value, message, fields: _report_install(value, message, **fields)
+        return install_runtime(
+            lambda value, message, fields: _report_install(value, message, **fields), demucs=True
         )
 
     ok, detail = _demucs_check()

@@ -21,7 +21,8 @@ def active_runtime_dir() -> Path:
         relative = str(payload.get("path") or "").strip()
         candidate = (pointer.parent / relative).resolve()
         root = pointer.parent.resolve()
-        if relative and root in candidate.parents and candidate.is_dir():
+        legacy = (home / '.venv-runtime').resolve()
+        if relative and (root in candidate.parents or candidate == legacy) and candidate.is_dir():
             return candidate
     except (OSError, ValueError, json.JSONDecodeError):
         pass

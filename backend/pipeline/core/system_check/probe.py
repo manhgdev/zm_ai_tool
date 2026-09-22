@@ -168,13 +168,7 @@ _AI_RUNTIME_MODULES = (
 
 
 def _required_ai_runtime_modules() -> tuple[str, ...]:
-    """Torch is a required runtime layer only for NVIDIA CUDA on Windows.
-
-    AMD/Intel use ONNX/DirectML where supported; forcing CPU Torch there made
-    first-run downloads large without accelerating those machines.
-    """
-    if getattr(sys, "frozen", False) and sys.platform == "win32" and not _nvidia_present():
-        return tuple(name for name in _AI_RUNTIME_MODULES if name not in ("torch", "torchaudio"))
+    """VieNeu voice cloning still requires Torch for speaker features."""
     return _AI_RUNTIME_MODULES
 
 
@@ -343,7 +337,7 @@ def _demucs_venv_fast() -> tuple[bool, str]:
     if getattr(sys, "frozen", False) and sys.platform == "win32":
         py = _runtime_python()
         if py.is_file() and _site_has_dist(_venv_site_packages(py.parent.parent), "demucs"):
-            return True, "đã cài · runtime pack"
+            return True, "đã cài · AI runtime"
     for root in _demucs_root_candidates():
         py = _demucs_py_in(root)
         if not py.is_file():

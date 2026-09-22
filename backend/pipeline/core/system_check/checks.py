@@ -382,10 +382,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
     )
 
     # Nhóm 3 — zmAI + VieNeu
-    _vieneu_mods = (
-        ("torch", "torchaudio", "transformers", "vieneu", "soundfile")
-        if nvidia else ("transformers", "vieneu", "soundfile")
-    )
+    _vieneu_mods = ("torch", "torchaudio", "transformers", "vieneu", "soundfile")
     _vieneu_missing = [m for m in _vieneu_mods if m in runtime_missing]
     _vieneu_torch_bad = runtime_torch_cuda
     items.append(

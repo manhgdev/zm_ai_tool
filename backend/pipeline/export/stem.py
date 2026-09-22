@@ -441,7 +441,7 @@ def _demucs_python(project_id: str | None = None, *, report: bool = True) -> str
             return str(active)
         raise RuntimeError(
             "Demucs runtime chưa được cài. Mở Thiết lập → Cài Demucs; "
-            "APP không chạy pip trên máy người dùng nữa."
+            "Cài đặt sẽ tự chọn dependency phù hợp với máy."
         )
 
     # 1) Dùng venv đã có demucs (app home / server / LocalAppData)
