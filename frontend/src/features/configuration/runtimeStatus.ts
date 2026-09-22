@@ -26,7 +26,8 @@ export function runtimeStatusText(status: InstallStatus, locale: Locale): string
   const stage = stages[status.stage || '']
   if (!stage) return localize(locale, 'Đang chuẩn bị cài đặt…', 'Preparing installation…')
   const profile = status.runtimeProfile || status.runtimePack
-  return [localize(locale, ...stage), profile, status.currentPackage].filter(Boolean).join(' · ')
+  // Package commands and versions are already present in the diagnostic log.
+  return [localize(locale, ...stage), profile].filter(Boolean).join(' · ')
 }
 
 export function runtimeErrorText(status: InstallStatus, locale: Locale): string {

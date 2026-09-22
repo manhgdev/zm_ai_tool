@@ -16,6 +16,27 @@ from pipeline.core.system_check import install
 
 
 class HardwareTests(unittest.TestCase):
+    def test_uv_448_switches_to_pip_once_without_changing_gpu_profile(self):
+        calls = []
+        def run(command, *args):
+            calls.append(command)
+            if command[0] == 'uv':
+                raise runtime.RuntimeInstallError('DEPENDENCY_INSTALL_FAILED', 'query failed',
+                    diagnostics='Failed to query Python interpreter (os error 448)')
+        with patch.object(runtime, '_run', side_effect=run):
+            runtime._install_packages('uv', Path('python.exe'), 'nvidia-cu124', False, lambda *a, **k: None)
+        self.assertEqual(sum(c[0] == 'uv' for c in calls), 1)
+        self.assertEqual(calls[1][:4], ['python.exe', '-I', '-m', 'pip'])
+        self.assertIn('--no-compile', calls[1])
+        self.assertIn('https://download.pytorch.org/whl/cu124', calls[1])
+        self.assertTrue(all(c[0] == 'python.exe' for c in calls[1:]))
+
+    def test_other_install_errors_do_not_trigger_a_second_download(self):
+        with patch.object(runtime, '_run', side_effect=runtime.RuntimeInstallError('DOWNLOAD_FAILED', 'offline')) as run:
+            with self.assertRaises(runtime.RuntimeInstallError):
+                runtime._install_packages('uv', Path('python.exe'), 'cpu', False, lambda *a, **k: None)
+        self.assertEqual(run.call_count, 1)
+
     def test_minor_link_failure_uses_verified_patch_python(self):
         with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {'ZM_AI_TOOL_HOME': raw}):
             python = Path(raw) / 'runtime/python/cpython-3.12.10-windows-x86_64-none/python.exe'
@@ -76,8 +97,8 @@ class HardwareTests(unittest.TestCase):
                 self.assertTrue(ort[0].startswith('onnxruntime-directml=='))
             for command in commands:
                 self.assertIn(str(Path('candidate/python.exe')), command)
-                self.assertEqual(command[:4], [str(Path('candidate/python.exe')), '-I', '-m', 'pip'])
-                self.assertNotIn('--python', command)
+                self.assertEqual(command[:3], ['uv', 'pip', 'install'])
+                self.assertIn('--python', command)
             self.assertIn('--no-deps', commands[-1])
             self.assertIn('--no-binary', commands[-1])
             self.assertTrue(all('--only-binary' in c for c in commands))

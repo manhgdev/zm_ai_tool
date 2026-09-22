@@ -60,6 +60,11 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[Registry]
+; Only interactive Setup changes the user's language; silent updates preserve it.
+Root: HKCU; Subkey: "Software\ZM_AI_TOOL"; ValueType: string; ValueName: "InstallerLocale"; ValueData: "{language}"; Check: not WizardSilent
+Root: HKCU; Subkey: "Software\ZM_AI_TOOL"; ValueType: string; ValueName: "InstallerLocaleRevision"; ValueData: "{#MyAppVersion}:{code:GetInstallLocaleRevision}"; Check: not WizardSilent
+
 [Files]
 Source: "{#MyAppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Distinguishes Setup from the marker-free Portable ZIP. The launcher uses
@@ -81,3 +86,9 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 Type: filesandordirs; Name: "{app}\tmp"
 Type: files; Name: "{app}\app.log"
 Type: files; Name: "{app}\last_crash.txt"
+
+[Code]
+function GetInstallLocaleRevision(Param: String): String;
+begin
+  Result := GetDateTimeString('yyyymmddhhnnss', #0, #0);
+end;

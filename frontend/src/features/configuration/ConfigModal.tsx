@@ -46,7 +46,7 @@ export default function ConfigModal({
   licenseStatus,
   onLicenseStatusChange,
 }: Props) {
-  const { locale } = useLocale()
+  const { locale, setLocale } = useLocale()
   const localeRef = useRef(locale)
   localeRef.current = locale
   const installLabel = (kind: string) => kind.startsWith('ai_runtime')
@@ -332,7 +332,6 @@ export default function ConfigModal({
           setInstallMessage(runtimeStatusText(st, locale))
           if (st.log) setInstallLog(st.log)
           if (st.diagnostics) setInstallLog((previous) => previous.includes(st.diagnostics!) ? previous : `${previous}${previous ? '\n' : ''}${st.diagnostics}`)
-          setMsg(runtimeStatusText(st, locale))
         } else {
           setInstalling(null)
           if (st.error && st.error !== observedInstallError.current) {
@@ -370,6 +369,7 @@ export default function ConfigModal({
     setInstallPopupError('')
     setInstallLog('')
     setInstallProgress(1)
+    setMsg('')
     setInstallMessage(localize(locale, 'Đang chuẩn bị cài đặt…', 'Preparing installation…'))
     setChecksErr('')
     let lastInstallError = ''
@@ -710,6 +710,14 @@ export default function ConfigModal({
             </p>
           </div>
           <div className="cfg-head-actions">
+            <label>
+              <span>{t('Ngôn ngữ giao diện', 'Interface language')}</span>
+              <select aria-label={t('Ngôn ngữ giao diện', 'Interface language')}
+                value={locale} onChange={(event) => setLocale(event.target.value === 'en' ? 'en' : 'vi')}>
+                <option value="vi">Tiếng Việt</option>
+                <option value="en">English</option>
+              </select>
+            </label>
             <button type="button" className="cfg-update" disabled={updateChecking} onClick={() => void checkForUpdate()}>
               {updateChecking ? t('Đang kiểm tra…', 'Checking…') : t('Kiểm tra cập nhật', 'Check for updates')}
             </button>
@@ -872,7 +880,7 @@ export default function ConfigModal({
                 {t('Đã cài xong. Khởi động lại ứng dụng để áp dụng.', 'Installation complete. Restart the application to apply changes.')}
               </p>
             ) : null}
-            {msg && section === 'setup' ? <p className="cfg-msg">{msg}</p> : null}
+            {msg && !installing && !installPopupError && section === 'setup' ? <p className="cfg-msg">{msg}</p> : null}
             <ul className="cfg-check-list">
               {(checks?.items || []).filter((it) => it.id !== 'device' && it.id !== 'httpx').map((it) => (
                 <li
@@ -1329,7 +1337,7 @@ export default function ConfigModal({
           </div>
         ) : null}
 
-        {msg && section !== 'logs' ? <p className="cfg-msg">{msg}</p> : null}
+        {msg && section !== 'logs' && section !== 'setup' ? <p className="cfg-msg">{msg}</p> : null}
 
         <footer className="cfg-foot">
           {section === 'setup' ? (

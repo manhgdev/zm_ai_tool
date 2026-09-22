@@ -148,15 +148,19 @@ def _probe(root: Path, profile: str, demucs: bool = False) -> str:
     return output
 
 
-def _run(command: list[str], error: str, label: str) -> None:
+def _run(command: list[str], error: str, label: str, progress=None) -> None:
     from .system_check.install import _pip_stream, _install_log_fn
     if _install_log_fn:
         _install_log_fn(subprocess.list2cmdline(command) + '\n')
     try:
-        result = _pip_stream(command, timeout=2700, idle_timeout=300, environment={
+        result = _pip_stream(command, timeout=2700, idle_timeout=300, progress=progress, environment={
             'UV_PYTHON_INSTALL_DIR': str(runtime_home() / 'runtime' / 'python'),
             'UV_CACHE_DIR': str(runtime_home() / 'runtime' / 'cache'),
             'PIP_CACHE_DIR': str(runtime_home() / 'runtime' / 'pip-cache'),
+            # Bound disk concurrency independently from downloads. Do not run
+            # multiple resolvers/writers against the same environment.
+            'UV_CONCURRENT_DOWNLOADS': '16',
+            'UV_CONCURRENT_INSTALLS': str(min(8, max(2, os.cpu_count() or 2))),
         })
     except (OSError, RuntimeError) as exc:
         raise RuntimeInstallError(error, f'{label} failed', diagnostics=str(exc)) from exc
@@ -209,38 +213,54 @@ def _prepare(uv: str, root: Path) -> Path:
 
 
 def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit) -> None:
-    base = [str(python), '-I', '-m', 'pip', '--isolated', 'install',
+    pip_base = [str(python), '-I', '-m', 'pip', '--isolated', 'install',
             '--cache-dir', str(runtime_home() / 'runtime' / 'pip-cache'),
-            '--disable-pip-version-check', '--no-input']
-    def install(specs, value, *, index=None, no_deps=False, source=False):
+            '--disable-pip-version-check', '--no-input', '--no-compile']
+    uv_base = [uv, 'pip', 'install', '--python', str(python), '--link-mode', 'copy']
+    use_pip = False
+    def install(specs, value, end, *, index=None, no_deps=False, source=False, links=None):
+        nonlocal use_pip
         label = ', '.join(specs)
         emit(value, 'install_packages', currentPackage=label)
-        command = [*base, '--only-binary', ':all:']
+        command = ['--only-binary', ':all:']
         if source:
             command += ['--no-binary', ','.join(SOURCE_ALLOWED)]
         if index:
             command += ['--index-url', index]
         if no_deps:
             command.append('--no-deps')
-        _run([*command, *specs], 'DEPENDENCY_INSTALL_FAILED', label)
+        if links:
+            command += ['--find-links', links]
+        try:
+            _run([*(pip_base if use_pip else uv_base), *command, *specs],
+                 'DEPENDENCY_INSTALL_FAILED', label, (value, end, label))
+        except RuntimeInstallError as exc:
+            detail = exc.diagnostics.lower()
+            if use_pip or 'os error 448' not in detail or 'interpreter' not in detail:
+                raise
+            # Only interpreter discovery failed: no packages were installed.
+            # Keep the same hardware profile and use pip for the remaining steps.
+            use_pip = True
+            from .system_check.install import _install_log_fn
+            if _install_log_fn:
+                _install_log_fn('uv interpreter query blocked (448); switching to CPython pip for this installation.\n')
+            _run([*pip_base, *command, *specs], 'DEPENDENCY_INSTALL_FAILED', label, (value, end, label))
     cuda = profile.startswith('nvidia-')
     torch_version = '2.7.1' if profile == 'nvidia-cu128' else '2.6.0'
     index = profile.removeprefix('nvidia-') if cuda else 'cpu'
-    install((f'torch=={torch_version}', f'torchaudio=={torch_version}'), 30,
+    install((f'torch=={torch_version}', f'torchaudio=={torch_version}'), 30, 49,
             index=f'https://download.pytorch.org/whl/{index}')
     provider = {'cpu': 'onnxruntime==1.20.1', 'directml': 'onnxruntime-directml==1.23.0'}.get(profile, 'onnxruntime-gpu==1.20.2')
     sherpa = () if cuda else ('sherpa-onnx==1.13.8',)
-    install((*CORE, provider, *sherpa), 50)
+    install((*CORE, provider, *sherpa), 50, 64)
     # SDK declares unused Gradio/watermark and CPU ORT dependencies; provision
     # the actual app paths explicitly to keep exactly one ORT provider.
-    install(('faster-whisper==1.2.1', 'rapidocr-onnxruntime==1.4.4', 'vieneu==3.2.0'), 65, no_deps=True)
+    install(('faster-whisper==1.2.1', 'rapidocr-onnxruntime==1.4.4', 'vieneu==3.2.0'), 65, 69, no_deps=True)
     if cuda:
-        emit(70, 'install_packages', currentPackage='sherpa-onnx==1.13.5+cuda12.cudnn9')
-        _run([*base, '--only-binary', ':all:', '--no-deps', '--find-links',
-              'https://k2-fsa.github.io/sherpa/onnx/cuda.html', 'sherpa-onnx==1.13.5+cuda12.cudnn9'],
-             'DEPENDENCY_INSTALL_FAILED', 'Sherpa CUDA')
+        install(('sherpa-onnx==1.13.5+cuda12.cudnn9',), 70, 74, no_deps=True,
+                links='https://k2-fsa.github.io/sherpa/onnx/cuda.html')
     if demucs:
-        install(DEMUCS, 75, no_deps=True, source=True)
+        install(DEMUCS, 75, 84, no_deps=True, source=True)
 
 
 def _write_pointer(root: Path, name: str, data: dict[str, Any]) -> None:

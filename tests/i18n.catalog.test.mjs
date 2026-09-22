@@ -2,6 +2,26 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+test('installation progress has a single detailed surface, without dependency dumps', () => {
+  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
+  const status = readFileSync(new URL('../frontend/src/features/configuration/runtimeStatus.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(modal, /setMsg\(runtimeStatusText/)
+  assert.match(modal, /msg && !installing && !installPopupError && section === 'setup'/)
+  assert.match(modal, /msg && section !== 'logs' && section !== 'setup'/)
+  assert.doesNotMatch(status, /profile, status.currentPackage/)
+})
+
+test('first-run setup exposes the shared locale selector and waits for saved locale', () => {
+  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
+  const app = readFileSync(new URL('../frontend/src/app/App.tsx', import.meta.url), 'utf8')
+  assert.match(modal, /locale, setLocale.*useLocale/)
+  assert.match(modal, /value=\{locale\} onChange=.*setLocale/)
+  assert.match(app, /open=\{configModalOpen && localeReady\}/)
+  assert.match(modal, /t\('Kiểm tra cập nhật', 'Check for updates'\)/)
+  assert.match(modal, /t\('Cấu hình', 'Settings'\)/)
+  assert.match(modal, /t\('Cài gói AI', 'Install AI packages'\)/)
+})
+
 test('Windows Setup Vietnamese uses complete message sections', () => {
   const source = readFileSync(new URL('../build_app/languages/Vietnamese.isl', import.meta.url), 'utf8')
   const [messages, custom] = source.split('[Messages]')[1].split('[CustomMessages]')

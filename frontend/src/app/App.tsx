@@ -84,6 +84,7 @@ const EMPTY_LICENSE: LicenseStatus = {
 
 export default function App() {
   const [locale, setLocale] = useState<AppLocale>(loadLocale)
+  const [localeReady, setLocaleReady] = useState(false)
   const localeChangedRef = useRef(false)
   const [dark, setDark] = useState(loadTheme)
   const [appMode, setAppMode] = useState<AppMode>(loadAppMode)
@@ -133,6 +134,7 @@ export default function App() {
       .catch(() => {
         /* Browser/dev mode continues with localStorage or browser language. */
       })
+      .finally(() => setLocaleReady(true))
   }, [])
 
   const changeLocale = (nextLocale: AppLocale) => {
@@ -872,7 +874,7 @@ export default function App() {
       />
       )}
       <ConfigModal
-        open={configModalOpen}
+        open={configModalOpen && localeReady}
         initialSection={configSection}
         forceSetup={firstRunBlocked}
         onSetupReady={passSetupGate}
