@@ -8,6 +8,12 @@ from pathlib import Path
 
 
 def runtime_home() -> Path:
+    if sys.platform == 'win32' and getattr(sys, 'frozen', False):
+        install = Path(sys.executable).absolute().parent
+        if (install / '.zmaio-installed').is_file():
+            # Match the launcher even if an old HOME survives an update or
+            # was supplied by a parent process. Never install back onto C.
+            return install / 'user-data'
     raw = (os.environ.get("ZM_AI_TOOL_HOME") or "").strip()
     return Path(raw) if raw else Path(__file__).resolve().parents[2]
 

@@ -16,6 +16,22 @@ from pipeline.core.system_check import install
 
 
 class HardwareTests(unittest.TestCase):
+    def test_installed_runtime_ignores_stale_home_on_another_drive(self):
+        from pipeline.core.runtime_active import runtime_home
+        with tempfile.TemporaryDirectory() as raw:
+            installed = Path(raw) / 'D' / 'ZM AI TOOL'
+            installed.mkdir(parents=True)
+            (installed / '.zmaio-installed').touch()
+            with patch.object(sys, 'platform', 'win32'), patch.object(sys, 'frozen', True, create=True), patch.object(sys, 'executable', str(installed / 'ZM AI TOOL.exe')), patch.dict(os.environ, {'ZM_AI_TOOL_HOME': str(Path(raw) / 'C')}):
+                self.assertEqual(runtime_home(), installed / 'user-data')
+
+    def test_disk_full_during_copy_is_not_a_dependency_error(self):
+        with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {'ZM_AI_TOOL_HOME': raw}), patch.object(install, '_pip_stream', return_value=subprocess.CompletedProcess([], 1, 'Failed to copy DLL: os error 112', '')) as stream:
+            with self.assertRaises(runtime.RuntimeInstallError) as caught:
+                runtime._run(['uv'], 'DEPENDENCY_INSTALL_FAILED', 'Sherpa')
+            self.assertEqual(caught.exception.code, 'DISK_FULL')
+            self.assertEqual(stream.call_args.kwargs['environment']['TEMP'], str(Path(raw) / 'runtime/tmp'))
+
     def test_uv_448_switches_to_pip_once_without_changing_gpu_profile(self):
         calls = []
         def run(command, *args):

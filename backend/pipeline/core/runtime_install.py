@@ -158,11 +158,16 @@ def _run(command: list[str], error: str, label: str, progress=None) -> None:
     from .system_check.install import _pip_stream, _install_log_fn
     if _install_log_fn:
         _install_log_fn(subprocess.list2cmdline(command) + '\n')
+    temporary = runtime_home() / 'runtime' / 'tmp'
+    temporary.mkdir(parents=True, exist_ok=True)
     try:
         result = _pip_stream(command, timeout=2700, idle_timeout=300, progress=progress, environment={
             'UV_PYTHON_INSTALL_DIR': str(runtime_home() / 'runtime' / 'python'),
             'UV_CACHE_DIR': str(runtime_home() / 'runtime' / 'cache'),
             'PIP_CACHE_DIR': str(runtime_home() / 'runtime' / 'pip-cache'),
+            'TEMP': str(temporary),
+            'TMP': str(temporary),
+            'TMPDIR': str(temporary),
             # Bound disk concurrency independently from downloads. Do not run
             # multiple resolvers/writers against the same environment.
             'UV_CONCURRENT_DOWNLOADS': '16',
@@ -172,6 +177,9 @@ def _run(command: list[str], error: str, label: str, progress=None) -> None:
         raise RuntimeInstallError(error, f'{label} failed', diagnostics=str(exc)) from exc
     if result.returncode:
         output = (result.stdout or '') + '\n' + (result.stderr or '')
+        if any(term in output.lower() for term in ('os error 112', 'winerror 112', 'no space left', 'not enough space on the disk', 'errno 28')):
+            raise RuntimeInstallError('DISK_FULL', f'Insufficient disk space at {runtime_home()}',
+                                      retryable=False, diagnostics=output[-12000:])
         network = any(s in output.lower() for s in ('connection', 'timed out', 'proxy', 'failed to download', 'dns'))
         raise RuntimeInstallError('DOWNLOAD_FAILED' if network else error, f'{label} failed', diagnostics=output[-12000:])
 
