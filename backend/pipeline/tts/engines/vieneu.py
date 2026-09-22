@@ -178,6 +178,9 @@ def _resolve_backend() -> tuple[str, str]:
 def available() -> bool:
     if os.environ.get("VIENEU_DISABLED", "").strip().lower() in ("1", "true", "yes"):
         return False
+    if getattr(sys, 'frozen', False):
+        from pipeline.core.system_check.probe import _runtime_mod_ok
+        return _runtime_mod_ok('vieneu')[0]
     try:
         import importlib.util
 
@@ -196,6 +199,10 @@ def package_version() -> str:
 
 
 def _assets_voices_path() -> Path | None:
+    if getattr(sys, 'frozen', False):
+        from pipeline.core.runtime_active import runtime_site
+        path = runtime_site() / 'vieneu' / 'assets' / 'voices_v3_turbo.json'
+        return path if path.is_file() else None
     try:
         import vieneu
 

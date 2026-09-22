@@ -2,6 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+test('setup cards use stable IDs instead of backend display strings', () => {
+  const source = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
+  assert.match(source, /setupLabel\(locale, it.id, 'name'\)/)
+  assert.match(source, /setupLabel\(locale, it.id, 'hint'\)/)
+  assert.doesNotMatch(source, /it.installLabel \|\|/)
+  assert.doesNotMatch(source, /systemCheckText/)
+  assert.match(source, /Chi tiết kỹ thuật', 'Technical details'/)
+})
+
 test('download completion automatically applies update once without a second button', () => {
   const source = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
   assert.match(source, /state.phase === 'ready'\) \{\s*await applyUpdate\(\)/)

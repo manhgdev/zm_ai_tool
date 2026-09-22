@@ -1618,9 +1618,9 @@ class FlowService:
         try:
             items = await page.evaluate(
                 """() => [...document.querySelectorAll(
-                    'img[data-media-id], video[data-media-id]'
+                    'img[data-media-id], video[data-media-id], [data-media-id] img, [data-media-id] video'
                 )].map(element => ({
-                    id: element.getAttribute('data-media-id') || '',
+                    id: element.getAttribute('data-media-id') || element.closest('[data-media-id]')?.getAttribute('data-media-id') || '',
                     tag: element.tagName.toLowerCase(),
                     src: element.currentSrc || element.src || '',
                     width: element.naturalWidth || 0,
@@ -1683,6 +1683,10 @@ class FlowService:
         found: list[dict[str, Any]] = []
         for media in sorted(records, key=lambda item: _media_created_timestamp(item)):
             item = by_id.get(str(media.get("name")))
+            if kind == 'image':
+                url = str((media.get('image') or {}).get('fifeUrl') or '')
+                if url.startswith('https://'):
+                    item = {'id': str(media['name']), 'tag': 'img', 'src': url}
             if item:
                 found.append(item)
             if len(found) >= max(1, int(count or 1)):
@@ -1697,17 +1701,32 @@ class FlowService:
         expected_count: int,
         job_id: str,
         timeout_s: int = 360,
+        api=None,
+        job: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Wait for media tiles after a current Flow Angular submit."""
         deadline = time.monotonic() + timeout_s
+        next_project_check = 0.0
         store.patch_row("jobs", job_id, {
             "stage": "generating", "progress": 20, "updatedAt": time.time(),
         })
         while time.monotonic() < deadline:
             self._check_cancel(job_id)
             items = await self._project_media_elements(page)
+            if api is not None and job is not None and time.monotonic() >= next_project_check:
+                next_project_check = time.monotonic() + 10
+                recovered = await self._find_existing_project_media(api, page, job, kind, expected_count)
+                recovered = [item for item in recovered if str(item['id']) not in baseline_ids]
+                if len(recovered) >= max(1, expected_count):
+                    return recovered[:max(1, expected_count)]
             fresh: list[dict[str, Any]] = []
+            seen: set[str] = set()
             for item in items:
+                if str(item.get('id')) in seen:
+                    continue
+                seen.add(str(item.get('id')))
+                if item.get('tag') != ('img' if kind == 'image' else 'video'):
+                    continue
                 if str(item.get("id")) in baseline_ids:
                     continue
                 src = str(item.get("src") or "")
@@ -2007,6 +2026,7 @@ class FlowService:
                     await self._click_flow_submit(page)
                     media_items = await self._wait_for_project_media(
                         page, baseline_ids, "image", count, job_id,
+                        api=api, job=job,
                     )
                 media_ids = [str(item["id"]) for item in media_items]
                 self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": settings.get("model"), "mediaIds": media_ids})

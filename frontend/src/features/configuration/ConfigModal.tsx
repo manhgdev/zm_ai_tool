@@ -10,6 +10,7 @@ import { copyText } from '@/shared/lib/clipboard'
 import { toast } from 'sonner'
 import { IconEye, IconEyeOff } from '@/shared/components/Icons'
 import './ConfigModal.css'
+import { setupLabel } from './setupLabels'
 import { runtimeStatusText, runtimeErrorText } from './runtimeStatus'
 
 import {
@@ -53,16 +54,6 @@ export default function ConfigModal({
     ? localize(locale, 'gói AI', 'AI packages')
     : kind === 'ocr_cuda' ? 'OCR GPU' : kind === 'demucs_cuda' ? 'Demucs' : 'NVM + Node.js LTS'
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
-  const systemCheckText = (id: string, value: string | undefined, kind: 'detail' | 'hint' | 'installLabel') => {
-    if (!value) return ''
-    if (id !== 'ollama') return value
-    if (kind === 'detail' && value === 'chưa cài') return t('chưa cài', 'Not installed yet')
-    if (kind === 'hint' && value === 'Dịch local (tuỳ chọn).') return t('Dịch local (tuỳ chọn).', 'Local translation (optional).')
-    if (kind === 'installLabel' && /^Tải Ollama \((.+)\)$/.test(value)) {
-      return value.replace(/^Tải Ollama \((.+)\)$/, (_, os: string) => `Download Ollama (${os})`)
-    }
-    return value
-  }
   const [section, setSection] = useState<Section>(initialSection)
   const [draft, setDraft] = useState<CloudDraft>(emptyCloud)
   /** Mỗi ô 1 key; savedIndex tham chiếu key cũ trên server, value là key mới người dùng nhập */
@@ -912,9 +903,7 @@ export default function ConfigModal({
                         {it.ok ? '✓' : it.required ? '!' : '·'}
                       </span>
                       <div className="cfg-check-name">
-                        {it.id === 'ai_runtime_diarization'
-                          ? t('Sherpa-ONNX (Tách người nói)', 'Sherpa-ONNX (Speaker diarization)')
-                          : it.name}
+                        {setupLabel(locale, it.id, 'name')}
                         {it.required ? (
                           <em className="cfg-req">{t('bắt buộc', 'required')}</em>
                         ) : (
@@ -943,13 +932,13 @@ export default function ConfigModal({
                           }}
                         >
                           {installing === it.install || (it.install.startsWith('ai_runtime') && installing === 'ai_runtime')
-                            ? 'Đang cài…'
-                            : it.installLabel ||
-                            (it.install.startsWith('ai_runtime')
+                            ? t('Đang cài…', 'Installing…')
+                            : it.install.startsWith('ai_runtime')
                               ? t('Cài gói AI', 'Install AI packages')
-                              : it.install === 'demucs_cuda'
-                                ? checks?.device?.install?.demucsLabel || t('Cài Demucs GPU', 'Install Demucs (GPU)')
-                                : checks?.device?.install?.ocrLabel || t('Cài OCR CUDA', 'Install OCR (CUDA)'))}
+                              : it.install === 'demucs_cuda' ? t('Cài Demucs', 'Install Demucs')
+                              : it.install === 'nvm' ? t('Cài Node.js', 'Install Node.js')
+                              : t('Cài OCR GPU', 'Install OCR GPU')}
+
                         </button>
                       ) : it.install && it.install.startsWith('http') ? (
                         <a
@@ -957,18 +946,19 @@ export default function ConfigModal({
                           href={it.install}
                           target="_blank"
                           rel="noreferrer"
-                          title={systemCheckText(it.id, it.installLabel, 'installLabel') || it.install}
+                          title={t('Tải từ trang chính thức', 'Download from official site')}
                         >
-                          {systemCheckText(it.id, it.installLabel, 'installLabel') || t('Tải', 'Download')}
+                          {t('Tải', 'Download')}
                         </a>
                       ) : null}
                     </div>
                   </div>
                   <div className="cfg-check-body">
-                    {it.detail ? <div className="cfg-check-detail">{systemCheckText(it.id, it.detail, 'detail')}</div> : null}
-                    {!it.ok && it.hint ? <div className="cfg-check-hint">{systemCheckText(it.id, it.hint, 'hint')}</div> : null}
+                    <div className="cfg-check-detail">{it.ok ? t('Sẵn sàng', 'Ready') : t('Cần kiểm tra hoặc cài đặt', 'Needs checking or installation')}</div>
+                    {it.detail && <details><summary>{t('Chi tiết kỹ thuật', 'Technical details')}</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{it.detail}</pre></details>}
+                    {!it.ok && <div className="cfg-check-hint">{setupLabel(locale, it.id, 'hint')}</div>}
                     {!it.ok && it.install && !it.install.startsWith('http') && !['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
-                      <code className="cfg-check-cmd" title={it.installLabel || 'Chạy trong terminal'}>
+                      <code className="cfg-check-cmd" title={t('Lệnh kỹ thuật', 'Technical command')}>
                         {it.install}
                       </code>
                     ) : null}

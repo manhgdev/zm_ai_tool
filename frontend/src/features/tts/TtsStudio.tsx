@@ -1393,7 +1393,7 @@ export default function TtsStudio({
             <div className="meta-row">
               <span className="meta-lab">Trạng thái</span>
               <strong className={vieneu?.ready ? 'ok' : 'bad'}>
-                {vieneu?.ready ? 'Sẵn sàng' : (vieneu?.message || 'Chưa cài').slice(0, 48)}
+                {!vieneu ? t('Đang kiểm tra…', 'Checking…') : vieneu.ready ? t('Sẵn sàng', 'Ready') : vieneu.installed ? t('Đã cài — chưa sẵn sàng', 'Installed — not ready') : t('Chưa cài', 'Not installed')}
               </strong>
             </div>
             <div className="meta-row">
@@ -1414,13 +1414,13 @@ export default function TtsStudio({
           <div className="tts-ram">
             <i style={{ width: vieneu?.loaded ? '42%' : vieneu?.installed ? '18%' : '6%' }} />
           </div>
-          {!vieneu?.installed && (
+          {vieneu && !vieneu.installed && (
             <p className="tts-engine-hint">
-              {vieneu?.installHint || 'pip install vieneu onnxruntime soundfile soxr sea-g2p'}
+              {t('Mở Cấu hình → Thiết lập để cài gói AI.', 'Open Settings → Setup to install AI packages.')}
             </p>
           )}
           <button type="button" className="tts-link" onClick={() => void loadStatus()}>
-            Làm mới trạng thái
+            {t('Làm mới trạng thái', 'Refresh status')}
           </button>
         </div>
       </aside>
