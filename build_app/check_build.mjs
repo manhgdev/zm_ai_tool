@@ -147,10 +147,11 @@ check(
   existsSync(path.join(drawingReference, 'assets', 'drawing-hand.png')),
 )
 
-// 9. VERSION file
-const versionFile = path.join(internalDir, 'VERSION')
-check('VERSION file', existsSync(versionFile),
-  existsSync(versionFile) ? readFileSync(versionFile, 'utf8').trim() : '')
+// 9. Bundled package.json must match the source package version.
+const bundledPackage = path.join(internalDir, 'package.json')
+let bundledVersion = ''
+try { bundledVersion = JSON.parse(readFileSync(bundledPackage, 'utf8')).version } catch {}
+check('package.json version', bundledVersion === pkg.version && version === pkg.version, bundledVersion)
 
 // 10. Windows Portable ZIP — macOS chỉ phát hành .pkg
 const platform = isWin ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'

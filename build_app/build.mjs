@@ -11,8 +11,6 @@ const python = path.join(root, 'backend', '.venv', isWin ? 'Scripts/python.exe' 
 const dataSep = isWin ? ';' : ':'
 const packageJsonPath = path.join(root, 'package.json')
 const workDir = path.join(root, 'build_app', '.work')
-const versionFilePath = path.join(workDir, 'VERSION')
-const releaseVersionFilePath = path.join(root, 'build_app', 'VERSION')
 // onedir = nhanh (Windows mặc định). ONEFILE=1 để gói 1 file (chậm vì bước PKG).
 const oneFile = process.env.ONEFILE === '1' || process.env.ONEFILE === 'true'
 const clean = process.env.CLEAN === '1' || process.env.CLEAN === 'true'
@@ -112,19 +110,20 @@ function bumpPatch(version) {
 }
 
 function writeSyncedVersion(version) {
-  writeFileSync(releaseVersionFilePath, `${version}\n`, 'utf8')
   const nextPkg = readPackage()
   nextPkg.version = version
   writeFileSync(packageJsonPath, `${JSON.stringify(nextPkg, null, 2)}\n`, 'utf8')
 }
 
-/** Keep package.json / VERSION unless BUMP_VERSION=1 (patch +1). CI never bumps. */
+/** package.json is the only version source. CI validates tags, never rewrites it. */
 function resolveAppVersion() {
   const pkg = readPackage()
-  const fileVersion = existsSync(releaseVersionFilePath)
-    ? readFileSync(releaseVersionFilePath, 'utf8').trim()
-    : ''
-  const current = formatSemver(parseSemver(fileVersion || pkg.version || '1.0.0'))
+  const current = pkg.version
+  if (!/^\d+\.\d+\.\d+$/.test(current || '')) throw new Error('Invalid package.json version')
+  if (process.env.CI && process.env.GITHUB_REF_TYPE === 'tag') {
+    const tagVersion = (process.env.GITHUB_REF_NAME || '').replace(/^(v|action\/)/, '')
+    if (tagVersion !== current) throw new Error(`Tag ${tagVersion} differs from package.json ${current}`)
+  }
   if (process.env.CI) return current
   const wantBump = process.env.BUMP_VERSION === '1' || process.env.BUMP_VERSION === 'true'
   if (!wantBump) return current
@@ -273,7 +272,6 @@ if (!existsSync(python)) {
 
 const appVersion = resolveAppVersion()
 if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true })
-writeFileSync(versionFilePath, `${appVersion}\n`, 'utf8')
 console.log(`Building ${APP_DISPLAY_NAME} v${appVersion} (${oneFile ? 'onefile' : 'onedir'}${clean ? ', clean' : ''})`)
 
 // Drop stale versioned pkgs so release/ only keeps the current build artifact.
@@ -337,7 +335,7 @@ const args = [
   '--add-data', `${path.join(root, 'backend', 'resources', 'voice-ref')}${dataSep}resources/voice-ref`,
   '--add-data', `${path.join(root, 'previews', 'v1.0-base-vietnam-2D-image.txt')}${dataSep}previews`,
   '--add-data', `${path.join(root, 'previews', 'v1.0-base-english-2D-image.txt')}${dataSep}previews`,
-  '--add-data', `${versionFilePath}${dataSep}.`,
+  '--add-data', `${packageJsonPath}${dataSep}.`,
   '--collect-all', 'webview',
   '--collect-all', 'yt_dlp',
   '--collect-all', 'playwright',

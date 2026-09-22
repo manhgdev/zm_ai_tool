@@ -38,15 +38,11 @@ function findISCC() {
 
 export function buildInstaller(customVersion) {
   const releaseDir = process.env.ZM_AI_TOOL_BUILD_RELEASE_DIR || path.join(root, 'build_app', 'release')
-  const versionFile = path.join(root, 'build_app', 'VERSION')
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
 
-  const version = (
-    customVersion ||
-    (existsSync(versionFile) ? readFileSync(versionFile, 'utf8').trim() : '') ||
-    pkg.version ||
-    '1.0.0'
-  ).replace(/^v/, '').trim()
+  const version = pkg.version
+  if (!/^\d+\.\d+\.\d+$/.test(version || '')) throw new Error('Invalid package.json version')
+  if (customVersion && customVersion !== version) throw new Error('Build version differs from package.json; rebuild the app')
 
   const verName = `ZM_AI_TOOL_v${version}`
   const sourceDir = path.join(releaseDir, verName)

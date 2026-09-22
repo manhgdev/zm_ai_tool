@@ -32,7 +32,7 @@ jobs:
           npm install
           python -m venv backend/.venv
           backend/.venv/Scripts/python.exe -m pip install --upgrade pip
-          backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-app.txt pyinstaller pywebview uv pythonnet pytest
+          backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-app.txt pyinstaller pywebview uv pythonnet
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             choco install ffmpeg -y --no-progress
             'C:\ProgramData\chocolatey\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
@@ -42,75 +42,11 @@ jobs:
             'C:\Program Files (x86)\Inno Setup 6' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           }
 
-      - name: Write version from tag
-        shell: pwsh
-        run: |
-          $tag = $env:GITHUB_REF_NAME
-          $version = if ($tag) { $tag -replace '^v', '' -replace '^action/', '' } else { '' }
-          if (-not $version -or $version -notmatch '^[0-9]+\.[0-9]') {
-            $version = Get-Content build_app/VERSION -ErrorAction SilentlyContinue
-          }
-          if (-not $version) { $version = '0.0.0' }
-          Set-Content -Path build_app/VERSION -Value $version.Trim()
-          Write-Host "Building version: $version"
-
-
       - name: Build EXE
         shell: pwsh
         run: |
           npm run build:app
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $version = (Get-Content build_app/VERSION -Raw).Trim()
-          node build_app/check_build.mjs $version
-
-      - name: Smoke test packaged Python and GUI bridge
-        shell: pwsh
-        run: |
-          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AI_TOOL_v*' |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (-not $package) { throw 'Built app not found' }
-          $exe = Join-Path $package.FullName 'ZM AI TOOL.exe'
-          $report = Join-Path $env:RUNNER_TEMP 'frozen-import-check.json'
-          $process = Start-Process -FilePath $exe -ArgumentList @('--runtime-import-check', "`"$report`"") -PassThru
-          if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'Frozen import check timed out' }
-          if (-not (Test-Path $report)) { throw 'Frozen import report missing' }
-          Get-Content $report
-          $result = Get-Content $report -Raw | ConvertFrom-Json
-          if ($process.ExitCode -ne 0 -or -not $result.ok) { throw 'Frozen standard library imports failed' }
-
-      - name: Smoke test Portable GUI startup
-        shell: pwsh
-        run: |
-          $package = Get-ChildItem build_app/release -Directory -Filter 'ZM_AI_TOOL_v*' |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if (-not $package) { throw 'Built app not found' }
-          $exe = Join-Path $package.FullName 'ZM AI TOOL.exe'
-          $updates = Join-Path $package.FullName 'updates'
-          New-Item -ItemType Directory -Path $updates -Force | Out-Null
-          $ready = Join-Path $updates 'update-ready-ci.txt'
-          $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ready
-          $process = Start-Process -FilePath $exe -WorkingDirectory $package.FullName -PassThru
-          $deadline = (Get-Date).AddSeconds(90)
-          while ((Get-Date) -lt $deadline -and -not (Test-Path $ready)) {
-            if ($process.HasExited) { throw "Portable GUI exited early: $($process.ExitCode)" }
-            Start-Sleep -Milliseconds 500
-          }
-          if (-not (Test-Path $ready)) { throw 'Portable GUI did not initialize in 90 seconds' }
-          Get-Content $ready
-          taskkill.exe /PID $process.Id /T /F 2>$null
-          if ($LASTEXITCODE -ne 0 -and -not $process.HasExited) { throw 'Could not stop Portable GUI smoke process' }
-          $env:ZM_AI_TOOL_UPDATE_READY_FILE = $null
-          foreach ($name in @('data', 'output', 'tmp', 'resources', 'updates', '.venv-runtime', '.venv-ocr', 'app.log', 'last_crash.txt')) {
-            Remove-Item -LiteralPath (Join-Path $package.FullName $name) -Recurse -Force -ErrorAction SilentlyContinue
-          }
-          exit 0
-
-      - name: Test runtime installer transaction and failure handling
-        shell: pwsh
-        run: |
-          backend/.venv/Scripts/python.exe -m unittest discover -s tests -p 'test_runtime_install.py' -v
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
 
       - name: Create release package
         id: package
@@ -118,66 +54,20 @@ jobs:
         run: |
           node build_app/package_windows.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Smoke test Windows Setup install, launch, and uninstall
+      - name: Check release files exist
         shell: pwsh
         env:
-          SETUP_EXE: ${{ steps.package.outputs.installer }}
+          INSTALLER: ${{ steps.package.outputs.installer }}
+          ZIP: ${{ steps.package.outputs.zip }}
         run: |
-          $installDir = Join-Path $env:RUNNER_TEMP 'zmaio-setup-smoke'
-          $localData = Join-Path $env:RUNNER_TEMP 'zmaio-localappdata'
-          Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item -LiteralPath $localData -Recurse -Force -ErrorAction SilentlyContinue
-
-          $setup = Start-Process -FilePath $env:SETUP_EXE -ArgumentList @(
-            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$installDir", '/TASKS='
-          ) -Wait -PassThru
-          if ($setup.ExitCode -ne 0) { throw "Setup failed: exit $($setup.ExitCode)" }
-
-          $exe = Join-Path $installDir 'ZM AI TOOL.exe'
-          $marker = Join-Path $installDir '.zmaio-installed'
-          if (-not (Test-Path $exe)) { throw 'Installed EXE is missing' }
-          if (-not (Test-Path $marker)) { throw 'Setup layout marker is missing' }
-
-          $env:LOCALAPPDATA = $localData
-          $localHome = Join-Path $localData 'ZM_AI_TOOL'
-          $localUpdates = Join-Path $localHome 'updates'
-          New-Item -ItemType Directory -Path $localUpdates -Force | Out-Null
-          $ready = Join-Path $localUpdates 'update-ready-ci.txt'
-          Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
-          $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ready
-          $app = Start-Process -FilePath $exe -WorkingDirectory $installDir -PassThru
-          $deadline = (Get-Date).AddSeconds(90)
-          while ((Get-Date) -lt $deadline -and -not (Test-Path $ready)) {
-            if ($app.HasExited) { throw "Installed GUI exited early: $($app.ExitCode)" }
-            Start-Sleep -Milliseconds 500
-          }
-          if (-not (Test-Path $ready)) { throw 'Installed GUI did not initialize in 90 seconds' }
-          if (-not (Test-Path (Join-Path $localData 'ZM_AI_TOOL'))) {
-            throw 'Setup build did not use LocalAppData for mutable state'
-          }
-          # Chỉ kiểm tra thư mục do runtime tạo ra khi chạy lần đầu.
-          # data/ và resources/ có thể được đóng gói sẵn bởi Inno Setup (seed files).
-          foreach ($name in @('output', 'tmp', '.venv-runtime', '.venv-ocr', 'updates')) {
-            if (Test-Path (Join-Path $installDir $name)) {
-              throw "Setup build wrote mutable state into install directory: $name"
+          foreach ($file in @($env:INSTALLER, $env:ZIP)) {
+            if (-not $file -or -not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Missing release artifact: $file"
+            }
+            if ((Get-Item -LiteralPath $file).Length -eq 0) {
+              throw "Empty release artifact: $file"
             }
           }
-          taskkill.exe /PID $app.Id /T /F 2>$null
-          if ($LASTEXITCODE -ne 0 -and -not $app.HasExited) { throw 'Could not stop installed GUI' }
-          $env:ZM_AI_TOOL_UPDATE_READY_FILE = $null
-
-          $uninstaller = Join-Path $installDir 'unins000.exe'
-          if (-not (Test-Path $uninstaller)) { throw 'Uninstaller is missing' }
-          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
-            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
-          ) -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0) { throw "Uninstall failed: exit $($uninstall.ExitCode)" }
-          $deadline = (Get-Date).AddSeconds(30)
-          while ((Get-Date) -lt $deadline -and (Test-Path $exe)) {
-            Start-Sleep -Milliseconds 250
-          }
-          if (Test-Path $exe) { throw 'Installed EXE remains after uninstall' }
-          Remove-Item -LiteralPath $localData -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/action/')

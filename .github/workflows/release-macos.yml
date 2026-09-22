@@ -43,6 +43,7 @@ jobs:
         env:
           ONEFILE: '0'
           CLEAN: '1'
+          SKIP_INSTALL: '1'
         run: |
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           npm run build:app

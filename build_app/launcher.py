@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import json
 import multiprocessing
 import os
 import shutil
@@ -679,16 +680,16 @@ if sys.platform == "win32":
 
 def app_version() -> str:
     for candidate in (
-        bundle / "VERSION",
-        Path(__file__).resolve().parent / "VERSION",
+        bundle / "package.json",
+        Path(__file__).resolve().parents[1] / "package.json",
     ):
         try:
-            v = candidate.read_text(encoding="utf-8").strip()
-            if v:
+            v = json.loads(candidate.read_text(encoding="utf-8")).get("version")
+            if isinstance(v, str) and v:
                 return v
-        except OSError:
+        except (OSError, ValueError, AttributeError):
             pass
-    return "1.0.0"
+    raise RuntimeError("Missing or invalid application package.json version")
 
 
 APP_VERSION = app_version()

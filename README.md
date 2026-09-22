@@ -202,7 +202,7 @@ Artifact local được tạo trong `build_app/release/`. GitHub Actions build m
 
 `npm run build:app` trên từng OS tạo đủ bản phát hành (giống CI):
 
-- **Version:** mặc định giữ nguyên. Tăng số thứ 3 (0–9): `BUMP_VERSION=1` → sau `.9` nhảy minor (`8.0.9` → `8.1.0`). CI dùng version từ tag.
+- **Version:** mặc định giữ nguyên. Tăng số thứ 3 (0–9): `BUMP_VERSION=1` → sau `.9` nhảy minor (`8.0.9` → `8.1.0`). Version chỉ lấy từ `package.json`; CI kiểm tra tag phải khớp version này.
 - **macOS:** `ZM AI TOOL.app` + `.pkg`; sau build cài đè `~/Applications`. `/Applications` (nếu root) dùng `sudo installer -pkg …`.
 - **Windows:** `…-windows-x64-Portable.zip` + `…-windows-x64-Setup.exe` (cần Inno Setup 6 / `ISCC` trên máy).
 

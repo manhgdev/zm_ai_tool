@@ -77,11 +77,10 @@ frontend/src/
 
 ```text
 scripts/
-└─ release.sh     Đồng bộ 3 chỗ rồi push: build_app/VERSION + package.json + git tag
+└─ release.sh     Bump package.json rồi tạo git tag và push
                   Dùng: ./scripts/release.sh 4.2.0
                         ./scripts/release.sh patch|minor|major
                   CI sẽ tự tạo asset đúng tên theo tag: ZM_AI_TOOL_v<version>-macos-arm64.pkg
 ```
 
-> **Quy tắc version**: luôn dùng `release.sh` để bump. Không sửa `VERSION` / `package.json` tay rồi tạo tag riêng — sẽ gây lệch tên asset CI.
-
+> **Quy tắc version**: luôn dùng `release.sh` để bump. `package.json` là nguồn version duy nhất; tag phải khớp version này.

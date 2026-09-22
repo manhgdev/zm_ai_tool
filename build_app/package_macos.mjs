@@ -70,12 +70,11 @@ if (!existsSync(iconPath)) {
   fail(`Không tìm thấy app icon: ${iconPath}`)
 }
 
-let version = runCapture('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleShortVersionString', plist])
-if (!/^\d+\.\d+\.\d+/.test(version)) {
-  const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
-  version = String(pkg.version || '0.0.0').replace(/^v/, '')
+const version = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version
+const builtVersion = runCapture('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleShortVersionString', plist])
+if (!/^\d+\.\d+\.\d+$/.test(version || '') || builtVersion !== version) {
+  fail('App bundle version differs from package.json; rebuild the app')
 }
-version = version.match(/^\d+\.\d+\.\d+/)?.[0] || version
 
 const arch = runCapture('uname', ['-m'])
 const pkg = path.join(releaseDir, `${APP_ARTIFACT_NAME}_v${version}-macos-${arch}.pkg`)
