@@ -2,6 +2,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+test('download completion automatically applies update once without a second button', () => {
+  const source = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
+  assert.match(source, /state.phase === 'ready'\) \{\s*await applyUpdate\(\)/)
+  assert.match(source, /if \(updateApplyStarted.current\) return/)
+  assert.doesNotMatch(source, /updateDialog.kind === 'ready'.*<button/)
+  assert.match(source, /if \(updateDialog\?\.kind !== 'downloading'\) return/)
+})
+
 test('installation progress has a single detailed surface, without dependency dumps', () => {
   const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
   const status = readFileSync(new URL('../frontend/src/features/configuration/runtimeStatus.ts', import.meta.url), 'utf8')

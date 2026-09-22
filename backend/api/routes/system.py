@@ -318,7 +318,15 @@ Log "ReadyFile: $ReadyFile"
 
 try {
     if (-not (Test-Path -LiteralPath $Zip -PathType Leaf)) { throw 'Update ZIP missing' }
-    if ($StartedFile) { Set-Content -LiteralPath $StartedFile -Value 'ready' -Encoding ASCII }
+    if (-not $StartedFile) { throw 'Updater handshake path missing' }
+    Set-Content -LiteralPath $StartedFile -Value 'ready' -Encoding ASCII
+    $commitFile = $StartedFile + '.commit'
+    $handshakeDeadline = (Get-Date).AddSeconds(40)
+    while (-not (Test-Path -LiteralPath $commitFile -PathType Leaf)) {
+        if ((Get-Date) -gt $handshakeDeadline) { Log 'App did not authorize handoff; stopping updater'; exit 1 }
+        Start-Sleep -Milliseconds 100
+    }
+    Remove-Item -LiteralPath $commitFile -Force -ErrorAction SilentlyContinue
     # 1. Cho process goi cap nhat thoat
     if ($AppPid -gt 0) {
         Log "Cho process $AppPid thoat..."
@@ -523,7 +531,15 @@ function Log($msg) {
 try {
     Log '=== Bat dau cap nhat ZM AI TOOL installed ==='
     if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) { throw 'Update Setup missing' }
-    if ($StartedFile) { Set-Content -LiteralPath $StartedFile -Value 'ready' -Encoding ASCII }
+    if (-not $StartedFile) { throw 'Updater handshake path missing' }
+    Set-Content -LiteralPath $StartedFile -Value 'ready' -Encoding ASCII
+    $commitFile = $StartedFile + '.commit'
+    $handshakeDeadline = (Get-Date).AddSeconds(40)
+    while (-not (Test-Path -LiteralPath $commitFile -PathType Leaf)) {
+        if ((Get-Date) -gt $handshakeDeadline) { Log 'App did not authorize handoff; stopping updater'; exit 1 }
+        Start-Sleep -Milliseconds 100
+    }
+    Remove-Item -LiteralPath $commitFile -Force -ErrorAction SilentlyContinue
     if ($AppPid -gt 0) {
         Wait-Process -Id $AppPid -Timeout 20 -ErrorAction SilentlyContinue
     }
@@ -1398,30 +1414,42 @@ def _launch_macos_updater(package: Path) -> None:
 def _spawn_windows_updater(command: list[str], *, started: Path, log_path: Path, **kwargs) -> None:
     """Do not close the app until the detached updater acknowledges startup."""
     started.unlink(missing_ok=True)
-    env = os.environ.copy()
+    commit = Path(str(started) + '.commit')
+    commit.unlink(missing_ok=True)
+    from pipeline.core.runtime_site import subprocess_environment
+    env = subprocess_environment()
     env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
     env.pop('ZM_AI_TOOL_SUPERVISOR_CHILD', None)
-    with log_path.open('ab') as log:
+    with log_path.open('wb') as log:
+        log.write((subprocess.list2cmdline(command) + '\n').encode('utf-8'))
+        log.flush()
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                    env=env, close_fds=True, **kwargs)
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if process.poll() is not None:
             break
         if started.is_file():
+            commit.write_text('proceed', encoding='ascii')
             started.unlink(missing_ok=True)
             return
         time.sleep(0.1)
-    if process.poll() is None:
+    exit_code = process.poll()
+    if exit_code is None:
         process.terminate()
     detail = log_path.read_text(encoding='utf-8', errors='replace')[-4000:]
-    raise RuntimeError(f'Updater did not acknowledge startup. App kept open. Log: {log_path}\n{detail}')
+    reason = f'exit code {exit_code}' if exit_code is not None else 'startup timed out after 30s'
+    raise RuntimeError(f'Updater did not acknowledge startup ({reason}). App kept open. Log: {log_path}\n{detail}')
 
 
 def _launch_windows_updater(package: Path) -> None:
     """Start the detached staged updater; it waits for this app before swapping."""
-    flags = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+    flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+
+    powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    if not powershell.is_file():
+        raise RuntimeError(f"Windows PowerShell is missing: {powershell}")
 
     if package.suffix.lower() == ".exe":
         exe = Path(sys.executable).resolve()
@@ -1447,7 +1475,7 @@ def _launch_windows_updater(package: Path) -> None:
         )
         _spawn_windows_updater(
             [
-                "powershell.exe",
+                str(powershell),
                 "-NoProfile",
                 "-NonInteractive",
                 "-ExecutionPolicy",
@@ -1487,7 +1515,7 @@ def _launch_windows_updater(package: Path) -> None:
     )
     _spawn_windows_updater(
         [
-            "powershell.exe",
+            str(powershell),
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",

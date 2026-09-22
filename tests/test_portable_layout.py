@@ -50,6 +50,7 @@ class PortableLayoutTest(unittest.TestCase):
             with patch('api.routes.system.subprocess.Popen', side_effect=spawn):
                 _spawn_windows_updater(['powershell.exe'], started=started, log_path=root / 'log')
             process.terminate.assert_not_called()
+            self.assertEqual(Path(str(started) + '.commit').read_text(), 'proceed')
 
     def test_setup_marker_always_uses_local_app_data(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

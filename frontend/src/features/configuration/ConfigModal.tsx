@@ -137,7 +137,7 @@ export default function ConfigModal({
       setUpdateDialog({
         kind: 'available',
         title: t(`Đã có bản v${result.latestVersion}`, `Version ${result.latestVersion} is available`),
-        detail: t('Gói đúng nền tảng sẽ được tải trước khi cài.', 'The platform-specific package will be downloaded before installation.'),
+        detail: t('Tải và cài tự động. Ứng dụng sẽ đóng rồi tự mở lại sau khi cập nhật.', 'Download and install automatically. The app will close and reopen after updating.'),
       })
     } catch (error) {
       setUpdateDialog({
@@ -150,52 +150,71 @@ export default function ConfigModal({
     }
   }
 
+  const updateApplyStarted = useRef(false)
+  const updateDownloadStarted = useRef(false)
   const downloadUpdate = async () => {
+    if (updateDownloadStarted.current) return
+    updateDownloadStarted.current = true
+    updateApplyStarted.current = false
     try {
       await api.installAppUpdate()
       setUpdateDialog({ kind: 'downloading', title: t('Đang tải cập nhật', 'Downloading update'), detail: t('Đang tải gói cài đặt…', 'Downloading the installation package…'), progress: 0 })
     } catch (error) {
+      updateDownloadStarted.current = false
       setUpdateDialog({ kind: 'error', title: t('Không thể tải cập nhật', 'Could not download update'), detail: error instanceof Error ? error.message : t('Vui lòng thử lại sau.', 'Please try again later.') })
     }
   }
 
-  const applyUpdate = async () => {
+  const applyUpdate = useCallback(async () => {
+    if (updateApplyStarted.current) return
+    updateApplyStarted.current = true
+    const text = (vi: string, en: string) => localize(localeRef.current, vi, en)
+    setUpdateDialog({ kind: 'applying', title: text('Đang cài cập nhật', 'Installing update'), detail: text('Ứng dụng sẽ đóng để cài đặt và tự mở lại khi hoàn tất.', 'The app will close for installation and reopen automatically when finished.'), progress: 0 })
     try {
       await api.applyAppUpdate()
-      setUpdateDialog({ kind: 'applying', title: t('Đang cài cập nhật', 'Installing update'), detail: t('Đang giải nén và chuẩn bị bản mới…', 'Extracting and preparing the new version…'), progress: 0 })
+      // The detached updater now owns installation and relaunch; API disconnect is expected.
     } catch (error) {
-      setUpdateDialog({ kind: 'error', title: t('Không thể cài cập nhật', 'Could not install update'), detail: error instanceof Error ? error.message : t('Vui lòng thử lại sau.', 'Please try again later.') })
+      updateApplyStarted.current = false
+      updateDownloadStarted.current = false
+      setUpdateDialog({ kind: 'error', title: text('Không thể cài cập nhật', 'Could not install update'), detail: error instanceof Error ? error.message : text('Vui lòng thử lại sau.', 'Please try again later.') })
     }
-  }
+  }, [])
 
   useEffect(() => {
-    const isApplying = updateDialog?.kind === 'applying'
-    if (updateDialog?.kind !== 'downloading' && !isApplying) return
+    if (updateDialog?.kind !== 'downloading') return
     let cancelled = false
+    let timer: number | undefined
+    const text = (vi: string, en: string) => localize(localeRef.current, vi, en)
     const poll = async () => {
       try {
         const state = await api.getAppUpdateStatus()
         if (cancelled) return
         if (state.phase === 'error') {
-          setUpdateDialog({ kind: 'error', title: isApplying ? t('Không thể cài cập nhật', 'Could not install update') : t('Không thể tải cập nhật', 'Could not download update'), detail: state.error || state.message })
-        } else if (state.phase === 'complete') {
-          const completeDetail = state.message || t('Đã cập nhật xong.', 'Update completed.')
-          setUpdateDialog({ kind: 'complete', title: t('Cập nhật đã sẵn sàng', 'Update is ready'), detail: completeDetail, progress: 100 })
-        } else if (!isApplying && state.phase === 'ready') {
-          setUpdateDialog({ kind: 'ready', title: t('Đã tải xong', 'Download complete'), detail: t('Gói cập nhật đã sẵn sàng để cài.', 'The update package is ready to install.'), progress: 100 })
-        } else if (isApplying || state.phase === 'applying') {
-          setUpdateDialog({ kind: 'applying', title: t('Đang cài cập nhật', 'Installing update'), detail: state.message || t('Đang giải nén và chuẩn bị bản mới…', 'Extracting and preparing the new version…'), progress: state.progress })
-        } else {
-          setUpdateDialog({ kind: 'downloading', title: t('Đang tải cập nhật', 'Downloading update'), detail: t('Đang tải gói cài đặt…', 'Downloading the installation package…'), progress: state.progress })
+          updateDownloadStarted.current = false
+          setUpdateDialog({ kind: 'error', title: text('Không thể tải cập nhật', 'Could not download update'), detail: state.error || state.message })
+          return
         }
+        if (state.phase === 'ready') {
+          await applyUpdate()
+          return
+        }
+        if (state.phase === 'applying') {
+          setUpdateDialog({ kind: 'applying', title: text('Đang cài cập nhật', 'Installing update'), detail: text('Ứng dụng sẽ tự mở lại sau khi cài xong.', 'The app will reopen automatically after installation.'), progress: 0 })
+          return
+        }
+        setUpdateDialog({ kind: 'downloading', title: text('Đang tải cập nhật', 'Downloading update'), detail: text('Tải xong sẽ tự cài và mở lại ứng dụng.', 'The update will install automatically and reopen the app.'), progress: state.progress })
       } catch (error) {
-        if (!cancelled) setUpdateDialog({ kind: 'error', title: t('Mất kết nối cập nhật', 'Update connection failed'), detail: error instanceof Error ? error.message : t('Vui lòng thử lại sau.', 'Please try again later.') })
+        if (!cancelled) {
+          updateDownloadStarted.current = false
+          setUpdateDialog({ kind: 'error', title: text('Mất kết nối cập nhật', 'Update connection failed'), detail: error instanceof Error ? error.message : text('Vui lòng thử lại sau.', 'Please try again later.') })
+        }
+        return
       }
+      if (!cancelled) timer = window.setTimeout(() => void poll(), 800)
     }
     void poll()
-    const timer = window.setInterval(() => void poll(), 800)
-    return () => { cancelled = true; window.clearInterval(timer) }
-  }, [t, updateDialog?.kind])
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [applyUpdate, updateDialog?.kind])
 
   const loadLogs = useCallback(() => {
     setLogLoading(true)
@@ -1468,8 +1487,7 @@ export default function ConfigModal({
               </>
             ) : null}
             <div className="cfg-update-actions">
-              {updateDialog.kind === 'available' ? <button type="button" className="primary" onClick={() => void downloadUpdate()}>{t('Tải cập nhật', 'Download update')}</button> : null}
-              {updateDialog.kind === 'ready' ? <button type="button" className="primary" onClick={() => void applyUpdate()}>{t('Cài cập nhật', 'Install update')}</button> : null}
+              {updateDialog.kind === 'available' ? <button type="button" className="primary" onClick={() => void downloadUpdate()}>{t('Cập nhật', 'Update')}</button> : null}
               {updateDialog.kind !== 'downloading' && updateDialog.kind !== 'applying' ? <button type="button" onClick={() => setUpdateDialog(null)}>{t('Đóng', 'Close')}</button> : null}
             </div>
           </section>

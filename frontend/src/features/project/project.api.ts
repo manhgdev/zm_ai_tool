@@ -191,7 +191,7 @@ export const api = {
     fetchJson<{ ok: boolean; message: string }>(
       `${base}/system/update/apply`,
       { method: 'POST' },
-      20_000,
+      45_000,
     ),
 
   /** Log app (job lỗi, crash) — tab Cấu hình → Log */
