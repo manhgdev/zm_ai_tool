@@ -10,7 +10,7 @@ import { copyText } from '@/shared/lib/clipboard'
 import { toast } from 'sonner'
 import { IconEye, IconEyeOff } from '@/shared/components/Icons'
 import './ConfigModal.css'
-import { setupLabel } from './setupLabels'
+import { setupLabel, setupDetail } from './setupLabels'
 import { runtimeStatusText, runtimeErrorText } from './runtimeStatus'
 
 import {
@@ -721,7 +721,6 @@ export default function ConfigModal({
           </div>
           <div className="cfg-head-actions">
             <label>
-              <span>{t('Ngôn ngữ giao diện', 'Interface language')}</span>
               <select aria-label={t('Ngôn ngữ giao diện', 'Interface language')}
                 value={locale} onChange={(event) => setLocale(event.target.value === 'en' ? 'en' : 'vi')}>
                 <option value="vi">Tiếng Việt</option>
@@ -955,7 +954,7 @@ export default function ConfigModal({
                   </div>
                   <div className="cfg-check-body">
                     <div className="cfg-check-detail">{it.ok ? t('Sẵn sàng', 'Ready') : t('Cần kiểm tra hoặc cài đặt', 'Needs checking or installation')}</div>
-                    {it.detail && <details><summary>{t('Chi tiết kỹ thuật', 'Technical details')}</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{it.detail}</pre></details>}
+                    {it.detail && <details><summary>{t('Chi tiết kỹ thuật', 'Technical details')}</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{setupDetail(locale, it)}</pre></details>}
                     {!it.ok && <div className="cfg-check-hint">{setupLabel(locale, it.id, 'hint')}</div>}
                     {!it.ok && it.install && !it.install.startsWith('http') && !['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
                       <code className="cfg-check-cmd" title={t('Lệnh kỹ thuật', 'Technical command')}>

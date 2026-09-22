@@ -70,12 +70,23 @@ def _item(
     install: str = "",
     installLabel: str = "",
 ) -> dict[str, Any]:
+    detail_code = ''
+    detail_value = ''
+    if detail == 'đã cài':
+        detail_code = 'installed'
+    elif detail.startswith('đã cài · tự động: '):
+        detail_code = 'installed_auto'
+        detail_value = detail.removeprefix('đã cài · tự động: ')
+    elif detail in ('chưa cài', 'không có'):
+        detail_code = 'not_installed'
     return {
         "id": id,
         "name": name,
         "ok": ok,
         "required": required,
         "detail": detail,
+        "detailCode": detail_code,
+        "detailValue": detail_value,
         "hint": hint,
         "install": install,
         "installLabel": installLabel,

@@ -94,6 +94,7 @@ export function speedStatusLines(
   bakedSpeed?: number,
   bakedPreferVideo?: boolean,
   hasBakedSpeed?: boolean,
+  locale: 'vi' | 'en' = 'vi',
 ): { inputLine: string; appliedLine: string; exportLine: string; matchLabel: string } {
   const draft = Math.round(Math.max(0.5, Math.min(2, draftSpeed)) * 100) / 100
   const applied = appliedFileSpeed(bakedSpeed, bakedPreferVideo, hasBakedSpeed)
@@ -101,6 +102,15 @@ export function speedStatusLines(
     Boolean(hasBakedSpeed)
     || Boolean(bakedPreferVideo)
     || Math.abs(applied - 1) > 0.02
+
+  if (locale === 'en') {
+    return {
+      inputLine: `Input (playing file): ${formatSpeedX(applied)}`,
+      appliedLine: locked ? `Applied to all: ${formatSpeedX(applied)} (file + timeline + export)` : `Not applied yet — select ${formatSpeedX(draft)} and click Apply`,
+      exportLine: locked ? `Export = timeline at file speed ${formatSpeedX(applied)}` : `Export = timeline at 1.00× (click Apply ${formatSpeedX(draft)} to change speed)`,
+      matchLabel: `Duration matching: ${matchDuration || 'settings'} · file ${formatSpeedX(applied)}`,
+    }
+  }
 
   let matchLabel = 'Khớp: theo cài đặt'
   if (matchDuration === 'preferVideo') {

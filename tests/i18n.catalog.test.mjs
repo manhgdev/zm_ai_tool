@@ -2,6 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+test('technical status is localized without translating provider names', () => {
+  const labels = readFileSync(new URL('../frontend/src/features/configuration/setupLabels.ts', import.meta.url), 'utf8')
+  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
+  assert.match(labels, /case 'installed_auto'/)
+  assert.match(labels, /Đã cài · tự động', 'Installed · automatic'/)
+  assert.match(labels, /item.detailValue/)
+  assert.match(modal, /setupDetail\(locale, it\)/)
+})
+
 test('setup cards use stable IDs instead of backend display strings', () => {
   const source = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
   assert.match(source, /setupLabel\(locale, it.id, 'name'\)/)

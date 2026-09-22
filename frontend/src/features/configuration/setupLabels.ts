@@ -1,4 +1,14 @@
 import { localize, type AppLocale } from '@/app/i18n'
+import type { SystemCheckItem } from '@/features/project/project.types'
+
+export function setupDetail(locale: AppLocale, item: SystemCheckItem): string {
+  switch (item.detailCode) {
+    case 'installed': return localize(locale, 'Đã cài', 'Installed')
+    case 'installed_auto': return `${localize(locale, 'Đã cài · tự động', 'Installed · automatic')}: ${item.detailValue || ''}`
+    case 'not_installed': return localize(locale, 'Chưa cài', 'Not installed')
+    default: return item.detail
+  }
+}
 
 const labels: Record<string, [string, string, string, string]> = {
   ffmpeg: ['FFmpeg', 'FFmpeg', 'Xử lý âm thanh và xuất video.', 'Audio processing and video export.'],

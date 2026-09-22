@@ -392,6 +392,8 @@ export type DeviceInfo = {
 }
 
 export type SystemCheckItem = {
+  detailCode?: string
+  detailValue?: string
   id: string
   name: string
   ok: boolean

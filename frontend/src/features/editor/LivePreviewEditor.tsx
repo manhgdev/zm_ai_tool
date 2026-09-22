@@ -655,8 +655,9 @@ export default function LivePreviewEditor({
       bakedSpeed,
       bakedPreferVideo,
       hasBakedSpeed,
+      locale,
     ),
-    [settings.matchDuration, speedDraft, bakedSpeed, bakedPreferVideo, hasBakedSpeed],
+    [settings.matchDuration, speedDraft, bakedSpeed, bakedPreferVideo, hasBakedSpeed, locale],
   )
   const appliedSpeedX = useMemo(
     () => appliedFileSpeed(bakedSpeed, bakedPreferVideo, hasBakedSpeed),

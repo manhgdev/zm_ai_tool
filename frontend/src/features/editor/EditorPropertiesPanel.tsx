@@ -311,7 +311,7 @@ export function EditorPropertiesPanel({
   const [previewRunSec, setPreviewRunSec] = React.useState(() => Math.max(5, Number(settings.previewSec) || 30))
   const PROP_TABS: { key: PropTab; label: string; icon: React.ReactNode; hidden?: boolean }[] = [
     {
-      key: 'caption', label: 'Phụ đề',
+      key: 'caption', label: t('Phụ đề', 'Captions'),
       icon: <TabSvg><polyline points="4 7 4 4 20 4 20 7" /><line x1="9" y1="20" x2="15" y2="20" /><line x1="12" y1="4" x2="12" y2="20" /></TabSvg>,
     },
     {
@@ -319,7 +319,7 @@ export function EditorPropertiesPanel({
       icon: <TabSvg><rect x="2" y="2" width="20" height="20" rx="2.18" /><path d="M7 2v20M17 2v20M2 12h20M2 7h5M2 17h5M17 17h5M17 7h5" /></TabSvg>,
     },
     {
-      key: 'audio', label: 'Âm thanh',
+      key: 'audio', label: t('Âm thanh', 'Audio'),
       icon: <TabSvg><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3" /></TabSvg>,
     },
     {
@@ -372,7 +372,7 @@ export function EditorPropertiesPanel({
                         <div className="text-sm text-muted-foreground pb-1 border-b border-border">
                           {selected
                             ? `${PROP_TABS.find((t) => t.key === effectivePropTab)?.label} — Đoạn #${String(selected.index).padStart(2, '0')}`
-                            : `${PROP_TABS.find((t) => t.key === effectivePropTab)?.label ?? 'Thuộc tính'} — Tất cả`}
+                            : `${PROP_TABS.find((t) => t.key === effectivePropTab)?.label ?? 'Thuộc tính'} — ${t('Tất cả', 'All')}`}
                         </div>
 
                         {(effectivePropTab as string) === 'workflow' && (
@@ -899,7 +899,7 @@ export function EditorPropertiesPanel({
                                   <div className="flex items-center justify-between gap-3">
                                     <span className="text-xs font-medium">Biến đổi</span>
                                   </div>
-                                  <PropLabel label={`Thu phóng ngang: ${Math.round(settings.videoScaleX ?? settings.videoScale ?? 100)}%`}>
+                                  <PropLabel label={t(`Thu phóng ngang: ${Math.round(settings.videoScaleX ?? settings.videoScale ?? 100)}%`, `Horizontal zoom: ${Math.round(settings.videoScaleX ?? settings.videoScale ?? 100)}%`)}>
                                     <input
                                       type="range"
                                       min={1}
@@ -914,7 +914,7 @@ export function EditorPropertiesPanel({
                                       })}
                                     />
                                   </PropLabel>
-                                  <PropLabel label={`Thu phóng dọc: ${Math.round(settings.videoScaleY ?? settings.videoScale ?? 100)}%`}>
+                                  <PropLabel label={t(`Thu phóng dọc: ${Math.round(settings.videoScaleY ?? settings.videoScale ?? 100)}%`, `Vertical zoom: ${Math.round(settings.videoScaleY ?? settings.videoScale ?? 100)}%`)}>
                                     <input
                                       type="range"
                                       min={1}
@@ -935,7 +935,7 @@ export function EditorPropertiesPanel({
                                 <p>{speedStatus.appliedLine}</p>
                                 <p>{speedStatus.exportLine}</p>
                               </div>
-                              <PropLabel label={`Chọn tốc độ: ${draftX}${draftMatchesFile ? ` (= file ${fileX})` : ` · file đang ${fileX}`}`}>
+                              <PropLabel label={t('Chọn tốc độ', 'Selected speed') + ': ' + draftX + (draftMatchesFile ? ' (= file ' + fileX + ')' : t(' · file đang ', ' · current file ') + fileX)}>
                                 <input
                                   type="range"
                                   min={0.5}
@@ -973,8 +973,8 @@ export function EditorPropertiesPanel({
                                     }}
                                     title={
                                       hasBakedSpeed && Math.abs(appliedSpeedX - v) < 0.005
-                                        ? `Đang ${formatSpeedX(v)} — chọn số khác rồi bấm Áp dụng`
-                                        : `Chọn ${formatSpeedX(v)} rồi bấm Áp dụng`
+                                        ? t(`Đang ${formatSpeedX(v)} — chọn số khác rồi bấm Áp dụng`, `Đang ${formatSpeedX(v)} — chọn số khác rồi bấm Apply`)
+                                        : t(`Chọn ${formatSpeedX(v)} rồi bấm Áp dụng`, `Chọn ${formatSpeedX(v)} rồi bấm Apply`)
                                     }
                                   >
                                     {formatSpeedX(v)}
@@ -1005,28 +1005,27 @@ export function EditorPropertiesPanel({
                                     ? `Đang bake… (Hủy / chọn số khác)`
                                     : draftMatchesFile && hasBakedSpeed
                                       ? `Đã khóa ${fileX} — chọn số khác để đổi`
-                                      : `Áp dụng ${draftX} cho tất cả → file ${draftX}`}
+                                      : t(`Áp dụng ${draftX} cho tất cả → file ${draftX}`, `Apply ${draftX} to all → file ${draftX}`)}
                               </button>
                               <button
                                 type="button"
                                 className="w-full rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent px-2 py-1.5 text-[11px] transition-colors disabled:opacity-50"
                                 disabled={(busy && !speedBusy) || speedCancelling || speedBusy || atDefault}
-                                title={`Đặt lại tốc độ mặc định ${formatSpeedX(defaultSpeedX)} (theo Khớp thời lượng) và áp dụng cho tất cả`}
+                                title={t(`Đặt lại tốc độ mặc định ${formatSpeedX(defaultSpeedX)} (theo Khớp thời lượng) và áp dụng cho tất cả`, `Reset default speed ${formatSpeedX(defaultSpeedX)} (duration matching) and apply to all`)}
                                 onClick={() => {
                                   setSpeedError(null)
                                   applyVideoSpeed('all', defaultSpeedX)
                                 }}
                               >
                                 {atDefault
-                                  ? `Đang ở mặc định ${formatSpeedX(defaultSpeedX)}`
-                                  : `Về mặc định ${formatSpeedX(defaultSpeedX)}`}
+                                  ? t(`Đang ở mặc định ${formatSpeedX(defaultSpeedX)}`, `At default speed ${formatSpeedX(defaultSpeedX)}`)
+                                  : t(`Về mặc định ${formatSpeedX(defaultSpeedX)}`, `Reset to default ${formatSpeedX(defaultSpeedX)}`)}
                               </button>
                               {speedError && (
                                 <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-snug">{speedError}</p>
                               )}
                               <p className="text-[10px] text-muted-foreground leading-snug">
-                                Thước = xuất (cùng tốc độ file). Chưa khóa: bấm Áp dụng kể cả 1.00× / 0.80×.
-                                Đã khóa cùng số: chọn tốc độ khác rồi Áp dụng. Khớp preferVideo chỉ TTS.
+                                {t('Thước = xuất (cùng tốc độ file). Chưa khóa: bấm Áp dụng kể cả 1.00× / 0.80×. Đã khóa cùng số: chọn tốc độ khác rồi Áp dụng. Khớp preferVideo chỉ TTS.', 'Timeline and export use the file speed. Apply even at 1.00× or 0.80× to lock it. If already applied, choose another speed and Apply. Prefer video duration affects only TTS.')}
                               </p>
 
                               {selected && (
@@ -1371,7 +1370,7 @@ export function EditorPropertiesPanel({
 
                             {selected ? (
                               <>
-                            <PropLabel label={`Âm lượng TTS: ${selected.ttsVolume ?? 100}%`}>
+                            <PropLabel label={t(`Âm lượng TTS: ${selected.ttsVolume ?? 100}%`, `TTS volume: ${selected.ttsVolume ?? 100}%`)}>
                               <input type="range" min={0} max={200}
                                 className="w-full accent-primary"
                                 value={selected.ttsVolume ?? 100}
@@ -1405,8 +1404,8 @@ export function EditorPropertiesPanel({
                               return (
                                 <>
                                   <PropLabel label={Math.abs(segRatio - 1) > 0.02
-                                    ? `Tốc độ TTS (phát thực): ${eff.toFixed(2)}× — dub ở ${(selected.ttsBake ?? 1).toFixed(2)}, timeline ${(bakedSpeed ?? 1).toFixed(2)}`
-                                    : `Tốc độ TTS: ${eff.toFixed(2)}×`}>
+                                    ? t(`Tốc độ TTS (phát thực): ${eff.toFixed(2)}× — dub ở ${(selected.ttsBake ?? 1).toFixed(2)}, timeline ${(bakedSpeed ?? 1).toFixed(2)}`, `TTS speed (playback): ${eff.toFixed(2)}× — dubbed at ${(selected.ttsBake ?? 1).toFixed(2)}, timeline ${(bakedSpeed ?? 1).toFixed(2)}`)
+                                    : t(`Tốc độ TTS: ${eff.toFixed(2)}×`, `TTS speed: ${eff.toFixed(2)}×`)}>
                                     <input type="range"
                                       min={0.75 * segRatio} max={1.5 * segRatio} step={0.05}
                                       className="w-full accent-primary"
@@ -1459,7 +1458,7 @@ export function EditorPropertiesPanel({
                                 <p className="text-[11px] text-muted-foreground leading-relaxed">
                                   Chọn giọng (nút <strong className="text-foreground font-medium">Tạo TTS tất cả</strong> bên phải) hoặc kéo thanh chỉnh volume/tốc độ để áp dụng cho tất cả các đoạn.
                                 </p>
-                                <PropLabel label={`Âm lượng TTS: ${globalTtsVolume}% · tất cả`}>
+                                <PropLabel label={t(`Âm lượng TTS: ${globalTtsVolume}% · tất cả`, `TTS volume: ${globalTtsVolume}% · all`)}>
                                   <input
                                     type="range"
                                     min={0}
@@ -1523,8 +1522,8 @@ export function EditorPropertiesPanel({
                                   return (
                                     <>
                                       <PropLabel label={Math.abs(allRatio - 1) > 0.02
-                                        ? `Tốc độ TTS (phát thực): ${effAll.toFixed(2)}× · tất cả — dub ở ${(dubRef?.ttsBake ?? 1).toFixed(2)}, timeline ${(bakedSpeed ?? 1).toFixed(2)}`
-                                        : `Tốc độ TTS: ${effAll.toFixed(2)}× · tất cả`}>
+                                        ? t(`Tốc độ TTS (phát thực): ${effAll.toFixed(2)}× · tất cả — dub ở ${(dubRef?.ttsBake ?? 1).toFixed(2)}, timeline ${(bakedSpeed ?? 1).toFixed(2)}`, `TTS speed (playback): ${effAll.toFixed(2)}× · all — dubbed at ${(dubRef?.ttsBake ?? 1).toFixed(2)}, timeline ${(bakedSpeed ?? 1).toFixed(2)}`)
+                                        : t(`Tốc độ TTS: ${effAll.toFixed(2)}× · tất cả`, `TTS speed: ${effAll.toFixed(2)}× · all`)}>
                                         <input
                                           type="range"
                                           min={0.75 * allRatio}
