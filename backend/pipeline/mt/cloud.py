@@ -410,19 +410,28 @@ def translate_cloud(
                 source_lang, target_lang, chunk[0]
             )
             riva_input = chunk[0]
-            riva_pair = f"{source_code}-{target_code}"
-            if source_code != "en" and target_code != "en":
-                raise _cloud_error("nvidia", "UNSUPPORTED_LANGUAGE_PAIR")
-            raw = _openai_compatible_chat(
-                base_url=base_url,
-                api_keys=api_keys,
-                model=model,
-                prompt=riva_input,
-                system_msg=riva_pair,
-                max_output_tokens=512,
-                max_input_tokens=8_192,
-                provider=pid,
-            )
+            if source_code == target_code:
+                return start, [_clean_burn_text(riva_input, target_lang=target_lang)]
+            # Riva supports English-centric pairs. Pivot through English for
+            # e.g. Chinese -> Vietnamese, preserving each segment's position.
+            pairs = [(source_code, target_code)] if 'en' in (source_code, target_code) else [
+                (source_code, 'en'), ('en', target_code),
+            ]
+            raw = riva_input
+            for source, target in pairs:
+                check_cancel(project_id)
+                raw = _openai_compatible_chat(
+                    base_url=base_url,
+                    api_keys=api_keys,
+                    model=model,
+                    prompt=raw,
+                    system_msg=f'{source}-{target}',
+                    max_output_tokens=512,
+                    max_input_tokens=8_192,
+                    provider=pid,
+                )
+                if not raw or not raw.strip():
+                    raise _cloud_error(pid, 'INVALID_RESPONSE')
             cleaned = _clean_burn_text(raw, target_lang=target_lang)
             if not cleaned:
                 raise _cloud_error(pid, "INVALID_RESPONSE")
