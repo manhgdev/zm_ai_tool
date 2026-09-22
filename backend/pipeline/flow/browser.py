@@ -47,19 +47,22 @@ class BrowserManager:
             raise RuntimeError("FLOW_CHROME_REQUIRED: Google Chrome was not found. Install Google Chrome, then connect again.")
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._pw = await async_playwright().start()
-        self._ctx = await self._pw.chromium.launch_persistent_context(
-            str(self.profile_dir),
-            executable_path=str(executable),
-            headless=self.headless,
-            slow_mo=self.slow_mo,
-            viewport={"width": 1440, "height": 900},
-            accept_downloads=True,
-            locale="en-US",
-            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled", "--disable-infobars",
-                  "--lang=en-US"],
-        )
-        await self._ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        try:
+            self._ctx = await self._pw.chromium.launch_persistent_context(
+                str(self.profile_dir),
+                executable_path=str(executable),
+                headless=self.headless,
+                slow_mo=self.slow_mo,
+                viewport={"width": 1440, "height": 900},
+                accept_downloads=True,
+                locale="en-US",
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                chromium_sandbox=True,
+                args=["--lang=en-US"],
+            )
+        except Exception:
+            await self.stop()
+            raise
         return self
 
     async def stop(self) -> None:
