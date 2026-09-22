@@ -25,7 +25,7 @@ export type InstallStatus = {
   progress?: number
   startedAt?: number
   updatedAt?: number
-  stage?: 'detect_hardware' | 'prepare_python' | 'install_packages' | 'probe' | 'activate' | 'rollback' | ''
+  stage?: 'detect_hardware' | 'prepare_python' | 'download_packages' | 'install_packages' | 'probe' | 'activate' | 'rollback' | ''
   runtimeProfile?: string
   currentPackage?: string
   runtimePack?: string

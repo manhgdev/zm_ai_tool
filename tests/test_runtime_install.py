@@ -16,6 +16,21 @@ from pipeline.core.system_check import install
 
 
 class HardwareTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        environment = patch.dict(os.environ, {'ZM_AI_TOOL_HOME': temporary.name})
+        environment.start()
+        self.addCleanup(environment.stop)
+        def downloaded(python, groups, emit, on_ready=None):
+            paths = {group['name']: Path(temporary.name) / group['name'] for group in groups}
+            if on_ready:
+                for group in groups:
+                    on_ready(group, paths[group['name']], 30, 40)
+            return paths
+        prefetch = patch.object(runtime, '_prefetch_packages', side_effect=downloaded)
+        prefetch.start()
+        self.addCleanup(prefetch.stop)
     def test_installed_runtime_ignores_stale_home_on_another_drive(self):
         from pipeline.core.runtime_active import runtime_home
         with tempfile.TemporaryDirectory() as raw:
@@ -44,7 +59,8 @@ class HardwareTests(unittest.TestCase):
         self.assertEqual(sum(c[0] == 'uv' for c in calls), 1)
         self.assertEqual(calls[1][:4], ['python.exe', '-I', '-m', 'pip'])
         self.assertIn('--no-compile', calls[1])
-        self.assertIn('https://download.pytorch.org/whl/cu124', calls[1])
+        self.assertIn('--no-index', calls[1])
+        self.assertIn('torch==2.6.0', calls[1])
         self.assertTrue(all(c[0] == 'python.exe' for c in calls[1:]))
 
     def test_other_install_errors_do_not_trigger_a_second_download(self):
@@ -109,7 +125,8 @@ class HardwareTests(unittest.TestCase):
             torch_commands = [c for c in commands if any(s.startswith('torch==') for s in c)]
             self.assertEqual(len(torch_commands), 1)
             expected_index = profile.removeprefix('nvidia-') if profile.startswith('nvidia-') else 'cpu'
-            self.assertIn(f'https://download.pytorch.org/whl/{expected_index}', torch_commands[0])
+            self.assertIn('--no-index', torch_commands[0])
+            self.assertIn('--find-links', torch_commands[0])
             ort = [s for c in commands for s in c if s.startswith(('onnxruntime==', 'onnxruntime-gpu==', 'onnxruntime-directml=='))]
             self.assertEqual(len(ort), 1)
             if profile == 'directml':

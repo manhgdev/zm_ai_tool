@@ -44,7 +44,7 @@ test('Windows Setup Vietnamese uses complete message sections', () => {
 
 test('runtime setup stages and errors have Vietnamese and English labels', () => {
   const source = readFileSync(new URL('../frontend/src/features/configuration/runtimeStatus.ts', import.meta.url), 'utf8')
-  for (const key of ['detect_hardware', 'prepare_python', 'install_packages', 'probe', 'activate', 'rollback',
+  for (const key of ['detect_hardware', 'prepare_python', 'download_packages', 'install_packages', 'probe', 'activate', 'rollback',
     'HARDWARE_UNSUPPORTED', 'DRIVER_TOO_OLD', 'DOWNLOAD_FAILED', 'PYTHON_PREPARE_FAILED',
     'DEPENDENCY_INSTALL_FAILED', 'RUNTIME_PROBE_FAILED', 'DISK_FULL', 'ACTIVATION_FAILED', 'RUNTIME_BUSY']) {
     assert.match(source, new RegExp(`${key}: \\[\\s*'[^']+',\\s*'[^']+'\\s*\\]`), key)

@@ -895,7 +895,8 @@ def run_desktop() -> int:
             from pipeline.core.desktop_window import register_restore_callback
 
             def _restore_desktop_window() -> None:
-                for method in ("restore", "show", "focus"):
+                # Auth completion must not unmaximize or unminimize the app.
+                for method in ("focus",):
                     fn = getattr(window, method, None)
                     if callable(fn):
                         try:

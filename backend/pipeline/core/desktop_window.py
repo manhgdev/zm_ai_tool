@@ -16,10 +16,12 @@ def register_restore_callback(callback: Callable[[], None]) -> None:
 
 
 def request_desktop_foreground() -> None:
-    """Keep the desktop app visible after an external browser login closes."""
+    """Return focus without changing the user's window size/state."""
     if os.environ.get("ZM_AI_TOOL_DESKTOP") != "1":
         return
-    if _restore_callback is not None:
+    # Windows uses native focus only, never pywebview.restore()/show(), which
+    # can turn a maximized window into a normal-sized window.
+    if sys.platform != 'win32' and _restore_callback is not None:
         try:
             _restore_callback()
         except Exception:
@@ -51,16 +53,12 @@ def request_desktop_foreground() -> None:
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
         pid = kernel32.GetCurrentProcessId()
-        SW_RESTORE = 9
-        SW_SHOW = 5
 
         def enum_proc(hwnd, _lparam):  # noqa: ANN001
             owner = wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-            if owner.value != pid or not user32.IsWindowVisible(hwnd):
+            if owner.value != pid or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
                 return True
-            user32.ShowWindow(hwnd, SW_RESTORE)
-            user32.ShowWindow(hwnd, SW_SHOW)
             user32.SetForegroundWindow(hwnd)
             return False
 

@@ -23,7 +23,7 @@ from pipeline.core.output_paths import safe_output_part, selected_or_default
 from . import store
 
 # Match both legacy labs.google/fx/tools/flow/project/<id> and new flow.google.com/project/<id>
-_PROJECT_RE = re.compile(r"(?:/flow)?/project/([^/?#]+)")
+_PROJECT_RE = re.compile(r"^(?:https://(?:flow\.google\.com|labs\.google)(?::443)?)?(?:/fx/tools/flow|/flow)?/project/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})(?:[/?#]|$)")
 _TERMINAL = {"done", "failed", "cancelled", "action_required"}
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 3
 _MAX_CONCURRENT_JOBS_PER_ACCOUNT = 6
@@ -922,7 +922,10 @@ class FlowService:
                         if m:
                             confirmed_id = m.group(1)
 
-            if not confirmed_id:
+            if not confirmed_id or not _PROJECT_RE.search(str(page.url)):
+                return False
+            authenticated = await page.evaluate("() => Boolean(window.WIZ_global_data?.SNlM0e || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email)")
+            if not authenticated:
                 return False
             email = await page.evaluate("() => window.WIZ_global_data?.oPEP7c || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''")
             credits = None
@@ -1101,6 +1104,13 @@ class FlowService:
                 self._account_condition.notify_all()
 
     def _clone_runtime_profile(self, account_id: str, job_id: str) -> Path:
+        from .browser import profile_lock
+        # Cookie databases can only be copied once Chrome releases this profile.
+        with profile_lock(store.profile_dir(account_id)):
+            self._check_cancel(job_id)
+            return self._clone_closed_profile(account_id, job_id)
+
+    def _clone_closed_profile(self, account_id: str, job_id: str) -> Path:
         """Copy login state into an isolated, cache-free profile for one job."""
         source = store.profile_dir(account_id)
         target = store.root() / "runtime-profiles" / account_id / job_id
@@ -2011,25 +2021,8 @@ class FlowService:
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")
             store.patch_row("jobs", job_id, {"status": action, "stage": action, "error": str(exc), "updatedAt": time.time()})
             if needs_login:
-                # Thử tự refresh session headlessly trước khi yêu cầu user can thiệp.
-                project_id = str(account.get("projectId") or "")
-                auto_ok = False
-                if project_id:
-                    try:
-                        auto_ok = await self._try_headless_reconnect(account["id"], project_id)
-                    except Exception as reconnect_exc:
-                        _log.debug("auto headless reconnect failed for %s: %s", account["id"], reconnect_exc)
-                if auto_ok:
-                    # Session được refresh thành công → retry job tự động
-                    _log.info("auto reconnect OK for %s — re-queuing job %s", account["id"], job_id)
-                    store.patch_row("jobs", job_id, {"status": "queued", "stage": "queued", "error": None, "updatedAt": time.time()})
-                    threading.Thread(
-                        target=lambda: asyncio.run(self._run(job_id)),
-                        daemon=True,
-                        name=f"flow-retry-{job_id}",
-                    ).start()
-                    return
-                # Headless thất bại → cookie hết hạn thật sự, cần user đăng nhập lại
+                # Do not recursively reopen the shared login profile from each
+                # failed worker. Leave jobs action_required for explicit reconnect.
                 store.patch_row("accounts", account["id"], {"status": "reconnect", "error": str(exc), "updatedAt": time.time()})
             if job.get("seriesContext"):
                 from . import series

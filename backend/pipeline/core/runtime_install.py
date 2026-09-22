@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import json
 import os
 import platform
@@ -226,13 +228,82 @@ def _prepare(uv: str, root: Path) -> Path:
     return _python(root)
 
 
+def _prefetch_packages(python: Path, groups: list[dict[str, Any]], emit, on_ready=None) -> dict[str, Path]:
+    """Download independent wheel groups concurrently; never mutate the venv."""
+    cache = runtime_home() / 'runtime' / 'wheelhouse'
+    destinations: dict[str, Path] = {}
+    installed: set[str] = set()
+    def download(group):
+        identity = hashlib.sha256(json.dumps(group, sort_keys=True).encode()).hexdigest()[:20]
+        destination = cache / identity
+        destination.mkdir(parents=True, exist_ok=True)
+        command = [str(python), '-I', '-m', 'pip', '--isolated', 'download',
+                   '--cache-dir', str(runtime_home() / 'runtime/pip-cache'),
+                   '--disable-pip-version-check', '--no-input', '--only-binary', ':all:',
+                   '--dest', str(destination)]
+        if group.get('index'):
+            command += ['--index-url', group['index']]
+        if group.get('links'):
+            command += ['--find-links', group['links']]
+        if group.get('no_deps'):
+            command.append('--no-deps')
+        _run([*command, *group['specs']], 'DOWNLOAD_FAILED', group['name'])
+        return destination
+    emit(30, 'download_packages', currentPackage=', '.join(g['name'] for g in groups))
+    # Three network workers bound RAM/disk pressure on low-end PCs. Each
+    # group has its own wheel directory, including the CUDA-specific index.
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix='ai-download') as pool:
+        pending = {pool.submit(download, g): g['name'] for g in groups}
+        while pending:
+            done, _ = wait(pending, timeout=2, return_when=FIRST_COMPLETED)
+            for future in done:
+                name = pending.pop(future)
+                try:
+                    destinations[name] = future.result()
+                except Exception:
+                    for queued in pending:
+                        queued.cancel()
+                    raise
+            # One coordinator installs ready groups while network workers
+            # continue downloading. Only dependency-ready groups can proceed.
+            for group in groups:
+                name = group['name']
+                if (on_ready and name in destinations and name not in installed
+                        and set(group.get('requires', ())) <= installed):
+                    start = 30 + int(44 * len(installed) / len(groups))
+                    end = 30 + int(44 * (len(installed) + 1) / len(groups))
+                    on_ready(group, destinations[name], start, end)
+                    installed.add(name)
+            # Completed-group progress, never claim that this is byte progress.
+            emit(30 + int((44 * len(installed) if on_ready else 25 * len(destinations)) / len(groups)), 'download_packages',
+                 currentPackage=', '.join(pending.values()))
+        if on_ready and len(installed) != len(groups):
+            raise RuntimeInstallError('DEPENDENCY_INSTALL_FAILED', 'Unresolved runtime group dependencies')
+    return destinations
+
+
 def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit) -> None:
+    cuda = profile.startswith('nvidia-')
+    torch_version = '2.7.1' if profile == 'nvidia-cu128' else '2.6.0'
+    index = profile.removeprefix('nvidia-') if cuda else 'cpu'
+    provider = {'cpu': 'onnxruntime==1.20.1', 'directml': 'onnxruntime-directml==1.23.0'}.get(profile, 'onnxruntime-gpu==1.20.2')
+    groups = [
+        {'name': 'Torch CUDA' if cuda else 'Torch CPU', 'specs': (f'torch=={torch_version}', f'torchaudio=={torch_version}'),
+         'index': f'https://download.pytorch.org/whl/{index}'},
+        {'name': 'ONNX / Core', 'specs': (*CORE, provider, *(() if cuda else ('sherpa-onnx==1.13.8',)))},
+        {'name': 'Whisper / OCR / VieNeu', 'specs': ('faster-whisper==1.2.1', 'rapidocr-onnxruntime==1.4.4', 'vieneu==3.2.0'), 'no_deps': True,
+         'requires': ['Torch CUDA' if cuda else 'Torch CPU', 'ONNX / Core']},
+    ]
+    if cuda:
+        groups.append({'name': 'Sherpa CUDA', 'specs': ('sherpa-onnx==1.13.5+cuda12.cudnn9',),
+                       'no_deps': True, 'links': 'https://k2-fsa.github.io/sherpa/onnx/cuda.html',
+                       'requires': ['Torch CUDA', 'ONNX / Core']})
     pip_base = [str(python), '-I', '-m', 'pip', '--isolated', 'install',
             '--cache-dir', str(runtime_home() / 'runtime' / 'pip-cache'),
             '--disable-pip-version-check', '--no-input', '--no-compile']
     uv_base = [uv, 'pip', 'install', '--python', str(python), '--link-mode', 'copy']
     use_pip = False
-    def install(specs, value, end, *, index=None, no_deps=False, source=False, links=None):
+    def install(specs, value, end, *, index=None, no_deps=False, source=False, links=None, offline=False):
         nonlocal use_pip
         label = ', '.join(specs)
         emit(value, 'install_packages', currentPackage=label)
@@ -244,7 +315,9 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit) -
         if no_deps:
             command.append('--no-deps')
         if links:
-            command += ['--find-links', links]
+            command += ['--find-links', str(links)]
+        if offline:
+            command += ['--no-index']
         try:
             _run([*(pip_base if use_pip else uv_base), *command, *specs],
                  'DEPENDENCY_INSTALL_FAILED', label, (value, end, label))
@@ -259,20 +332,10 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit) -
             if _install_log_fn:
                 _install_log_fn('uv interpreter query blocked (448); switching to CPython pip for this installation.\n')
             _run([*pip_base, *command, *specs], 'DEPENDENCY_INSTALL_FAILED', label, (value, end, label))
-    cuda = profile.startswith('nvidia-')
-    torch_version = '2.7.1' if profile == 'nvidia-cu128' else '2.6.0'
-    index = profile.removeprefix('nvidia-') if cuda else 'cpu'
-    install((f'torch=={torch_version}', f'torchaudio=={torch_version}'), 30, 49,
-            index=f'https://download.pytorch.org/whl/{index}')
-    provider = {'cpu': 'onnxruntime==1.20.1', 'directml': 'onnxruntime-directml==1.23.0'}.get(profile, 'onnxruntime-gpu==1.20.2')
-    sherpa = () if cuda else ('sherpa-onnx==1.13.8',)
-    install((*CORE, provider, *sherpa), 50, 64)
-    # SDK declares unused Gradio/watermark and CPU ORT dependencies; provision
-    # the actual app paths explicitly to keep exactly one ORT provider.
-    install(('faster-whisper==1.2.1', 'rapidocr-onnxruntime==1.4.4', 'vieneu==3.2.0'), 65, 69, no_deps=True)
-    if cuda:
-        install(('sherpa-onnx==1.13.5+cuda12.cudnn9',), 70, 74, no_deps=True,
-                links='https://k2-fsa.github.io/sherpa/onnx/cuda.html')
+    def install_ready(group, wheels, start, end):
+        install(group['specs'], start, end,
+                no_deps=group.get('no_deps', False), links=wheels, offline=True)
+    _prefetch_packages(python, groups, emit, on_ready=install_ready)
     if demucs:
         install(DEMUCS, 75, 84, no_deps=True, source=True)
 

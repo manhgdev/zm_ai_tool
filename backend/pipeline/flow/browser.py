@@ -7,6 +7,8 @@ Chrome instead and keep the persistent account profile inside ZM AI TOOL.
 from __future__ import annotations
 
 import os
+import asyncio
+import threading
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,14 @@ from typing import Any
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 
 FLOW_BASE_URL = "https://flow.google.com"
+_profile_guard = threading.Lock()
+_profile_locks: dict[str, Any] = {}
+
+
+def profile_lock(path: Path):
+    key = os.path.normcase(str(path.resolve()))
+    with _profile_guard:
+        return _profile_locks.setdefault(key, threading.Lock())
 
 
 def chrome_executable() -> Path | None:
@@ -40,14 +50,19 @@ class BrowserManager:
         self._pw: Playwright | None = None
         self._ctx: BrowserContext | None = None
         self._page: Page | None = None
+        self._profile_lock = profile_lock(self.profile_dir)
+        self._owns_profile = False
 
     async def start(self) -> "BrowserManager":
         executable = chrome_executable()
         if executable is None:
             raise RuntimeError("FLOW_CHROME_REQUIRED: Google Chrome was not found. Install Google Chrome, then connect again.")
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        self._pw = await async_playwright().start()
+        while not self._profile_lock.acquire(blocking=False):
+            await asyncio.sleep(0.1)
+        self._owns_profile = True
         try:
+            self._pw = await async_playwright().start()
             self._ctx = await self._pw.chromium.launch_persistent_context(
                 str(self.profile_dir),
                 executable_path=str(executable),
@@ -66,7 +81,7 @@ class BrowserManager:
             await self._ctx.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
-        except Exception:
+        except BaseException:
             await self.stop()
             raise
         return self
@@ -85,6 +100,9 @@ class BrowserManager:
         self._ctx = None
         self._pw = None
         self._page = None
+        if self._owns_profile:
+            self._owns_profile = False
+            self._profile_lock.release()
 
     @property
     def context(self) -> BrowserContext:

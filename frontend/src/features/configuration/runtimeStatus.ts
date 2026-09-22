@@ -5,7 +5,8 @@ type Locale = Parameters<typeof localize>[0]
 const stages: Record<string, [string, string]> = {
   detect_hardware: ['Nhận diện phần cứng', 'Detecting hardware'],
   prepare_python: ['Chuẩn bị Python riêng', 'Preparing managed Python'],
-  install_packages: ['Tải và cài dependency', 'Downloading and installing dependencies'],
+  download_packages: ['Đang tải song song các nhóm (tiến độ theo nhóm)', 'Downloading groups in parallel (group progress)'],
+  install_packages: ['Đang cài dependency', 'Installing dependencies'],
   probe: ['Kiểm tra runtime', 'Testing runtime'],
   activate: ['Kích hoạt runtime', 'Activating runtime'],
   rollback: ['Khôi phục runtime trước', 'Restoring previous runtime'],
@@ -27,7 +28,8 @@ export function runtimeStatusText(status: InstallStatus, locale: Locale): string
   if (!stage) return localize(locale, 'Đang chuẩn bị cài đặt…', 'Preparing installation…')
   const profile = status.runtimeProfile || status.runtimePack
   // Package commands and versions are already present in the diagnostic log.
-  return [localize(locale, ...stage), profile].filter(Boolean).join(' · ')
+  const downloading = status.stage === 'download_packages' ? status.currentPackage : ''
+  return [localize(locale, ...stage), profile, downloading].filter(Boolean).join(' · ')
 }
 
 export function runtimeErrorText(status: InstallStatus, locale: Locale): string {

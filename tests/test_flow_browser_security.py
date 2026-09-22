@@ -28,6 +28,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 context.add_init_script.assert_awaited_once_with(
                     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
                 )
+                await manager.stop()
 
     async def test_blocked_launch_stops_driver_without_disabling_sandbox(self):
         launch = AsyncMock(side_effect=RuntimeError('blocked by policy'))
