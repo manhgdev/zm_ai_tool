@@ -49,10 +49,8 @@ def windows_portable_home(
 ) -> tuple[Path, Path | None]:
     """Select stable state storage for Windows Setup and Portable builds.
 
-    Inno Setup writes ``.zmaio-installed`` next to the EXE, so an installed
-    copy always uses LocalAppData even when it was launched elevated or placed
-    in a custom writable folder. A marker-free Portable copy remains truly
-    portable and stores state beside the EXE whenever that location is writable.
+    Setup data follows the selected installation directory. Never silently
+    redirect a custom-drive installation to the system drive if writes fail.
     """
     env = os.environ if environ is None else environ
     # Keep mapped/subst drive spelling; resolving junctions can make AI paths much longer.
@@ -62,7 +60,7 @@ def windows_portable_home(
         or (Path.home() / "AppData" / "Local")
     )
     if (portable_root / _INSTALLED_MARKER).is_file():
-        installed_home = local / "ZM_AI_TOOL"
+        installed_home = portable_root / 'user-data'
         return ensure_writable_directory(installed_home), portable_root
     try:
         return ensure_writable_directory(portable_root), None

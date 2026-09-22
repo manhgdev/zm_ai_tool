@@ -10,18 +10,24 @@ from pipeline.flow.browser import BrowserManager
 
 
 class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
-    async def test_flow_keeps_chrome_sandbox_and_does_not_mask_automation(self):
+    async def test_flow_restores_launch_compatibility_without_disabling_sandbox(self):
         context = SimpleNamespace(add_init_script=AsyncMock())
         launch = AsyncMock(return_value=context)
         playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch), stop=AsyncMock())
         with tempfile.TemporaryDirectory() as raw, patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome.exe')), patch(
             'pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))
         ):
-            manager = BrowserManager(headless=True, profile_dir=Path(raw) / 'flow-profile')
-            await manager.start()
-            self.assertTrue(launch.call_args.kwargs['chromium_sandbox'])
-            self.assertEqual(launch.call_args.kwargs['args'], ['--lang=en-US'])
-            context.add_init_script.assert_not_called()
+            for headless in (False, True):
+                context.add_init_script.reset_mock()
+                manager = BrowserManager(headless=headless, profile_dir=Path(raw) / 'flow-profile')
+                await manager.start()
+                self.assertTrue(launch.call_args.kwargs['chromium_sandbox'])
+                self.assertEqual(launch.call_args.kwargs['headless'], headless)
+                self.assertIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
+                self.assertNotIn('--no-sandbox', launch.call_args.kwargs['args'])
+                context.add_init_script.assert_awaited_once_with(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                )
 
     async def test_blocked_launch_stops_driver_without_disabling_sandbox(self):
         launch = AsyncMock(side_effect=RuntimeError('blocked by policy'))

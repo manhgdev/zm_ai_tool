@@ -52,7 +52,7 @@ class PortableLayoutTest(unittest.TestCase):
             process.terminate.assert_not_called()
             self.assertEqual(Path(str(started) + '.commit').read_text(), 'proceed')
 
-    def test_setup_marker_always_uses_local_app_data(self) -> None:
+    def test_setup_data_follows_selected_install_directory(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             installed = root / "Program Files" / "ZM AI TOOL"
@@ -66,8 +66,19 @@ class PortableLayoutTest(unittest.TestCase):
                 executable, {"LOCALAPPDATA": str(local)}
             )
 
-            self.assertEqual(home, local / "ZM_AI_TOOL")
+            self.assertEqual(home, installed.absolute() / 'user-data')
+            self.assertFalse(local.exists())
             self.assertEqual(source, installed.absolute())
+
+    def test_setup_does_not_fallback_to_c_when_selected_folder_is_unwritable(self):
+        with tempfile.TemporaryDirectory() as raw:
+            installed = Path(raw) / 'Selected Drive' / 'ZM AI TOOL'
+            installed.mkdir(parents=True)
+            (installed / '.zmaio-installed').touch()
+            with patch('portable_layout.ensure_writable_directory', side_effect=PermissionError('denied')) as ensure:
+                with self.assertRaises(PermissionError):
+                    windows_portable_home(installed / 'ZM AI TOOL.exe', {'LOCALAPPDATA': str(Path(raw) / 'C')})
+                ensure.assert_called_once_with(installed.absolute() / 'user-data')
 
     def test_marker_free_build_remains_portable_when_writable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

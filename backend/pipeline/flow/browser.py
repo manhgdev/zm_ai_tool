@@ -58,7 +58,13 @@ class BrowserManager:
                 locale="en-US",
                 extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
                 chromium_sandbox=True,
-                args=["--lang=en-US"],
+                # Restore the Flow launch compatibility settings removed in
+                # v8.2.2; keep Chrome's process sandbox enabled independently.
+                args=["--lang=en-US", "--disable-blink-features=AutomationControlled",
+                      "--disable-infobars"],
+            )
+            await self._ctx.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
         except Exception:
             await self.stop()
