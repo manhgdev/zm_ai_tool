@@ -88,6 +88,21 @@ Type: files; Name: "{app}\app.log"
 Type: files; Name: "{app}\last_crash.txt"
 
 [Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  LocaleFile: String;
+  LocaleData: String;
+begin
+  if (CurStep = ssPostInstall) and (not WizardSilent) then
+  begin
+    LocaleFile := ExpandConstant('{app}\installer-locale.json');
+    LocaleData := '{"locale":"' + ActiveLanguage + '","revision":"{#MyAppVersion}:' +
+      GetDateTimeString('yyyymmddhhnnss', #0, #0) + '"}';
+    if not SaveStringToFile(LocaleFile, LocaleData, False) then
+      RaiseException('Cannot save the selected application language.');
+  end;
+end;
+
 function GetInstallLocaleRevision(Param: String): String;
 begin
   Result := GetDateTimeString('yyyymmddhhnnss', #0, #0);

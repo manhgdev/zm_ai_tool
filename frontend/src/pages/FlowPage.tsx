@@ -220,7 +220,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const [confirmAction, setConfirmAction] = useState<{
     message: string;
     confirmLabel: string;
-    run: () => void;
+    run: () => void | Promise<unknown>;
   } | null>(null);
   const [queueKind, setQueueKind] = useState<CreateKind | "all">("all");
   const selectCreateKind = (kind: CreateKind) => {
@@ -632,6 +632,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       toast.error(msg);
     }
   };
+  const actionLock = useRef(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const runAction = async (action: () => void | Promise<unknown>) => {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setActionBusy(true);
+    try { await action(); }
+    catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
+    finally { actionLock.current = false; setActionBusy(false); }
+  };
   const createFlowJobs = async () => {
     const prompts = prompt
       .split(/\n\s*\n/)
@@ -822,7 +832,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setConfirmAction({
       message: t(`Xóa tài khoản ${account.label}?`, `Delete account ${account.label}?`),
       confirmLabel: t("Xóa tài khoản", "Delete account"),
-      run: () => void flowRequest(`/api/flow/accounts/${account.id}`, { method: "DELETE" })
+      run: () => flowRequest(`/api/flow/accounts/${account.id}`, { method: "DELETE" })
         .then(() => setAccounts((current) => current.filter((item) => item.id !== account.id)))
         .catch((error) => setApiError(error instanceof Error ? error.message : String(error))),
     });
@@ -865,7 +875,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setConfirmAction({
       message: t("Xóa job này khỏi danh sách?", "Delete this job from the list?"),
       confirmLabel: t("Xóa job", "Delete job"),
-      run: () => void (async () => {
+      run: () => (async () => {
         await flowRequest(`/api/flow/jobs/${id}`, { method: "DELETE" });
         if (job) await deleteWebFlowOutputs(job);
         setJobs((current) => current.filter((item) => item.id !== id));
@@ -886,7 +896,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setConfirmAction({
       message: t(`Hủy ${activeCount} job đang chờ/chạy?`, `Cancel ${activeCount} queued/running jobs?`),
       confirmLabel: t("Hủy tất cả", "Cancel all"),
-      run: () => void flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs/cancel-all", { method: "POST" })
+      run: () => flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs/cancel-all", { method: "POST" })
         .then(({ jobs: rows }) => {
           setJobs(normalizeFlowJobs(rows, accounts));
           setApiError("");
@@ -907,7 +917,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       confirmLabel: t("Chạy lại tất cả", "Retry all"),
       run: async () => {
         try {
-          await Promise.all(retryable.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, { method: "POST" })));
+          for (const job of retryable) await flowRequest(`/api/flow/jobs/${job.id}/retry`, { method: "POST" });
           const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
           setJobs(normalizeFlowJobs(data.jobs, accounts));
           toast.success(t(`Đã đưa ${retryable.length} job vào hàng đợi chạy lại.`, `Queued ${retryable.length} jobs for retry.`));
@@ -922,7 +932,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setConfirmAction({
       message: t(`Xóa toàn bộ ${jobs.length} job khỏi hàng đợi?`, `Delete all ${jobs.length} jobs from the queue?`),
       confirmLabel: t("Xóa tất cả", "Delete all"),
-      run: () => void (async () => {
+      run: () => (async () => {
         const { jobs: rows } = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", { method: "DELETE" });
         for (const job of jobs) await deleteWebFlowOutputs(job);
         setJobs(normalizeFlowJobs(rows, accounts));
@@ -947,7 +957,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         `Cancel ${activeCount} queued/running jobs in this folder?`,
       ),
       confirmLabel: t("Hủy", "Cancel"),
-      run: () => void flowRequest<{ jobs: Array<Record<string, unknown>> }>(
+      run: () => flowRequest<{ jobs: Array<Record<string, unknown>> }>(
         "/api/flow/jobs/cancel-folder",
         {
           method: "POST",
@@ -976,7 +986,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         `Delete all ${folderJobs.length} jobs and files in this folder?`,
       ),
       confirmLabel: t("Xóa thư mục", "Delete folder"),
-      run: () => void (async () => {
+      run: () => (async () => {
         const { jobs: rows } = await flowRequest<{ jobs: Array<Record<string, unknown>> }>(
           "/api/flow/jobs/delete-folder",
           {
@@ -1175,7 +1185,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setConfirmAction({
       message: t("Xóa toàn bộ log Flow?", "Clear all Flow logs?"),
       confirmLabel: t("Xóa log", "Clear logs"),
-      run: () => void flowRequest("/api/flow/logs", { method: "DELETE" })
+      run: () => flowRequest("/api/flow/logs", { method: "DELETE" })
         .then(() => setLogs([]))
         .catch((error) => setApiError(error instanceof Error ? error.message : String(error))),
     });
@@ -2052,9 +2062,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 <button
                   type="button"
                   className="flow-generate"
-                  onClick={() => void createFlowJobs()}
+                  disabled={actionBusy}
+                  onClick={() => void runAction(createFlowJobs)}
                 >
                   <IconPlay size={17} />
+                  {actionBusy && <span role="status">{t("Đang xử lý…", "Processing…")}</span>}
                   {createKind === "video"
                     ? seriesDraft?.artifact === "video" ? t("TẠO VIDEO CẢNH", "CREATE SCENE VIDEO") : t("TẠO VIDEO", "CREATE VIDEO")
                     : seriesDraft?.artifact === "keyframe" ? t("TẠO KEYFRAME", "CREATE KEYFRAME") : t("TẠO ẢNH", "CREATE IMAGES")}
@@ -2074,7 +2086,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             <div className="flow-card-title">
               <b>{t(`Hàng đợi (${jobs.length})`, `Queue (${jobs.length})`)}</b>
               <div className="flow-queue-tools">
-                <button className="flow-text-button" type="button" disabled={!jobs.some((job) => job.status === "failed" || job.status === "cancelled")} onClick={retryAllJobs}>{t("Chạy lại tất cả", "Retry all")}</button>
+                <button className="flow-text-button" type="button" disabled={actionBusy || !jobs.some((job) => job.status === "failed" || job.status === "cancelled")} onClick={retryAllJobs}>{t("Chạy lại tất cả", "Retry all")}</button>
                 <button className="flow-text-button" type="button" disabled={!jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={cancelAllJobs}>{t("Hủy tất cả", "Cancel all")}</button>
                 <button className="flow-text-button is-danger" type="button" disabled={!jobs.length} onClick={deleteAllJobs}>{t("Xóa tất cả", "Delete all")}</button>
               </div>
@@ -2133,7 +2145,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </div>
                         <div className="flow-queue-folder-actions">
                           <button className="flow-text-button" type="button" onClick={() => openSrtImageWithFlowFolder(queueFolderLabel(group.kind, group.outputDir, group.outputFolder, group.displayOutputFolder))}>{t("Ghép", "Merge")}</button>
-                          <button className="flow-text-button is-warning" type="button" disabled={!group.jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={() => cancelFolderJobs(group.outputDir, group.jobs)}>{t("Hủy", "Cancel")}</button>
+                          <button className="flow-text-button is-warning" type="button" disabled={actionBusy || !group.jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={() => cancelFolderJobs(group.outputDir, group.jobs)}>{t("Hủy", "Cancel")}</button>
                           <button className="flow-text-button is-danger" type="button" onClick={() => deleteFolderJobs(group.outputDir, group.jobs)}>{t("Xóa", "Delete")}</button>
                         </div>
                       </div>
@@ -2579,6 +2591,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             )}
           </section>
         )}
+        {actionBusy && <p role="status" aria-live="polite">{t("Đang xử lý yêu cầu, vui lòng chờ…", "Processing your request, please wait…")}</p>}
         {confirmAction && (
           <div
             className="flow-preview-backdrop"
@@ -2601,7 +2614,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   onClick={() => {
                     const run = confirmAction.run;
                     setConfirmAction(null);
-                    run();
+                    void runAction(run);
                   }}
                 >
                   {confirmAction.confirmLabel}

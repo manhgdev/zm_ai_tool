@@ -255,11 +255,22 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
     }
   }
 
+  const cancelLock = useRef(false)
+  const [cancelling, setCancelling] = useState(false)
   async function cancel() {
-    if (!job?.id) return
-    await fetch(`/api/srt-image/jobs/${job.id}/cancel`, { method: 'POST' })
-    setJob({ ...job, status: 'cancelled' })
-    toast.success(t('Đã gửi yêu cầu hủy render.', 'Render cancellation requested.'))
+    if (!job?.id || cancelLock.current) return
+    cancelLock.current = true
+    setCancelling(true)
+    try {
+      const response = await fetch(`/api/srt-image/jobs/${job.id}/cancel`, { method: 'POST' })
+      if (!response.ok) throw new Error(await response.text())
+      toast.success(t('Đã gửi yêu cầu hủy render.', 'Render cancellation requested.'))
+    } catch (error) {
+      toast.error(String(error))
+    } finally {
+      cancelLock.current = false
+      setCancelling(false)
+    }
   }
 
   async function togglePause() {
@@ -697,7 +708,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
               <button disabled={!job || !['processing', 'paused'].includes(job.status)} onClick={togglePause}>
                 {job?.status === 'paused' ? 'Tiếp tục' : 'Tạm dừng'}
               </button>
-              <button disabled={!busy} onClick={cancel}>Hủy</button>
+              <button disabled={!busy || cancelling} onClick={cancel}>{cancelling ? t('Đang gửi hủy…', 'Cancelling…') : t('Hủy', 'Cancel')}</button>
               <button onClick={openFolder}>Thư mục</button>
               <span>{statusText}</span>
             </footer>

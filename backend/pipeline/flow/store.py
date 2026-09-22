@@ -81,3 +81,25 @@ def delete_row(name: str, row_id: str) -> bool:
             return False
         _write(name, kept)
         return True
+
+
+def cancel_active_jobs(ids: set[str], updated_at: float) -> int:
+    with _LOCK:
+        rows = _read('jobs')
+        changed = 0
+        for row in rows:
+            if row.get('id') in ids and row.get('status') not in {'done', 'failed', 'cancelled', 'action_required'}:
+                row.update(status='cancelled', stage='cancelled', progress=0, updatedAt=updated_at)
+                changed += 1
+        if changed:
+            _write('jobs', rows)
+        return changed
+
+
+def delete_rows(name: str, ids: set[str]) -> list[dict[str, Any]]:
+    with _LOCK:
+        rows = _read(name)
+        removed = [row for row in rows if row.get('id') in ids]
+        if removed:
+            _write(name, [row for row in rows if row.get('id') not in ids])
+        return removed

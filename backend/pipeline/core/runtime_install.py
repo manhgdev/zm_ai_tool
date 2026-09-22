@@ -69,11 +69,17 @@ def detect_profile() -> str:
         except (OSError, ValueError, IndexError, subprocess.SubprocessError) as exc:
             raise RuntimeInstallError('DRIVER_TOO_OLD', 'Cannot validate NVIDIA driver', retryable=False, diagnostics=str(exc)) from exc
         modern = any(cap >= 10 for cap in caps)
-        minimum = (570, 65) if modern else (551, 78)
+        # CUDA 12.x minor compatibility on Windows starts at 528.33.
+        # 551.78 is the driver bundled with CUDA 12.4 Update 1, not its
+        # compatibility floor. Actual CUDA/ORT probes still gate activation.
+        # https://docs.nvidia.com/cuda/archive/12.4.1/cuda-toolkit-release-notes/
+        minimum = (570, 65) if modern else (528, 33)
         if min(caps) < 5 or (modern and min(caps) < 7):
             raise RuntimeInstallError('HARDWARE_UNSUPPORTED', 'No common CUDA profile for these GPUs', retryable=False)
         if any(driver < minimum for driver in drivers):
-            raise RuntimeInstallError('DRIVER_TOO_OLD', f'NVIDIA requires driver >= {minimum[0]}.{minimum[1]}', retryable=False)
+            detected = ', '.join('.'.join(map(str, driver)) for driver in drivers)
+            raise RuntimeInstallError('DRIVER_TOO_OLD', f'NVIDIA requires driver >= {minimum[0]}.{minimum[1]}',
+                                      retryable=False, diagnostics=f'Detected NVIDIA driver: {detected}; minimum: {minimum[0]}.{minimum[1]}')
         return 'nvidia-cu128' if modern else 'nvidia-cu124'
     if kind in ('amd', 'intel') and device.get('accel') == 'directml':
         return 'directml'

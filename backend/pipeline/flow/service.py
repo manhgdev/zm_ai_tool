@@ -472,10 +472,11 @@ class FlowService:
         return removed
 
     def cancel_all(self) -> int:
-        count = 0
-        for job in self.jobs():
-            if job.get("status") not in _TERMINAL and self.cancel(str(job["id"])):
-                count += 1
+        ids = {str(job['id']) for job in store.list_rows('jobs') if job.get('status') not in _TERMINAL}
+        with self._account_condition:
+            self._cancelled.update(ids)
+            self._account_condition.notify_all()
+        count = store.cancel_active_jobs(ids, time.time())
         return count
 
     def cancel_output_folder_jobs(self, output_dir: str, kind: str = "") -> int:
@@ -494,11 +495,22 @@ class FlowService:
         return count
 
     def delete_all_jobs(self) -> int:
-        count = 0
-        for job in self.jobs():
-            if self.delete_job(str(job["id"])):
-                count += 1
-        return count
+        ids = {str(job['id']) for job in store.list_rows('jobs')}
+        with self._account_condition:
+            self._cancelled.update(ids)
+            self._account_condition.notify_all()
+        removed = store.delete_rows('jobs', ids)
+        for job in removed:
+            for raw in job.get('outputs') or []:
+                try:
+                    Path(str(raw)).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                self._output_folder(job, create=False).rmdir()
+            except OSError:
+                pass
+        return len(removed)
 
     def delete_output_folder_jobs(self, output_dir: str, kind: str = "") -> int:
         """Delete only the jobs and real artifacts belonging to one Flow folder."""
@@ -1014,7 +1026,11 @@ class FlowService:
         concurrency = _job_concurrency(job.get("settings") or {})
         with self._account_condition:
             while self._account_active.get(account_id, 0) >= concurrency:
+                if job_id in self._cancelled:
+                    return
                 self._account_condition.wait()
+            if job_id in self._cancelled:
+                return
             self._account_active[account_id] = self._account_active.get(account_id, 0) + 1
         # ponytail: one auto-retry for transient failures (timeout / UI selector);
         # hard errors (LOGIN_REQUIRED, GENERATION_FAILED/REJECTED, CANCELLED) skip retry.
@@ -2078,7 +2094,9 @@ class FlowService:
             raise asyncio.CancelledError
 
     def cancel(self, job_id: str) -> dict[str, Any] | None:
-        self._cancelled.add(job_id)
+        with self._account_condition:
+            self._cancelled.add(job_id)
+            self._account_condition.notify_all()
         job = store.patch_row("jobs", job_id, {"status": "cancelled", "stage": "cancelled", "progress": 0, "updatedAt": time.time()})
         if job:
             self._log("warning", "job_cancel_requested", job_id=job_id, account_id=str(job.get("accountId") or ""))

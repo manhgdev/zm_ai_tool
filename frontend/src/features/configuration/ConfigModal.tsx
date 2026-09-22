@@ -394,7 +394,7 @@ export default function ConfigModal({
     let lastInstallError = ''
     const onStatus = (status: InstallStatus) => {
       if (status.log) setInstallLog(status.log)
-      if (status.error) setInstallLog((previous) => previous + '\n' + status.error)
+      if (status.error && !status.diagnostics) setInstallLog((previous) => previous.includes(status.error!) ? previous : previous + '\n' + status.error)
       if (typeof status.progress === 'number') setInstallProgress(status.progress)
       setInstallMessage(runtimeStatusText(status, localeRef.current))
       if (status.error) lastInstallError = runtimeErrorText(status, localeRef.current)
@@ -423,7 +423,7 @@ export default function ConfigModal({
       // Giữ popup hiện tối thiểu 1.5s để user thấy kết quả
       await new Promise((r) => window.setTimeout(r, 1500))
     } catch (e) {
-      if (e instanceof Error) setInstallLog((previous) => previous + '\\n' + e.message)
+      if (e instanceof Error && !lastInstallError) setInstallLog((previous) => previous.includes(e.message) ? previous : previous + '\n' + e.message)
       const message = lastInstallError || runtimeErrorText({ running: false }, localeRef.current)
       setChecksErr(message)
       setInstallPopupError(message)

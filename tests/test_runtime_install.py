@@ -72,11 +72,14 @@ class HardwareTests(unittest.TestCase):
         for kind in ('amd', 'intel'):
             self.assertEqual(self.detect({'gpuKind': kind, 'accel': 'directml'}), 'directml')
         self.assertEqual(self.detect({'gpuKind': 'nvidia'}, '551.78, 8.6'), 'nvidia-cu124')
+        self.assertEqual(self.detect({'gpuKind': 'nvidia'}, '528.33, 7.5'), 'nvidia-cu124')
+        self.assertEqual(self.detect({'gpuKind': 'nvidia'}, '550.0, 8.6'), 'nvidia-cu124')
         self.assertEqual(self.detect({'gpuKind': 'nvidia'}, '570.65, 12.0'), 'nvidia-cu128')
 
     def test_bad_driver_or_unknown_gpu_never_falls_back(self):
         for device, output, code in [({'gpuKind': 'nvidia'}, '', 1),
-                                     ({'gpuKind': 'nvidia'}, '550.0, 8.6', 0),
+                                     ({'gpuKind': 'nvidia'}, '528.32, 8.6', 0),
+                                     ({'gpuKind': 'nvidia'}, '527.41, 7.5', 0),
                                      ({'gpuKind': 'nvidia'}, '565.0, 12.0', 0),
                                      ({'gpuKind': 'other'}, '', 0)]:
             with self.subTest(device=device, output=output), self.assertRaises(runtime.RuntimeInstallError):

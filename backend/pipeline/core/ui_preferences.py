@@ -13,6 +13,20 @@ _MAX_STORAGE_ITEM_BYTES = 512_000
 _MAX_STORAGE_BYTES = 2_000_000
 
 
+def _setup_locale_file() -> dict[str, str]:
+    # Read beside the installed EXE, independent of selected drive, HKCU
+    # registry view, elevation account and the browser's language settings.
+    if sys.platform != 'win32' or not getattr(sys, 'frozen', False):
+        return {}
+    try:
+        data = json.loads((Path(sys.executable).parent / 'installer-locale.json').read_text(encoding='utf-8-sig'))
+        if isinstance(data, dict) and data.get('locale') in _SUPPORTED_LOCALES and isinstance(data.get('revision'), str):
+            return data
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
 def _installer_locale() -> str | None:
     if sys.platform != 'win32':
         return None
@@ -54,8 +68,9 @@ def load_ui_preferences() -> dict[str, object]:
     if not isinstance(saved, dict):
         saved = {}
     locale = saved.get("locale")
-    installer_locale = _installer_locale()
-    revision = (_installer_locale_revision() or f'legacy:{installer_locale}') if installer_locale else None
+    setup = _setup_locale_file()
+    installer_locale = setup.get('locale') or _installer_locale()
+    revision = (setup.get('revision') or _installer_locale_revision() or f'legacy:{installer_locale}') if installer_locale else None
     if installer_locale and revision != saved.get('installerLocaleRevision'):
         # A newer interactive Setup choice wins once, including over an old
         # English preference. Later app choices retain this receipt on save.
