@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from pipeline.core import runtime_packs
 from pipeline.core.runtime_active import active_runtime_dir
+from scripts import build_runtime_packs
 
 
 def _archive(path: Path, files: dict[str, bytes]) -> dict[str, object]:
@@ -31,6 +32,17 @@ def _archive(path: Path, files: dict[str, bytes]) -> dict[str, object]:
 
 
 class RuntimePackInstallTest(unittest.TestCase):
+    def test_runtime_builder_finds_uv_in_backend_build_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundled = root / "backend" / ".venv" / "Scripts" / "uv.exe"
+            bundled.parent.mkdir(parents=True)
+            bundled.write_bytes(b"uv")
+            with patch.object(build_runtime_packs, "ROOT", root), patch(
+                "scripts.build_runtime_packs.shutil.which", return_value=None
+            ), patch.dict("os.environ", {"UV_EXECUTABLE": ""}):
+                self.assertEqual(build_runtime_packs.find_uv(), str(bundled))
+
     def test_core_and_gpu_activate_only_after_probe(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

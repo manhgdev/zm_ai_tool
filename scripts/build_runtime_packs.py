@@ -44,6 +44,18 @@ def run(command: list[str], **kwargs) -> None:
     subprocess.run(command, check=True, **kwargs)
 
 
+def find_uv() -> str | None:
+    """Find uv both on PATH and in the repository build virtualenv."""
+    configured = (os.environ.get("UV_EXECUTABLE") or "").strip()
+    candidates = (
+        configured,
+        shutil.which("uv") or "",
+        str(ROOT / "backend" / ".venv" / "Scripts" / "uv.exe"),
+        str(ROOT / "backend" / ".venv" / "bin" / "uv"),
+    )
+    return next((item for item in candidates if item and Path(item).is_file()), None)
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -90,7 +102,7 @@ def installed_lock(site: Path) -> list[str]:
 
 def build_core(work: Path) -> tuple[Path, list[str], list[dict[str, object]]]:
     target = work / "core"
-    uv = shutil.which("uv")
+    uv = find_uv()
     if not uv:
         raise RuntimeError("uv is required to build a relocatable runtime")
     run([uv, "python", "install", PYTHON_VERSION])
