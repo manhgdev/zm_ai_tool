@@ -16,6 +16,30 @@ from pipeline.core.system_check import install
 
 
 class HardwareTests(unittest.TestCase):
+    def test_minor_link_failure_uses_verified_patch_python(self):
+        with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {'ZM_AI_TOOL_HOME': raw}):
+            python = Path(raw) / 'runtime/python/cpython-3.12.10-windows-x86_64-none/python.exe'
+            commands = []
+            def run(command, *args):
+                commands.append(command)
+                if command[1:3] == ['python', 'install']:
+                    python.parent.mkdir(parents=True)
+                    python.write_bytes(b'python')
+                    raise runtime.RuntimeInstallError('PYTHON_PREPARE_FAILED', 'install failed',
+                        diagnostics='Failed to create Python minor version link directory (os error 448)')
+            with patch.object(runtime, '_run', side_effect=run), patch('subprocess.run', return_value=subprocess.CompletedProcess([], 0, '', '')):
+                runtime._prepare('uv', Path(raw) / 'candidate')
+            self.assertIn(str(python), commands[-1])
+            self.assertIn('--no-python-downloads', commands[-1])
+
+    def test_minor_link_failure_does_not_hide_broken_python(self):
+        with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {'ZM_AI_TOOL_HOME': raw}), patch.object(
+            runtime, '_run', side_effect=runtime.RuntimeInstallError('PYTHON_PREPARE_FAILED', 'install failed',
+                diagnostics='Failed to create Python minor version link directory (os error 448)')
+        ):
+            with self.assertRaises(runtime.RuntimeInstallError):
+                runtime._prepare('uv', Path(raw) / 'candidate')
+
     def detect(self, device, output='', code=0):
         with patch('platform.machine', return_value='AMD64'), patch('pipeline.core.media.detect_device', return_value=device), patch(
             'pipeline.core.accel.nvidia_smi_executable', return_value='nvidia-smi'

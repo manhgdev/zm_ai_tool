@@ -166,8 +166,38 @@ def _run(command: list[str], error: str, label: str) -> None:
 
 
 def _prepare(uv: str, root: Path) -> Path:
-    _run([uv, 'python', 'install', PYTHON_VERSION], 'PYTHON_PREPARE_FAILED', 'Python download')
-    _run([uv, 'venv', '--python', PYTHON_VERSION, '--managed-python', '--seed', str(root)],
+    from .system_check.install import _runtime_subprocess_env, _install_log_fn
+    # Use the concrete patch installation, never uv's minor-version junction.
+    python = runtime_home() / 'runtime' / 'python' / f'cpython-{PYTHON_VERSION}-windows-x86_64-none' / 'python.exe'
+
+    def usable() -> bool:
+        if not python.is_file():
+            return False
+        try:
+            result = subprocess.run(
+                [str(python), '-I', '-c',
+                 "import sys,ssl,venv,struct; assert sys.version_info[:3] == (3,12,10); assert struct.calcsize('P') == 8"],
+                capture_output=True, text=True, timeout=30, env=_runtime_subprocess_env(),
+            )
+            return result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    if not usable():
+        try:
+            _run([uv, 'python', 'install', PYTHON_VERSION, '--no-bin', '--no-registry'],
+                 'PYTHON_PREPARE_FAILED', 'Python download')
+        except RuntimeInstallError as exc:
+            # uv creates a minor-version link even with --no-bin. Windows can
+            # reject that junction after the concrete interpreter is installed.
+            detail = exc.diagnostics.lower()
+            if not ('minor version link' in detail and 'os error 448' in detail and usable()):
+                raise
+            if _install_log_fn:
+                _install_log_fn('Windows blocked the optional Python minor-version link; verified patch interpreter will be used directly.\n')
+        if not usable():
+            raise RuntimeInstallError('PYTHON_PREPARE_FAILED', 'Downloaded Python failed its version/stdlib probe')
+    _run([uv, 'venv', '--python', str(python), '--no-python-downloads', '--seed', str(root)],
          'PYTHON_PREPARE_FAILED', 'Python environment')
     return _python(root)
 
