@@ -81,7 +81,7 @@ function ensureAppBuildDeps() {
   const needBase = !pyOk('import fastapi')
   const needTools = !pyOk('import PyInstaller') || !pyOk('import webview')
   if (needBase || needTools) {
-    run(python, ['-m', 'pip', 'install', '-r', reqFile, 'pyinstaller', 'pywebview', 'uv'])
+    run(python, ['-m', 'pip', 'install', '-r', reqFile, 'pyinstaller', 'pywebview', 'uv==0.12.15'])
   }
   ensurePip(['yt-dlp'])
 }

@@ -32,7 +32,7 @@ jobs:
           npm install
           python -m venv backend/.venv
           backend/.venv/Scripts/python.exe -m pip install --upgrade pip
-          backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-app.txt pyinstaller pywebview uv pythonnet
+          backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-app.txt pyinstaller pywebview uv==0.12.15 pythonnet
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             choco install ffmpeg -y --no-progress
             'C:\ProgramData\chocolatey\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
@@ -69,6 +69,25 @@ jobs:
             }
           }
 
+      - name: Inventory and scan Windows release
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.package.outputs.installer }}
+          ZIP: ${{ steps.package.outputs.zip }}
+          BUNDLE: ${{ steps.package.outputs.directory }}
+        run: |
+          backend/.venv/Scripts/python.exe scripts/windows_release_audit.py --bundle "$env:BUNDLE" --installer "$env:INSTALLER" --portable "$env:ZIP" --output build_app/windows-audit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/audit-windows-release.ps1 -Bundle $env:BUNDLE -Installer $env:INSTALLER -Portable $env:ZIP -Output build_app/windows-audit
+
+      - name: Save audit diagnostics (including failures)
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-security-audit
+          path: build_app/windows-audit/
+          if-no-files-found: warn
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/action/')
         env:
@@ -101,7 +120,22 @@ jobs:
             "$TAG" "$INSTALLER_BASE" "$ZIP_BASE" "$TAG" "$NOTES")
 
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$INSTALLER" "$ZIP" --clobber
+            gh release upload "$TAG" "$INSTALLER" "$ZIP" build_app/windows-audit/windows-* --clobber
           else
-            gh release create "$TAG" "$INSTALLER" "$ZIP" --title "ZM AI TOOL $TAG" --notes "$BODY"
+            gh release create "$TAG" "$INSTALLER" "$ZIP" build_app/windows-audit/windows-* --title "ZM AI TOOL $TAG" --notes "$BODY"
           fi
+
+      - name: Verify published asset digests
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/action/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $manifest = Get-Content build_app/windows-audit/windows-artifact-manifest.json -Raw | ConvertFrom-Json
+          $release = gh release view $env:RELEASE_TAG --json assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($item in $manifest.assets) {
+            $remote = @($release.assets | Where-Object name -eq $item.name)
+            if ($remote.Count -ne 1 -or $remote[0].digest -ne ('sha256:' + $item.sha256)) { throw "Published artifact digest mismatch: $($item.name)" }
+          }

@@ -25,12 +25,20 @@ export type InstallStatus = {
   progress?: number
   startedAt?: number
   updatedAt?: number
-  stage?: 'detect_hardware' | 'prepare_python' | 'download_packages' | 'install_packages' | 'probe' | 'activate' | 'rollback' | ''
+  stage?: 'detect_hardware' | 'prepare_python' | 'resolve' | 'download' | 'install' | 'download_packages' | 'install_packages' | 'probe' | 'activate' | 'rollback' | ''
   runtimeProfile?: string
   currentPackage?: string
   runtimePack?: string
   downloadedBytes?: number
-  totalBytes?: number
+  totalBytes?: number | null
+  speedBytesPerSecond?: number | null
+  etaSeconds?: number | null
+  cacheHit?: number
+  retryAttempt?: number
+  retryAfterSeconds?: number | null
+  diskDrive?: string
+  freeDiskBytes?: number | null
+  downloadItems?: Array<{ package: string; received: number; total: number | null; cache: boolean; attempt: number; activity: string }>
   requiredDiskBytes?: number
   errorCode?: 'HARDWARE_UNSUPPORTED' | 'DRIVER_TOO_OLD' | 'DOWNLOAD_FAILED' | 'CHECKSUM_MISMATCH' | 'DISK_FULL' | 'EXTRACT_FAILED' | 'RUNTIME_PROBE_FAILED' | 'ACTIVATION_FAILED' | string
   retryable?: boolean

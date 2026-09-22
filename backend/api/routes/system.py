@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -97,6 +98,14 @@ _install_state: dict[str, Any] = {
     "errorCode": "",
     "retryable": False,
     "diagnostics": "",
+    "speedBytesPerSecond": None,
+    "etaSeconds": None,
+    "cacheHit": 0,
+    "downloadItems": [],
+    "freeDiskBytes": None,
+    "diskDrive": "",
+    "retryAttempt": 0,
+    "retryAfterSeconds": None,
 }
 _install_lock = threading.Lock()
 _checks_warm_lock = threading.Lock()
@@ -113,6 +122,7 @@ _UPDATE_STATE: dict[str, Any] = {
     "assetName": "",
     "latestVersion": "",
     "packagePath": "",
+    "packageSha256": "",
 }
 
 
@@ -212,6 +222,19 @@ def _set_update_state(**values: Any) -> None:
         _UPDATE_STATE.update(values)
 
 
+def _update_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_update(path: Path, expected: str) -> None:
+    if not re.fullmatch(r'[0-9a-f]{64}', expected) or _update_sha256(path) != expected:
+        raise RuntimeError('UPDATE_CHECKSUM_MISMATCH: Update package integrity check failed')
+
+
 def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path:
     name = str(asset.get("name") or "")
     url = str(asset.get("browser_download_url") or "")
@@ -221,6 +244,10 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
     # escape the dedicated update directory through a path separator.
     if Path(name).name != name or name in {".", ".."}:
         raise RuntimeError("Tên gói cập nhật không hợp lệ")
+    expected_sha = str(asset.get('digest') or '').removeprefix('sha256:').lower()
+    if not re.fullmatch(r'[0-9a-f]{64}', expected_sha):
+        raise RuntimeError('UPDATE_DIGEST_MISSING: Release asset has no SHA-256; automatic execution is disabled')
+    _set_update_state(packageSha256=expected_sha)
     try:
         expected_size = max(0, int(asset.get("size") or 0))
     except (TypeError, ValueError):
@@ -229,6 +256,7 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
     partial = target.with_suffix(target.suffix + ".part")
     # File đã tải đủ từ lần trước → dùng lại, không tải lại.
     if target.is_file() and expected_size and target.stat().st_size == expected_size:
+        _verify_update(target, expected_sha)
         _set_update_state(phase="ready", progress=100, message="Đã tải gói cập nhật", assetName=name, latestVersion=version, packagePath=str(target))
         return target
     _set_update_state(phase="downloading", progress=0, message="Đang tải bản cập nhật…", assetName=name, latestVersion=version)
@@ -264,6 +292,7 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
                 raise OSError(
                     f"Gói cập nhật tải chưa đủ ({actual_size}/{expected_size} byte)"
                 )
+            _verify_update(target, expected_sha)
             last_error = None
             break
         except (BrokenPipeError, ConnectionError, TimeoutError, OSError) as exc:
@@ -318,6 +347,8 @@ Log "ReadyFile: $ReadyFile"
 
 try {
     if (-not (Test-Path -LiteralPath $Zip -PathType Leaf)) { throw 'Update ZIP missing' }
+    if ((Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $p.PackageSHA256) { throw 'UPDATE_CHECKSUM_MISMATCH' }
+    Log "Updater PID=$PID parent=$AppPid package SHA256=$($p.PackageSHA256)"
     if (-not $StartedFile) { throw 'Updater handshake path missing' }
     Set-Content -LiteralPath $StartedFile -Value 'ready' -Encoding ASCII
     $commitFile = $StartedFile + '.commit'
@@ -380,11 +411,7 @@ try {
         throw "Goi cap nhat khong hop le: Thieu $exeName trong ban giai nen."
     }
 
-    # Go Zone.Identifier (MOTW) khoi tat ca file moi
-    Get-ChildItem -LiteralPath $sourceDir -Recurse -File | ForEach-Object {
-        Unblock-File -LiteralPath $_.FullName -ErrorAction SilentlyContinue
-    }
-    Log "Da go Zone.Identifier."
+    # Keep Windows security metadata intact; never unblock files automatically.
 
     # 4. Chi thay payload bat bien. data/output/runtime/resources/logs luon duoc giu nguyen.
     $backup = Join-Path $updateDir ('backup-' + $stamp)
@@ -447,7 +474,9 @@ try {
     $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ReadyFile
     $env:ZM_AI_TOOL_SUPERVISOR_CHILD = $null
     $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
+    Log "New EXE SHA256=$((Get-FileHash -LiteralPath $newExe -Algorithm SHA256).Hash)"
     $newProcess = Start-Process -FilePath $newExe -WorkingDirectory $Target -PassThru
+    Log "Relaunch PID=$($newProcess.Id)"
     $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
         if ($newProcess.HasExited) {
@@ -531,6 +560,9 @@ function Log($msg) {
 try {
     Log '=== Bat dau cap nhat ZM AI TOOL installed ==='
     if (-not (Test-Path -LiteralPath $Setup -PathType Leaf)) { throw 'Update Setup missing' }
+    if ((Get-FileHash -LiteralPath $Setup -Algorithm SHA256).Hash.ToLowerInvariant() -ne $p.PackageSHA256) { throw 'UPDATE_CHECKSUM_MISMATCH' }
+    Log "Updater PID=$PID parent=$AppPid package SHA256=$($p.PackageSHA256)"
+    if (Test-Path -LiteralPath $OldExe) { Log "Old EXE SHA256=$((Get-FileHash -LiteralPath $OldExe -Algorithm SHA256).Hash)" }
     if (-not $StartedFile) { throw 'Updater handshake path missing' }
     Set-Content -LiteralPath $StartedFile -Value 'ready' -Encoding ASCII
     $commitFile = $StartedFile + '.commit'
@@ -560,7 +592,9 @@ try {
     $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ReadyFile
     $env:ZM_AI_TOOL_SUPERVISOR_CHILD = $null
     $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
+    Log "New EXE SHA256=$((Get-FileHash -LiteralPath $newExe -Algorithm SHA256).Hash)"
     $newProcess = Start-Process -FilePath $newExe -WorkingDirectory $Target -PassThru
+    Log "Relaunch PID=$($newProcess.Id)"
     $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
         if ($newProcess.HasExited) {
@@ -658,7 +692,7 @@ def _set_install_progress(
             _install_state["message"] = message
         for key in (
             "stage", "runtimeProfile", "currentPackage", "runtimePack", "downloadedBytes", "totalBytes",
-            "requiredDiskBytes", "diagnostics",
+            "requiredDiskBytes", "diagnostics", "speedBytesPerSecond", "etaSeconds", "cacheHit", "downloadItems", "freeDiskBytes", "diskDrive", "retryAttempt", "retryAfterSeconds",
         ):
             if fields and key in fields:
                 _install_state[key] = fields[key]
@@ -710,6 +744,8 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
             runtimePack="",
             runtimeProfile="",
             currentPackage="",
+            speedBytesPerSecond=None, etaSeconds=None, cacheHit=0, downloadItems=[],
+            freeDiskBytes=None, diskDrive="", retryAttempt=0, retryAfterSeconds=None,
             downloadedBytes=0,
             totalBytes=0,
             requiredDiskBytes=0,
@@ -1054,7 +1090,7 @@ def api_install_status():
     }
     for key in (
         "stage", "runtimeProfile", "currentPackage", "runtimePack", "downloadedBytes", "totalBytes",
-        "requiredDiskBytes", "errorCode", "retryable", "diagnostics",
+        "requiredDiskBytes", "errorCode", "retryable", "diagnostics", "speedBytesPerSecond", "etaSeconds", "cacheHit", "downloadItems", "freeDiskBytes", "diskDrive", "retryAttempt", "retryAfterSeconds",
     ):
         out[key] = st.get(key)
     if st.get("log"):
@@ -1446,6 +1482,8 @@ def _launch_windows_updater(package: Path) -> None:
     """Start the detached staged updater; it waits for this app before swapping."""
     flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    package_sha = _update_snapshot().get('packageSha256') or ''
+    _verify_update(package, str(package_sha))
 
     powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     if not powershell.is_file():
@@ -1462,6 +1500,7 @@ def _launch_windows_updater(package: Path) -> None:
             json.dumps(
                 {
                     "AppPid": os.getpid(),
+                    "PackageSHA256": package_sha,
                     "Setup": str(package.resolve()),
                     "Target": str(target.resolve()),
                     "Exe": exe.name,
@@ -1503,6 +1542,7 @@ def _launch_windows_updater(package: Path) -> None:
         json.dumps(
             {
                 "AppPid": os.getpid(),
+                "PackageSHA256": package_sha,
                 "Zip": str(package.resolve()),
                 "Target": str(target.resolve()),
                 "Exe": exe.name,
@@ -1544,6 +1584,14 @@ def api_update_apply():
     package = Path(str(state["packagePath"]))
     if not package.is_file():
         raise HTTPException(404, "Không tìm thấy gói cập nhật đã tải")
+    updates = (Path(os.environ.get('ZM_AI_TOOL_HOME') or DATA) / 'updates').resolve()
+    if package.resolve().parent != updates or package.is_symlink():
+        raise HTTPException(400, 'UPDATE_UNSAFE_PATH')
+    try:
+        _verify_update(package, str(state.get('packageSha256') or ''))
+    except (OSError, RuntimeError) as exc:
+        _set_update_state(phase='error', error=str(exc))
+        raise HTTPException(400, str(exc)) from exc
     if sys.platform == "darwin":
         if package.suffix.lower() not in {".pkg", ".zip"}:
             raise HTTPException(400, "Gói cập nhật macOS không hợp lệ")

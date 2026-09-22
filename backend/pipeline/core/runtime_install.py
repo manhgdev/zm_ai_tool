@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .runtime_active import active_runtime_dir, runtime_home
+from .runtime_download import Wheel, RuntimeInstallError, classify_error, download_wheel, redact
+from .runtime_resolution import resolve as resolve_wheels
 
 PYTHON_VERSION = '3.12.10'
 RECIPE_VERSION = 1
@@ -38,12 +41,6 @@ DEMUCS = (
 )
 # Only these pure-Python source releases may use a build backend. No compiler.
 SOURCE_ALLOWED = ('demucs', 'dora-search', 'julius', 'antlr4-python3-runtime')
-
-
-class RuntimeInstallError(RuntimeError):
-    def __init__(self, code: str, message: str, *, retryable: bool = True, diagnostics: str = ''):
-        super().__init__(message)
-        self.code, self.retryable, self.diagnostics = code, retryable, diagnostics or message
 
 
 def detect_profile() -> str:
@@ -176,14 +173,15 @@ def _run(command: list[str], error: str, label: str, progress=None) -> None:
             'UV_CONCURRENT_INSTALLS': str(min(8, max(2, os.cpu_count() or 2))),
         })
     except (OSError, RuntimeError) as exc:
-        raise RuntimeInstallError(error, f'{label} failed', diagnostics=str(exc)) from exc
+        code, retryable = classify_error(exc, error)
+        raise RuntimeInstallError(code, f'{label} failed', retryable=retryable, diagnostics=str(exc)) from exc
     if result.returncode:
         output = (result.stdout or '') + '\n' + (result.stderr or '')
         if any(term in output.lower() for term in ('os error 112', 'winerror 112', 'no space left', 'not enough space on the disk', 'errno 28')):
             raise RuntimeInstallError('DISK_FULL', f'Insufficient disk space at {runtime_home()}',
                                       retryable=False, diagnostics=output[-12000:])
-        network = any(s in output.lower() for s in ('connection', 'timed out', 'proxy', 'failed to download', 'dns'))
-        raise RuntimeInstallError('DOWNLOAD_FAILED' if network else error, f'{label} failed', diagnostics=output[-12000:])
+        code, retryable = classify_error(RuntimeError(output), error)
+        raise RuntimeInstallError(code, f'{label} failed', retryable=retryable, diagnostics=output[-12000:])
 
 
 def _prepare(uv: str, root: Path) -> Path:
@@ -228,116 +226,181 @@ def _prepare(uv: str, root: Path) -> Path:
     return _python(root)
 
 
-def _prefetch_packages(python: Path, groups: list[dict[str, Any]], emit, on_ready=None) -> dict[str, Path]:
-    """Download independent wheel groups concurrently; never mutate the venv."""
-    cache = runtime_home() / 'runtime' / 'wheelhouse'
-    destinations: dict[str, Path] = {}
+def _download_workers() -> int:
+    # Bound sockets and temporary buffers on low-RAM clients; no extra dependency.
+    workers = min(16, max(4, (os.cpu_count() or 2) * 2))
+    if os.name == 'nt':
+        import ctypes
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [('length', ctypes.c_ulong), ('load', ctypes.c_ulong)] + [
+                (name, ctypes.c_ulonglong) for name in ('total', 'available', 'page', 'availablePage', 'virtual', 'availableVirtual', 'extended')
+            ]
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(status)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            if status.available < 2 * 1024**3:
+                workers = min(workers, 4)
+            elif status.available < 4 * 1024**3:
+                workers = min(workers, 8)
+    return workers
+
+
+def _prefetch_packages(wheels: list[Wheel], groups: list[dict[str, Any]], emit, on_ready) -> None:
+    """A single hash cache and one writer, with concurrent resumable downloads."""
+    from .system_check.install import _install_log_fn
+    root = runtime_home() / 'runtime'
+    cache = root / 'wheels'
+    cache.mkdir(parents=True, exist_ok=True)
+    stop = threading.Event()
+    guard = threading.Lock()
+    state = {w.name: {'received': 0, 'total': w.size, 'cache': False, 'attempt': 0, 'activity': 'queued'} for w in wheels}
+    activity = {'phase': 'download', 'group': ''}
     installed: set[str] = set()
-    def download(group):
-        identity = hashlib.sha256(json.dumps(group, sort_keys=True).encode()).hexdigest()[:20]
-        destination = cache / identity
-        destination.mkdir(parents=True, exist_ok=True)
-        command = [str(python), '-I', '-m', 'pip', '--isolated', 'download',
-                   '--cache-dir', str(runtime_home() / 'runtime/pip-cache'),
-                   '--disable-pip-version-check', '--no-input', '--only-binary', ':all:',
-                   '--dest', str(destination)]
-        if group.get('index'):
-            command += ['--index-url', group['index']]
-        if group.get('links'):
-            command += ['--find-links', group['links']]
-        if group.get('no_deps'):
-            command.append('--no-deps')
-        _run([*command, *group['specs']], 'DOWNLOAD_FAILED', group['name'])
-        return destination
-    emit(30, 'download_packages', currentPackage=', '.join(g['name'] for g in groups))
-    # Three network workers bound RAM/disk pressure on low-end PCs. Each
-    # group has its own wheel directory, including the CUDA-specific index.
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix='ai-download') as pool:
-        pending = {pool.submit(download, g): g['name'] for g in groups}
-        while pending:
-            done, _ = wait(pending, timeout=2, return_when=FIRST_COMPLETED)
-            for future in done:
-                name = pending.pop(future)
-                try:
-                    destinations[name] = future.result()
-                except Exception:
-                    for queued in pending:
-                        queued.cancel()
-                    raise
-            # One coordinator installs ready groups while network workers
-            # continue downloading. Only dependency-ready groups can proceed.
-            for group in groups:
-                name = group['name']
-                if (on_ready and name in destinations and name not in installed
-                        and set(group.get('requires', ())) <= installed):
-                    start = 30 + int(44 * len(installed) / len(groups))
-                    end = 30 + int(44 * (len(installed) + 1) / len(groups))
-                    on_ready(group, destinations[name], start, end)
-                    installed.add(name)
-            # Completed-group progress, never claim that this is byte progress.
-            emit(30 + int((44 * len(installed) if on_ready else 25 * len(destinations)) / len(groups)), 'download_packages',
-                 currentPackage=', '.join(pending.values()))
-        if on_ready and len(installed) != len(groups):
-            raise RuntimeInstallError('DEPENDENCY_INSTALL_FAILED', 'Unresolved runtime group dependencies')
-    return destinations
+    downloads: dict[str, Path] = {}
+    received_network = 0
+    def report(wheel, received, total, cached, attempt, status, diagnostics=''):
+        nonlocal received_network
+        with guard:
+            old = state[wheel.name]
+            if not cached and old['activity'] not in ('queued', 'retrying') and received >= old['received']:
+                received_network += received - old['received']
+            state[wheel.name] = {'received': received, 'total': total, 'cache': cached, 'attempt': attempt, 'activity': status}
+        if diagnostics and _install_log_fn:
+            _install_log_fn(redact(diagnostics) + '\n')
+
+    def monitor():
+        last_bytes, last_time = 0, time.monotonic()
+        while not stop.wait(.5):
+            with guard:
+                snapshot = {name: dict(item) for name, item in state.items()}
+                phase, group = activity['phase'], activity['group']
+                network_bytes = received_network
+                progress = 30 + int(44 * len(installed) / max(1, len(groups)))
+            now = time.monotonic()
+            speed = max(0, network_bytes - last_bytes) / max(.01, now - last_time)
+            last_bytes, last_time = network_bytes, now
+            total = sum(item['total'] for item in snapshot.values()) if all(item['total'] is not None for item in snapshot.values()) else None
+            received = sum(item['received'] for item in snapshot.values())
+            active = [name for name, item in snapshot.items() if item['activity'] not in ('complete', 'cached')]
+            emit(progress, phase, currentPackage=group or ', '.join(active[:3]), downloadedBytes=received,
+                 totalBytes=total, speedBytesPerSecond=round(speed), etaSeconds=round(max(0, total - received) / speed) if total is not None and speed > 0 else None,
+                 cacheHit=sum(item['cache'] for item in snapshot.values()),
+                 downloadItems=[{'package': name, **item} for name, item in snapshot.items()])
+
+    monitor_thread = threading.Thread(target=monitor, daemon=True, name='runtime-progress')
+    monitor_thread.start()
+    try:
+        workers = _download_workers()
+        if shutil.disk_usage(root).free < 8 * 1024**3:
+            workers = min(workers, 4)
+        # Start the largest known artifacts first; unknown-sized Torch wheels
+        # also start immediately so small-package metadata never delays them.
+        ordered = sorted(wheels, key=lambda w: (w.name == 'torch', w.size or 0), reverse=True)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='ai-download') as pool:
+            futures = {pool.submit(download_wheel, wheel, cache, report, stop): wheel for wheel in ordered}
+            try:
+                while futures or len(installed) < len(groups):
+                    done, _ = wait(futures, timeout=.5, return_when=FIRST_COMPLETED) if futures else (set(), set())
+                    for future in done:
+                        wheel = futures.pop(future)
+                        downloads[wheel.name] = future.result()
+                    for group in groups:
+                        name = group['name']
+                        if name in installed or not set(group.get('requires', ())) <= installed:
+                            continue
+                        if not set(group['packages']) <= downloads.keys():
+                            continue
+                        paths = [downloads[package] for package in group['packages']]
+                        # Exact extracted size is available from verified wheel ZIPs.
+                        unpacked = 0
+                        for path in paths:
+                            with zipfile.ZipFile(path) as bundle:
+                                unpacked += sum(entry.file_size for entry in bundle.infolist())
+                        remaining = sum(max(0, (state[w.name]['total'] or 0) - state[w.name]['received']) for w in futures.values())
+                        required = 2 * unpacked + remaining + 1024**3  # installer extraction + copy + reserve
+                        free = shutil.disk_usage(root).free
+                        emit(30 + int(44 * len(installed) / len(groups)), 'install',
+                             currentPackage=name, requiredDiskBytes=required, freeDiskBytes=free, diskDrive=root.anchor)
+                        if free < required:
+                            raise RuntimeInstallError('DISK_FULL', f'Not enough disk space at {root}', retryable=False,
+                                diagnostics=json.dumps({'disk': str(root), 'requiredBytes': required, 'freeBytes': free}))
+                        with guard:
+                            activity.update(phase='install', group=name)
+                        on_ready(group, paths)
+                        with guard:
+                            installed.add(name)
+                            activity.update(phase='download', group='')
+                    if not futures and len(installed) != len(groups):
+                        raise RuntimeInstallError('DEPENDENCY_RESOLUTION_FAILED', 'Unresolved group prerequisites', retryable=False)
+            except Exception:
+                stop.set()
+                for future in futures:
+                    future.cancel()
+                raise
+    finally:
+        stop.set()
+        monitor_thread.join(timeout=2)
+    received = sum(item['received'] for item in state.values())
+    emit(74, 'install', downloadedBytes=received, totalBytes=received,
+         speedBytesPerSecond=0, etaSeconds=0, currentPackage='')
 
 
 def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit) -> None:
-    cuda = profile.startswith('nvidia-')
-    torch_version = '2.7.1' if profile == 'nvidia-cu128' else '2.6.0'
-    index = profile.removeprefix('nvidia-') if cuda else 'cpu'
-    provider = {'cpu': 'onnxruntime==1.20.1', 'directml': 'onnxruntime-directml==1.23.0'}.get(profile, 'onnxruntime-gpu==1.20.2')
+    root = runtime_home() / 'runtime'
+    # uv compile is the only resolver. The installer consumes exact verified
+    # wheel paths with --no-deps; CPU ORT can never overwrite CUDA/DirectML.
+    wheels = None
+    for attempt in range(1, 4):
+        try:
+            wheels = resolve_wheels(uv, profile, CORE, root, _run, emit)
+            break
+        except RuntimeInstallError as exc:
+            if not exc.retryable or attempt == 3:
+                raise
+            emit(20, 'resolve', currentPackage=profile, retryAttempt=attempt, retryAfterSeconds=2 ** attempt)
+            time.sleep(2 ** attempt)
+    assert wheels is not None
+    by_name = {wheel.name: wheel for wheel in wheels}
+    sdk = {'faster-whisper', 'rapidocr-onnxruntime', 'vieneu'}
+    torch = {'torch', 'torchaudio'}
+    sherpa = {'sherpa-onnx'} if profile.startswith('nvidia-') else set()
     groups = [
-        {'name': 'Torch CUDA' if cuda else 'Torch CPU', 'specs': (f'torch=={torch_version}', f'torchaudio=={torch_version}'),
-         'index': f'https://download.pytorch.org/whl/{index}'},
-        {'name': 'ONNX / Core', 'specs': (*CORE, provider, *(() if cuda else ('sherpa-onnx==1.13.8',)))},
-        {'name': 'Whisper / OCR / VieNeu', 'specs': ('faster-whisper==1.2.1', 'rapidocr-onnxruntime==1.4.4', 'vieneu==3.2.0'), 'no_deps': True,
-         'requires': ['Torch CUDA' if cuda else 'Torch CPU', 'ONNX / Core']},
+        {'name': 'Core / ONNX', 'packages': sorted(by_name.keys() - sdk - torch - sherpa)},
+        {'name': 'Torch', 'packages': sorted(torch), 'requires': ['Core / ONNX']},
+        {'name': 'Whisper / OCR / VieNeu', 'packages': sorted(sdk), 'requires': ['Core / ONNX', 'Torch']},
     ]
-    if cuda:
-        groups.append({'name': 'Sherpa CUDA', 'specs': ('sherpa-onnx==1.13.5+cuda12.cudnn9',),
-                       'no_deps': True, 'links': 'https://k2-fsa.github.io/sherpa/onnx/cuda.html',
-                       'requires': ['Torch CUDA', 'ONNX / Core']})
+    if sherpa:
+        groups.append({'name': 'Sherpa CUDA', 'packages': sorted(sherpa), 'requires': ['Core / ONNX', 'Torch']})
     pip_base = [str(python), '-I', '-m', 'pip', '--isolated', 'install',
-            '--cache-dir', str(runtime_home() / 'runtime' / 'pip-cache'),
-            '--disable-pip-version-check', '--no-input', '--no-compile']
+                '--cache-dir', str(root / 'cache'), '--disable-pip-version-check', '--no-input', '--no-compile']
     uv_base = [uv, 'pip', 'install', '--python', str(python), '--link-mode', 'copy']
     use_pip = False
-    def install(specs, value, end, *, index=None, no_deps=False, source=False, links=None, offline=False):
+    requirements_dir = root / 'requirements'
+    requirements_dir.mkdir(parents=True, exist_ok=True)
+    def install(paths, label):
         nonlocal use_pip
-        label = ', '.join(specs)
-        emit(value, 'install_packages', currentPackage=label)
-        command = ['--only-binary', ':all:']
-        if source:
-            command += ['--no-binary', ','.join(SOURCE_ALLOWED)]
-        if index:
-            command += ['--index-url', index]
-        if no_deps:
-            command.append('--no-deps')
-        if links:
-            command += ['--find-links', str(links)]
-        if offline:
-            command += ['--no-index']
+        requirement_file = requirements_dir / (re.sub(r'[^A-Za-z0-9_.-]+', '_', label) + '.txt')
+        requirement_file.write_text('\n'.join(str(path) for path in paths) + '\n', encoding='utf-8')
+        command = ['--no-index', '--no-deps', '--requirement', str(requirement_file)]
         try:
-            _run([*(pip_base if use_pip else uv_base), *command, *specs],
-                 'DEPENDENCY_INSTALL_FAILED', label, (value, end, label))
+            _run([*(pip_base if use_pip else uv_base), *command], 'DEPENDENCY_INSTALL_FAILED', label)
         except RuntimeInstallError as exc:
-            detail = exc.diagnostics.lower()
-            if use_pip or 'os error 448' not in detail or 'interpreter' not in detail:
+            if use_pip or 'os error 448' not in exc.diagnostics.lower() or 'interpreter' not in exc.diagnostics.lower():
                 raise
-            # Only interpreter discovery failed: no packages were installed.
-            # Keep the same hardware profile and use pip for the remaining steps.
             use_pip = True
-            from .system_check.install import _install_log_fn
-            if _install_log_fn:
-                _install_log_fn('uv interpreter query blocked (448); switching to CPython pip for this installation.\n')
-            _run([*pip_base, *command, *specs], 'DEPENDENCY_INSTALL_FAILED', label, (value, end, label))
-    def install_ready(group, wheels, start, end):
-        install(group['specs'], start, end,
-                no_deps=group.get('no_deps', False), links=wheels, offline=True)
-    _prefetch_packages(python, groups, emit, on_ready=install_ready)
+            _run([*pip_base, *command], 'DEPENDENCY_INSTALL_FAILED', label)
+    def install_ready(group, paths):
+        install(paths, group['name'])
+    _prefetch_packages(wheels, groups, emit, install_ready)
     if demucs:
-        install(DEMUCS, 75, 84, no_deps=True, source=True)
+        emit(75, 'install', currentPackage='Demucs')
+        demucs_command = ['--only-binary', ':all:', '--no-binary', ','.join(SOURCE_ALLOWED), '--no-deps', *DEMUCS]
+        try:
+            _run([*(pip_base if use_pip else uv_base), *demucs_command], 'DEPENDENCY_INSTALL_FAILED', 'Demucs')
+        except RuntimeInstallError as exc:
+            if use_pip or 'os error 448' not in exc.diagnostics.lower() or 'interpreter' not in exc.diagnostics.lower():
+                raise
+            _run([*pip_base, *demucs_command], 'DEPENDENCY_INSTALL_FAILED', 'Demucs')
 
 
 def _write_pointer(root: Path, name: str, data: dict[str, Any]) -> None:

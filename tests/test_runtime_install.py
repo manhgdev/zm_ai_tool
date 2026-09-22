@@ -22,12 +22,18 @@ class HardwareTests(unittest.TestCase):
         environment = patch.dict(os.environ, {'ZM_AI_TOOL_HOME': temporary.name})
         environment.start()
         self.addCleanup(environment.stop)
-        def downloaded(python, groups, emit, on_ready=None):
-            paths = {group['name']: Path(temporary.name) / group['name'] for group in groups}
-            if on_ready:
-                for group in groups:
-                    on_ready(group, paths[group['name']], 30, 40)
-            return paths
+        def resolved(uv, profile, core, root, run, emit):
+            names = ['torch', 'torchaudio', 'faster-whisper', 'rapidocr-onnxruntime', 'vieneu']
+            names += ['onnxruntime-directml' if profile == 'directml' else 'onnxruntime-gpu' if profile.startswith('nvidia-') else 'onnxruntime']
+            names += ['sherpa-onnx', 'numpy']
+            return [runtime.Wheel(name, '1.0', name.replace('-', '_') + '-1.0-py3-none-any.whl', 'https://example.invalid/a.whl', 'a' * 64, 1) for name in names]
+        resolver = patch.object(runtime, 'resolve_wheels', side_effect=resolved)
+        resolver.start()
+        self.addCleanup(resolver.stop)
+        def downloaded(wheels, groups, emit, on_ready):
+            by_name = {w.name: Path(temporary.name) / w.filename for w in wheels}
+            for group in groups:
+                on_ready(group, [by_name[n] for n in group['packages']])
         prefetch = patch.object(runtime, '_prefetch_packages', side_effect=downloaded)
         prefetch.start()
         self.addCleanup(prefetch.stop)
@@ -60,7 +66,7 @@ class HardwareTests(unittest.TestCase):
         self.assertEqual(calls[1][:4], ['python.exe', '-I', '-m', 'pip'])
         self.assertIn('--no-compile', calls[1])
         self.assertIn('--no-index', calls[1])
-        self.assertIn('torch==2.6.0', calls[1])
+        self.assertIn('--no-deps', calls[1])
         self.assertTrue(all(c[0] == 'python.exe' for c in calls[1:]))
 
     def test_other_install_errors_do_not_trigger_a_second_download(self):
@@ -122,28 +128,24 @@ class HardwareTests(unittest.TestCase):
             commands = []
             with patch.object(runtime, '_run', side_effect=lambda command, *args: commands.append(command)):
                 runtime._install_packages('uv', Path('candidate/python.exe'), profile, True, lambda *a, **kw: None)
-            torch_commands = [c for c in commands if any(s.startswith('torch==') for s in c)]
-            self.assertEqual(len(torch_commands), 1)
-            expected_index = profile.removeprefix('nvidia-') if profile.startswith('nvidia-') else 'cpu'
-            self.assertIn('--no-index', torch_commands[0])
-            self.assertIn('--find-links', torch_commands[0])
-            ort = [s for c in commands for s in c if s.startswith(('onnxruntime==', 'onnxruntime-gpu==', 'onnxruntime-directml=='))]
+            wheel_files = [Path(c[c.index('--requirement') + 1]).read_text() for c in commands if '--requirement' in c]
+            self.assertEqual(sum('torch-1.0-' in text for text in wheel_files), 1)
+            ort = [path for text in wheel_files for path in text.splitlines() if Path(path).name.startswith('onnxruntime')]
             self.assertEqual(len(ort), 1)
             if profile == 'directml':
-                self.assertTrue(ort[0].startswith('onnxruntime-directml=='))
+                self.assertIn('onnxruntime_directml', ort[0])
             for command in commands:
                 self.assertIn(str(Path('candidate/python.exe')), command)
                 self.assertEqual(command[:3], ['uv', 'pip', 'install'])
-                self.assertIn('--python', command)
-            self.assertIn('--no-deps', commands[-1])
+                self.assertIn('--no-deps', command)
             self.assertIn('--no-binary', commands[-1])
-            self.assertTrue(all('--only-binary' in c for c in commands))
+            self.assertTrue(all('--no-index' in c for c in commands[:-1]))
 
     def test_network_and_timeout_report_useful_errors(self):
-        with patch.object(install, '_pip_stream', return_value=subprocess.CompletedProcess([], 1, 'Failed to download: proxy error', '')):
+        with patch.object(install, '_pip_stream', return_value=subprocess.CompletedProcess([], 1, 'HTTP error: 407 Proxy Authentication Required', '')):
             with self.assertRaises(runtime.RuntimeInstallError) as caught:
                 runtime._run(['uv'], 'DEPENDENCY_INSTALL_FAILED', 'package')
-            self.assertEqual(caught.exception.code, 'DOWNLOAD_FAILED')
+            self.assertEqual(caught.exception.code, 'PROXY_AUTH_FAILED')
         with patch.object(install, '_pip_stream', side_effect=RuntimeError('INSTALL_IDLE_TIMEOUT')):
             with self.assertRaises(runtime.RuntimeInstallError) as caught:
                 runtime._run(['uv'], 'DEPENDENCY_INSTALL_FAILED', 'package')

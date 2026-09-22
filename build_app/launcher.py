@@ -18,57 +18,10 @@ APP_DISPLAY_NAME = "ZM AI TOOL"
 _SUPERVISOR_ENV = "ZM_AI_TOOL_SUPERVISOR_CHILD"
 
 
-def _unblock_zone_identifier(path: Path) -> bool:
-    """Xóa MOTW (Zone.Identifier). Zip tải từ internet làm netfx không LoadLibrary DLL."""
-    if sys.platform != "win32":
-        return False
-    ads = str(path) + ":Zone.Identifier"
-    try:
-        os.remove(ads)
-        return True
-    except OSError:
-        pass
-    try:
-        import ctypes
-
-        if ctypes.windll.kernel32.DeleteFileW(ads):
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def unblock_windows_motw(root: Path) -> int:
-    """Remove MOTW from every native library before Python.NET/WebView2 loads.
-
-    Explorer can propagate the download zone from a GitHub ZIP to every DLL
-    inside ``_internal``.  Unblocking only Python.Runtime.dll is insufficient:
-    WebView2's Core/WinForms DLLs fail with the same 0x80131515 error.
-    """
-    if sys.platform != "win32" or not root.is_dir():
-        return 0
-    n = 0
-    # PyInstaller's one-dir bundle contains native libraries in package
-    # folders such as webview/lib, pythonnet/runtime and clr_loader.  .pyd
-    # modules are native DLLs too and can carry Zone.Identifier.
-    for pattern in ("*.dll", "*.pyd"):
-        try:
-            libraries = root.rglob(pattern)
-            for library in libraries:
-                if _unblock_zone_identifier(library):
-                    n += 1
-        except OSError:
-            # A broken optional package must not prevent the desktop launcher
-            # from continuing to its normal dependency/fallback diagnostics.
-            continue
-    return n
-
-
 def prepare_pythonnet(root: Path) -> None:
-    """Load CLR sau khi gỡ MOTW; PYTHONNET_PYDLL trỏ python312.dll trong bundle."""
+    """Load CLR without altering Windows download/security metadata."""
     if sys.platform != "win32":
         return
-    unblock_windows_motw(root)
     py_dll = next((p for p in (root / "python312.dll", root / "python3.dll") if p.is_file()), None)
     if py_dll is not None:
         os.environ["PYTHONNET_PYDLL"] = str(py_dll)
@@ -556,10 +509,6 @@ try:
     prepend_windows_path(bundle)
 except Exception:
     os.environ["PATH"] = os.pathsep.join((str(bundle), os.environ.get("PATH", "")))
-if sys.platform == "win32":
-    _motw_removed = unblock_windows_motw(bundle)
-    if _motw_removed:
-        print(f"[desktop] removed MOTW from {_motw_removed} native library file(s)", flush=True)
 
 # Chocolatey ShimGen copy vào _internal trỏ `..\lib\ffmpeg\...` → exit 4294967295.
 # Đưa thư mục ffmpeg thật (ngoài bundle) lên trước để bare `ffmpeg` không dính shim.

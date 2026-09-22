@@ -1,6 +1,7 @@
 import { Component, type ReactNode, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './app/App'
+import LandingPage from './pages/LandingPage'
 import './index.css'
 
 // WKWebView may omit the usual "Mac OS X" token. Check every platform hint so
@@ -46,7 +47,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      <App />
+      {window.location.pathname === '/landing' ? <LandingPage /> : <App />}
     </ErrorBoundary>
   </StrictMode>,
 )
