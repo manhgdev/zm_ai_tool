@@ -32,6 +32,18 @@ def _archive(path: Path, files: dict[str, bytes]) -> dict[str, object]:
 
 
 class RuntimePackInstallTest(unittest.TestCase):
+    def test_manifest_is_assembled_from_parallel_pack_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            output = Path(raw)
+            for pack_id in build_runtime_packs.PACKS:
+                with zipfile.ZipFile(output / f"{pack_id}-9.9.9.zip", "w") as bundle:
+                    bundle.writestr(f"{pack_id}.txt", pack_id.encode())
+            manifest = build_runtime_packs.write_manifest_from_archives(output, "9.9.9", "")
+            self.assertEqual(set(manifest["packs"]), set(build_runtime_packs.PACKS))
+            self.assertEqual(manifest["appVersion"], "9.9.9")
+            saved = json.loads((output / "runtime-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved, manifest)
+
     def test_runtime_builder_finds_uv_in_backend_build_venv(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

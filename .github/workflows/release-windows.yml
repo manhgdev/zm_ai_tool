@@ -11,7 +11,51 @@ permissions:
   contents: write
 
 jobs:
+  runtime-packs:
+    name: runtime-${{ matrix.pack }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pack:
+          - core-ai-win-x64
+          - gpu-directml
+          - gpu-nvidia-cu124
+          - gpu-nvidia-cu128
+          - gpu-torch-cpu
+          - feature-demucs
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12.10'
+
+      - name: Install runtime build tool
+        if: matrix.pack == 'core-ai-win-x64'
+        run: python -m pip install uv==0.8.22
+
+      - name: Build ${{ matrix.pack }}
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}' -replace '^v', '' -replace '^action/', ''
+          if (-not $version -or $version -notmatch '^[0-9]+\.[0-9]+') {
+            $version = (Get-Content build_app/VERSION -Raw).Trim()
+          }
+          python scripts/build_runtime_packs.py `
+            --output build_app/runtime-release `
+            --runtime-version $version `
+            --pack '${{ matrix.pack }}'
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: runtime-${{ matrix.pack }}
+          path: build_app/runtime-release/${{ matrix.pack }}-*.zip
+          if-no-files-found: error
+          retention-days: 3
+
   build:
+    needs: runtime-packs
     runs-on: windows-latest
 
     steps:
@@ -123,14 +167,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 
-      - name: Build immutable Windows AI runtime packs
-        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/action/')
+      - name: Download parallel runtime packs
+        uses: actions/download-artifact@v6
+        with:
+          pattern: runtime-*
+          path: build_app/runtime-release
+          merge-multiple: true
+
+      - name: Build runtime manifest
         shell: pwsh
         run: |
           $version = (Get-Content build_app/VERSION -Raw).Trim()
           python scripts/build_runtime_packs.py `
             --output build_app/runtime-release `
-            --runtime-version $version
+            --runtime-version $version `
+            --manifest-only
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $manifest = Get-Content build_app/runtime-release/runtime-manifest.json -Raw | ConvertFrom-Json
           foreach ($pack in $manifest.packs.PSObject.Properties) {

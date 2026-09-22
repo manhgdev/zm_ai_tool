@@ -192,15 +192,50 @@ def validate_compositions(work: Path, trees: dict[str, Path]) -> None:
         run([str(python), "-I", "-c", probe])
 
 
+def write_manifest_from_archives(output: Path, runtime_version: str, base_url: str) -> dict[str, object]:
+    packs: dict[str, object] = {}
+    for pack_id in PACKS:
+        archive = output / f"{pack_id}-{runtime_version}.zip"
+        if not archive.is_file():
+            raise FileNotFoundError(f"runtime archive missing: {archive}")
+        with zipfile.ZipFile(archive) as bundle:
+            unpacked = sum(info.file_size for info in bundle.infolist() if not info.is_dir())
+        packs[pack_id] = {
+            "url": f"{base_url}{archive.name}",
+            "sha256": sha256(archive),
+            "size": archive.stat().st_size,
+            "unpackedSize": unpacked,
+        }
+    manifest: dict[str, object] = {
+        "schemaVersion": 1,
+        "runtimeVersion": runtime_version,
+        "appVersion": runtime_version,
+        "pythonVersion": PYTHON_VERSION,
+        "architecture": "win-x64",
+        "packs": packs,
+    }
+    (output / "runtime-manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return manifest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--runtime-version", required=True)
     parser.add_argument("--base-url", default="")
+    parser.add_argument("--pack", choices=PACKS, action="append")
+    parser.add_argument("--manifest-only", action="store_true")
     args = parser.parse_args()
     if sys.platform != "win32":
         parser.error("runtime packs must be built on Windows")
     args.output.mkdir(parents=True, exist_ok=True)
+    if args.manifest_only:
+        manifest = write_manifest_from_archives(args.output, args.runtime_version, args.base_url)
+        print(json.dumps(manifest, indent=2))
+        return 0
+    selected = tuple(args.pack or PACKS)
     manifest: dict[str, object] = {
         "schemaVersion": 1,
         "runtimeVersion": args.runtime_version,
@@ -212,7 +247,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="zmaio-runtime-build-") as raw:
         work = Path(raw)
         trees: dict[str, Path] = {}
-        for pack_id in PACKS:
+        for pack_id in selected:
             tree, locked, wheels = build_core(work) if pack_id == "core-ai-win-x64" else build_layer(pack_id, work)
             trees[pack_id] = tree
             lock_path = tree / "runtime-lock.json"
@@ -226,7 +261,8 @@ def main() -> int:
                 "size": archive.stat().st_size,
                 "unpackedSize": unpacked,
             }
-        validate_compositions(work, trees)
+        if set(selected) == set(PACKS):
+            validate_compositions(work, trees)
     (args.output / "runtime-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
