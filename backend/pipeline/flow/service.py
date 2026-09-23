@@ -26,7 +26,7 @@ from . import store
 _PROJECT_RE = re.compile(r"^(?:https://(?:flow\.google\.com|labs\.google)(?::443)?)?(?:/fx/tools/flow|/flow)?/project/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})(?:[/?#]|$)")
 _TERMINAL = {"done", "failed", "cancelled", "action_required"}
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 3
-_MAX_CONCURRENT_JOBS_PER_ACCOUNT = 6
+_MAX_CONCURRENT_JOBS_PER_ACCOUNT = 16
 _PROFILE_COPY_IGNORES = {
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
     "GraphiteDawnCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache",
@@ -40,6 +40,8 @@ _VIDEO_UI_MODELS = {
     "Omni Flash", "Veo 3.1 - Lite", "Veo 3.1 - Fast",
     "Veo 3.1 - Quality", "Veo 3.1 - Lite [Lower Priority]",
 }
+# Temporarily disabled upstream; remove this entry to re-enable when Flow restores it.
+_DISABLED_VIDEO_MODELS = {"Veo 3.1 - Lite [Lower Priority]"}
 
 
 def _flow_submit_button_score(text: str = "", aria_label: str = "") -> int:
@@ -337,7 +339,7 @@ class FlowService:
         self._account_active: dict[str, int] = {}
         # Monotonic dispatch cursor per account.  Threads are created quickly
         # for bulk jobs, so relying on OS scheduling makes prompts start in a
-        # random order even when concurrency is set to 6.
+        # random order even when concurrency is set to 16.
         self._account_next_order: dict[str, int] = {}
         self._account_next_start: dict[str, int] = {}
         self._connecting_accounts: set[str] = set()
@@ -1164,6 +1166,8 @@ class FlowService:
             if mode != "text" and not source_files:
                 raise ValueError("Image edit/reference mode requires at least one source image")
         else:
+            if str(settings.get("model") or "Veo 3.1 - Fast") in _DISABLED_VIDEO_MODELS:
+                raise ValueError(f"FLOW_MODEL_UNAVAILABLE: {settings.get('model')}")
             if str(settings.get("model") or "Veo 3.1 - Fast") not in _VIDEO_UI_MODELS:
                 raise ValueError(f"Unsupported Flow video model: {settings.get('model')}")
         created = []

@@ -89,6 +89,7 @@ export default function App() {
   const [dark, setDark] = useState(loadTheme)
   const [appMode, setAppMode] = useState<AppMode>(loadAppMode)
   const [srtImageInitialMediaFolder, setSrtImageInitialMediaFolder] = useState('')
+  const [srtImageInitialCompose, setSrtImageInitialCompose] = useState<Record<string, unknown> | null>(null)
   const tabPrev = useRef<AppMode[]>([])
   const [hw, setHw] = useState<HardwareInfo>({ label: 'CPU', accel: 'cpu' })
   const [voices, setVoices] = useState<{ id: string; name: string; previewUrl?: string }[]>([
@@ -966,11 +967,19 @@ export default function App() {
       ) : appMode === 'chat' ? (
         <ChatPage onOpenConfig={() => { setConfigSection('cloud'); setConfigOpen(true) }} />
       ) : appMode === 'automation' ? (
-        <AutomationPage />
+        <AutomationPage onOpenCompose={async (jobId) => {
+          const response = await fetch(`/api/automation/jobs/${encodeURIComponent(jobId)}/compose-inputs`)
+          const data = response.ok
+            ? await response.json() as { mediaFolder?: string; audioPath?: string; timelinePath?: string; srtPath?: string; outputDir?: string; settings?: Record<string, unknown> }
+            : {}
+          setSrtImageInitialMediaFolder(String(data.mediaFolder || ''))
+          setSrtImageInitialCompose(data)
+          navigateToMode('srt-image')
+        }} />
       ) : appMode === 'cleaner' ? (
         <VideoCleanerPage onBack={goBackTab} />
       ) : appMode === 'srt-image' ? (
-        <SrtImagePage onBack={goBackTab} initialMediaFolder={srtImageInitialMediaFolder} />
+        <SrtImagePage onBack={goBackTab} initialMediaFolder={srtImageInitialMediaFolder} initialCompose={srtImageInitialCompose} />
       ) : appMode === 'srt-export' ? (
         <SrtExportPage onBack={goBackTab} />
       ) : appMode === 'drawing' ? (

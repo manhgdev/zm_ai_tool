@@ -1845,9 +1845,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     createKind === "video"
                       ? FLOW_VIDEO_MODELS.filter(
                           (m) =>
-                            m !== "Veo 3.1 - Lite [Lower Priority]" ||
-                            selectedFlowAccount(accounts, settings.account)?.planStatus === "verified" &&
-                            selectedFlowAccount(accounts, settings.account)?.plan === "Ultra",
+                            m !== "Veo 3.1 - Lite [Lower Priority]",
                         )
                       : selectedFlowAccount(accounts, settings.account)?.planStatus === "verified" &&
                         selectedFlowAccount(accounts, settings.account)?.plan === "Free"
@@ -1969,7 +1967,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     onChange={(concurrency) =>
                       setSettings((current) => ({ ...current, concurrency }))
                     }
-                    options={["1", "2", "3", "4", "5", "6"]}
+                    options={Array.from({ length: 16 }, (_, index) => String(index + 1))}
                   />
                   <FlowSelect
                     label={t("Định dạng lưu", "Output format")}

@@ -1018,7 +1018,11 @@ class StreamBoardRenderer:
         self.out_w = max(align, w)
         self.out_h = max(align, h)
 
-        self.color_img = cv2.resize(image_bgr, (self.out_w, self.out_h), interpolation=cv2.INTER_AREA)
+        # Keep a separate final frame from the untouched source. The drawing
+        # canvas may be background-matched for the ink animation, but the last
+        # frames must show the original sharp image without that processing.
+        self.original_img = cv2.resize(image_bgr, (self.out_w, self.out_h), interpolation=cv2.INTER_LANCZOS4)
+        self.color_img = self.original_img.copy()
         gray = cv2.cvtColor(self.color_img, cv2.COLOR_BGR2GRAY)
         self.thresh_map = cv2.adaptiveThreshold(
             gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 10
@@ -1600,7 +1604,7 @@ class StreamBoardRenderer:
         self.lay_down_ink(writer, plan.ink_frames)
         self.wash_color(writer, plan.color_frames)
         # 凝视：完整原图
-        gaze_img = self.color_img
+        gaze_img = self.original_img
         for _ in range(plan.gaze_frames):
             writer.write(gaze_img)
         writer.release()

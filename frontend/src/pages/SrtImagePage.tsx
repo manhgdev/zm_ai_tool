@@ -13,7 +13,7 @@ import {
 
 
 
-export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBack: () => void; initialMediaFolder?: string }) {
+export default function SrtImagePage({ onBack, initialMediaFolder = '', initialCompose = null }: { onBack: () => void; initialMediaFolder?: string; initialCompose?: { audioPath?: string; timelinePath?: string; srtPath?: string; outputDir?: string; settings?: Record<string, unknown> } | null }) {
   const { locale } = useLocale()
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
   function helpText(key: HelpKey) {
@@ -69,7 +69,8 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
   const [removeMetadata, setRemoveMetadata] = useState(Boolean(cached.removeMetadata ?? false))
   const [drawingEnabled, setDrawingEnabled] = useState(Boolean(cached.drawingEnabled ?? false))
   const [drawingMode, setDrawingMode] = useState(String(cached.drawingMode ?? 'hand'))
-  const [drawingTool, setDrawingTool] = useState(String(cached.drawingTool ?? 'pencil'))
+  const [drawingTool, setDrawingTool] = useState(String(cached.drawingTool ?? 'pen'))
+  const [drawingHandId, setDrawingHandId] = useState(String(cached.drawingHandId ?? 'pen'))
   const [drawingDetail, setDrawingDetail] = useState(Number(cached.drawingDetail ?? 72))
   const [drawingThickness, setDrawingThickness] = useState(Number(cached.drawingThickness ?? 2))
   const [drawingStrokeOrder, setDrawingStrokeOrder] = useState(String(cached.drawingStrokeOrder ?? 'natural'))
@@ -117,6 +118,19 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
     setMediaFolder(initialMediaFolder)
     setTab('project')
   }, [initialMediaFolder])
+
+  useEffect(() => {
+    if (!initialCompose) return
+    if (initialCompose.audioPath) setAudioPath(initialCompose.audioPath)
+    if (initialCompose.timelinePath) { setTimelinePath(initialCompose.timelinePath); setTimelineMode('file') }
+    if (initialCompose.srtPath) setSrtPath(initialCompose.srtPath)
+    if (initialCompose.outputDir) setOutputPath(initialCompose.outputDir)
+    const s = initialCompose.settings || {}
+    if (s.resolution) setResolution(String(s.resolution)); if (s.fps) setFps(Number(s.fps)); if (s.crf) setCrf(Number(s.crf))
+    if (s.encoder) setEncoder(String(s.encoder)); if (s.effect) setEffect(String(s.effect)); if (s.zoom) setZoom(String(s.zoom))
+    if (s.speed) setSpeed(Number(s.speed)); if (s.volume) setVolume(Number(s.volume)); if (s.transitionDuration) setTransitionDuration(Number(s.transitionDuration))
+    if (s.subtitleEnabled !== undefined) setSubtitleBackground(s.subtitleEnabled ? String(s.subtitleBackground || 'solid') : 'none')
+  }, [initialCompose])
 
   useEffect(() => {
     void fetch('/api/system/resolve-output-folder?tab=subtitle-image', { method: 'POST' })
@@ -192,7 +206,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
     mediaFolder, audioPath, timelinePath, timelineText, srtPath, watermarkPath, outputName, outputPath,
     resolution, targetPlatform, fps, crf, effect, transitionDuration, zoom, speed, volume,
     previewSeconds, encoder, removeMetadata, delogoEnabled, delogoAuto, delogoRect,
-    drawingEnabled, drawingMode, drawingTool, drawingDetail, drawingThickness,
+    drawingEnabled, drawingMode, drawingTool, drawingHandId, drawingDetail, drawingThickness,
     drawingStrokeOrder,
     subtitleSize, subtitleOffset, subtitleFontFamily,
     subtitleMargin, subtitleBackground, subtitleColor, subtitleBgColor, subtitleOpacity, logoEnabled, logoSource, logoText,
@@ -227,7 +241,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
         encoder, removeMetadata, subtitleSize, subtitleOffset, subtitleFontFamily, subtitleMargin,
         subtitleBackground, subtitleColor, subtitleBgColor, subtitleOpacity, previewSeconds: preview ? previewSeconds : 0,
         delogo: { enabled: delogoEnabled, ...delogoRect },
-        drawing: { enabled: drawingEnabled, mode: drawingMode, tool: drawingTool, detail: drawingDetail, thickness: drawingThickness, strokeOrder: drawingStrokeOrder, resolution: '1080p' },
+        drawing: { enabled: drawingEnabled, mode: drawingMode, tool: drawingTool, handId: drawingHandId, detail: drawingDetail, thickness: drawingThickness, strokeOrder: drawingStrokeOrder, resolution: '1080p' },
         logo: {
           enabled: logoEnabled, source: logoSource, text: logoText, icon: logoIcon,
           size: logoSize, fontSize: logoFontSize, color: logoColor, opacity: logoOpacity,
@@ -708,7 +722,8 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
                 <p className="siv-hint">{t('Mỗi ảnh tĩnh được vẽ thành clip theo đúng thời lượng timeline trước khi ghép. Video có sẵn giữ nguyên.', 'Each still image becomes a drawing clip for its timeline duration before merging. Existing videos remain unchanged.')}</p>
                 {drawingEnabled && <div className="siv-set-row siv-set-row--four">
                   <label><span className="siv-setting-title">{t('Kiểu vẽ', 'Drawing style')}</span><select value={drawingMode} onChange={(e) => setDrawingMode(e.target.value)}><option value="hand">{t('Tay + bút', 'Hand + pen')}</option><option value="drawing">{t('Vẽ nét', 'Strokes')}</option></select></label>
-                  <label><span className="siv-setting-title">{t('Dụng cụ', 'Tool')}</span><select value={drawingTool} onChange={(e) => setDrawingTool(e.target.value)}><option value="pencil">{t('Chì', 'Pencil')}</option><option value="pen">{t('Bút', 'Pen')}</option><option value="marker">Marker</option><option value="brush">{t('Cọ', 'Brush')}</option></select></label>
+                  <label><span className="siv-setting-title">{t('Dụng cụ', 'Tool')}</span><select value={drawingTool} onChange={(e) => setDrawingTool(e.target.value)}><option value="pencil">{t('Chì', 'Pencil')}</option><option value="pen">{t('Bút máy', 'Fountain pen')}</option><option value="marker">Marker</option><option value="brush">{t('Cọ', 'Brush')}</option></select></label>
+                  <div className="siv-sprite-field"><span className="siv-setting-title">{t('Sprite bút vẽ', 'Drawing pen sprite')}</span><div className="siv-sprite-grid">{[['pen', 'Bút máy', 'Fountain pen'], ['default', 'Tay + bút chì', 'Hand + pencil'], ['left', 'Tay trái', 'Left hand'], ['marker', 'Marker', 'Marker']].map(([id, vi, en]) => <button type="button" key={id} className={drawingHandId === id ? 'is-active' : ''} onClick={() => setDrawingHandId(id)} title={t(vi, en)}><img src={`/api/drawing/hands/${id}`} alt={t(vi, en)} /><small>{t(vi, en)}</small></button>)}</div></div>
                   <label><span className="siv-setting-title">{t('Đường đi nét', 'Stroke route')}</span><select value={drawingStrokeOrder} onChange={(e) => setDrawingStrokeOrder(e.target.value)}><option value="natural">{t('Tự nhiên theo đối tượng', 'Natural by object')}</option><option value="outline">{t('Theo viền thật', 'True outlines')}</option><option value="region">{t('Từng vùng hoàn chỉnh', 'Complete one region')}</option><option value="reading">{t('Theo chữ · trái sang phải', 'Text · left to right')}</option><option value="center">{t('Từ tâm lan ra', 'Centre outward')}</option><option value="horizontal">{t('Quét ngang', 'Horizontal sweep')}</option><option value="vertical">{t('Quét dọc', 'Vertical sweep')}</option></select></label>
                   <label><span className="siv-setting-title">{t('Độ chi tiết', 'Detail')} · {drawingDetail}%</span><input type="range" min="10" max="100" value={drawingDetail} onChange={(e) => setDrawingDetail(Number(e.target.value))} /></label>
                   <label><span className="siv-setting-title">{t('Độ dày nét', 'Stroke thickness')} · {drawingThickness}px</span><input type="range" min="1" max="8" value={drawingThickness} onChange={(e) => setDrawingThickness(Number(e.target.value))} /></label>

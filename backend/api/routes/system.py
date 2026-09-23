@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -251,6 +252,47 @@ def _verify_update(path: Path, expected: str) -> None:
         raise RuntimeError('UPDATE_CHECKSUM_MISMATCH: Update package integrity check failed')
 
 
+def _download_update_parallel(url: str, partial: Path, expected_size: int) -> bool:
+    """Download a large GitHub asset with four independent HTTP ranges."""
+    if expected_size < 32 * 1024 * 1024 or partial.exists():
+        return False
+    workers = 4
+    chunk_size = (expected_size + workers - 1) // workers
+    parts = [partial.with_name(f"{partial.name}.{i}") for i in range(workers)]
+    def fetch(index: int) -> Path:
+        start = index * chunk_size
+        end = min(expected_size - 1, start + chunk_size - 1)
+        req = urllib.request.Request(url, headers={"User-Agent": "ZM-AI-TOOL", "Range": f"bytes={start}-{end}"})
+        with urllib.request.urlopen(req, timeout=_UPDATE_DOWNLOAD_TIMEOUT_SECONDS) as response:
+            if response.status != 206:
+                raise RuntimeError("UPDATE_RANGE_UNSUPPORTED")
+            target = parts[index]
+            with target.open("wb") as stream:
+                while block := response.read(8 * 1024 * 1024):
+                    if _UPDATE_CANCEL.is_set():
+                        raise _UpdateCancelled
+                    stream.write(block)
+        if target.stat().st_size != end - start + 1:
+            raise OSError("UPDATE_RANGE_INCOMPLETE")
+        return target
+    try:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="update-range") as pool:
+            futures = [pool.submit(fetch, i) for i in range(workers)]
+            completed = 0
+            for future in as_completed(futures):
+                future.result()
+                completed += 1
+                _set_update_state(progress=min(99, completed * 25))
+        with partial.open("wb") as output:
+            for part in parts:
+                with part.open("rb") as source:
+                    shutil.copyfileobj(source, output, length=8 * 1024 * 1024)
+        return True
+    finally:
+        for part in parts:
+            part.unlink(missing_ok=True)
+
+
 def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path:
     name = str(asset.get("name") or "")
     url = str(asset.get("browser_download_url") or "")
@@ -280,6 +322,17 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
         _set_update_state(phase="ready", progress=100, message="Đã tải gói cập nhật", assetName=name, latestVersion=version, packagePath=str(target))
         return target
     _set_update_state(phase="downloading", progress=0, message="Đang tải bản cập nhật…", assetName=name, latestVersion=version)
+    try:
+        parallel_done = _download_update_parallel(url, partial, expected_size)
+    except _UpdateCancelled:
+        raise
+    except Exception:
+        parallel_done = False
+    if parallel_done:
+        partial.replace(target)
+        _verify_update(target, expected_sha)
+        _set_update_state(progress=100)
+        return target
     last_error: Exception | None = None
     for attempt in range(3):
         try:

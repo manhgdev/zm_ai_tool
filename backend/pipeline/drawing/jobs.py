@@ -416,7 +416,7 @@ def run(job_id: str) -> None:
         if mode != "hand" and tool not in {"pen", "marker", "brush"}:
             render_command.append("--bare-tip")
         # Custom / built-in hand sprite
-        hand_id = str(options.get("handId") or "default")
+        hand_id = str(options.get("handId") or {"pen": "pen", "marker": "marker", "brush": "marker"}.get(tool, "default"))
         hand_png = resolve_hand_png(hand_id)
         if hand_png:
             render_command += ["--hand-png", str(hand_png)]
@@ -492,8 +492,10 @@ def _drawing_render_profile(width: int, height: int, fps: int, resolution: str) 
     optimizations (buffer reuse, OpenCL snapshot, vectorized blend) help at any
     resolution, so keep the same compact master for both paths.
     """
-    long_edge = 1280 if resolution == "4k" else min(960, max(width, height))
-    return long_edge, min(15, fps)
+    # Render at the requested export size so the final original-image frames
+    # are not enlarged from a 960px intermediate and made soft.
+    long_edge = 3840 if resolution == "4k" else max(width, height)
+    return long_edge, fps
 
 
 def start_batch(job_ids: list[str]) -> int:

@@ -103,4 +103,4 @@
 .automation-recompose-footer button:hover{border-color:var(--primary);color:var(--primary)}
 .automation-recompose-footer button.is-primary{border-color:var(--primary);background:var(--primary);color:var(--primary-foreground)}
 .automation-recompose-footer button:disabled{opacity:.6;cursor:wait}
-
+.automation-sprite-field{grid-column:1/-1;display:grid;gap:8px}.automation-sprite-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.automation-sprite-grid button{display:grid;justify-items:center;gap:5px;padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--card);color:var(--foreground);cursor:pointer}.automation-sprite-grid button.is-active{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 10%,var(--card))}.automation-sprite-grid img{width:28px;height:28px;object-fit:contain}.automation-sprite-grid small{font-size:.7rem;text-align:center}

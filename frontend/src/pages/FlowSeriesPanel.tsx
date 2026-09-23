@@ -712,7 +712,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           onChange={(e) => saveSeriesSettings({ model: e.target.value })}
                           aria-label={t('Model video', 'Video model')}
                         >
-                          {VIDEO_MODELS.filter((m) => m !== 'Veo 3.1 - Lite [Lower Priority]' || accounts.find((a) => a.id === seriesSettings.accountId)?.plan === 'Ultra').map((m) => <option key={m} value={m}>{m}</option>)}
+                          {VIDEO_MODELS.filter((m) => m !== 'Veo 3.1 - Lite [Lower Priority]').map((m) => <option key={m} value={m}>{m}</option>)}
                         </select>
                       </div>
                       <div className="fsp-auto-field">
@@ -777,7 +777,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           onChange={(e) => saveSeriesSettings({ concurrency: e.target.value })}
                           aria-label={t('Luồng chạy song song', 'Parallel threads')}
                         >
-                          {['1', '2', '3', '4', '5', '6'].map((c) => (
+                          {Array.from({ length: 16 }, (_, index) => String(index + 1)).map((c) => (
                             <option key={c} value={c}>{c}</option>
                           ))}
                         </select>

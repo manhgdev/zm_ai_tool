@@ -1,5 +1,13 @@
 # Changelog
 
+## v8.4.6 — 2026-09-23
+
+- Tạm ẩn Veo 3.1 Lite Lower Priority trên Flow và Flow Series; backend báo model không khả dụng.
+- Nâng giới hạn luồng Flow lên 16 cho Flow, Series và Automation.
+- Tự động hoá mở Ghép ảnh/video SRT với đường dẫn media, audio, image_prompts.txt, phụ đề và cài đặt job.
+- Vẽ tay dùng bút máy mặc định, cho chọn sprite bằng icon; giữ ảnh gốc sắc nét ở cuối video.
+- Tải cập nhật dùng bốn kết nối cho gói lớn nếu máy chủ hỗ trợ HTTP Range.
+
 ## v8.4.5 — 2026-09-23
 
 - Drawing Windows không còn crash vì log Unicode trên code page `cp1252`.

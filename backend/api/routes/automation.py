@@ -133,6 +133,36 @@ def get_job(job_id: str):
         raise HTTPException(404, detail={"code": "AUTOMATION_JOB_NOT_FOUND", "message": _t("Không tìm thấy job", "Automation job not found")}) from exc
 
 
+@router.get("/jobs/{job_id}/compose-inputs")
+def compose_inputs(job_id: str):
+    """Return local compose inputs for the desktop SRT editor."""
+    try:
+        job = service.store.get_job(job_id)
+        if not job:
+            raise KeyError(job_id)
+        inp = job.get("input") or {}
+        workspace = service.store.workspace(job_id)
+        images = workspace / "images"
+        audio = Path(str(inp.get("audio") or ""))
+        srt = Path(str(inp.get("srt") or ""))
+        # Generated artifacts may not exist yet while the automation job is
+        # running. Expose their stable workspace paths so the editor is ready
+        # immediately and can be rendered manually once the files arrive.
+        if not audio.name:
+            audio = workspace / "audio.wav"
+        if not srt.name:
+            srt = workspace / "subtitles.srt"
+        timeline = workspace / "image_prompts.txt"
+        if not timeline.is_file():
+            timeline = srt
+        return {"mediaFolder": str(images),
+                "audioPath": str(audio), "timelinePath": str(timeline), "srtPath": str(srt),
+                "settings": (job.get("settings") or {}).get("compose") or {},
+                "outputDir": str((job.get("settings") or {}).get("outputDir") or "")}
+    except KeyError as exc:
+        raise HTTPException(404, "Automation job not found") from exc
+
+
 @router.delete("/jobs/{job_id}")
 def delete_job(job_id: str):
     try:
@@ -384,4 +414,3 @@ def preview_youtube_rewrite(body: dict[str, Any] = Body(...)):
         return service.preview_youtube_rewrite(url, settings=settings)
     except Exception as exc:
         raise HTTPException(500, detail={"code": "YOUTUBE_REWRITE_FAILED", "message": str(exc)})
-
