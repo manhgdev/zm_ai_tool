@@ -26,6 +26,9 @@ RECIPE_VERSION = 1
 Progress = Callable[[int, str, dict[str, Any]], None]
 _LOCK = threading.Lock()
 CORE = (
+    # CTranslate2 4.6.0 imports pkg_resources at runtime. Recent setuptools
+    # releases removed that module; keep a verified compatible wheel pinned.
+    'setuptools==80.9.0',
     'ctranslate2==4.6.0', 'av==16.0.1', 'pillow==12.0.0', 'opencv-python-headless==4.12.0.88',
     'numpy==2.2.6', 'huggingface-hub==0.36.0', 'pyyaml==6.0.3', 'sea-g2p==0.8.4',
     'soundfile==0.13.1', 'cffi==2.0.0', 'soxr==1.0.0', 'httpx==0.28.1',

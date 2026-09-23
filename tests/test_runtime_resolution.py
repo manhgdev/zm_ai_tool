@@ -8,6 +8,11 @@ from pipeline.core.runtime_download import RuntimeInstallError
 
 
 class ResolutionTests(unittest.TestCase):
+    def test_ctranslate_runtime_pins_setuptools_with_pkg_resources(self):
+        from pipeline.core.runtime_install import CORE
+        self.assertIn('ctranslate2==4.6.0', CORE)
+        self.assertEqual([spec for spec in CORE if spec.startswith('setuptools')], ['setuptools==80.9.0'])
+
     def test_selects_only_windows_cp312_and_keeps_hash(self):
         packages = [{'name': 'test', 'version': '1.0', 'wheels': [
             {'url': f'https://example.invalid/test-1.0-{tag}.whl', 'hashes': {'sha256': 'a' * 64}, 'size': 100}
