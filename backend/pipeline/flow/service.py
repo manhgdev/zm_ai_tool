@@ -91,6 +91,38 @@ def _media_created_timestamp(media: dict[str, Any]) -> float:
         return 0.0
 
 
+def _captured_video_ids(response: dict[str, Any]) -> list[str]:
+    """Return stable media IDs from either observed Flow video response shape."""
+    values: list[str] = []
+    for job in response.get("jobs") or []:
+        media = job.get("mediaId") or {}
+        value = media.get("mediaName") or media.get("name")
+        if value:
+            values.append(str(value))
+    for media in response.get("media") or []:
+        value = media.get("name") or media.get("mediaName")
+        if value:
+            values.append(str(value))
+    return list(dict.fromkeys(values))
+
+
+def _captured_image_items(response: dict[str, Any]) -> list[dict[str, str]]:
+    """Normalize both current and legacy batchGenerateImages response shapes."""
+    values: list[dict[str, str]] = []
+    for media in response.get("media") or []:
+        generated = (media.get("image") or {}).get("generatedImage") or {}
+        media_id = media.get("name") or media.get("mediaName")
+        src = generated.get("fifeUrl") or media.get("fifeUrl")
+        if media_id and src:
+            values.append({"id": str(media_id), "src": str(src)})
+    for generated in response.get("generatedImages") or []:
+        media_id = generated.get("mediaName") or generated.get("name")
+        src = generated.get("fifeUrl") or generated.get("fife_url")
+        if media_id and src:
+            values.append({"id": str(media_id), "src": str(src)})
+    return list({item["id"]: item for item in values}.values())
+
+
 def _detect_plan(credit_info: Any) -> str | None:
     """Map Flow's Credits object to 'Pro' or 'Ultra'.
 
@@ -273,6 +305,11 @@ async def _open_flow_settings_panel(page, pill, tabs, ui=None) -> bool:
 class FlowService:
     def __init__(self) -> None:
         self._account_active: dict[str, int] = {}
+        # Monotonic dispatch cursor per account.  Threads are created quickly
+        # for bulk jobs, so relying on OS scheduling makes prompts start in a
+        # random order even when concurrency is set to 6.
+        self._account_next_order: dict[str, int] = {}
+        self._account_next_start: dict[str, int] = {}
         self._connecting_accounts: set[str] = set()
         self._syncing_accounts: set[str] = set()  # guard concurrent credit syncs
         self._claimed_media_ids: set[str] = set()
@@ -418,8 +455,34 @@ class FlowService:
 
     @staticmethod
     def _outputs_exist(outputs: Any) -> bool:
-        paths = [Path(str(value)) for value in (outputs or []) if str(value)]
-        return bool(paths) and all(path.is_file() and path.stat().st_size > 0 for path in paths)
+        """Return true only when every declared output is a readable non-empty file.
+
+        A Flow job must never become ``done`` merely because a media id or a
+        download URL was returned.  The final file check is deliberately kept
+        at the service boundary so it covers both image and video workers.
+        """
+        paths = [Path(str(value)) for value in (outputs or []) if str(value).strip()]
+        if not paths:
+            return False
+        try:
+            return all(path.is_file() and path.stat().st_size > 0 for path in paths)
+        except OSError:
+            return False
+
+    @classmethod
+    def _output_validation_error(cls, outputs: Any) -> str | None:
+        paths = [Path(str(value)) for value in (outputs or []) if str(value).strip()]
+        if not paths:
+            return "FLOW_EMPTY_OUTPUT: no output file was downloaded"
+        for path in paths:
+            try:
+                if not path.is_file():
+                    return f"FLOW_OUTPUT_MISSING: {path}"
+                if path.stat().st_size <= 0:
+                    return f"FLOW_OUTPUT_EMPTY: {path}"
+            except OSError as exc:
+                return f"FLOW_OUTPUT_UNREADABLE: {path}: {exc}"
+        return None
 
     def save_account(self, payload: dict[str, Any], account_id: str | None = None) -> dict[str, Any]:
         now = time.time()
@@ -1020,8 +1083,18 @@ class FlowService:
         for index, prompt in enumerate(prompts, 1):
             now = time.time()
             job_input_index = int(payload.get("inputIndex") or series_context.get("sceneIndex") or index)
+            with self._account_condition:
+                order = self._account_next_order.get(account_id)
+                if order is None:
+                    persisted_orders = [
+                        int(row.get("queueOrder")) for row in self.jobs()
+                        if row.get("accountId") == account_id and str(row.get("queueOrder", "")).isdigit()
+                    ]
+                    order = max(persisted_orders, default=-1) + 1
+                self._account_next_order[account_id] = order + 1
             job = {
                 "id": uuid.uuid4().hex[:12], "inputIndex": job_input_index, "kind": kind,
+                "queueOrder": order,
                 "mode": mode, "prompt": prompt, "accountId": account_id,
                 "inputType": input_type,
                 "settings": settings, "sourceFiles": source_files,
@@ -1046,16 +1119,35 @@ class FlowService:
             return
         account_id = str(job["accountId"])
         concurrency = _job_concurrency(job.get("settings") or {})
+        order = int(job.get("queueOrder", job.get("inputIndex", 0)))
         with self._account_condition:
-            while self._account_active.get(account_id, 0) >= concurrency:
+            if account_id not in self._account_next_start:
+                pending_orders = [
+                    int(row.get("queueOrder")) for row in self.jobs()
+                    if row.get("accountId") == account_id
+                    and row.get("status") not in _TERMINAL
+                    and str(row.get("queueOrder", "")).isdigit()
+                ]
+                self._account_next_start[account_id] = min(pending_orders, default=order)
+            while (
+                order != self._account_next_start[account_id]
+                or self._account_active.get(account_id, 0) >= concurrency
+            ):
                 if job_id in self._cancelled:
+                    if order == self._account_next_start[account_id]:
+                        self._account_next_start[account_id] += 1
+                        self._account_condition.notify_all()
                     return
                 self._account_condition.wait()
             if job_id in self._cancelled:
+                self._account_next_start[account_id] += 1
+                self._account_condition.notify_all()
                 return
+            self._account_next_start[account_id] += 1
             self._account_active[account_id] = self._account_active.get(account_id, 0) + 1
-        # ponytail: one auto-retry for transient failures (timeout / UI selector);
-        # hard errors (LOGIN_REQUIRED, GENERATION_FAILED/REJECTED, CANCELLED) skip retry.
+        # Retry only failures that happen before a generation is submitted.
+        # Once Flow accepts a job, retrying can create a duplicate and charge
+        # credits twice; media recovery owns all post-submit timeouts.
         _HARD_ERROR = re.compile(
             r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT",
             re.I,
@@ -1746,7 +1838,10 @@ class FlowService:
             elapsed = timeout_s - max(0.0, deadline - time.monotonic())
             store.patch_row("jobs", job_id, {
                 "stage": "generating",
-                "progress": min(75, 20 + int(elapsed / max(1, timeout_s) * 55)),
+                # Keep progress moving while Flow renders. Reserve 90–100 for
+                # download and final file validation so long renders do not
+                # look frozen at 70–75% or trigger a duplicate retry.
+                "progress": min(88, 20 + int(elapsed / max(1, timeout_s) * 68)),
                 "updatedAt": time.time(),
             })
             await asyncio.sleep(2)
@@ -1761,7 +1856,7 @@ class FlowService:
         count: int,
         baseline_text: str,
         job_id: str,
-        timeout_s: int = 600,
+        timeout_s: int = 900,
     ) -> list[str]:
         """Wait for newly generated Flow video tiles to complete and download MP4s directly."""
         deadline = time.monotonic() + timeout_s
@@ -2004,12 +2099,42 @@ class FlowService:
                     if not await client._ui.fill_prompt(page, job["prompt"]):
                         raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
                     await asyncio.sleep(1)
+                    from ._flow._ui_interceptor import UIInterceptor
+                    from ._flow._exceptions import GenerationTimeout
+                    interceptor = UIInterceptor()
+                    interceptor.attach(page)
                     await self._click_flow_submit(page)
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model})
                     await self._sync_credits(api, account["id"])
-                    outputs = await self._wait_and_download_flow_videos(
-                        page, job, count, baseline_text, job_id,
-                    )
+                    try:
+                        captured = await interceptor.wait_for(
+                            "batchAsyncGenerateVideoText", timeout=30, require_success=True,
+                        )
+                    except GenerationTimeout:
+                        captured = None
+                    media_ids = _captured_video_ids(captured.resp or {}) if captured else []
+                    if media_ids:
+                        self._log("success", "api_generation_submitted", job_id=job_id, account_id=account["id"], details={"mediaIds": media_ids})
+                        store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": 20})
+                        from ._flow._api import VideoJob
+                        outputs = []
+                        for output_index, media_id in enumerate(media_ids[:count], 1):
+                            self._check_cancel(job_id)
+                            remote_job = VideoJob.__new__(VideoJob)
+                            remote_job.media_name = media_id
+                            remote_job.project_id = account["projectId"]
+                            status = await api.wait_for_video(
+                                remote_job, timeout_s=900,
+                                on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 20 + int(elapsed / 12)), "updatedAt": time.time()}),
+                            )
+                            output = self._output_path(job, output_index, "mp4")
+                            await api.download(status.fife_url, output)
+                            outputs.append(str(output))
+                    else:
+                        self._log("warning", "ui_generation_fallback", job_id=job_id, account_id=account["id"], details={"kind": "video"})
+                        outputs = await self._wait_and_download_flow_videos(
+                            page, job, count, baseline_text, job_id,
+                        )
             else:
                 model = str(settings.get("model") or "Nano Banana 2")
                 sources = job.get("sourceFiles") or []
@@ -2029,11 +2154,26 @@ class FlowService:
                     await self._set_flow_count(page, count)
                     if not await client._ui.fill_prompt(page, job["prompt"]):
                         raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
+                    from ._flow._ui_interceptor import UIInterceptor
+                    from ._flow._exceptions import GenerationTimeout
+                    interceptor = UIInterceptor()
+                    interceptor.attach(page)
                     await self._click_flow_submit(page)
-                    media_items = await self._wait_for_project_media(
-                        page, baseline_ids, "image", count, job_id,
-                        api=api, job=job,
-                    )
+                    try:
+                        captured = await interceptor.wait_for(
+                            "batchGenerateImages", timeout=180, require_success=True,
+                        )
+                    except GenerationTimeout:
+                        captured = None
+                    media_items = _captured_image_items(captured.resp or {}) if captured else []
+                    if media_items:
+                        self._log("success", "api_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
+                    else:
+                        self._log("warning", "ui_generation_fallback", job_id=job_id, account_id=account["id"], details={"kind": "image"})
+                        media_items = await self._wait_for_project_media(
+                            page, baseline_ids, "image", count, job_id,
+                            api=api, job=job,
+                        )
                 media_ids = [str(item["id"]) for item in media_items]
                 self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": settings.get("model"), "mediaIds": media_ids})
                 await self._sync_credits(api, account["id"])
@@ -2045,8 +2185,9 @@ class FlowService:
                     await api.download(str(image["src"]), output)
                     outputs.append(str(output))
                     self._log("success", "output_downloaded", job_id=job_id, account_id=account["id"], details={"outputIndex": output_index, "path": str(output)})
-            if not self._outputs_exist(outputs):
-                raise RuntimeError("FLOW_EMPTY_OUTPUT: generation finished without a downloaded media file")
+            output_error = self._output_validation_error(outputs)
+            if output_error:
+                raise RuntimeError(output_error)
             store.patch_row("jobs", job_id, {"status": "done", "stage": "done", "progress": 100, "outputs": outputs, "updatedAt": time.time()})
             if job.get("seriesContext"):
                 from . import series
