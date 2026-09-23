@@ -688,7 +688,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         return;
       }
     }
-    if (createKind === "video" && account.plan === "Free") {
+    if (createKind === "video" && account.planStatus === "verified" && account.plan === "Free") {
       const message = t(
         "Tài khoản gói thường chỉ hỗ trợ tạo ảnh. Vui lòng chuyển sang loại 'Ảnh' hoặc chọn tài khoản Pro/Ultra.",
         "Free accounts only support image generation. Please switch to 'Image' or select a Pro/Ultra account.",
@@ -722,7 +722,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         ? settings
         : { ...settings, outputDir: defaultFlowOutputFolder() };
 
-      if (createKind === "image" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
+      if (createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
         effectiveSettings = { ...effectiveSettings, model: "Nano Banana 2", imageModel: "Nano Banana 2" };
       }
 
@@ -1442,7 +1442,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   className={account.isDefault ? "is-default" : ""}
                 >
                   <div className="flow-account-head">
-                    <span>{account.plan === "Free" ? t("Gói thường", "Free") : account.plan}</span>
+                    <span>{account.planStatus !== "verified"
+                      ? t("Chưa xác minh", "Unverified")
+                      : account.plan === "Free" ? t("Gói thường", "Free") : account.plan}</span>
                     <mark className={account.status}>
                       {account.status === "online"
                         ? t("Online", "Online")
@@ -1476,6 +1478,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     )}
                   </div>
                   <p>{account.email}</p>
+                  <small className="flow-account-plan-source">
+                    {account.planStatus === "verified"
+                      ? t("Đã xác minh từ Flow", "Verified from Flow")
+                      : t("Cần đồng bộ gói trước khi tạo", "Sync plan before generation")}
+                  </small>
 
                   <div className="flow-account-credits">
                     <div className="flow-account-credits-head">
@@ -1839,9 +1846,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       ? FLOW_VIDEO_MODELS.filter(
                           (m) =>
                             m !== "Veo 3.1 - Lite [Lower Priority]" ||
+                            selectedFlowAccount(accounts, settings.account)?.planStatus === "verified" &&
                             selectedFlowAccount(accounts, settings.account)?.plan === "Ultra",
                         )
-                      : selectedFlowAccount(accounts, settings.account)?.plan === "Free"
+                      : selectedFlowAccount(accounts, settings.account)?.planStatus === "verified" &&
+                        selectedFlowAccount(accounts, settings.account)?.plan === "Free"
                         ? FLOW_IMAGE_MODELS.filter((m) => m !== "Nano Banana Pro")
                         : [...FLOW_IMAGE_MODELS]
                   }
@@ -1866,10 +1875,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   const plan = selectedFlowAccount(accounts, settings.account)?.plan;
                   const isOmni = settings.model === "Omni Flash";
                   const isQuality = settings.model === "Veo 3.1 - Quality";
-                  const isSelectable = isOmni || (plan === "Ultra" && isQuality);
+                  const isSelectable = isOmni && selectedFlowAccount(accounts, settings.account)?.planStatus === "verified"
+                    || (plan === "Ultra" && selectedFlowAccount(accounts, settings.account)?.planStatus === "verified" && isQuality);
                   const durationOptions = isOmni
                     ? ["4", "6", "8", "10"]
-                    : isQuality && plan === "Ultra"
+                    : isQuality && plan === "Ultra" && selectedFlowAccount(accounts, settings.account)?.planStatus === "verified"
                       ? ["4", "6", "8"]
                       : ["8"];
                   const currentValue = durationOptions.includes(settings.duration) ? settings.duration : "8";

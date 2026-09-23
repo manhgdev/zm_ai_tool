@@ -133,14 +133,13 @@ def _detect_plan(credit_info: Any) -> str | None:
     """
     tier = str(getattr(credit_info, "tier", "") or "").lower()
     sku  = str(getattr(credit_info, "sku",  "") or "").lower()
-    combined = tier + " " + sku
+    service_tier = str(getattr(credit_info, "service_tier", "") or "").lower()
+    combined = re.sub(r"[^a-z0-9]+", "_", f"{tier} {sku} {service_tier}")
     if "ultra" in combined or "tier_two" in combined or "tier_2" in combined:
         return "Ultra"
     if "pro" in combined or "tier_one" in combined or "tier_1" in combined:
         return "Pro"
     if "tier_0" in combined or "free" in combined or "standard" in combined:
-        return "Free"
-    if hasattr(credit_info, "credits") and credit_info.credits is not None:
         return "Free"
     return None
 
@@ -497,6 +496,12 @@ class FlowService:
             "status": existing.get("status", "reconnect"),
             "credits": existing.get("credits"),
             "creditsSyncedAt": existing.get("creditsSyncedAt"),
+            "planStatus": existing.get("planStatus", "unknown"),
+            "planSource": existing.get("planSource", ""),
+            "planSyncedAt": existing.get("planSyncedAt"),
+            "flowTier": existing.get("flowTier", ""),
+            "flowSku": existing.get("flowSku", ""),
+            "flowServiceTier": existing.get("flowServiceTier", ""),
             "isDefault": bool(payload.get("isDefault", existing.get("isDefault", not self.accounts()))),
             "createdAt": existing.get("createdAt", now),
             "updatedAt": now,
@@ -675,19 +680,39 @@ class FlowService:
             api = FlowAPI(browser, project_id=project_id)
             _log.info("sync_credits_for_account: fetching credits project=%s account=%s", project_id, account_id)
             credit_info = await asyncio.wait_for(api.get_credits(), timeout=30.0)
+            detected_plan = _detect_plan(credit_info)
             patch: dict[str, Any] = {
                 "credits": int(credit_info.credits),
                 "creditsSyncedAt": time.time(),
+                "planStatus": "verified" if detected_plan else "unknown",
+                "planSource": "flow_credits_api",
+                "planSyncedAt": time.time(),
+                "flowTier": str(getattr(credit_info, "tier", "") or ""),
+                "flowSku": str(getattr(credit_info, "sku", "") or ""),
+                "flowServiceTier": str(getattr(credit_info, "service_tier", "") or ""),
                 "updatedAt": time.time(),
                 "status": "online",
                 "error": None,
             }
             if getattr(credit_info, "email", ""):
                 patch["email"] = credit_info.email
-            detected_plan = _detect_plan(credit_info)
             if detected_plan:
                 patch["plan"] = detected_plan
+            else:
+                patch["plan"] = "Free"
             store.patch_row("accounts", account_id, patch)
+            self._log(
+                "info",
+                "account_plan_verified" if detected_plan else "account_plan_unknown",
+                account_id=account_id,
+                details={
+                    "plan": detected_plan,
+                    "tier": str(getattr(credit_info, "tier", "") or ""),
+                    "sku": str(getattr(credit_info, "sku", "") or ""),
+                    "serviceTier": str(getattr(credit_info, "service_tier", "") or ""),
+                    "credits": int(credit_info.credits),
+                },
+            )
         except Exception as exc:
             if isinstance(exc, FlowAuthError) or _session_needs_login(exc):
                 # Token expired or cookies invalid — mark as needing reconnect.
@@ -706,6 +731,29 @@ class FlowService:
             except Exception:
                 pass
         return store.get_row("accounts", account_id) or account
+
+    def _verify_account_plan_before_enqueue(self, account_id: str) -> dict[str, Any]:
+        """Refresh Flow entitlement before every generation entry point.
+
+        ``enqueue`` is synchronous and is also called by series/automation
+        workers, so run the existing async sync routine in a short-lived loop.
+        A stale stored plan must never authorize a new job.
+        """
+        account = store.get_row("accounts", account_id)
+        if not account:
+            raise ValueError("FLOW_PLAN_SYNC_REQUIRED: Flow account was not found")
+        if account.get("status") != "online" or not account.get("projectId"):
+            raise ValueError("FLOW_PLAN_SYNC_REQUIRED: Đồng bộ tài khoản Flow rồi thử lại")
+        try:
+            refreshed = asyncio.run(self.sync_credits_for_account(account_id))
+        except Exception as exc:
+            message = str(exc)
+            if "FLOW_SESSION_EXPIRED" in message or _session_needs_login(exc):
+                raise ValueError(f"FLOW_SESSION_EXPIRED: {message}") from exc
+            raise ValueError(f"FLOW_PLAN_SYNC_FAILED: {message}") from exc
+        if refreshed.get("planStatus") != "verified" or refreshed.get("plan") not in {"Free", "Pro", "Ultra"}:
+            raise ValueError("FLOW_PLAN_UNKNOWN: Không xác định được gói Flow; hãy đồng bộ lại")
+        return refreshed
 
 
     def sync_all_credits(self) -> list[dict[str, Any]]:
@@ -923,6 +971,12 @@ class FlowService:
                 "email": email or (store.get_row("accounts", account_id) or {}).get("email", ""),
                 "credits": credits,
                 "creditsSyncedAt": credits_synced_at,
+                "planStatus": "verified" if detected_plan else "unknown",
+                "planSource": "flow_credits_api" if detected_plan else "",
+                "planSyncedAt": credits_synced_at,
+                "flowTier": str(getattr(credit_info, "tier", "") or "") if credit_info else "",
+                "flowSku": str(getattr(credit_info, "sku", "") or "") if credit_info else "",
+                "flowServiceTier": str(getattr(credit_info, "service_tier", "") or "") if credit_info else "",
                 "updatedAt": time.time(),
                 "error": None,
             }
@@ -1064,7 +1118,7 @@ class FlowService:
             input_type = "prompt"
         source_files = list(payload.get("sourceFiles") or [])
         series_context = dict(payload.get("seriesContext") or {})
-        account = store.get_row("accounts", account_id) or {}
+        account = self._verify_account_plan_before_enqueue(account_id)
         if account.get("plan") == "Free":
             if kind == "video":
                 raise ValueError("Tài khoản gói thường chỉ hỗ trợ tạo ảnh (Free accounts only support image generation)")
@@ -1634,6 +1688,16 @@ class FlowService:
         duration_label = f"{duration_value}s"
         duration_tab = await visible_tab(_duration_pattern(duration_value))
         if duration_tab is None:
+            # Current Flow builds hide the duration control for models whose
+            # only supported duration is the default 8 seconds.  In that UI
+            # there is nothing to select; failing here prevents a valid video
+            # job from ever being submitted.  Non-default durations still
+            # require an explicit control so we never silently change them.
+            if duration_value == "8":
+                _log.info(
+                    "_prepare_ui_format: duration 8s control is hidden; using Flow model default",
+                )
+                return
             raise RuntimeError(f"FLOW_UI_CHANGED: duration {duration_label} was not found")
         if not await _flow_control_is_selected(duration_tab):
             await duration_tab.click(force=True)

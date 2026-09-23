@@ -5,10 +5,49 @@ from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-from pipeline.flow.service import FlowService, _captured_image_items, _captured_video_ids
+from pipeline.flow.service import FlowService, _captured_image_items, _captured_video_ids, _detect_plan
+
+
+class _FlowControlLocator:
+    def __init__(self, count=0):
+        self._count = count
+
+    def filter(self, **kwargs):
+        pattern = kwargs.get('has_text')
+        return _FlowControlLocator(1 if pattern and pattern.search('16:9') else 0)
+
+    async def count(self):
+        return self._count
+
+    def nth(self, _index):
+        return self
+
+    async def is_visible(self):
+        return True
+
+    async def get_attribute(self, name):
+        return 'true' if name == 'aria-selected' else None
+
+
+class _DurationPage:
+    def locator(self, _selector):
+        return _FlowControlLocator()
 
 
 class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_plan_detection_uses_flow_tier_sku_and_service_tier(self):
+        self.assertEqual(_detect_plan(SimpleNamespace(tier='PAYGATE_TIER_TWO', sku='labs_ultra_monthly')), 'Ultra')
+        self.assertEqual(_detect_plan(SimpleNamespace(tier='PAYGATE_TIER_ONE', sku='labs_pro_monthly')), 'Pro')
+        self.assertEqual(_detect_plan(SimpleNamespace(tier='tier_0', sku='standard')), 'Free')
+        self.assertIsNone(_detect_plan(SimpleNamespace(tier='', sku='', service_tier='mystery')))
+
+    async def test_hidden_default_duration_uses_flow_model_default(self):
+        await FlowService()._prepare_ui_format(_DurationPage(), "16:9", "8")
+
+    async def test_hidden_non_default_duration_remains_an_error(self):
+        with self.assertRaisesRegex(RuntimeError, "duration 6s was not found"):
+            await FlowService()._prepare_ui_format(_DurationPage(), "16:9", "6")
+
     def test_done_requires_non_empty_files(self):
         with self.subTest("missing"):
             self.assertFalse(FlowService._outputs_exist(['/tmp/flow-missing-output.png']))

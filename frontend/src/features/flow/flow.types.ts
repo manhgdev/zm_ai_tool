@@ -46,6 +46,12 @@ export type FlowAccount = {
   isDefault?: boolean;
   projectId?: string;
   error?: string;
+  planStatus?: "verified" | "unknown";
+  planSource?: string;
+  planSyncedAt?: number | null;
+  flowTier?: string;
+  flowSku?: string;
+  flowServiceTier?: string;
 };
 
 export type FlowLog = {
