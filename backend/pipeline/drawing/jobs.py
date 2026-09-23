@@ -187,6 +187,25 @@ def _run(job_id: str, command: list[str], timeout: int = 900) -> None:
         raise RuntimeError((stderr or "FFmpeg failed").strip()[-1000:])
 
 
+def _has_video_stream(path: Path) -> bool:
+    """Return true only when ffprobe sees a usable video stream."""
+    try:
+        probe_kwargs = {}
+        if sys.platform == "win32":
+            from pipeline.core.winproc import hide_console_kwargs
+            probe_kwargs.update(hide_console_kwargs())
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name,width,height", "-of", "json", str(path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, check=False, **probe_kwargs,
+        )
+        streams = json.loads(probe.stdout or "{}").get("streams") or []
+        return bool(probe.returncode == 0 and streams and int(streams[0].get("width") or 0) > 0)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
 def _run_streaming_renderer(job_id: str, command: list[str], timeout: int) -> None:
     """Run the renderer while relaying real ink/colour progress to the job.
 
@@ -196,7 +215,7 @@ def _run_streaming_renderer(job_id: str, command: list[str], timeout: int) -> No
     """
     proc = _spawn(
         command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
     with _LOCK:
         _PROCS[job_id] = proc
@@ -246,6 +265,9 @@ def _run_streaming_renderer(job_id: str, command: list[str], timeout: int) -> No
                         last_progress = progress
                         _update(job_id, step="color", progress=progress)
                         _log(job_id, f"Drawing colour: {match.group(1)}%")
+        # EOF may arrive just before process teardown; collect the real exit
+        # code before accepting any generated MP4.
+        proc.wait(timeout=10)
     finally:
         with _LOCK:
             _PROCS.pop(job_id, None)
@@ -402,7 +424,7 @@ def run(job_id: str) -> None:
         if (get_job(job_id) or {}).get("status") == "cancelled":
             return
         generated = sorted(stream_dir.glob("drawing_*.mp4"), key=lambda item: item.stat().st_mtime)
-        generated = [item for item in generated if item.is_file() and item.stat().st_size >= 1024]
+        generated = [item for item in generated if item.is_file() and item.stat().st_size >= 1024 and _has_video_stream(item)]
         if not generated:
             raise RuntimeError("Streaming renderer finished without an MP4 output")
         _update(job_id, step="encoding", progress=90)
@@ -414,6 +436,8 @@ def run(job_id: str) -> None:
             "-vf", canvas, "-r", str(fps), *h264_encoder_args(fast=True),
             "-movflags", "+faststart", str(job["output"]),
         ], timeout=max(900, int(duration * 60)))
+        if not _has_video_stream(Path(job["output"])):
+            raise RuntimeError("FFmpeg tạo MP4 nhưng không có video stream hợp lệ")
         if (get_job(job_id) or {}).get("status") == "cancelled":
             return
         target_dir = selected_or_default("drawing", str(options.get("outputDir") or ""))
