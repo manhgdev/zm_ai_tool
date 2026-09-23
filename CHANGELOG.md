@@ -1,5 +1,11 @@
 # Changelog
 
+## v8.3.9 — 2026-09-23
+
+- Xác minh gói Flow mới nhất trước mỗi lần tạo ảnh/video; không dùng plan cũ để cấp quyền.
+- Hiển thị rõ trạng thái Free/Pro/Ultra hoặc chưa xác minh tài khoản Flow.
+- Tiến độ Flow cập nhật liên tục sau khi submit, không còn đứng ở 5% rồi nhảy thẳng 100% khi chạy hàng loạt.
+
 ## v8.3.8 — 2026-09-23
 
 - Phóng to ảnh/video trong hộp thoại xem trước theo vùng preview, vẫn giữ đúng tỷ lệ.
