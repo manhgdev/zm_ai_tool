@@ -70,7 +70,14 @@ def _spawn(command: list[str], **kwargs: Any) -> subprocess.Popen:
     if sys.platform == "win32":
         from pipeline.core.runtime_site import subprocess_environment
 
-        kwargs.setdefault("creationflags", int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)))
+        # CREATE_NEW_PROCESS_GROUP keeps cancellation reliable, while
+        # CREATE_NO_WINDOW prevents every Drawing/FFmpeg worker from flashing
+        # a short-lived CMD window in the packaged Windows desktop app.
+        flags = (
+            int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            | int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        )
+        kwargs.setdefault("creationflags", flags)
         kwargs["env"] = subprocess_environment(kwargs.get("env"))
     else:
         kwargs.setdefault("start_new_session", True)
