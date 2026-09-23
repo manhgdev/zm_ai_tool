@@ -26,6 +26,7 @@ from pipeline.drawing.jobs import (
     cancel as cancel_drawing_job,
     create_job as create_drawing_job,
     get_job as get_drawing_job,
+    retry as retry_drawing_job,
     start_batch as start_drawing_batch,
 )
 from pipeline.export.fonts import _resolve_font_name
@@ -1311,6 +1312,7 @@ def _drawing_video_sources(job_id: str, media: list[Path], durations: list[float
     workers = start_drawing_batch(list(drawing_jobs))
     _log(job_id, f"Đang vẽ {len(drawing_jobs)} ảnh · tự động {workers} luồng, co/giãn theo CPU/RAM")
     pending = set(drawing_jobs)
+    retry_counts: dict[str, int] = {}
     while pending:
         if (get_job(job_id) or {}).get("status") == "cancelled":
             for drawing_job_id in pending:
@@ -1322,9 +1324,19 @@ def _drawing_video_sources(job_id: str, media: list[Path], durations: list[float
                 continue
             index, source, ckey = drawing_jobs[drawing_job_id]
             if not state or state.get("status") != "done":
+                error = (state or {}).get('error') or 'job bị hủy'
+                # OpenCV/FFmpeg can transiently fail to open an MP4 writer when
+                # several drawing workers start together on Windows. Retry only
+                # this image once; do not discard successful sibling renders.
+                retries = retry_counts.get(drawing_job_id, 0)
+                if retries < 1:
+                    _log(job_id, f"Retry vẽ ảnh {source.name} sau lỗi codec: {error}")
+                    retry_counts[drawing_job_id] = retries + 1
+                    if retry_drawing_job(drawing_job_id):
+                        continue
                 for remaining_id in pending - {drawing_job_id}:
                     cancel_drawing_job(remaining_id)
-                raise RuntimeError(f"Không vẽ được ảnh {source.name}: {(state or {}).get('error') or 'job bị hủy'}")
+                raise RuntimeError(f"Không vẽ được ảnh {source.name}: {error}")
             target = work / f"drawing_{index:05d}.mp4"
             shutil.copy2(state["output"], target)
             cached_video = DRAWING_CACHE_ROOT / f"{ckey}.mp4"

@@ -395,6 +395,7 @@ def run(job_id: str) -> None:
         if (get_job(job_id) or {}).get("status") == "cancelled":
             return
         generated = sorted(stream_dir.glob("drawing_*.mp4"), key=lambda item: item.stat().st_mtime)
+        generated = [item for item in generated if item.is_file() and item.stat().st_size >= 1024]
         if not generated:
             raise RuntimeError("Streaming renderer finished without an MP4 output")
         _update(job_id, step="encoding", progress=90)
@@ -512,6 +513,22 @@ def update_options(job_id: str, options: dict[str, Any]) -> dict[str, Any] | Non
         job["step"] = "queued"
         job["progress"] = 0
         job["error"] = None
+        return dict(job)
+
+
+def retry(job_id: str) -> dict[str, Any] | None:
+    """Requeue one failed drawing without changing its render options."""
+    with _LOCK:
+        job = _JOBS.get(job_id)
+        if not job or job.get("status") == "processing":
+            return None
+        job["status"] = "queued"
+        job["step"] = "queued"
+        job["progress"] = 0
+        job["error"] = ""
+        worker = threading.Thread(target=run, args=(job_id,), name=f"drawing-retry-{job_id}", daemon=True)
+        _WORKERS[job_id] = worker
+        worker.start()
         return dict(job)
 
 

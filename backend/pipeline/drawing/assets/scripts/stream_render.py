@@ -1584,6 +1584,11 @@ class StreamBoardRenderer:
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(raw_path), fourcc, cfg.fps, (self.out_w, self.out_h))
+        if not writer.isOpened():
+            raise RuntimeError(
+                f"OpenCV không mở được bộ ghi MP4 ({self.out_w}x{self.out_h}); "
+                "kiểm tra FFmpeg/codec mp4v trên máy"
+            )
 
         print(f"  墨流: {len(self.ink_streams)} 条, 墨迹格: {ink_cells}")
         print(
@@ -1599,6 +1604,8 @@ class StreamBoardRenderer:
         for _ in range(plan.gaze_frames):
             writer.write(gaze_img)
         writer.release()
+        if not raw_path.is_file() or raw_path.stat().st_size < 1024:
+            raise RuntimeError("OpenCV tạo file MP4 rỗng hoặc không có video stream")
         print(f"  渲染耗时: {time.time() - started:.1f}s")
         return raw_path
 
