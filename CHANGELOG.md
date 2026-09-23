@@ -1,5 +1,12 @@
 # Changelog
 
+## v8.4.1 — 2026-09-23
+
+- Drawing loại bỏ MP4 trung gian không có video stream trước khi ghép.
+- Kiểm tra `ffprobe` cả file trung gian và file đầu ra cuối.
+- Ẩn CMD worker/FFmpeg trên Windows nhưng vẫn giữ khả năng Hủy tiến trình.
+- Retry riêng ảnh lỗi codec thay vì hủy toàn bộ batch.
+
 ## v8.4.0 — 2026-09-23
 
 - Drawing kiểm tra codec và MP4 trung gian trước khi chuyển mã.
