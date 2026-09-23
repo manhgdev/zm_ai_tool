@@ -123,6 +123,8 @@
 .flow-preview-media iframe,
 .media-preview-media iframe {
   display: block;
+  width: 100%;
+  height: min(68vh, 720px);
   max-width: 100%;
   max-height: 68vh;
   object-fit: contain;
