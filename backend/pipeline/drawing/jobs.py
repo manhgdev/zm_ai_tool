@@ -22,7 +22,7 @@ from pipeline.core.config import DATA, safe_child
 from pipeline.core.jobs import kill_process_tree
 from pipeline.core.output_paths import selected_or_default
 from pipeline.core.artifact_cache import ArtifactCache
-from pipeline.core.media import h264_encoder_args, h264_hardware_encoder
+from pipeline.core.media import _ff_bin, h264_encoder_args, h264_hardware_encoder
 from pipeline.core.resources import adaptive_workers, run_with_adaptive_workers
 
 ROOT = DATA / "drawing"
@@ -144,7 +144,7 @@ def create_job(filename: str, source: Path, options: dict[str, Any]) -> dict[str
 
 def _probe_size(source: Path) -> tuple[int, int]:
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", str(source)],
+        [_ff_bin("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", str(source)],
         capture_output=True, text=True, check=True, timeout=30,
     )
     stream = json.loads(result.stdout)["streams"][0]
@@ -195,7 +195,7 @@ def _has_video_stream(path: Path) -> bool:
             from pipeline.core.winproc import hide_console_kwargs
             probe_kwargs.update(hide_console_kwargs())
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+            [_ff_bin("ffprobe"), "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=codec_name,width,height", "-of", "json", str(path)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=30, check=False, **probe_kwargs,
