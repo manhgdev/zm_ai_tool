@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, patch
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-from pipeline.flow.service import FlowService, _captured_image_items, _captured_video_ids, _detect_plan
+from pipeline.flow.service import (
+    FlowService, _await_with_job_progress, _captured_image_items,
+    _captured_video_ids, _detect_plan,
+)
 
 
 class _FlowControlLocator:
@@ -35,6 +38,15 @@ class _DurationPage:
 
 
 class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_progress_await_returns_interceptor_result(self):
+        async def completed():
+            return {'ok': True}
+
+        self.assertEqual(
+            await _await_with_job_progress(completed(), 'job', timeout_s=30),
+            {'ok': True},
+        )
+
     def test_plan_detection_uses_flow_tier_sku_and_service_tier(self):
         self.assertEqual(_detect_plan(SimpleNamespace(tier='PAYGATE_TIER_TWO', sku='labs_ultra_monthly')), 'Ultra')
         self.assertEqual(_detect_plan(SimpleNamespace(tier='PAYGATE_TIER_ONE', sku='labs_pro_monthly')), 'Pro')

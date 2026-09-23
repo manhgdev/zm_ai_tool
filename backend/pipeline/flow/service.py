@@ -248,6 +248,37 @@ async def _flow_control_is_selected(control) -> bool:
         return False
 
 
+async def _await_with_job_progress(
+    awaitable,
+    job_id: str,
+    *,
+    timeout_s: int,
+    start: int = 20,
+    ceiling: int = 75,
+):
+    """Await a Flow response while keeping an accepted job visibly alive."""
+    task = asyncio.create_task(awaitable)
+    started = time.monotonic()
+    try:
+        while not task.done():
+            done, _pending = await asyncio.wait({task}, timeout=2.0)
+            if done:
+                break
+            elapsed = time.monotonic() - started
+            progress = min(ceiling, start + int(elapsed / max(1, timeout_s) * (ceiling - start)))
+            current = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
+            store.patch_row("jobs", job_id, {
+                "stage": "generating",
+                "progress": max(current, progress),
+                "updatedAt": time.time(),
+            })
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 def _is_settings_trigger(text: str, aria_label: str = "") -> bool:
     """Identify the generation settings pill without clicking grid settings."""
     text = str(text or "")
@@ -1870,7 +1901,9 @@ class FlowService:
         deadline = time.monotonic() + timeout_s
         next_project_check = 0.0
         store.patch_row("jobs", job_id, {
-            "stage": "generating", "progress": 20, "updatedAt": time.time(),
+            "stage": "generating",
+            "progress": max(20, int((store.get_row("jobs", job_id) or {}).get("progress") or 0)),
+            "updatedAt": time.time(),
         })
         while time.monotonic() < deadline:
             self._check_cancel(job_id)
@@ -1900,12 +1933,13 @@ class FlowService:
             if len(fresh) >= max(1, expected_count):
                 return fresh[:max(1, expected_count)]
             elapsed = timeout_s - max(0.0, deadline - time.monotonic())
+            current_progress = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
             store.patch_row("jobs", job_id, {
                 "stage": "generating",
                 # Keep progress moving while Flow renders. Reserve 90–100 for
                 # download and final file validation so long renders do not
                 # look frozen at 70–75% or trigger a duplicate retry.
-                "progress": min(88, 20 + int(elapsed / max(1, timeout_s) * 68)),
+                "progress": max(current_progress, min(88, 20 + int(elapsed / max(1, timeout_s) * 68))),
                 "updatedAt": time.time(),
             })
             await asyncio.sleep(2)
@@ -2097,8 +2131,11 @@ class FlowService:
                 ratio = str(settings.get("ratio") or "16:9")
                 page = await browser.page()
                 await client._ensure_project_page(page)
+                store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
                 await self._prepare_ui_model(page, "video", model, ui=client._ui)
+                store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 12, "updatedAt": time.time()})
                 await self._prepare_ui_format(page, ratio, str(settings.get("duration") or "8"))
+                store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
                 baseline_media = await self._project_media_elements(page)
                 baseline_ids = {str(item.get("id")) for item in baseline_media if item.get("id")}
                 if not baseline_ids:
@@ -2168,11 +2205,13 @@ class FlowService:
                     interceptor = UIInterceptor()
                     interceptor.attach(page)
                     await self._click_flow_submit(page)
+                    store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model})
                     await self._sync_credits(api, account["id"])
                     try:
-                        captured = await interceptor.wait_for(
-                            "batchAsyncGenerateVideoText", timeout=30, require_success=True,
+                        captured = await _await_with_job_progress(
+                            interceptor.wait_for("batchAsyncGenerateVideoText", timeout=30, require_success=True),
+                            job_id, timeout_s=30, ceiling=30,
                         )
                     except GenerationTimeout:
                         captured = None
@@ -2204,8 +2243,11 @@ class FlowService:
                 sources = job.get("sourceFiles") or []
                 page = await browser.page()
                 await client._ensure_project_page(page)
+                store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
                 await self._prepare_ui_model(page, "image", model, ui=client._ui)
+                store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 12, "updatedAt": time.time()})
                 await self._prepare_ui_format(page, str(settings.get("ratio") or "16:9"))
+                store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
                 for source in sources:
                     await client._ui.upload_image(page, source)
                 count = max(1, min(4, int(settings.get("count", 1))))
@@ -2223,9 +2265,11 @@ class FlowService:
                     interceptor = UIInterceptor()
                     interceptor.attach(page)
                     await self._click_flow_submit(page)
+                    store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                     try:
-                        captured = await interceptor.wait_for(
-                            "batchGenerateImages", timeout=180, require_success=True,
+                        captured = await _await_with_job_progress(
+                            interceptor.wait_for("batchGenerateImages", timeout=180, require_success=True),
+                            job_id, timeout_s=180, ceiling=75,
                         )
                     except GenerationTimeout:
                         captured = None
