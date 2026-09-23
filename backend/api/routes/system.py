@@ -302,13 +302,17 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
                     except (TypeError, ValueError, IndexError):
                         total = 0
                     received = offset
-                    while chunk := response.read(1024 * 1024):
+                    next_progress_at = 0.0
+                    while chunk := response.read(8 * 1024 * 1024):
                         if _UPDATE_CANCEL.is_set():
                             raise _UpdateCancelled
                         output.write(chunk)
                         received += len(chunk)
                         progress = min(99, int(received * 100 / total)) if total else 0
-                        _set_update_state(progress=progress)
+                        now = time.monotonic()
+                        if now >= next_progress_at:
+                            _set_update_state(progress=progress)
+                            next_progress_at = now + 0.25
             partial.replace(target)
             actual_size = target.stat().st_size
             if expected_size and actual_size != expected_size:
