@@ -3,6 +3,7 @@ import subprocess
 import threading
 import time
 import zlib
+import tempfile
 from pathlib import Path
 
 import sys
@@ -18,7 +19,70 @@ from pipeline.cleaner.cleaner_jobs import (
 )
 
 CREATE_NO_WINDOW = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)) if sys.platform == "win32" else 0
-_CACHE = ArtifactCache("video-cleaner", version=2)
+_CACHE = ArtifactCache("video-cleaner", version=3)
+
+
+def _inpaint_video(input_path: str, output: str, job_id: str) -> None:
+    import cv2
+    from pipeline.export.cover_mask import _inpaint_region
+    detection = _detect_logo_with_retry(input_path, job_id) or {}
+    masks = detection.get('masks') or [detection.get('bbox')]
+    masks = [m for m in masks if isinstance(m, dict)]
+    if not masks:
+        raise RuntimeError('Không nhận diện được logo / No logo detected')
+    cap = cv2.VideoCapture(input_path)
+    encoder = None
+    try:
+        ok, frame = cap.read()
+        if not ok:
+            raise RuntimeError('Cannot decode source video')
+        height, width = frame.shape[:2]
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 30)
+        total = max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+        boxes = []
+        for m in masks:
+            x = max(0, min(width, round(float(m.get('x', 0)) * width)))
+            y = max(0, min(height, round(float(m.get('y', 0)) * height)))
+            right = min(width, x + round(float(m.get('w', 0)) * width))
+            bottom = min(height, y + round(float(m.get('h', 0)) * height))
+            if right > x and bottom > y:
+                boxes.append((x, y, right, bottom))
+        if not boxes:
+            raise RuntimeError('Invalid logo mask')
+        # File-backed stderr prevents pipe deadlock while feeding raw frames.
+        with tempfile.TemporaryFile() as errors:
+            encoder = subprocess.Popen([
+                _ff_bin('ffmpeg'), '-y', '-loglevel', 'error', '-f', 'rawvideo',
+                '-pix_fmt', 'bgr24', '-s', f'{width}x{height}', '-r', str(fps),
+                '-i', '-', '-i', input_path, '-map', '0:v:0', '-map', '1:a?',
+                '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+                *h264_encoder_args(quality=18), '-c:a', 'copy',
+                '-movflags', '+faststart', output,
+            ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errors,
+                creationflags=CREATE_NO_WINDOW)
+            register_proc(job_id, encoder)
+            count = 0
+            while ok:
+                if (get_job(job_id) or {}).get('status') == 'cancelled':
+                    return
+                for box in boxes:
+                    frame = _inpaint_region(frame, box)
+                encoder.stdin.write(frame.tobytes())
+                count += 1
+                if count % max(1, round(fps)) == 0:
+                    update_job(job_id, {'progress': min(99, count * 100 / total)})
+                ok, frame = cap.read()
+            encoder.stdin.close()
+            encoder.wait(timeout=60)
+            if encoder.returncode:
+                errors.seek(0)
+                raise RuntimeError(errors.read().decode('utf-8', 'replace')[-2000:])
+    finally:
+        cap.release()
+        if encoder and encoder.poll() is None:
+            encoder.kill()
+            encoder.wait()
+        unregister_proc(job_id)
 
 # Gemini's sparkle watermark is intentionally icon-only, so an OCR-only probe
 # cannot describe it.  This small lower-right region matches that mark without
@@ -116,6 +180,16 @@ def run_cleaner_job_sync(job_id: str) -> None:
             append_job_log(job_id, "Hoàn thành · Cache")
             return
         duration_s = ffprobe_duration(input_path) or 100.0
+        if method == 'logo':
+            append_job_log(job_id, 'Tái tạo nền logo từng khung hình / Inpainting logo per frame')
+            _inpaint_video(input_path, output_path, job_id)
+            if (get_job(job_id) or {}).get('status') == 'cancelled':
+                return
+            out_size = Path(output_path).stat().st_size
+            if out_size == 0:
+                raise RuntimeError('Empty inpaint output')
+            update_job(job_id, {'status': 'done', 'progress': 100, 'outputSize': out_size, 'finishedAt': time.time()})
+            return
         
         # Always resolve the same FFmpeg binary as the rest of the app.  A
         # packaged Windows/macOS app cannot rely on a globally installed ffmpeg.

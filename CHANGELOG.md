@@ -1,5 +1,12 @@
 # Changelog
 
+## v8.4.4 — 2026-09-23
+
+- Giới hạn CSS trang giới thiệu để tiêu đề Tự động hoá không bị phóng lớn.
+- Ghép ảnh/video SRT: inpaint logo cho batch ảnh tĩnh trước Drawing, tránh delogo lần hai.
+- Làm sạch video: thêm inpainting từng khung hình cho vùng logo được nhận diện; giữ âm thanh nguồn.
+- Chất lượng xóa logo trên nền phức tạp và bản Windows cần kiểm chứng thực tế.
+
 ## v8.4.3 — 2026-09-23
 
 - Thêm nút X và Hủy cập nhật trong tiến trình tải.

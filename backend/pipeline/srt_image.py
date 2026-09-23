@@ -471,6 +471,33 @@ def is_video(path: Path) -> bool:
     return path.suffix.lower() in VIDEO_EXTENSIONS
 
 
+def _inpaint_still_logo(source: Path, dl: dict[str, Any], work: Path, index: int) -> Path:
+    """Reconstruct a logo patch on stills before the final video encode."""
+    import cv2
+    import numpy as np
+    image = cv2.imdecode(np.fromfile(source, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise RuntimeError(f"Cannot decode logo input: {source.name}")
+    height, width = image.shape[:2]
+    x = max(0, min(width - 1, round(float(dl.get("x", 82)) / 100 * width)))
+    y = max(0, min(height - 1, round(float(dl.get("y", 94)) / 100 * height)))
+    w = max(2, min(width - x, round(float(dl.get("w", 16)) / 100 * width)))
+    h = max(2, min(height - y, round(float(dl.get("h", 4)) / 100 * height)))
+    # Keep the mask tight; a large feathered delogo rectangle is what causes
+    # visible blur around the watermark.
+    mask = np.zeros((height, width), dtype=np.uint8)
+    pad = max(1, round(min(width, height) * 0.003))
+    cv2.rectangle(mask, (max(0, x - pad), max(0, y - pad)),
+                  (min(width - 1, x + w + pad), min(height - 1, y + h + pad)), 255, -1)
+    restored = cv2.inpaint(image, mask, max(2, min(7, round(min(width, height) * 0.004))), cv2.INPAINT_TELEA)
+    target = work / f"delogo-still-{index:05d}.png"
+    ok, encoded = cv2.imencode('.png', restored)
+    if not ok:
+        raise RuntimeError(f"Cannot encode repaired image: {source.name}")
+    encoded.tofile(target)
+    return target
+
+
 def _prepare_media_inputs(
     job_id: str, media: list[Path], durations: list[float], work: Path,
     allow_missing: bool,
@@ -1395,6 +1422,11 @@ def run(job_id: str) -> None:
         media, durations = preview_media_window(media, durations, preview, speed)
         if preview:
             _log(job_id, f"Preview {preview:g}s: chỉ chuẩn bị {len(media)} media đầu tiên")
+        dl = opts.get("delogo") if isinstance(opts.get("delogo"), dict) else {}
+        repaired_stills = bool(dl.get('enabled')) and all(not is_video(p) for p in media)
+        if repaired_stills:
+            media = [_inpaint_still_logo(p, dl, work, i) for i, p in enumerate(media)]
+            _log(job_id, "Logo: inpaint ảnh nguồn trước Drawing / Inpaint source images before Drawing")
         media = _drawing_video_sources(job_id, media, durations, opts, work)
         width, height = _output_resolution(opts, media[0])
         fps = max(1, min(60, int(opts.get("fps", 30))))
@@ -1412,7 +1444,7 @@ def run(job_id: str) -> None:
         # ponytail: delogo — xóa watermark AI trước scale/zoom, tính trên frame gốc
         delogo_prefix = ""
         dl = opts.get("delogo") if isinstance(opts.get("delogo"), dict) else {}
-        if dl.get("enabled"):
+        if dl.get("enabled") and not repaired_stills:
             src_w, src_h = image_resolution(media[0])
             dx = max(0, round(float(dl.get("x", 82)) / 100 * src_w))
             dy = max(0, round(float(dl.get("y", 94)) / 100 * src_h))
@@ -1420,6 +1452,10 @@ def run(job_id: str) -> None:
             dh = max(10, round(float(dl.get("h", 4)) / 100 * src_h))
             delogo_prefix = f"delogo=x={dx}:y={dy}:w={dw}:h={dh},"
             _log(job_id, f"Delogo: {dw}×{dh} tại ({dx},{dy}) trên {src_w}×{src_h}")
+            if all(not is_video(path) for path in media):
+                # Still images were already reconstructed with inpaint; a
+                # second delogo pass would blur the repaired pixels again.
+                delogo_prefix = ""
         # ponytail: drawing videos và ảnh tĩnh khi zoom=off không cần encode segment trung gian,
         # áp dụng delogo trực tiếp trong final pass.
         all_raw_still = all(not is_video(p) for p in media)
