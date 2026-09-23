@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import type { DragEvent as ReactDragEvent } from 'react'
 import { toast } from 'sonner'
 import './SrtImagePage.css'
 import { localize, useLocale } from '../app/i18n'
@@ -36,6 +37,10 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
   const [timelinePath, setTimelinePath] = useState(String(cached.timelinePath ?? ''))
   const [timelineText, setTimelineText] = useState(String(cached.timelineText ?? ''))
   const [timelineMode, setTimelineMode] = useState<'file' | 'paste'>('file')
+  const [dragTarget, setDragTarget] = useState<'audio' | 'timeline' | 'srt' | null>(null)
+  const [droppedAudio, setDroppedAudio] = useState<File | null>(null)
+  const [droppedTimeline, setDroppedTimeline] = useState<File | null>(null)
+  const [droppedSrt, setDroppedSrt] = useState<File | null>(null)
   const [srtPath, setSrtPath] = useState(String(cached.srtPath ?? ''))
   const [subtitleSize, setSubtitleSize] = useState(Number(cached.subtitleSize ?? 8))
   const [subtitleOffset, setSubtitleOffset] = useState(Number(cached.subtitleOffset ?? 0))
@@ -204,11 +209,15 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
       form.append('media_folder', mediaFolder)
       if (timelineMode === 'paste' && timelineText.trim()) {
         form.append('timeline', new Blob([timelineText], { type: 'text/plain;charset=utf-8' }), 'timeline.txt')
+      } else if (droppedTimeline) {
+        form.append('timeline', droppedTimeline, droppedTimeline.name)
       } else if (timelinePath) {
         form.append('timeline_path', timelinePath)
       }
-      if (srtPath) form.append('srt_path', srtPath)
-      if (audioPath) form.append('audio_path', audioPath)
+      if (droppedSrt) form.append('srt', droppedSrt, droppedSrt.name)
+      else if (srtPath) form.append('srt_path', srtPath)
+      if (droppedAudio) form.append('audio', droppedAudio, droppedAudio.name)
+      else if (audioPath) form.append('audio_path', audioPath)
       if (watermarkPath) form.append('watermark_path', watermarkPath)
       form.append('output_name', preview ? `${outputName.replace(/\.mp4$/i, '')}-preview.mp4` : outputName)
       if (outputPath && !preview) form.append('output_path', outputPath)
@@ -320,16 +329,19 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
       if (!result.ok || !result.path) return
       const path = String(result.path)
       if (kind === 'audio') {
+        setDroppedAudio(null)
         setAudioPath(path)
         toast.success(t('Đã chọn file audio.', 'Audio file selected.'))
       }
       else if (kind === 'timeline') {
+        setDroppedTimeline(null)
         setTimelinePath(path)
         setTimelineText('')
         setTimelineMode('file')
         toast.success(t('Đã chọn file timeline.', 'Timeline file selected.'))
       }
       else if (kind === 'srt') {
+        setDroppedSrt(null)
         setSrtPath(path)
         toast.success(t('Đã chọn file phụ đề SRT.', 'SRT subtitle file selected.'))
       }
@@ -343,6 +355,45 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
       toast.error(msg)
     }
   }
+
+  function dropInputFile(kind: 'audio' | 'timeline' | 'srt', event: ReactDragEvent<HTMLDivElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    setDragTarget(null)
+    const file = event.dataTransfer.files?.[0]
+    if (!file) return
+    const filePath = String((file as File & { path?: string }).path || file.webkitRelativePath || '')
+    const lower = file.name.toLowerCase()
+    const isAudio = /\.(wav|mp3|m4a|aac|flac|ogg)$/i.test(lower)
+    const isTimeline = /\.(txt|srt|vtt|ass|ssa|csv|tsv|json|lrc)$/i.test(lower)
+    const valid = kind === 'audio' ? isAudio : kind === 'srt' ? /\.srt$/i.test(lower) : isTimeline
+    if (!valid) {
+      toast.error(kind === 'audio'
+        ? t('Hãy thả file audio hợp lệ.', 'Drop a supported audio file.')
+        : t('Hãy thả file timeline/phụ đề hợp lệ.', 'Drop a supported timeline/subtitle file.'))
+      return
+    }
+    if (kind === 'audio') {
+      setAudioPath(filePath)
+      setDroppedAudio(filePath ? null : file)
+    } else if (kind === 'timeline') {
+      setTimelinePath(filePath)
+      setDroppedTimeline(filePath ? null : file)
+      setTimelineText('')
+      setTimelineMode('file')
+    } else {
+      setSrtPath(filePath)
+      setDroppedSrt(filePath ? null : file)
+    }
+    toast.success(kind === 'audio' ? t('Đã nhận file audio.', 'Audio file received.') : kind === 'timeline' ? t('Đã nhận file timeline.', 'Timeline file received.') : t('Đã nhận file phụ đề.', 'Subtitle file received.'))
+  }
+
+  const dropProps = (kind: 'audio' | 'timeline' | 'srt') => ({
+    onDragEnter: (event: ReactDragEvent<HTMLDivElement>) => { event.preventDefault(); setDragTarget(kind) },
+    onDragOver: (event: ReactDragEvent<HTMLDivElement>) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' },
+    onDragLeave: (event: ReactDragEvent<HTMLDivElement>) => { if (event.currentTarget === event.target) setDragTarget(null) },
+    onDrop: (event: ReactDragEvent<HTMLDivElement>) => dropInputFile(kind, event),
+  })
 
   async function chooseOutput() {
     try {
@@ -487,9 +538,11 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
               </div>
               <div className="siv-row">
                 <label>File audio <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('audio') }}>i</span></label>
-                <div className="siv-input"><input type="text" value={audioPath} onChange={(e) => setAudioPath(e.target.value)} placeholder={t('Dán hoặc nhập đường dẫn file audio...', 'Paste or type audio file path...')} spellCheck={false} /></div>
+                <div {...dropProps('audio')} className={`siv-input siv-drop-input${dragTarget === 'audio' ? ' is-dragging' : ''}`}>
+                  <input type="text" value={droppedAudio?.name || audioPath} onChange={(e) => { setDroppedAudio(null); setAudioPath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn file audio hoặc thả file vào đây...', 'Paste or type an audio path or drop the file here...')} spellCheck={false} />
+                </div>
                 <button onClick={() => chooseInputFile('audio')}>Chọn</button>
-                <button onClick={() => { setAudioPath(''); toast.success(t('Đã xóa file audio.', 'Audio file cleared.')) }} disabled={!audioPath}>Xóa</button>
+                <button onClick={() => { setAudioPath(''); setDroppedAudio(null); toast.success(t('Đã xóa file audio.', 'Audio file cleared.')) }} disabled={!audioPath && !droppedAudio}>Xóa</button>
               </div>
               <div className="siv-row siv-row--timeline">
                 <label>{t('File timeline', 'Timeline file')} <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('timeline') }}>i</span></label>
@@ -501,7 +554,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
                       placeholder={t('Dán nội dung timeline (ví dụ: 001_[00:00:00.00-00:00:08.50] hoặc [00:00 - 00:05] hoặc nội dung file SRT, VTT, CSV, JSON…)', 'Paste timeline content (e.g. 001_[00:00:00.00-00:00:08.50] or [00:00 - 00:05] or SRT, VTT, CSV, JSON text…)')}
                       onChange={(event) => setTimelineText(event.target.value)}
                     />
-                  : <div className="siv-input"><input type="text" value={timelinePath} onChange={(e) => setTimelinePath(e.target.value)} placeholder={t('Dán hoặc nhập đường dẫn timeline...', 'Paste or type timeline file path...')} spellCheck={false} /></div>}
+                  : <div {...dropProps('timeline')} className={`siv-input siv-drop-input${dragTarget === 'timeline' ? ' is-dragging' : ''}`}><input type="text" value={droppedTimeline?.name || timelinePath} onChange={(e) => { setDroppedTimeline(null); setTimelinePath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn timeline hoặc thả file vào đây...', 'Paste or type a timeline path or drop the file here...')} spellCheck={false} /></div>}
                 <div className="siv-row-actions" role="group" aria-label={t('Nguồn timeline', 'Timeline source')}>
                   <div className="siv-source-switch">
                     <button
@@ -510,12 +563,12 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
                       aria-label={timelineMode === 'paste' ? t('Đổi sang chọn file', 'Switch to file selection') : t('Đổi sang dán nội dung', 'Switch to pasted content')}
                       onClick={() => {
                         if (timelineMode === 'paste') setTimelineMode('file')
-                        else { setTimelinePath(''); setTimelineMode('paste') }
+                        else { setTimelinePath(''); setDroppedTimeline(null); setTimelineMode('paste') }
                       }}
                     >{t('Đổi', 'Switch')}</button>
                   </div>
                   <button onClick={() => { setTimelineMode('file'); void chooseInputFile('timeline') }}>{t('Chọn', 'Choose')}</button>
-                  <button onClick={() => { setTimelinePath(''); setTimelineText(''); setTimelineMode('file'); toast.success(t('Đã xóa timeline.', 'Timeline cleared.')) }} disabled={!timelinePath && !timelineText}>{t('Xóa', 'Clear')}</button>
+                  <button onClick={() => { setTimelinePath(''); setDroppedTimeline(null); setTimelineText(''); setTimelineMode('file'); toast.success(t('Đã xóa timeline.', 'Timeline cleared.')) }} disabled={!timelinePath && !timelineText && !droppedTimeline}>{t('Xóa', 'Clear')}</button>
                 </div>
               </div>
               <div className="siv-row">
@@ -526,11 +579,11 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '' }: { onBa
               </div>
               <div className="siv-row">
                 <label>File phụ đề <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('subtitles') }}>i</span></label>
-                <div className="siv-input"><input type="text" value={srtPath} onChange={(e) => setSrtPath(e.target.value)} placeholder={t('Dán hoặc nhập đường dẫn file SRT...', 'Paste or type SRT file path...')} spellCheck={false} /></div>
+                <div {...dropProps('srt')} className={`siv-input siv-drop-input${dragTarget === 'srt' ? ' is-dragging' : ''}`}><input type="text" value={droppedSrt?.name || srtPath} onChange={(e) => { setDroppedSrt(null); setSrtPath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn file SRT hoặc thả file vào đây...', 'Paste or type an SRT path or drop the file here...')} spellCheck={false} /></div>
                 <button onClick={() => chooseInputFile('srt')}>Chọn</button>
-                <button onClick={() => { setSrtPath(''); toast.success(t('Đã xóa file phụ đề SRT.', 'SRT subtitle file cleared.')) }} disabled={!srtPath}>Xóa</button>
+                <button onClick={() => { setSrtPath(''); setDroppedSrt(null); toast.success(t('Đã xóa file phụ đề SRT.', 'SRT subtitle file cleared.')) }} disabled={!srtPath && !droppedSrt}>Xóa</button>
               </div>
-              {srtPath && (
+              {(srtPath || droppedSrt) && (
                 <div className="siv-subtitle-options">
                   <label>
                     <span className="siv-subtitle-title">Phông chữ <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('subtitleFontFamily') }}>i</span></span>

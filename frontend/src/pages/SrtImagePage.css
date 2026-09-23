@@ -212,6 +212,16 @@
   min-width: 0;
   overflow: hidden;
 }
+
+.siv-drop-input {
+  transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
+}
+
+.siv-drop-input.is-dragging {
+  border-color: var(--primary, #6d5dfc);
+  background: color-mix(in srgb, var(--primary, #6d5dfc) 10%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary, #6d5dfc) 22%, transparent);
+}
 .siv-input span {
   padding: 0 10px;
   white-space: nowrap;
