@@ -2,6 +2,11 @@ name: Build Windows app
 
 on:
   workflow_dispatch:
+    inputs:
+      security_audit:
+        description: Run the full Defender/SBOM audit explicitly
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -69,7 +74,20 @@ jobs:
             }
           }
 
+      - name: Record release hashes
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.package.outputs.installer }}
+          ZIP: ${{ steps.package.outputs.zip }}
+        run: |
+          New-Item -ItemType Directory -Force build_app/windows-audit | Out-Null
+          $assets = @($env:INSTALLER, $env:ZIP) | ForEach-Object {
+            @{ name = (Split-Path $_ -Leaf); sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
+          }
+          @{ assets = @($assets) } | ConvertTo-Json -Depth 4 | Set-Content build_app/windows-audit/windows-artifact-manifest.json -Encoding utf8
+
       - name: Inventory and scan Windows release
+        if: github.ref == 'refs/tags/v8.3.3' || inputs.security_audit == true
         shell: pwsh
         env:
           INSTALLER: ${{ steps.package.outputs.installer }}
@@ -81,7 +99,7 @@ jobs:
           ./scripts/audit-windows-release.ps1 -Bundle $env:BUNDLE -Installer $env:INSTALLER -Portable $env:ZIP -Output build_app/windows-audit
 
       - name: Save audit diagnostics (including failures)
-        if: always()
+        if: always() && (github.ref == 'refs/tags/v8.3.3' || inputs.security_audit == true)
         uses: actions/upload-artifact@v6
         with:
           name: windows-security-audit
@@ -98,6 +116,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          for file in "$INSTALLER" "$ZIP"; do
+            if [[ -z "$file" || ! -s "$file" ]]; then
+              echo "Missing or empty Windows artifact: $file" >&2
+              exit 1
+            fi
+          done
 
           # Build bullet-point release notes from commits since previous tag
           PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]' | sed -n '2p' || true)
@@ -120,9 +144,11 @@ jobs:
             "$TAG" "$INSTALLER_BASE" "$ZIP_BASE" "$TAG" "$NOTES")
 
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$INSTALLER" "$ZIP" build_app/windows-audit/windows-* --clobber
-          else
-            gh release create "$TAG" "$INSTALLER" "$ZIP" build_app/windows-audit/windows-* --title "ZM AI TOOL $TAG" --notes "$BODY"
+            gh release upload "$TAG" "$INSTALLER" "$ZIP" --clobber
+          elif ! gh release create "$TAG" "$INSTALLER" "$ZIP" --title "ZM AI TOOL $TAG" --notes "$BODY"; then
+            # macOS can create the same release between our view and create.
+            gh release view "$TAG" >/dev/null
+            gh release upload "$TAG" "$INSTALLER" "$ZIP" --clobber
           fi
 
       - name: Verify published asset digests

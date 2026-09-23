@@ -58,13 +58,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           PKG: ${{ steps.package.outputs.pkg }}
-          ZIP: ${{ steps.package.outputs.zip }}
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "$PKG" || ! -s "$PKG" ]]; then
+            echo "Missing or empty macOS PKG: $PKG" >&2
+            exit 1
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$PKG" "$ZIP" --clobber
-          elif ! gh release create "$TAG" "$PKG" "$ZIP" --generate-notes --title "ZM AI TOOL $TAG"; then
+            gh release upload "$TAG" "$PKG" --clobber
+          elif ! gh release create "$TAG" "$PKG" --generate-notes --title "ZM AI TOOL $TAG"; then
             sleep 5
-            gh release upload "$TAG" "$PKG" "$ZIP" --clobber
+            gh release upload "$TAG" "$PKG" --clobber
           fi
