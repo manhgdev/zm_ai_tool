@@ -16,6 +16,15 @@ import sys
 import time
 from pathlib import Path
 
+
+def _configure_text_output() -> None:
+    """Keep renderer diagnostics from crashing on Windows cp1252 consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
+
 import cv2
 import numpy as np
 
@@ -260,6 +269,7 @@ def _apply_rendering_optimizations(renderer, renderer_module) -> bool:
 
 
 def main() -> int:
+    _configure_text_output()
     parser = argparse.ArgumentParser()
     parser.add_argument("image")
     parser.add_argument("--out-dir", required=True)

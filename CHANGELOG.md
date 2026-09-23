@@ -1,5 +1,11 @@
 # Changelog
 
+## v8.4.5 — 2026-09-23
+
+- Drawing Windows không còn crash vì log Unicode trên code page `cp1252`.
+- Renderer ép UTF-8 cho stdout/stderr và worker Windows.
+- Thêm test hồi quy cho lỗi encoding trước khi tạo MP4.
+
 ## v8.4.4 — 2026-09-23
 
 - Giới hạn CSS trang giới thiệu để tiêu đề Tự động hoá không bị phóng lớn.

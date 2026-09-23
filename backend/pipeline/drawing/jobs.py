@@ -79,6 +79,8 @@ def _spawn(command: list[str], **kwargs: Any) -> subprocess.Popen:
         )
         kwargs.setdefault("creationflags", flags)
         kwargs["env"] = subprocess_environment(kwargs.get("env"))
+        kwargs["env"]["PYTHONIOENCODING"] = "utf-8:replace"
+        kwargs["env"]["PYTHONUTF8"] = "1"
     else:
         kwargs.setdefault("start_new_session", True)
     return subprocess.Popen(command, **kwargs)
