@@ -59,7 +59,7 @@ def _flow_submit_button_score(text: str = "", aria_label: str = "") -> int:
 
 def _media_prompt_matches(media: dict[str, Any], prompt: str) -> bool:
     """Match a Flow media record to the exact prompt that created it."""
-    expected = str(prompt or "").strip()
+    expected = re.sub(r'\s+', ' ', str(prompt or '').strip()).casefold()
     if not expected:
         return False
     request_data = ((media or {}).get("mediaMetadata") or {}).get("requestData") or {}
@@ -70,7 +70,12 @@ def _media_prompt_matches(media: dict[str, Any], prompt: str) -> bool:
         if not text:
             parts = ((item.get("structuredPrompt") or {}).get("parts") or [])
             text = " ".join(str(part.get("text") or "") for part in parts if isinstance(part, dict)).strip()
-        if text == expected:
+        normalized = re.sub(r'\s+', ' ', text).strip().casefold()
+        if normalized == expected or expected in normalized or normalized in expected:
+            return True
+    for key in ('prompt', 'promptText', 'textPrompt'):
+        normalized = re.sub(r'\s+', ' ', str(media.get(key) or '')).strip().casefold()
+        if normalized and (normalized == expected or expected in normalized or normalized in expected):
             return True
     return False
 
@@ -1052,7 +1057,7 @@ class FlowService:
         # ponytail: one auto-retry for transient failures (timeout / UI selector);
         # hard errors (LOGIN_REQUIRED, GENERATION_FAILED/REJECTED, CANCELLED) skip retry.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|FLOW_EMPTY_OUTPUT",
+            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT",
             re.I,
         )
         profile_ready = False
@@ -1684,7 +1689,8 @@ class FlowService:
         for media in sorted(records, key=lambda item: _media_created_timestamp(item)):
             item = by_id.get(str(media.get("name")))
             if kind == 'image':
-                url = str((media.get('image') or {}).get('fifeUrl') or '')
+                image = media.get('image') or {}
+                url = str(image.get('fifeUrl') if isinstance(image, dict) else image or '')
                 if url.startswith('https://'):
                     item = {'id': str(media['name']), 'tag': 'img', 'src': url}
             if item:
@@ -1700,7 +1706,7 @@ class FlowService:
         kind: str,
         expected_count: int,
         job_id: str,
-        timeout_s: int = 360,
+        timeout_s: int = 900,
         api=None,
         job: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:

@@ -23,3 +23,10 @@ class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
         api = SimpleNamespace(get_project_data=AsyncMock(return_value={'projectContents': {'media': [{'name': 'wrong', 'image': {'fifeUrl': 'https://example.invalid/wrong'}}]}}))
         with patch('pipeline.flow.service._media_prompt_matches', return_value=False):
             self.assertEqual(await service._find_existing_project_media(api, None, {'prompt': 'cat'}, 'image', 1), [])
+
+    def test_prompt_match_accepts_flow_normalized_text(self):
+        from pipeline.flow.service import _media_prompt_matches
+        self.assertTrue(_media_prompt_matches(
+            {'mediaMetadata': {'requestData': {'promptInputs': [{'textInput': 'A cat,  in sunlight'}]}}},
+            'a cat, in sunlight',
+        ))
