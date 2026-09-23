@@ -1,5 +1,11 @@
 # Changelog
 
+## v8.4.0 — 2026-09-23
+
+- Drawing kiểm tra codec và MP4 trung gian trước khi chuyển mã.
+- Tự retry riêng ảnh bị lỗi codec, không hủy toàn bộ batch khi một worker thất bại tạm thời.
+- Sửa lỗi `Output file does not contain any stream` khi render nhiều ảnh song song trên Windows.
+
 ## v8.3.9 — 2026-09-23
 
 - Xác minh gói Flow mới nhất trước mỗi lần tạo ảnh/video; không dùng plan cũ để cấp quyền.
