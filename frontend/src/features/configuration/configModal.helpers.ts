@@ -26,7 +26,7 @@ export function nextAutoInstall(checks: SystemChecks): InstallKind | null {
 export type Section = 'setup' | 'cloud' | 'tts' | 'output' | 'license' | 'logs'
 export type CloudTab = CloudProviderId
 export type UpdateDialog = {
-  kind: 'available' | 'info' | 'downloading' | 'ready' | 'applying' | 'error' | 'complete'
+  kind: 'available' | 'info' | 'downloading' | 'cancelling' | 'ready' | 'applying' | 'error' | 'complete'
   title: string; detail: string; progress?: number
 }
 

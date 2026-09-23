@@ -187,13 +187,18 @@ export const api = {
     fetchJson<{
       desktop: boolean
       running: boolean
-      phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'applying' | 'complete' | 'error'
+      phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'cancelling' | 'cancelled' | 'applying' | 'complete' | 'error'
       progress: number
       message: string
       error: string
       latestVersion: string
       assetName: string
+      cancelRequested?: boolean
+      cancelledAt?: number | null
     }>(`${base}/system/update/status`, undefined, 20_000),
+
+  cancelAppUpdate: () =>
+    fetchJson<{ ok: boolean; cancelling?: boolean }>(`${base}/system/update/cancel`, { method: 'POST' }, 20_000),
 
   applyAppUpdate: () =>
     fetchJson<{ ok: boolean; message: string }>(

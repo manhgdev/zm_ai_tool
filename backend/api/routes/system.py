@@ -113,6 +113,7 @@ _checks_warming = False
 _UPDATE_REPOSITORY = "manhgdev/zm_ai_tool"
 _UPDATE_LOCK = threading.Lock()
 _UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30 * 60
+_UPDATE_CANCEL = threading.Event()
 _UPDATE_STATE: dict[str, Any] = {
     "running": False,
     "phase": "idle",
@@ -123,7 +124,13 @@ _UPDATE_STATE: dict[str, Any] = {
     "latestVersion": "",
     "packagePath": "",
     "packageSha256": "",
+    "cancelRequested": False,
+    "cancelledAt": None,
 }
+
+
+class _UpdateCancelled(Exception):
+    pass
 
 
 def _release_version(value: str) -> str:
@@ -144,12 +151,17 @@ def _desktop_version() -> str:
 
 def _latest_release() -> dict[str, Any]:
     request = urllib.request.Request(
-        f"https://api.github.com/repos/{_UPDATE_REPOSITORY}/releases/latest",
+        f"https://api.github.com/repos/{_UPDATE_REPOSITORY}/releases?per_page=20",
         headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AI-TOOL"},
     )
     with urllib.request.urlopen(request, timeout=15) as response:
         payload = json.loads(response.read().decode("utf-8"))
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, list):
+        return {}
+    releases = [item for item in payload if isinstance(item, dict)
+                and not item.get('draft') and not item.get('prerelease')
+                and _version_key(str(item.get('tag_name') or '')) != (0, 0, 0)]
+    return max(releases, key=lambda item: _version_key(str(item.get('tag_name') or '')), default={})
 
 
 
@@ -219,6 +231,8 @@ def _update_snapshot() -> dict[str, Any]:
 
 def _set_update_state(**values: Any) -> None:
     with _UPDATE_LOCK:
+        if _UPDATE_CANCEL.is_set() and values.get('phase') not in {None, 'cancelled', 'cancelling'}:
+            raise _UpdateCancelled
         _UPDATE_STATE.update(values)
 
 
@@ -226,6 +240,8 @@ def _update_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open('rb') as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            if _UPDATE_CANCEL.is_set():
+                raise _UpdateCancelled
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -256,13 +272,19 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
     partial = target.with_suffix(target.suffix + ".part")
     # File đã tải đủ từ lần trước → dùng lại, không tải lại.
     if target.is_file() and expected_size and target.stat().st_size == expected_size:
+        if _UPDATE_CANCEL.is_set():
+            raise _UpdateCancelled
         _verify_update(target, expected_sha)
+        if _UPDATE_CANCEL.is_set():
+            raise _UpdateCancelled
         _set_update_state(phase="ready", progress=100, message="Đã tải gói cập nhật", assetName=name, latestVersion=version, packagePath=str(target))
         return target
     _set_update_state(phase="downloading", progress=0, message="Đang tải bản cập nhật…", assetName=name, latestVersion=version)
     last_error: Exception | None = None
     for attempt in range(3):
         try:
+            if _UPDATE_CANCEL.is_set():
+                raise _UpdateCancelled
             offset = partial.stat().st_size if partial.is_file() else 0
             request = urllib.request.Request(url, headers={"User-Agent": "ZM-AI-TOOL"})
             if offset:
@@ -281,6 +303,8 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
                         total = 0
                     received = offset
                     while chunk := response.read(1024 * 1024):
+                        if _UPDATE_CANCEL.is_set():
+                            raise _UpdateCancelled
                         output.write(chunk)
                         received += len(chunk)
                         progress = min(99, int(received * 100 / total)) if total else 0
@@ -295,13 +319,18 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
             _verify_update(target, expected_sha)
             last_error = None
             break
+        except _UpdateCancelled:
+            raise
         except (BrokenPipeError, ConnectionError, TimeoutError, OSError) as exc:
+            if _UPDATE_CANCEL.is_set():
+                raise _UpdateCancelled from exc
             last_error = exc
             if attempt < 2:
                 if expected_size and partial.is_file() and partial.stat().st_size > expected_size:
                     partial.unlink(missing_ok=True)
                 _set_update_state(message=f"Kết nối gián đoạn, đang thử lại ({attempt + 2}/3)…")
-                time.sleep(0.5 * (attempt + 1))
+                if _UPDATE_CANCEL.wait(0.5 * (attempt + 1)):
+                    raise _UpdateCancelled
             else:
                 partial.unlink(missing_ok=True)
                 raise
@@ -1200,9 +1229,10 @@ def api_update_install():
     if not _update_supported():
         raise HTTPException(400, "Chỉ bản desktop hỗ trợ cập nhật")
     with _UPDATE_LOCK:
-        if _UPDATE_STATE["running"]:
+        if _UPDATE_STATE["running"] or _UPDATE_STATE['phase'] == 'applying':
             return {"ok": True, "running": True, "message": _UPDATE_STATE["message"]}
-        _UPDATE_STATE.update(running=True, phase="checking", progress=0, message="Đang chuẩn bị cập nhật…", error="", packagePath="")
+        _UPDATE_CANCEL.clear()
+        _UPDATE_STATE.update(running=True, phase="checking", progress=0, message="Đang chuẩn bị cập nhật…", error="", packagePath="", cancelRequested=False, cancelledAt=None)
 
     def work() -> None:
         try:
@@ -1235,7 +1265,11 @@ def api_update_install():
             updates = Path(os.environ.get("ZM_AI_TOOL_HOME") or DATA) / "updates"
             updates.mkdir(parents=True, exist_ok=True)
             package = _download_update(asset, updates, version)
+            if _UPDATE_CANCEL.is_set():
+                raise _UpdateCancelled
             _set_update_state(phase="ready", progress=100, message="Đã tải gói cập nhật", packagePath=str(package))
+        except _UpdateCancelled:
+            _set_update_state(running=False, phase="cancelled", message="Đã hủy cập nhật", cancelRequested=True, cancelledAt=time.time())
         except Exception as exc:
             _set_update_state(phase="error", error=str(exc), message="Không thể tải bản cập nhật")
         finally:
@@ -1243,6 +1277,19 @@ def api_update_install():
 
     threading.Thread(target=work, name="desktop-update-download", daemon=True).start()
     return {"ok": True, "running": True, "message": "Đang tải bản cập nhật…"}
+
+
+@router.post("/api/system/update/cancel")
+def api_update_cancel():
+    with _UPDATE_LOCK:
+        state = dict(_UPDATE_STATE)
+        if state["phase"] == "applying":
+            raise HTTPException(409, "Không thể hủy sau khi updater đã nhận gói")
+        if not state["running"] and state["phase"] not in {"ready", "downloading", "checking"}:
+            return {"ok": True, "cancelled": state["phase"] == "cancelled"}
+        _UPDATE_CANCEL.set()
+        _UPDATE_STATE.update(phase="cancelling" if state['running'] else 'cancelled', message="Đang hủy cập nhật…", cancelRequested=True, cancelledAt=time.time())
+    return {"ok": True, "cancelling": True}
 
 
 @router.get("/api/system/update/status")
@@ -1577,6 +1624,8 @@ def api_update_apply():
     if not _update_supported():
         raise HTTPException(400, "Chỉ bản desktop hỗ trợ cập nhật")
     state = _update_snapshot()
+    if state.get("cancelRequested") or _UPDATE_CANCEL.is_set() or state["phase"] == "cancelled":
+        raise HTTPException(409, "UPDATE_CANCELLED")
     if state["running"]:
         raise HTTPException(409, "Gói cập nhật vẫn đang tải")
     if state["phase"] != "ready" or not state["packagePath"]:
@@ -1592,6 +1641,13 @@ def api_update_apply():
     except (OSError, RuntimeError) as exc:
         _set_update_state(phase='error', error=str(exc))
         raise HTTPException(400, str(exc)) from exc
+    except _UpdateCancelled as exc:
+        raise HTTPException(409, 'UPDATE_CANCELLED') from exc
+    # Atomic handoff boundary: cancellation and concurrent apply cannot both win.
+    with _UPDATE_LOCK:
+        if _UPDATE_CANCEL.is_set() or _UPDATE_STATE['phase'] != 'ready':
+            raise HTTPException(409, 'UPDATE_CANCELLED_OR_BUSY')
+        _UPDATE_STATE.update(phase='applying')
     if sys.platform == "darwin":
         if package.suffix.lower() not in {".pkg", ".zip"}:
             raise HTTPException(400, "Gói cập nhật macOS không hợp lệ")

@@ -93,6 +93,7 @@
 }
 
 .cfg-update-dialog {
+  position: relative;
   width: min(410px, 100%);
   padding: 20px;
   border: 1px solid color-mix(in srgb, var(--primary) 34%, var(--line));
@@ -100,6 +101,22 @@
   background: var(--card);
   box-shadow: 0 18px 48px rgba(15, 23, 42, .28);
 }
+
+.cfg-update-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted-foreground, #6b7280);
+  font-size: 25px;
+  line-height: 1;
+  cursor: pointer;
+}
+.cfg-update-close:hover { background: var(--accent, #eef2f7); color: var(--foreground, #111827); }
 
 .cfg-update-status {
   display: grid;

@@ -1,5 +1,12 @@
 # Changelog
 
+## v8.4.3 — 2026-09-23
+
+- Thêm nút X và Hủy cập nhật trong tiến trình tải.
+- Hủy thật sự dừng tải/retry, giữ file `.part` để lần sau tiếp tục và không tự cài.
+- Bổ sung trạng thái `cancelling`/`cancelled` và khóa race trước khi bàn giao updater.
+- Giữ nguyên quy trình updater đóng app, thay file và tự mở lại khi người dùng không hủy.
+
 ## v8.4.2 — 2026-09-23
 
 - Drawing dùng đúng `ffprobe.exe` trong bundle Windows thay vì phụ thuộc PATH.

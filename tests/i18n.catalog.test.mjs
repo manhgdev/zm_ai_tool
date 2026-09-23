@@ -23,7 +23,7 @@ test('setup cards use stable IDs instead of backend display strings', () => {
 test('download completion automatically applies update once without a second button', () => {
   const source = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
   assert.match(source, /state.phase === 'ready'\) \{\s*await applyUpdate\(\)/)
-  assert.match(source, /if \(updateApplyStarted.current\) return/)
+  assert.match(source, /if \(updateApplyStarted.current \|\| updateCancelRequested.current\) return/)
   assert.doesNotMatch(source, /updateDialog.kind === 'ready'.*<button/)
   assert.match(source, /if \(updateDialog\?\.kind !== 'downloading'\) return/)
 })
