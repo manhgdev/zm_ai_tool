@@ -556,7 +556,9 @@ class FlowService:
         if not job:
             return False
         if job.get("status") not in _TERMINAL:
-            self._cancelled.add(job_id)
+            with self._account_condition:
+                self._cancelled.add(job_id)
+                self._account_condition.notify_all()
             store.patch_row("jobs", job_id, {"status": "cancelled", "stage": "cancelled", "progress": 0, "updatedAt": time.time()})
         # Delete artifacts first. Keep the row if Windows locks a file so the
         # user can retry; never report success while output files remain.
@@ -1206,14 +1208,19 @@ class FlowService:
         concurrency = _job_concurrency(job.get("settings") or {})
         order = int(job.get("queueOrder", job.get("inputIndex", 0)))
         with self._account_condition:
-            if account_id not in self._account_next_start:
+            def next_queued_order() -> int | None:
                 pending_orders = [
                     int(row.get("queueOrder")) for row in self.jobs()
                     if row.get("accountId") == account_id
-                    and row.get("status") not in _TERMINAL
+                    and row.get("status") == "queued"
+                    and str(row.get("id") or "") not in self._cancelled
                     and str(row.get("queueOrder", "")).isdigit()
                 ]
-                self._account_next_start[account_id] = min(pending_orders, default=order)
+                return min(pending_orders) if pending_orders else None
+
+            if account_id not in self._account_next_start:
+                first_order = next_queued_order()
+                self._account_next_start[account_id] = order if first_order is None else first_order
             while (
                 order != self._account_next_start[account_id]
                 or self._account_active.get(account_id, 0) >= concurrency
@@ -1223,11 +1230,24 @@ class FlowService:
                         self._account_next_start[account_id] += 1
                         self._account_condition.notify_all()
                     return
-                self._account_condition.wait()
+                # Deleted/cancelled jobs can leave gaps in queueOrder. Advance
+                # to the first real queued row instead of sleeping forever.
+                queued_order = next_queued_order()
+                if queued_order is not None and self._account_next_start[account_id] != queued_order:
+                    self._account_next_start[account_id] = queued_order
+                    self._account_condition.notify_all()
+                    continue
+                self._account_condition.wait(timeout=1.0)
             if job_id in self._cancelled:
                 self._account_next_start[account_id] += 1
                 self._account_condition.notify_all()
                 return
+            # Remove the admitted row from the queued set before another
+            # waiter recalculates the first pending order.
+            store.patch_row("jobs", job_id, {
+                "status": "processing", "stage": "starting", "progress": 1,
+                "updatedAt": time.time(),
+            })
             self._account_next_start[account_id] += 1
             self._account_active[account_id] = self._account_active.get(account_id, 0) + 1
         # Retry only failures that happen before a generation is submitted.
@@ -2385,8 +2405,23 @@ class FlowService:
         return job
 
     def retry(self, job_id: str) -> dict[str, Any] | None:
-        self._cancelled.discard(job_id)
-        job = store.patch_row("jobs", job_id, {"status": "queued", "stage": "queued", "progress": 0, "error": None, "outputs": [], "updatedAt": time.time()})
+        existing = store.get_row("jobs", job_id)
+        if not existing:
+            return None
+        account_id = str(existing.get("accountId") or "")
+        with self._account_condition:
+            orders = [
+                int(row.get("queueOrder")) for row in self.jobs()
+                if row.get("accountId") == account_id and str(row.get("queueOrder", "")).isdigit()
+            ]
+            order = max(orders, default=-1) + 1
+            self._account_next_order[account_id] = max(self._account_next_order.get(account_id, 0), order + 1)
+            self._cancelled.discard(job_id)
+            job = store.patch_row("jobs", job_id, {
+                "status": "queued", "stage": "queued", "progress": 0,
+                "queueOrder": order, "error": None, "outputs": [], "updatedAt": time.time(),
+            })
+            self._account_condition.notify_all()
         if job:
             self._log("info", "job_retry", job_id=job_id, account_id=str(job.get("accountId") or ""))
             threading.Thread(target=self._run_sync, args=(job_id,), daemon=True, name=f"flow-job-{job_id}").start()

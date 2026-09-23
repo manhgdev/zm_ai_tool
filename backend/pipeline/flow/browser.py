@@ -62,25 +62,31 @@ class BrowserManager:
             await asyncio.sleep(0.1)
         self._owns_profile = True
         try:
-            self._pw = await async_playwright().start()
-            self._ctx = await self._pw.chromium.launch_persistent_context(
-                str(self.profile_dir),
-                executable_path=str(executable),
-                headless=self.headless,
-                slow_mo=self.slow_mo,
-                viewport={"width": 1440, "height": 900},
-                accept_downloads=True,
-                locale="en-US",
-                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-                chromium_sandbox=True,
-                # Restore the Flow launch compatibility settings removed in
-                # v8.2.2; keep Chrome's process sandbox enabled independently.
-                args=["--lang=en-US", "--disable-blink-features=AutomationControlled",
-                      "--disable-infobars"],
+            self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
+            self._ctx = await asyncio.wait_for(
+                self._pw.chromium.launch_persistent_context(
+                    str(self.profile_dir),
+                    executable_path=str(executable),
+                    headless=self.headless,
+                    slow_mo=self.slow_mo,
+                    viewport={"width": 1440, "height": 900},
+                    accept_downloads=True,
+                    locale="en-US",
+                    extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+                    chromium_sandbox=True,
+                    args=["--lang=en-US", "--disable-blink-features=AutomationControlled",
+                          "--disable-infobars"],
+                ),
+                timeout=60,
             )
             await self._ctx.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
+        except asyncio.TimeoutError as exc:
+            await self.stop()
+            raise RuntimeError(
+                "FLOW_BROWSER_START_TIMEOUT: Google Chrome did not start within 60 seconds"
+            ) from exc
         except BaseException:
             await self.stop()
             raise
