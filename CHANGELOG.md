@@ -1,5 +1,10 @@
 # Changelog
 
+## v8.4.2 — 2026-09-23
+
+- Drawing dùng đúng `ffprobe.exe` trong bundle Windows thay vì phụ thuộc PATH.
+- Sửa lỗi MP4 hợp lệ bị loại nhầm với thông báo `Streaming renderer finished without an MP4 output`.
+
 ## v8.4.1 — 2026-09-23
 
 - Drawing loại bỏ MP4 trung gian không có video stream trước khi ghép.
