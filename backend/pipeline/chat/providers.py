@@ -20,6 +20,7 @@ class ProviderError(RuntimeError):
 
 
 API_PROVIDER_IDS = ("openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia")
+LOCAL_PROVIDER_IDS = ("ollama",)
 PROVIDER_LABELS = {
     "openai": "OpenAI API",
     "gemini": "Gemini",
@@ -29,6 +30,7 @@ PROVIDER_LABELS = {
     "groq": "Groq",
     "nvidia": "NVIDIA NIM",
     "chatgpt_web": "ChatGPT Codex",
+    "ollama": "Ollama (local)",
 }
 _STREAM_TIMEOUT_SECONDS = 45.0
 
@@ -343,6 +345,16 @@ class OpenAIProvider(OpenAICompatibleProvider):
 
     def __init__(self, api_key: str, base_url: str):
         super().__init__("openai", api_key, base_url)
+
+
+class OllamaProvider(OpenAICompatibleProvider):
+    """Local Ollama's OpenAI-compatible API (no cloud key required)."""
+
+    def __init__(self, base_url: str = "http://127.0.0.1:11434/v1"):
+        super().__init__("ollama", "ollama-local", base_url)
+
+    def _headers(self, key: str | None = None) -> dict[str, str]:
+        return {"Content-Type": "application/json"}
 
 
 class GeminiProvider:

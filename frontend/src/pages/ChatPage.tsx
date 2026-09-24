@@ -9,7 +9,7 @@ type ChatArtifact = { id: string; name: string; kind: string; content_type: stri
 type Message = { id: string; role: 'user' | 'assistant'; content: string; status: string; error?: string; attachments?: ChatArtifact[] }
 type Account = { id: string; label: string; configured: boolean; experimental: boolean; status: string; email?: string; last_model?: string; error?: string; errorCode?: string }
 type ChatModel = { id: string; label: string; provider: string; free: boolean; capabilities: string[]; available: boolean; reason?: string }
-type ChatProvider = { id: string; label: string; kind: 'api' | 'browser'; configured: boolean; status: string; capabilities: string[]; models: ChatModel[]; errorCode?: string; reason?: string }
+type ChatProvider = { id: string; label: string; kind: 'api' | 'browser' | 'local'; configured: boolean; status: string; capabilities: string[]; models: ChatModel[]; errorCode?: string; reason?: string }
 type ChatMode = 'chat' | 'search' | 'research' | 'image'
 
 const API = '/api/chat'
@@ -484,7 +484,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
   }
   const modelSelection = `${provider}::${model}`
   const providerName = (id: string) => ({
-    chatgpt_web: t('ChatGPT Codex', 'ChatGPT Codex'), openai: t('OpenAI API', 'OpenAI API'), gemini: 'Gemini',
+    chatgpt_web: t('ChatGPT Codex', 'ChatGPT Codex'), ollama: t('Ollama (local)', 'Ollama (local)'), openai: t('OpenAI API', 'OpenAI API'), gemini: 'Gemini',
     deepseek: 'DeepSeek', openrouter: 'OpenRouter', grok: 'Grok (xAI)', groq: 'Groq', nvidia: t('NVIDIA NIM', 'NVIDIA NIM'),
   } as Record<string, string>)[id] || id
   const selectModel = (value: string) => {
@@ -494,7 +494,8 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
   }
   const selectableProviders = providers.filter(item => (item.id === 'chatgpt_web' ? item.configured : item.status === 'ready'))
   const availableModelsCount = providers.reduce((total, item) => total + item.models.filter(option => option.available && option.free).length, 0)
-  const availableProviderCount = providers.filter(item => item.models.some(option => option.available && option.free)).length
+  const availableCloudProviderCount = providers.filter(item => item.kind !== 'local' && item.models.some(option => option.available && option.free)).length
+  const availableLocalProviderCount = providers.filter(item => item.kind === 'local' && item.models.some(option => option.available && option.free)).length
   const currentProviderModelCount = models.filter(option => option.available && option.free).length
 
   return <main className="chat-page">
@@ -556,7 +557,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
             </optgroup>)}
           </select></label>
           <button type="button" className="chat-model-refresh" onClick={() => void refreshProviderModels()} disabled={!provider || modelsLoading} aria-label={t('Làm mới danh sách model', 'Refresh model list')} title={t('Làm mới danh sách model', 'Refresh model list')}>↻</button>
-          {modelsLoading ? <span className="chat-model-status" role="status">{t('Đang tải model…', 'Loading models…')}</span> : availableModelsCount ? <span className="chat-model-status" role="status" title={t(`${currentProviderModelCount} model từ provider đang chọn`, `${currentProviderModelCount} models from the selected provider`)}>{availableModelsCount} {t('model khả dụng', 'available model(s)')} · {availableProviderCount} {t('cloud', 'cloud providers')}{modelsError ? ` · ${t('provider đang chọn lỗi', 'selected provider unavailable')}` : ''}</span> : modelsError ? <span className="chat-model-status" role="status">{t('Không tải được model', 'Could not load models')}</span> : null}
+          {modelsLoading ? <span className="chat-model-status" role="status">{t('Đang tải model…', 'Loading models…')}</span> : availableModelsCount ? <span className="chat-model-status" role="status" title={t(`${currentProviderModelCount} model từ provider đang chọn`, `${currentProviderModelCount} models from the selected provider`)}>{availableModelsCount} {t('model khả dụng', 'available model(s)')} · {availableCloudProviderCount} {t('cloud', 'cloud')} · {availableLocalProviderCount} {t('local', 'local')}{modelsError ? ` · ${t('provider đang chọn lỗi', 'selected provider unavailable')}` : ''}</span> : modelsError ? <span className="chat-model-status" role="status">{t('Không tải được model', 'Could not load models')}</span> : null}
           <span className="chat-composer-spacer" />
           {busy ? <button type="button" onClick={() => void stopGeneration()} disabled={stopping} aria-label={stopping ? t('Đang dừng tạo', 'Stopping generation') : t('Dừng tạo', 'Stop generating')}>{stopping ? '…' : '■'}</button> : <button type="button" onClick={() => void send()} disabled={!input.trim()} aria-label={t('Gửi tin nhắn', 'Send message')}>↑</button>}
         </div>

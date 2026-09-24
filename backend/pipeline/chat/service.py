@@ -13,11 +13,13 @@ from pipeline.flow.browser import BrowserManager, chrome_executable
 from .auth import ChatGPTAuth
 from .providers import (
     API_PROVIDER_IDS,
+    LOCAL_PROVIDER_IDS,
     PROVIDER_LABELS,
     ChatGPTAccountProvider,
     GeminiProvider,
     OpenAICompatibleProvider,
     OpenAIProvider,
+    OllamaProvider,
     ProviderError,
     encode_attachment,
 )
@@ -133,6 +135,11 @@ class ChatService:
             return GeminiProvider(pid, cfg["apiKey"], cfg["baseUrl"])
         return OpenAICompatibleProvider(pid, cfg["apiKey"], cfg["baseUrl"], keys)
 
+    def _local_provider(self, provider_id: str):
+        if str(provider_id or "").strip().lower() == "ollama":
+            return OllamaProvider()
+        raise ProviderError("CHAT_PROVIDER_UNSUPPORTED", f"Unsupported local provider: {provider_id}")
+
     @staticmethod
     def _public_model(item: dict, *, provider: str) -> dict:
         result = {
@@ -161,6 +168,15 @@ class ChatService:
                 {"id": item, "label": item, "provider": pid, "free": True, "capabilities": ["text"], "available": True, "reason": "Active ChatGPT Codex session"}
                 for item in raw
             ]
+        if pid in LOCAL_PROVIDER_IDS:
+            now = time.monotonic()
+            cached = self._model_cache.get(pid)
+            if cached and not refresh and now - cached[0] < self._model_cache_ttl:
+                return cached[1]
+            models = [self._public_model(item, provider=pid) | {"free": True, "available": True, "reason": "Local Ollama model"}
+                      for item in self._local_provider(pid).model_records(timeout=2.0)]
+            self._model_cache[pid] = (now, models)
+            return models
         now = time.monotonic()
         cached = self._model_cache.get(pid)
         if cached and not refresh and now - cached[0] < self._model_cache_ttl:
@@ -229,6 +245,14 @@ class ChatService:
                 "models": [], "loginRequired": True,
                 "reason": "ChatGPT Codex account is not configured",
             })
+        try:
+            local_models = self.provider_models("ollama", refresh=refresh)
+            result.append({"id": "ollama", "label": PROVIDER_LABELS["ollama"], "kind": "local", "configured": True,
+                           "status": "ready" if local_models else "free_unavailable", "models": local_models,
+                           "capabilities": ["text"], "reason": "" if local_models else "OLLAMA_NOT_RUNNING"})
+        except ProviderError as exc:
+            result.append({"id": "ollama", "label": PROVIDER_LABELS["ollama"], "kind": "local", "configured": False,
+                           "status": "unavailable", "models": [], "capabilities": ["text"], "errorCode": exc.code})
         cloud = load_app_config().get("cloud", {})
         configured_ids = [pid for pid in API_PROVIDER_IDS if bool(cloud.get(pid, {}).get("apiKey"))]
         # Discovery is independent per provider. Run configured calls in
@@ -544,7 +568,7 @@ class ChatService:
         yield self.event("message.started", messageId=assistant["id"], provider=selected_provider, model=selected_model or None)
         try:
             history = self.store.list_messages(conversation_id)[:-1]
-            if requested_provider not in {"chatgpt_web", *API_PROVIDER_IDS, "openai_api", ""}:
+            if requested_provider not in {"chatgpt_web", *API_PROVIDER_IDS, *LOCAL_PROVIDER_IDS, "openai_api", ""}:
                 raise ProviderError("ACCOUNT_NOT_FOUND", "ChatGPT Codex account was not found")
             if mode != "chat":
                 raise ProviderError("CHAT_PROVIDER_CAPABILITY_UNAVAILABLE", "This mode is not available with ChatGPT Codex")
@@ -565,6 +589,8 @@ class ChatService:
             elif selected_provider == "openai":
                 cfg = load_app_config()["cloud"]["openai"]
                 provider = OpenAIProvider(cfg["apiKey"], cfg["baseUrl"])
+            elif selected_provider in LOCAL_PROVIDER_IDS:
+                provider = self._local_provider(selected_provider)
             else:
                 provider = self._api_provider(selected_provider)
             if model_info and "text" not in model_info.get("capabilities", ["text"]):
