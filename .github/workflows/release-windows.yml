@@ -87,7 +87,7 @@ jobs:
           @{ assets = @($assets) } | ConvertTo-Json -Depth 4 | Set-Content build_app/windows-audit/windows-artifact-manifest.json -Encoding utf8
 
       - name: Inventory and scan Windows release
-        if: github.ref == 'refs/tags/v8.3.3' || inputs.security_audit == true
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.security_audit == true
         shell: pwsh
         env:
           INSTALLER: ${{ steps.package.outputs.installer }}
@@ -99,7 +99,7 @@ jobs:
           ./scripts/audit-windows-release.ps1 -Bundle $env:BUNDLE -Installer $env:INSTALLER -Portable $env:ZIP -Output build_app/windows-audit
 
       - name: Save audit diagnostics (including failures)
-        if: always() && (github.ref == 'refs/tags/v8.3.3' || inputs.security_audit == true)
+        if: always() && (startsWith(github.ref, 'refs/tags/v') || inputs.security_audit == true)
         uses: actions/upload-artifact@v6
         with:
           name: windows-security-audit

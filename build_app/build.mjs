@@ -382,6 +382,7 @@ if (isWin && existsSync(iconIco)) {
 
 // ── Windowed (ẩn terminal) ────────────────────────────────────────────────────
 if (isWin || isMac) args.push('--windowed')
+if (isWin) args.push('--noupx')
 
 // ── WINDOWS-SPECIFIC ─────────────────────────────────────────────────────────
 if (isWin) {
