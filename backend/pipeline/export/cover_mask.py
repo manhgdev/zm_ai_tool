@@ -252,13 +252,8 @@ def _solid_region(
     return frame_bgr
 
 
-def _inpaint_region(
-    frame_bgr: Any,
-    box: tuple[int, int, int, int],
-    *,
-    polygon: list[tuple[int, int]] | None = None,
-) -> Any:
-    """Reconstruct only the detected glyph, preserving pixels outside its mask."""
+def _inpaint_region(frame_bgr: Any, box: tuple[int, int, int, int]) -> Any:
+    """Remove a small fixed logo by reconstructing it from surrounding pixels."""
     import cv2
     import numpy as np
 
@@ -272,49 +267,24 @@ def _inpaint_region(
     bw, bh = x1 - x0, y1 - y0
     if bw < 3 or bh < 3:
         return frame_bgr
-    pad = max(4, min(12, round(min(bw, bh) * 0.20)))
+    pad = max(8, round(min(bw, bh) * 0.45))
     ex0, ey0 = max(0, x0 - pad), max(0, y0 - pad)
     ex1, ey1 = min(w, x1 + pad), min(h, y1 + pad)
     crop = frame_bgr[ey0:ey1, ex0:ex1]
     mask = np.zeros(crop.shape[:2], np.uint8)
     lx0, ly0 = x0 - ex0, y0 - ey0
     lx1, ly1 = x1 - ex0, y1 - ey0
-    if polygon and len(polygon) >= 3:
-        shifted = np.asarray([(x - ex0, y - ey0) for x, y in polygon], dtype=np.int32)
-        cv2.fillPoly(mask, [shifted], 255)
-    else:
-        mask[ly0:ly1, lx0:lx1] = 255
-    # Remove anti-aliased glyph edges without expanding into the surrounding
-    # scene. The radius is deliberately bounded for small corner marks.
-    dilate = max(1, min(3, round(min(bw, bh) * 0.04)))
-    if dilate > 1:
-        mask = cv2.dilate(mask, np.ones((dilate, dilate), np.uint8))
-    # The eight-point polygon is the translucent Veo sparkle. Only repaint
-    # unusually bright pixels inside it; retaining the original stripe pixels
-    # makes the reconstruction substantially less visible than filling the
-    # whole polygon.
-    if polygon is not None and len(polygon) == 8 and bw >= 40 and bh >= 40:
-        gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        local = gray_crop.astype(np.float32) - cv2.GaussianBlur(gray_crop, (0, 0), 7)
-        selective = ((local > 4.0) & (mask > 0)).astype(np.uint8) * 255
-        if int(selective.sum()) > 0:
-            rebuilt = cv2.inpaint(crop, selective, 2.0, cv2.INPAINT_TELEA)
-            crop[selective > 0] = rebuilt[selective > 0]
-        frame_bgr[ey0:ey1, ex0:ex1] = crop
-        return frame_bgr
-    # Keep reconstruction tight for translucent corner graphics; a large
-    # radius smears nearby road stripes and makes the cleaned result more
-    # conspicuous than the original watermark.
-    radius = max(2.0, min(3.0, min(bw, bh) * 0.05))
-    # Telea follows local texture better for translucent sparkle graphics and
-    # avoids the flat rectangular fill produced by Navier–Stokes on striped
-    # backgrounds. OCR text masks remain small and use the same safe path.
-    method = cv2.INPAINT_TELEA if polygon is not None else (cv2.INPAINT_NS if min(bw, bh) >= 28 else cv2.INPAINT_TELEA)
-    rebuilt = cv2.inpaint(crop, mask, radius, method)
-    # Hard replace only the mask. A feathered blend leaves a visible halo and
-    # was the source of the previous blurred/washed-out corner.
-    crop[mask > 0] = rebuilt[mask > 0]
-    frame_bgr[ey0:ey1, ex0:ex1] = crop
+    mask[ly0:ly1, lx0:lx1] = 255
+    dilate = max(3, (round(min(bw, bh) * 0.08) | 1))
+    mask = cv2.dilate(mask, np.ones((dilate, dilate), np.uint8))
+    radius = max(3.0, min(9.0, min(bw, bh) * 0.12))
+    rebuilt = cv2.inpaint(crop, mask, radius, cv2.INPAINT_TELEA)
+    feather = max(3, (round(min(bw, bh) * 0.10) | 1))
+    alpha = cv2.GaussianBlur(mask, (feather, feather), 0).astype(np.float32) / 255.0
+    a3 = alpha[..., None]
+    frame_bgr[ey0:ey1, ex0:ex1] = (
+        rebuilt.astype(np.float32) * a3 + crop.astype(np.float32) * (1.0 - a3)
+    ).astype(np.uint8)
     return frame_bgr
 
 
