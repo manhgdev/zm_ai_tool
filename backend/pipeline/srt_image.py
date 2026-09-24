@@ -1388,18 +1388,23 @@ def run(job_id: str) -> None:
     cache_key = ""
     owns_cache_key = False
     try:
+        # The cache is keyed by every input and the complete render options,
+        # including the frontend's settings fingerprint.  Identical requests
+        # may reuse the final MP4; changing any setting gets a new key and
+        # therefore always renders a fresh result.
         cache_key = _render_cache_key(job)
         cached, owns_cache_key = _claim_render_cache(job_id, cache_key)
         if cached:
             output = Path(job["output"])
             output.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(cached, output)
-            published = _publish_render(job_id, output, str(job.get("name") or ""))
+            _publish_render(job_id, output, str(job.get("name") or ""))
             _update(job_id, status="done", progress=100, outputSize=output.stat().st_size)
-            _log(job_id, f"Hoàn thành (từ cache): {output} ({output.stat().st_size / 1_048_576:.1f} MB)")
+            _log(job_id, f"Hoàn thành (cache cùng cài đặt): {output} ({output.stat().st_size / 1_048_576:.1f} MB)")
             return
         if not owns_cache_key:
             return
+        _log(job_id, "Render mới: cài đặt hoặc đầu vào đã thay đổi")
         _log(job_id, "Đang đọc timeline và kiểm tra media…")
         media = [Path(p) for p in job["images"]]
         timeline = str(job.get("timeline") or "")
@@ -1677,7 +1682,8 @@ def run(job_id: str) -> None:
         try:
             _store_cached_render(cache_key, path)
         except OSError:
-            # ponytail: cache là tối ưu tùy chọn; lỗi ghi cache không được làm hỏng video đã render.
+            # Cache is an optimization; never fail a successful render if it
+            # cannot be written because of disk pressure or a file lock.
             pass
         published = _publish_render(job_id, path, str(job.get("name") or ""))
         _update(job_id, status="done", progress=100, outputSize=path.stat().st_size)

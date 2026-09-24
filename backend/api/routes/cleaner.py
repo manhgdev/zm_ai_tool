@@ -23,6 +23,10 @@ from pipeline.cleaner.cleaner_jobs import (
 from pipeline.cleaner.cleaner_ffmpeg import start_cleaner_job
 
 router = APIRouter()
+SUPPORTED_EXTENSIONS = {
+    ".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv", ".m4v", ".ts",
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff",
+}
 
 @router.get("/api/cleaner/jobs")
 def api_cleaner_list():
@@ -49,6 +53,8 @@ async def api_cleaner_start(
             continue
             
         ext = Path(upload.filename).suffix or ".mp4"
+        if ext.lower() not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(400, f"Định dạng media không được hỗ trợ: {ext}")
         temp_path = CLEANER_TEMP_DIR / f"temp_{uuid.uuid4().hex[:8]}{ext}"
         
         with open(temp_path, "wb") as f:
@@ -108,6 +114,14 @@ def api_cleaner_file(job_id: str, download: int = 0):
         media = "video/webm"
     elif p.suffix.lower() == ".mkv":
         media = "video/x-matroska"
+    elif p.suffix.lower() in {".png"}:
+        media = "image/png"
+    elif p.suffix.lower() in {".jpg", ".jpeg"}:
+        media = "image/jpeg"
+    elif p.suffix.lower() == ".webp":
+        media = "image/webp"
+    elif p.suffix.lower() in {".bmp"}:
+        media = "image/bmp"
         
     return FileResponse(
         p,

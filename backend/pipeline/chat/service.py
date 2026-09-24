@@ -101,11 +101,7 @@ class ChatService:
             if token_status.get("status") == "connected":
                 email = str(token_status.get("email") or "")
                 self.store.update_account(item["id"], status="connected", email=email, error="", error_code="")
-                masked_email = email
-                if "@" in masked_email:
-                    name, domain = masked_email.split("@", 1)
-                    masked_email = f"{name[:2]}***@{domain}"
-                item.update({"status": "connected", "configured": True, "email": masked_email, "error": "", "errorCode": ""})
+                item.update({"status": "connected", "configured": True, "email": email, "error": "", "errorCode": ""})
                 continue
             self.store.update_account(item["id"], status="signed_out", error="", error_code="")
             item.update({"status": "signed_out", "configured": False, "error": "", "errorCode": ""})
@@ -115,14 +111,10 @@ class ChatService:
         # The saved profile remains authoritative across app restarts. Browser
         # work verifies it only when the user checks the session or sends work.
         db_status = str(item.get("status") or "signed_out")
-        email = item.get("email", "")
-        if "@" in email:
-            name, domain = email.split("@", 1)
-            email = f"{name[:2]}***@{domain}"
         return [{**item, "provider": "chatgpt_web", "experimental": False,
              "configured": db_status == "connected",
              "status": db_status,
-                 "email": email}]
+                 "email": item.get("email", "")}]
 
     def primary_account(self):
         rows = self.store.list_accounts()

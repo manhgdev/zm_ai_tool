@@ -92,7 +92,7 @@ export function readSeriesSettings(): SeriesGenSettings {
       return {
         accountId: '', model: flow.model || 'Veo 3.1 - Lite',
         ratio: flow.ratio || '16:9', duration: flow.duration || '8',
-        resolution: flow.resolution || '1K', concurrency: flow.concurrency || '3',
+        resolution: flow.resolution || '1K', concurrency: flow.concurrency || '8',
       }
     }
   } catch {}

@@ -13,6 +13,7 @@ import shutil
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +26,8 @@ from . import store
 # Match both legacy labs.google/fx/tools/flow/project/<id> and new flow.google.com/project/<id>
 _PROJECT_RE = re.compile(r"^(?:https://(?:flow\.google\.com|labs\.google)(?::443)?)?(?:/fx/tools/flow|/flow)?/project/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})(?:[/?#]|$)")
 _TERMINAL = {"done", "failed", "cancelled", "action_required"}
-_DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 3
-_MAX_CONCURRENT_JOBS_PER_ACCOUNT = 16
+_DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 8
+_MAX_CONCURRENT_JOBS_PER_ACCOUNT = 30
 _PROFILE_COPY_IGNORES = {
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
     "GraphiteDawnCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache",
@@ -598,15 +599,20 @@ class FlowService:
         selected = str(output_dir or "").strip()
         if not selected:
             return 0
-        count = 0
+        ids = set()
         for job in self.jobs():
             if str((job.get("settings") or {}).get("outputDir") or "").strip() != selected:
                 continue
             if kind and str(job.get("kind") or "") != kind:
                 continue
-            if job.get("status") not in _TERMINAL and self.cancel(str(job["id"])):
-                count += 1
-        return count
+            if job.get("status") not in _TERMINAL:
+                ids.add(str(job["id"]))
+        if not ids:
+            return 0
+        with self._account_condition:
+            self._cancelled.update(ids)
+            self._account_condition.notify_all()
+        return store.cancel_active_jobs(ids, time.time())
 
     def delete_all_jobs(self) -> int:
         ids = {str(job['id']) for job in store.list_rows('jobs')}
@@ -614,18 +620,20 @@ class FlowService:
             self._cancelled.update(ids)
             self._account_condition.notify_all()
         selected = [job for job in store.list_rows('jobs') if str(job['id']) in ids]
-        for job in selected:
-            for raw in job.get('outputs') or []:
-                Path(str(raw)).unlink(missing_ok=True)
+        output_paths = [Path(str(raw)) for job in selected for raw in job.get('outputs') or []]
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(output_paths)))) as pool:
+            list(pool.map(lambda path: path.unlink(missing_ok=True), output_paths))
         removed = store.delete_rows('jobs', ids)
+        folders = [self._output_folder(job, create=False) for job in removed]
         for job in removed:
             for raw in job.get('outputs') or []:
                 try:
                     Path(str(raw)).unlink(missing_ok=True)
                 except OSError:
                     pass
+        for folder in folders:
             try:
-                self._output_folder(job, create=False).rmdir()
+                folder.rmdir()
             except OSError:
                 pass
         return len(removed)
@@ -643,10 +651,24 @@ class FlowService:
         if not matched:
             return 0
         folder = self._output_folder(matched[0], create=False)
-        count = 0
+        ids = {str(job["id"]) for job in matched}
+        with self._account_condition:
+            self._cancelled.update(ids)
+            self._account_condition.notify_all()
         for job in matched:
-            if self.delete_job(str(job["id"])):
-                count += 1
+            for raw in job.get("outputs") or []:
+                try:
+                    Path(str(raw)).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        removed = store.delete_rows("jobs", ids)
+        count = len(removed)
+        for job in removed:
+            for raw in job.get("outputs") or []:
+                try:
+                    Path(str(raw)).unlink(missing_ok=True)
+                except OSError:
+                    pass
         # Remove untracked remnants too (for example an interrupted download),
         # but only after restricting the operation to the matched output path.
         # Never remove another job's outputs when folders are shared.
@@ -1153,7 +1175,11 @@ class FlowService:
             input_type = "prompt"
         source_files = list(payload.get("sourceFiles") or [])
         series_context = dict(payload.get("seriesContext") or {})
-        account = self._verify_account_plan_before_enqueue(account_id)
+        # Queue creation must stay fast. Entitlement sync opens Chrome and can
+        # take minutes; doing it here made the UI look stuck and prevented the
+        # user from seeing/cancelling the complete batch. The worker verifies
+        # the account immediately before submitting each job.
+        account = store.get_row("accounts", account_id) or {}
         if account.get("plan") == "Free":
             if kind == "video":
                 raise ValueError("Tài khoản gói thường chỉ hỗ trợ tạo ảnh (Free accounts only support image generation)")
@@ -1265,6 +1291,9 @@ class FlowService:
         try:
             if job_id in self._cancelled:
                 return
+            verified_account = self._verify_account_plan_before_enqueue(account_id)
+            if verified_account.get("plan") == "Free" and job.get("kind") == "video":
+                raise ValueError("Tài khoản gói thường chỉ hỗ trợ tạo ảnh (Free accounts only support image generation)")
             runtime_profile: Path | None = None
             try:
                 runtime_profile = self._clone_runtime_profile(account_id, job_id)

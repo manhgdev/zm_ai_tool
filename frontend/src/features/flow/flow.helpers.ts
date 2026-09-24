@@ -120,7 +120,7 @@ export function readSettings(): FlowSettings {
     ratio: "16:9", imageRatio: "16:9", duration: "8", count: 1, imageCount: 1,
     account: "Ultra 01",
     outputDir: defaultFlowOutputFolder(), quality: "Standard", resolution: "1K",
-    concurrency: "3", format: "PNG", filePrefix: "flow", referenceStrength: 70, autoDownload: true,
+    concurrency: "8", format: "PNG", filePrefix: "flow", referenceStrength: 70, autoDownload: true,
   };
   try {
     const { enhancePrompt: _ep, seed: _s, ...saved } = JSON.parse(
@@ -135,7 +135,8 @@ export function readSettings(): FlowSettings {
     if (!["16:9","9:16","1:1","4:3","3:4"].includes(merged.imageRatio)) merged.imageRatio = fallback.imageRatio;
     if (![1,2,3,4].includes(Number(merged.imageCount))) merged.imageCount = fallback.imageCount;
     if (!["16:9","9:16","1:1","4:3","3:4"].includes(merged.ratio)) merged.ratio = fallback.ratio;
-    if (!["1","2","3","4","5","6"].includes(String(merged.concurrency))) merged.concurrency = fallback.concurrency;
+    const concurrency = Number(merged.concurrency);
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 30) merged.concurrency = fallback.concurrency;
     if (!String(merged.outputDir || "").trim() || merged.outputDir === "flow_20250824_143022") {
       merged.outputDir = defaultFlowOutputFolder();
     } else {

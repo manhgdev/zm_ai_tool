@@ -152,7 +152,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       ),
     ),
   );
-  // readSettings keeps the stable default ``concurrency: "3"`` for Flow.
+  // readSettings keeps the stable default ``concurrency: "8"`` for Flow.
   const [settings, setSettings] = useState<FlowSettings>(readSettings);
   const [importName, setImportName] = useState("");
   const [promptInputType, setPromptInputType] = useState<PromptInputType>("prompt");
@@ -642,6 +642,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
     finally { actionLock.current = false; setActionBusy(false); }
   };
+  const cancelCreateAction = async () => {
+    try {
+      await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs/cancel-all", { method: "POST" });
+      actionLock.current = false;
+      setActionBusy(false);
+      const snapshot = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
+      setJobs(normalizeFlowJobs(snapshot.jobs, accounts));
+      toast.success(t("Đã hủy các job đang chờ/chạy.", "Queued and running jobs cancelled."));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
   const createFlowJobs = async () => {
     const prompts = prompt
       .split(/\n\s*\n/)
@@ -659,6 +671,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       }
       return;
     }
+    // Show the queue immediately; enqueue/upload can involve Chrome or file IO.
+    // Keeping the user on the queue makes per-job cancel/delete controls
+    // available while the request is still being accepted.
+    setTab("queue");
+    writeFlowRoutePanel("queue");
     if (account.status !== "online") {
       // Thử tự reconnect headless trước
       toast.info(t("Đang thử kết nối lại tự động...", "Attempting auto-reconnect..."));
@@ -934,7 +951,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       confirmLabel: t("Xóa tất cả", "Delete all"),
       run: () => (async () => {
         const { jobs: rows } = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", { method: "DELETE" });
-        for (const job of jobs) await deleteWebFlowOutputs(job);
+        await Promise.all(jobs.map((job) => deleteWebFlowOutputs(job)));
         setJobs(normalizeFlowJobs(rows, accounts));
         setApiError("");
         toast.success(t("Đã xóa tất cả job.", "All jobs deleted."));
@@ -995,7 +1012,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             body: JSON.stringify({ outputDir, kind: folderJobs[0]?.kind || "" }),
           },
         );
-        for (const job of folderJobs) await deleteWebFlowOutputs(job);
+        await Promise.all(folderJobs.map((job) => deleteWebFlowOutputs(job)));
         setJobs(normalizeFlowJobs(rows, accounts));
         setApiError("");
         toast.success(t("Đã xóa thư mục và các job thành công.", "Folder and jobs deleted successfully."));
@@ -1967,7 +1984,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     onChange={(concurrency) =>
                       setSettings((current) => ({ ...current, concurrency }))
                     }
-                    options={Array.from({ length: 16 }, (_, index) => String(index + 1))}
+                    options={Array.from({ length: 30 }, (_, index) => String(index + 1))}
                   />
                   <FlowSelect
                     label={t("Định dạng lưu", "Output format")}
@@ -2050,7 +2067,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   </label>
                 )}
               </div>
-              <div className={`flow-create-actions ${createKind === "video" ? "has-preview" : ""}`}>
+              <div className={`flow-create-actions ${createKind === "video" ? "has-preview" : ""} ${actionBusy ? "has-cancel" : ""}`}>
                 {createKind === "video" && (
                   <button
                     type="button"
@@ -2085,6 +2102,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     )}
                   </small>
                 </button>
+                {actionBusy && (
+                  <button type="button" className="flow-text-button is-warning" onClick={() => void cancelCreateAction()}>
+                    {t("Hủy", "Cancel")}
+                  </button>
+                )}
               </div>
             </section>
           </div>
@@ -2401,7 +2423,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     {[
                       t("Thời gian", "Time"),
                       t("Loại", "Type"),
-                      t("Input", "Input"),
                       t("Prompt", "Prompt"),
                       t("Model", "Model"),
                       t("Tài khoản", "Account"),
@@ -2414,7 +2435,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   </tr>
                 </thead>
                 <tbody>
-                  {jobs.map((job, index) => (
+                  {[...jobs].sort((left, right) => right.createdAt - left.createdAt).map((job, index) => (
                     <tr key={job.id}>
                       <td>24/08 · 14:{30 - index * 4}</td>
                       <td>
@@ -2422,13 +2443,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           {job.kind === "video"
                             ? t("Video", "Video")
                             : t("Ảnh", "Image")}
-                        </mark>
-                      </td>
-                      <td>
-                        <mark>
-                          {job.inputType === "prompt"
-                            ? t("Nhập tay", "Manual")
-                            : job.inputType.toUpperCase()}
                         </mark>
                       </td>
                       <td title={job.prompt}>{job.prompt}</td>

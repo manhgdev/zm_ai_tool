@@ -9,37 +9,45 @@ from typing import Any
 
 from pipeline.core.jobs import check_cancel
 
-_LOGO_DETECTION_VERSION = 2
+_LOGO_DETECTION_VERSION = 4
 
 
 # OCR often garbles 哔哩哔哩 → 叽咕 / 吡哩; UID watermarks are CJK + digits.
-_PLATFORM_MARKS = (
-    "生成",
-    "veo",
-    "grok",
-    "kling",
-    "哔哩",
-    "bilibili",
-    "b站",
-    "抖音",
-    "douyin",
-    "tiktok",
-    "西瓜",
-    "快手",
-)
 _UID_WATERMARK = re.compile(r"[\u4e00-\u9fff]{2,}.{0,12}\d{3,}")
+_UID_LATIN = re.compile(r"(?:uid|user|id)[\s_:#-]*\d{4,}", re.IGNORECASE)
+_BRAND_NAMES = ("veo", "grok", "kling", "tiktok", "douyin", "bilibili", "b站", "抖音", "西瓜", "快手")
+
+
+def _branding_token(text: str) -> str | None:
+    """Return a stable brand token; ordinary corner captions return None."""
+    compact = "".join(str(text or "").split()).casefold()
+    if not compact:
+        return None
+    if compact.startswith("@") and len(compact) >= 3:
+        return "@handle"
+    if _UID_WATERMARK.search(compact) or _UID_LATIN.search(compact):
+        return "uid"
+    if compact.startswith("ai生成") or compact.startswith("aigenerated"):
+        return "ai-generated"
+    for mark in _BRAND_NAMES:
+        if compact == mark:
+            return mark
+        if compact.startswith(mark):
+            suffix = compact[len(mark):]
+            if re.fullmatch(r"[\d.@:_-]+", suffix):
+                return mark
+    return None
 
 
 def _branding_text(text: str) -> bool:
-    """@handle, AI生成, Bilibili/Douyin corner marks, CJK+UID."""
+    """Only known platform/UID/handle marks qualify for automatic removal."""
     compact = "".join(str(text or "").split()).casefold()
-    if not compact:
-        return False
-    if compact.startswith("@"):
-        return True
-    if any(mark in compact for mark in _PLATFORM_MARKS):
-        return True
-    return bool(_UID_WATERMARK.search(compact))
+    return bool(_branding_token(compact))
+
+
+def _is_corner(cx: float, cy: float) -> bool:
+    """Aspect-ratio independent corner gate (not an arbitrary edge gate)."""
+    return (cx <= 0.35 or cx >= 0.65) and (cy <= 0.30 or cy >= 0.70)
 
 
 def _padded_normalized_box(
@@ -100,10 +108,9 @@ def _moving_branding_tracks(
             else:
                 runs[-1].append(item)
         for run in runs:
-            text0 = str(run[0][1].get("text") or "")
-            # 生成/AI watermark: one OCR hit is enough. @handle still needs 2
-            # to avoid a one-frame misread becoming a mask.
-            if len(run) < 2 and not _branding_text(text0):
+            # A single OCR hit is not enough for a video: scene text and
+            # compression artifacts can be branded-looking for one frame.
+            if len(run) < 2:
                 continue
             for index, (sample_index, item) in enumerate(run):
                 prev_index = run[index - 1][0] if index else sample_index
@@ -153,6 +160,8 @@ def _full_clip_branding_tracks(
     ]
     if not hits:
         return []
+    if len({int(item.get("sample", -1)) for item in hits}) < 2:
+        return []
     box0 = hits[0]["box"]
     if any(not _same_logo_box(box0, item["box"], fw, fh) for item in hits[1:]):
         return []
@@ -176,7 +185,7 @@ def _full_clip_branding_tracks(
 
 
 def _corner_graphic_masks(
-    samples: list[list[dict[str, Any]]], fw: int, fh: int
+    samples: list[list[dict[str, Any]]], fw: int, fh: int, *, min_samples: int = 2
 ) -> list[dict[str, float]]:
     """Find small non-text glyph watermarks that corner OCR cannot name.
 
@@ -186,24 +195,111 @@ def _corner_graphic_masks(
     selected merely because it is near an edge.
     """
     masks: list[dict[str, float]] = []
-    for items in samples:
+    seen: list[tuple[dict[str, float], set[int]]] = []
+    for sample_index, items in enumerate(samples):
         for item in items:
             text = str(item.get("text") or "").strip()
-            if not text or text.isalnum() or len(text) > 3:
+            if not text or text.isalnum() or len(text) > 2 or float(item.get("confidence") or 0) < 0.65:
                 continue
             x0, y0, x1, y1 = item["box"]
             cx, cy = (x0 + x1) / (2 * fw), (y0 + y1) / (2 * fh)
             bw, bh = x1 - x0, y1 - y0
-            if cx < 0.78 or cy < 0.78 or bw > fw * 0.16 or bh > fh * 0.16:
+            if not _is_corner(cx, cy) or bw > fw * 0.16 or bh > fh * 0.16:
                 continue
             padded = _padded_normalized_box((x0, y0, x1, y1), fw, fh)
-            if not any(
-                abs(padded["x"] - current["x"]) < 0.03
-                and abs(padded["y"] - current["y"]) < 0.03
-                for current in masks
-            ):
-                masks.append(padded)
+            match = next((entry for entry in seen if
+                abs(padded["x"] - entry[0]["x"]) < 0.03 and
+                abs(padded["y"] - entry[0]["y"]) < 0.03), None)
+            if match:
+                match[1].add(sample_index)
+            else:
+                seen.append((padded, {sample_index}))
+    masks.extend(mask for mask, samples_seen in seen if len(samples_seen) >= min_samples)
     return masks
+
+
+def _corner_icon_candidates(frame_bgr: Any, sample: int) -> list[dict[str, Any]]:
+    """Find the translucent four-point Veo sparkle when OCR sees no text.
+
+    The mark is a graphic, not a word, and is commonly invisible to OCR.  Do
+    not run connected-component detection over the whole corner: road stripes,
+    lamps and captions produce hundreds of plausible components.  Veo places
+    this sparkle at a stable normalized position in the lower-right safe area,
+    so use a small local-contrast test there and return one tight box only when
+    the four-point mark has measurable contrast over its immediate background.
+    """
+    from pipeline.core.runtime_site import ensure_cv2
+
+    cv2 = ensure_cv2()
+    import numpy as np
+
+    fh, fw = frame_bgr.shape[:2]
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    # The logo is neutral gray/white.  Saturated road reflections and neon
+    # signs are rejected before scoring, while retaining the translucent mark.
+    neutral = (hsv[:, :, 1] < 155).astype(np.float32)
+    smooth = cv2.GaussianBlur(gray, (0, 0), max(3.0, min(fw, fh) * 0.012))
+    contrast = (gray - smooth) * neutral
+    radius = max(8, round(min(fw, fh) * 0.022))
+    outer = max(radius + 5, round(radius * 1.65))
+    yy, xx = np.ogrid[-outer:outer + 1, -outer:outer + 1]
+    inner_mask = (xx * xx + yy * yy <= radius * radius)
+    ring_mask = (xx * xx + yy * yy >= (radius + 4) ** 2) & (xx * xx + yy * yy <= outer * outer)
+    best: tuple[float, int, int] | None = None
+    # Veo's sparkle is in the lower-right safe area. Search a small normalized
+    # window so aspect ratio changes do not turn this into a fixed-pixel guess.
+    for ny in np.linspace(0.80, 0.94, 15):
+        cy = round(ny * fh)
+        for nx in np.linspace(0.91, 0.945, 9):
+            cx = round(nx * fw)
+            y0, y1 = cy - outer, cy + outer + 1
+            x0, x1 = cx - outer, cx + outer + 1
+            if x0 < 0 or y0 < 0 or x1 > fw or y1 > fh:
+                continue
+            patch = contrast[y0:y1, x0:x1]
+            if patch.shape != inner_mask.shape:
+                continue
+            score = float(patch[inner_mask].mean() - patch[ring_mask].mean())
+            # Prefer the canonical lower-right placement when several road
+            # highlights have a similar score.
+            distance = ((nx - 0.925) ** 2 + (ny - 0.89) ** 2) ** 0.5
+            ranked = score - distance * 45.0
+            if best is None or ranked > best[0]:
+                best = (ranked, cx, cy)
+    # The Flow mark is deliberately translucent; on a detailed night scene
+    # its local contrast can be only a few gray levels.  The normalized search
+    # window above is the false-positive guard, so do not require an opaque
+    # white component here.
+    if best is None or best[0] < max(7.0, min(fw, fh) * 0.007):
+        return []
+    _, cx, cy = best
+    bw = max(24, round(fw * 0.052))
+    bh = max(24, round(fh * 0.078))
+    box = (
+        max(0, cx - bw // 2), max(0, cy - bh // 2),
+        min(fw, cx + (bw + 1) // 2), min(fh, cy + (bh + 1) // 2),
+    )
+    confidence = min(0.96, 0.62 + best[0] / 80.0)
+    # A star-shaped mask avoids repainting the road stripes behind the mark.
+    # The rectangular bbox remains available for diagnostics/API compatibility.
+    sx, sy = bw * 0.50, bh * 0.50
+    polygon = [
+        (round(cx), round(cy - sy)), (round(cx + bw * 0.17), round(cy - bh * 0.17)),
+        (round(cx + sx), round(cy)), (round(cx + bw * 0.17), round(cy + bh * 0.17)),
+        (round(cx), round(cy + sy)), (round(cx - bw * 0.17), round(cy + bh * 0.17)),
+        (round(cx - sx), round(cy)), (round(cx - bw * 0.17), round(cy - bh * 0.17)),
+    ]
+    return [{
+        "box": box,
+        "polygon": polygon,
+        # Keep the stable brand token in the diagnostic text so the existing
+        # clustering/activation path treats this graphic like OCR "Veo".
+        "text": "Veo",
+        "confidence": round(confidence, 4),
+        "sample": sample,
+        "token": "veo",
+    }]
 
 
 def _parse_logo_rows(
@@ -245,19 +341,22 @@ def _parse_logo_rows(
             continue
         area = bw * bh / max(1.0, float(fw * fh))
         cx, cy = (x0 + x1) * 0.5 / fw, (y0 + y1) * 0.5 / fh
-        edge = cx <= 0.28 or cx >= 0.72 or cy <= 0.20 or cy >= 0.80
+        corner = _is_corner(cx, cy)
         branding = _branding_text(text)
         if branding:
-            if area < 0.00008 or area > 0.12:
+            if not corner or confidence < 0.25 or area < 0.00008 or area > 0.08:
                 continue
-        elif not edge or area < 0.00008 or area > 0.08 or bw > fw * 0.45 or bh > fh * 0.30:
+        elif not corner or area < 0.00008 or area > 0.08 or bw > fw * 0.45 or bh > fh * 0.30:
             continue
+        polygon = [(int(ox + float(point[0]) * inv), int(oy + float(point[1]) * inv)) for point in poly]
         out.append(
             {
                 "box": (int(x0), int(y0), int(x1), int(y1)),
+                "polygon": polygon,
                 "text": text,
                 "confidence": max(0.0, min(1.0, confidence)),
                 "sample": sample,
+                "token": _branding_token(text),
             }
         )
     return out
@@ -325,7 +424,7 @@ def _same_logo_box(
 
 
 def pick_logo_detection(
-    samples: list[list[dict[str, Any]]], fw: int, fh: int
+    samples: list[list[dict[str, Any]]], fw: int, fh: int, *, min_samples: int = 2
 ) -> dict[str, Any] | None:
     """Cluster geometrically stable edge OCR boxes and return the best one."""
     clusters: list[list[dict[str, Any]]] = []
@@ -351,7 +450,8 @@ def pick_logo_detection(
     eligible = [
         cluster
         for cluster in clusters
-        if any(_branding_text(str(item.get("text") or "")) for item in cluster)
+        if len(cluster) >= min_samples
+        and any(_branding_text(str(item.get("text") or "")) for item in cluster)
     ]
     if not eligible:
         return None
@@ -371,6 +471,8 @@ def pick_logo_detection(
     x1, y1 = median(box[2] for box in boxes), median(box[3] for box in boxes)
     texts = [str(item["text"]) for item in best]
     text = max(texts, key=lambda value: (texts.count(value), len(value)))
+    token = _branding_token(text)
+    representative = max(best, key=lambda item: float(item.get("confidence") or 0.0))
     return {
         "version": _LOGO_DETECTION_VERSION,
         "bbox": _padded_normalized_box((int(x0), int(y0), int(x1), int(y1)), fw, fh),
@@ -378,6 +480,9 @@ def pick_logo_detection(
         "total": len(samples),
         "confidence": round(sum(float(item["confidence"]) for item in best) / len(best), 4),
         "text": text,
+        "token": token or "generated",
+        "polygon": representative.get("polygon"),
+        "kind": "static",
     }
 
 
@@ -402,6 +507,42 @@ def detect_logo_bbox_inprocess(
     prepare_cv2_import_path()
     cv2 = ensure_cv2()
     path = Path(video)
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+    is_image = path.suffix.casefold() in image_exts
+    if is_image:
+        frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if frame is None or frame.size == 0:
+            return None
+        fh, fw = frame.shape[:2]
+        ocr = rapidocr_labels()
+        exclude_texts = {
+            "".join(str(segment.get("source") or "").lower().split())
+            for segment in (segments or [])
+            if str(segment.get("source") or "").strip()
+        }
+        hits = _logo_candidates(frame, ocr, 0, exclude_texts)
+        hits.extend(_logo_candidates_corners(frame, ocr, 0, exclude_texts))
+        hits.extend(_corner_icon_candidates(frame, 0))
+        static = pick_logo_detection([[*hits]], fw, fh, min_samples=1)
+        graphic_masks = _corner_graphic_masks([hits], fw, fh, min_samples=1)
+        if not static and not graphic_masks:
+            return None
+        if not static:
+            static = {
+                "version": _LOGO_DETECTION_VERSION,
+                "bbox": graphic_masks[0],
+                "masks": graphic_masks,
+                "samples": 1,
+                "total": 1,
+                "confidence": 0.65,
+                "text": "corner icon",
+                "token": "corner-icon",
+                "kind": "icon",
+            }
+        static["total"] = 1
+        static["kind"] = "static"
+        return static
+
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         return None
@@ -431,16 +572,19 @@ def detect_logo_bbox_inprocess(
         check_cancel(project_id)
         hits = _logo_candidates(frame, ocr, frame_index, exclude_texts)
         hits.extend(_logo_candidates_corners(frame, ocr, frame_index, exclude_texts))
+        hits.extend(_corner_icon_candidates(frame, frame_index))
         sample_by_frame[frame_index] = hits
     ordered_frames = sorted(time_by_frame)
     times = [time_by_frame[frame_index] for frame_index in ordered_frames]
     samples = [sample_by_frame.get(frame_index, []) for frame_index in ordered_frames]
-    static = pick_logo_detection(samples, fw, fh)
-    graphic_masks = _corner_graphic_masks(samples, fw, fh)
+    # A video needs confirmation in at least two distinct samples. A single
+    # OCR hit is too easy to confuse with scene text or compression noise.
+    static = pick_logo_detection(samples, fw, fh, min_samples=2)
+    graphic_masks = _corner_graphic_masks(samples, fw, fh, min_samples=2)
     tracks = _full_clip_branding_tracks(samples, fw, fh, duration)
     if not tracks:
         tracks = _moving_branding_tracks(samples, times, fw, fh)
-    if not static and not tracks and not graphic_masks:
+    if not static and not tracks:
         return None
     result: dict[str, Any] = static or {
         "version": _LOGO_DETECTION_VERSION,
@@ -455,6 +599,7 @@ def detect_logo_bbox_inprocess(
         if not result.get("bbox"):
             result["bbox"] = tracks[0].get("bbox")
             result["text"] = str(tracks[0].get("text") or result.get("text") or "")
+            result["kind"] = "track"
     if graphic_masks:
         primary = result.get("bbox")
         if not isinstance(primary, dict):

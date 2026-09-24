@@ -20,6 +20,7 @@ _PROCS: dict[str, subprocess.Popen] = {}
 
 CLEANER_TEMP_DIR = PUBLIC_DATA / "upload"
 CLEANER_OUT_DIR = DATA / "cleaner_out"
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 
 def ensure_dirs():
     CLEANER_TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,9 +40,10 @@ def create_job(filename: str, method: str, options: dict, input_path: str, outpu
     job_id = uuid.uuid4().hex[:8]
     
     ext = Path(filename).suffix or ".mp4"
-    if method == "reencode" and options.get("container"):
+    is_image = ext.lower() in IMAGE_EXTENSIONS
+    if not is_image and method == "reencode" and options.get("container"):
         ext = f".{options['container']}"
-    elif method in {"optimize", "logo"}:
+    elif not is_image and method in {"optimize", "logo"}:
         # Các filter/encoder của hai chế độ này không hợp lệ với mọi container
         # đầu vào (đặc biệt WebM). MP4 là output tương thích nhất để preview và tải.
         ext = ".mp4"

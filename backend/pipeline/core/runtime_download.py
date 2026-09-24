@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -90,6 +91,74 @@ def _retry_delay(error, attempt: int) -> float:
         return float(2 ** attempt)
 
 
+class _RangeUnsupported(Exception):
+    """The wheel host ignored or changed a bounded range request."""
+
+
+def _download_large_wheel(wheel: Wheel, part: Path, report: Callable,
+                          stop: threading.Event, attempt: int,
+                          opener: Callable) -> bool:
+    """Use four resumable ranges for a large Torch wheel when supported."""
+    if wheel.name != 'torch' or not wheel.size or wheel.size < 256 * 1024**2 or part.exists():
+        return False
+    size = wheel.size
+    count = 4
+    span = (size + count - 1) // count
+    parts = [part.with_name(f'{part.name}.{index}') for index in range(count)]
+    progress_lock = threading.Lock()
+    received = [min(span, path.stat().st_size) if path.exists() else 0 for path in parts]
+    def fetch(index: int) -> None:
+        start, end = index * span, min(size - 1, (index + 1) * span - 1)
+        length = end - start + 1
+        offset = parts[index].stat().st_size if parts[index].exists() else 0
+        if offset == length:
+            return
+        if offset > length:
+            parts[index].unlink()
+            offset = 0
+        request = urllib.request.Request(wheel.url, headers={
+            'User-Agent': 'ZM-AI-TOOL-runtime', 'Accept-Encoding': 'identity',
+            'Range': f'bytes={start + offset}-{end}',
+        })
+        with opener(request, timeout=30) as response:
+            if urllib.parse.urlsplit(response.geturl()).scheme != 'https' and urllib.parse.urlsplit(wheel.url).hostname not in ('127.0.0.1', 'localhost'):
+                raise RuntimeInstallError('TLS_CERTIFICATE_FAILED', 'Insecure download redirect', retryable=False)
+            expected = f'bytes {start + offset}-{end}/{size}'
+            if response.status != 206 or response.headers.get('Content-Range', '') != expected:
+                raise _RangeUnsupported
+            with parts[index].open('ab' if offset else 'wb') as output:
+                while True:
+                    if stop.is_set():
+                        raise RuntimeInstallError('INSTALL_CANCELLED', 'Download cancelled', retryable=True)
+                    block = response.read(256 * 1024)
+                    if not block:
+                        break
+                    output.write(block)
+                    offset += len(block)
+                    with progress_lock:
+                        received[index] = offset
+                        report(wheel, sum(received), size, False, attempt, 'downloading')
+        if offset != length:
+            raise ConnectionError(f'Range interrupted at {offset}/{length}')
+
+    try:
+        with ThreadPoolExecutor(max_workers=count, thread_name_prefix='torch-range') as pool:
+            futures = [pool.submit(fetch, index) for index in range(count)]
+            for future in as_completed(futures):
+                future.result()
+    except _RangeUnsupported:
+        for item in parts:
+            item.unlink(missing_ok=True)
+        return False
+    with part.open('wb') as output:
+        for item in parts:
+            with item.open('rb') as source:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+    for item in parts:
+        item.unlink(missing_ok=True)
+    return True
+
+
 def download_wheel(wheel: Wheel, cache: Path, report: Callable, stop: threading.Event,
                    *, opener=urllib.request.urlopen, sleep=time.sleep) -> Path:
     """At most three attempts; only complete, hash-verified wheels are visible."""
@@ -108,6 +177,14 @@ def download_wheel(wheel: Wheel, cache: Path, report: Callable, stop: threading.
             raise RuntimeInstallError('INSTALL_CANCELLED', 'Download cancelled', retryable=True)
         received = part.stat().st_size if part.is_file() else 0
         try:
+            if _download_large_wheel(wheel, part, report, stop, attempt, opener):
+                report(wheel, part.stat().st_size, wheel.size, False, attempt, 'verifying')
+                if sha256(part) != wheel.digest:
+                    part.unlink(missing_ok=True)
+                    raise RuntimeInstallError('CHECKSUM_MISMATCH', f'Checksum mismatch: {wheel.name}', retryable=False)
+                os.replace(part, target)
+                report(wheel, target.stat().st_size, target.stat().st_size, False, attempt, 'complete')
+                return target
             # A process may have exited after the final byte but before rename.
             if received and (total is None or received == total) and sha256(part) == wheel.digest:
                 os.replace(part, target)

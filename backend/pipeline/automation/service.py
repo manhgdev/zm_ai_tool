@@ -56,6 +56,7 @@ class AutomationService:
         self._executor = ThreadPoolExecutor(max_workers=max(1, min(int(max_workers), 8)), thread_name_prefix="automation")
         self._futures: dict[str, Future[Any]] = {}
         self._cancel: dict[str, threading.Event] = {}
+        self._deleted_jobs: set[str] = set()
         self._lock = threading.RLock()
         self._chat_gate = threading.Lock()
 
@@ -67,6 +68,16 @@ class AutomationService:
             "chatModel": "GPT-5.6 Sol",
             "systemPrompt": "",
             "promptEngine": "vi",
+            "scriptBrief": {
+                "niche": "",
+                "audience": "",
+                "durationMinutes": 8,
+                "videoType": "educational",
+                "tone": "Tự nhiên, sắc bén, dễ nghe",
+                "platform": "YouTube",
+                "primaryGoal": "watch_time",
+                "commonMistake": "",
+            },
             "tts": {"voice": "system", "speed": 1.0, "volume": 1.0, "pitch": 0.0, "style": "tu_nhien"},
             "flow": {"accountId": "", "model": "Nano Banana 2", "ratio": "16:9", "resolution": "1K", "concurrency": "3", "promptEngine": "vi"},
             "compose": {
@@ -223,6 +234,7 @@ class AutomationService:
         if not job:
             raise KeyError(job_id)
         with self._lock:
+            self._deleted_jobs.add(job_id)
             event = self._cancel.get(job_id)
             if event:
                 event.set()
@@ -232,27 +244,38 @@ class AutomationService:
                 # A queued future can be cancelled before _execute starts;
                 # no worker will run its finally block to clean this marker.
                 active_future = False
-        # Provider children have their own queues. Delete them rather than only
-        # cancelling: each child owns a Flow output file which belongs solely to
-        # this parent automation job.
-        for child_id in job.get("child_job_ids") or []:
-            try:
-                from pipeline.flow import service as flow_service
-                flow_service.delete_job(str(child_id))
-            except Exception:
-                pass
+        # Delete the parent record first. UI polling must never resurrect it
+        # while a Flow child/provider is still being cancelled.
+        deleted = self.store.delete_job(job_id)
+        # Provider cancellation can be slow. Run it out-of-band so DELETE
+        # returns immediately; the parent record is already gone above.
+        child_ids = list(job.get("child_job_ids") or [])
+        def cancel_children() -> None:
+            for child_id in child_ids:
+                try:
+                    from pipeline.flow import service as flow_service
+                    flow_service.delete_job(str(child_id))
+                except Exception:
+                    pass
+        if child_ids:
+            threading.Thread(target=cancel_children, name=f"automation-delete-{job_id}", daemon=True).start()
         # _compose creates exactly one isolated directory per automation job.
         # Do not remove the configured root because other jobs may share it.
         compose_root = selected_or_default("automation", str((job.get("settings") or {}).get("outputDir") or ""))
         output_dir = compose_root / safe_output_part(job.get("title"), "job") / job_id
-        shutil.rmtree(output_dir, ignore_errors=True)
-        deleted = self.store.delete_job(job_id)
         workspace = self.store.jobs_root / job_id
-        shutil.rmtree(workspace, ignore_errors=True)
-        with self._lock:
-            self._futures.pop(job_id, None)
-            if not active_future:
+        def finish_cleanup(_future: Future[Any] | None = None) -> None:
+            shutil.rmtree(output_dir, ignore_errors=True)
+            shutil.rmtree(workspace, ignore_errors=True)
+            with self._lock:
+                self._futures.pop(job_id, None)
                 self._cancel.pop(job_id, None)
+                self._deleted_jobs.discard(job_id)
+
+        if active_future and future:
+            future.add_done_callback(finish_cleanup)
+        else:
+            finish_cleanup()
         return {"id": job_id, "deleted": deleted}
 
     def retry_job(self, job_id: str, *, from_stage: str | None = None, preview_seconds: float | None = None) -> dict[str, Any]:
@@ -460,7 +483,8 @@ class AutomationService:
     def is_cancelled(self, job_id: str) -> bool:
         with self._lock:
             event = self._cancel.get(job_id)
-        return bool(event and event.is_set())
+            deleted = job_id in self._deleted_jobs
+        return deleted or bool(event and event.is_set())
 
     def set_stage(self, job_id: str, stage: str, progress: float, message: str = "") -> None:
         self.store.update_job(job_id, status="running", stage=stage, progress=max(0, min(100, float(progress))))
@@ -590,6 +614,7 @@ class AutomationService:
                 content, artifact = self._request_chat(job_id, self._youtube_rewrite_prompt(yt_title, caption_text, settings), [])
                 script = workspace / "script.txt"
                 self._write_text_result(script, artifact, content)
+                self._clean_script_for_tts(script)
                 self.save_artifact(job_id, "script", script, stage="script")
                 inputs["script"] = str(script); inputs["generatedScript"] = True
                 self.store.update_job(job_id, input=inputs)
@@ -599,6 +624,7 @@ class AutomationService:
                 content, artifact = self._request_chat(job_id, self._script_prompt(topic, settings), [])
                 script = workspace / "script.txt"
                 self._write_text_result(script, artifact, content)
+                self._clean_script_for_tts(script)
                 self.save_artifact(job_id, "script", script, stage="script")
                 inputs["script"] = str(script); inputs["generatedScript"] = True
                 self.store.update_job(job_id, input=inputs)
@@ -621,10 +647,16 @@ class AutomationService:
                 self.set_stage(job_id, "tts", 24, "Đang tạo audio và SRT bằng TTS.")
                 tts_cfg = settings.get("tts") if isinstance(settings.get("tts"), dict) else {}
                 from pipeline.tts.studio import synth_text_job, ensure_wav, ensure_mp3
+                from pipeline.tts.voice_store import normalize_voice_language
+                output_language = str(settings.get("language") or "vi").strip().lower()
+                try:
+                    output_language = normalize_voice_language(output_language, strict=True)
+                except ValueError as exc:
+                    raise RuntimeError(f"AUTOMATION_TTS_LANGUAGE_UNSUPPORTED: {settings.get('language') or 'unknown'}") from exc
                 result = synth_text_job(
                     text=script.read_text(encoding="utf-8-sig", errors="replace"),
                     voice=str(tts_cfg.get("voice") or "system"),
-                    lang=str(settings.get("language") or "vi"),
+                    lang=output_language,
                     speed=float(tts_cfg.get("speed") or 1.0), volume=float(tts_cfg.get("volume") or 1.0),
                     pitch=float(tts_cfg.get("pitch") or 0.0), style=str(tts_cfg.get("style") or "tu_nhien"),
                     match_duration="none", auto_split=True, title=job["title"],
@@ -735,6 +767,8 @@ class AutomationService:
         language = "English" if str(settings.get("language") or "vi").lower() == "en" else "Vietnamese"
         if language == "English":
             instruction = f"STAGE 1 — TOPIC SELECTION. When the user only says start or provides no specific topic, generate exactly 5 potentially engaging educational YouTube video ideas in English that fit this Audio-First 2D engine. Return this compact table and nothing else:\n| # | Video Topic |\n|---|---|\n| 1 | ... |\n| 2 | ... |\n| 3 | ... |\n| 4 | ... |\n| 5 | ... |\nThen write exactly: Choose 1-5 to begin. Starting hint: {topic or 'suggest a strong educational topic.'}"
+        elif language == "Korean":
+            instruction = f"사용자가 시작만 요청했거나 주제를 주지 않았다면 한국어로 매력적인 YouTube 교육 영상 아이디어 5개를 정확히 생성하세요. 다음 표만 출력하세요:\n| 번호 | 영상 주제 |\n|---|---|\n| 1 | ... |\n| 2 | ... |\n| 3 | ... |\n| 4 | ... |\n| 5 | ... |\n그 다음 정확히 ‘1-5 중 하나를 선택하세요.’라고 쓰세요. 시작 힌트: {topic or '매력적인 교육 주제를 제안하세요.'}"
         else:
             instruction = f"GIAI ĐOẠN 1 — CHỌN CHỦ ĐỀ. Khi người dùng chỉ nói bắt đầu hoặc chưa đưa chủ đề cụ thể, hãy tạo đúng 5 ý tưởng video YouTube giáo dục có khả năng thu hút bằng tiếng Việt, phù hợp với engine Audio-First 2D. Chỉ trả về bảng ngắn này và không thêm nội dung khác:\n| # | Chủ đề video |\n|---|---|\n| 1 | ... |\n| 2 | ... |\n| 3 | ... |\n| 4 | ... |\n| 5 | ... |\nSau đó viết đúng: Chọn số 1-5 để bắt đầu. Gợi ý ban đầu: {topic or 'hãy tự đề xuất chủ đề giáo dục có khả năng thu hút cao.'}"
         base = self._audio_first_engine_prompt(settings)
@@ -744,40 +778,56 @@ class AutomationService:
     def _audio_first_engine_prompt(settings: dict[str, Any]) -> str:
         """Return the Audio-First engine template or custom system prompt."""
         engine = str(settings.get("promptEngine") or (settings.get("flow") or {}).get("promptEngine") or settings.get("language") or "vi")
+        requested_language = str(settings.get("language") or "vi").strip().lower()
+        if engine == "vi" and requested_language != "vi":
+            engine = requested_language
         if engine == "custom":
             custom = str(settings.get("systemPrompt") or "").strip()
             if custom:
                 return custom
             return audio_first_prompt("vi")
+        if engine == "ko":
+            return audio_first_prompt("vi") + "\n\nIMPORTANT LANGUAGE OVERRIDE: Write every script, label, image prompt, and instruction in natural Korean (한국어). Do not output Vietnamese."
+        if engine not in {"vi", "en"}:
+            return audio_first_prompt("vi") + f"\n\nIMPORTANT LANGUAGE OVERRIDE: Write every script, topic, label, image prompt, subtitle, and instruction in natural {engine}. Do not output Vietnamese or English unless it is a proper name or required technical term."
         return audio_first_prompt(engine)
 
     def _script_prompt(self, topic: str, settings: dict[str, Any]) -> str:
         base = self._audio_first_engine_prompt(settings)
-        language = "English" if str(settings.get("language") or "vi").lower() == "en" else "Vietnamese"
+        language_code = str(settings.get("language") or "vi").lower()
+        language = "English" if language_code == "en" else ("Korean" if language_code == "ko" else "Vietnamese")
+        brief = settings.get("scriptBrief") if isinstance(settings.get("scriptBrief"), dict) else {}
+        brief_lines = (
+            f"Topic: {topic}\nNiche: {brief.get('niche') or 'general education'}\nAudience: {brief.get('audience') or 'curious general viewers'}\n"
+            f"Target duration: {brief.get('durationMinutes') or 8} minutes\nVideo type: {brief.get('videoType') or 'educational'}\nTone: {brief.get('tone') or 'natural and clear'}\n"
+            f"Platform: {brief.get('platform') or 'YouTube'}\nPrimary goal: {brief.get('primaryGoal') or 'watch time'}\nCommon mistake to correct: {brief.get('commonMistake') or 'none specified'}"
+        )
+        brief_lines_vi = (
+            f"Chủ đề: {topic}\nNgách: {brief.get('niche') or 'giáo dục đại chúng'}\nĐối tượng: {brief.get('audience') or 'người xem tò mò'}\n"
+            f"Độ dài mục tiêu: {brief.get('durationMinutes') or 8} phút\nDạng video: {brief.get('videoType') or 'giáo dục'}\nTone: {brief.get('tone') or 'tự nhiên, rõ ràng'}\n"
+            f"Nền tảng: {brief.get('platform') or 'YouTube'}\nMục tiêu chính: {brief.get('primaryGoal') or 'thời lượng xem'}\nSai lầm cần sửa: {brief.get('commonMistake') or 'không nêu'}"
+        )
         instruction = (
-            f"Final topic: {topic}\n"
-            "Reply with ONLY the raw narration text — no preamble, no filename mention, no explanation, no markdown. "
-            "Start immediately with the first word of the narration."
-            if language == "English" else
-            f"Chủ đề cuối cùng: {topic}\n"
-            "Chỉ trả về đúng nội dung lời thuyết minh thuần văn bản — không mở đầu, không nhắc tên file, không giải thích, không markdown. "
-            "Bắt đầu ngay bằng từ đầu tiên của lời thuyết minh."
+            f"{brief_lines}\nCreate a complete YouTube retention script in THREE clearly labelled parts: 1) five hook options with 1-10 scores and select one; 2) full script following HOOK → MICRO HOOK → curiosity loop → value → pattern interrupts → climax → result → CTA, including [VISUAL]/[B-ROLL] cues; 3) retention editor self-check, direct fixes, hook/result alignment, and three timestamped retention moments with psychological reasons. Keep spoken lines short and natural."
+            if language == "English" else (f"주제: {topic}\n장르: {brief.get('niche') or '교육'}\n대상 시청자: {brief.get('audience') or '호기심 많은 시청자'}\n분량: 약 {brief.get('durationMinutes') or 8}분\n영상 형식: {brief.get('videoType') or '교육'}\n톤: {brief.get('tone') or '자연스럽고 명확한 말투'}\n플랫폼: {brief.get('platform') or 'YouTube'}\n핵심 목표: {brief.get('primaryGoal') or '시청 시간'}\n다뤄야 할 흔한 오해: {brief.get('commonMistake') or '없음'}\n5가지 훅을 점수화하고 최적의 훅을 선택한 뒤, 마이크로 훅·호기심 루프·가치 전달·2개 이상의 패턴 브레이크·클라이맥스·결과·CTA가 포함된 완성 대본을 작성하세요. 중요한 지점에는 [이미지]/[B-ROLL]을 표시하고, 마지막에 리텐션 편집자 점검과 3개의 시청 유지 순간을 심리적 이유와 함께 제시하세요. 자연스러운 한국어로만 작성하세요.") if language == "Korean" else
+            f"{brief_lines_vi}\nHãy tạo kịch bản YouTube hoàn chỉnh theo ĐÚNG 3 phần có nhãn rõ ràng: 1) 5 phương án hook 3-5 giây, mỗi hook một góc tiếp cận, chấm 1-10 và chọn hook tốt nhất; 2) kịch bản theo HOOK → MICRO HOOK → mở vòng lặp tò mò → bối cảnh → giá trị → ít nhất 2 điểm phá vỡ khuôn mẫu → cao trào → kết quả → CTA, chèn [HÌNH ẢNH]/[B-ROLL] tại điểm quan trọng; 3) tự kiểm tra dưới góc nhìn biên tập viên, sửa trực tiếp điểm dễ tụt retention, xác nhận hook khớp kết quả, và liệt kê 3 khoảnh khắc giữ chân có mốc thời gian cùng lý do tâm lý. Câu nói ngắn, tự nhiên, sẵn sàng đọc thành tiếng."
         )
         return base + "\n\n" + instruction
 
     def _image_prompt_request(self, settings: dict[str, Any]) -> str:
         base = self._audio_first_engine_prompt(settings)
-        language = "English" if str(settings.get("language") or "vi").lower() == "en" else "Vietnamese"
+        language_code = str(settings.get("language") or "vi").lower()
+        language = "English" if language_code == "en" else ("Korean" if language_code == "ko" else "Vietnamese")
         instruction = (
             "Read the attached SRT with timecodes (or script), split visual beats by meaning, then output ONLY the image prompt lines. "
             "Format: 001_[00:00:00.000-00:00:05.000] <English description>. Separate each prompt with a blank line. "
             "IMPORTANT: every second of the video must be covered — do NOT stop early, do NOT skip any segment. "
             "No preamble, no explanation, no filename mention — start immediately with line 001."
-            if language == "English" else
+            if language == "English" else ("첨부된 SRT의 타임코드를 읽고 의미에 따라 비주얼 비트를 나눈 다음 이미지 프롬프트만 출력하세요. 모든 프롬프트는 한국어로 작성하고, 001_[HH:MM:SS.mmm-HH:MM:SS.mmm] 형식을 사용하며 영상 전체 시간을 빠짐없이 포함하세요. 설명이나 서문 없이 001번부터 시작하세요." if language == "Korean" else
             "Đọc file SRT có timecode (hoặc kịch bản) đính kèm, chia visual beat theo ý nghĩa, rồi chỉ xuất ra các dòng prompt ảnh. "
             "Mỗi prompt theo đúng format GIAI ĐOẠN 6: 001_[00:00:00.000-00:00:05.000] <nội dung prompt tiếng Việt>. Mỗi prompt cách nhau 1 dòng trống. "
             "QUAN TRỌNG: phải phủ kín toàn bộ thời lượng video — không được dừng sớm, không được bỏ sót đoạn nào. "
-            "Không mở đầu, không giải thích, không nhắc tên file — bắt đầu ngay bằng dòng 001."
+            "Không mở đầu, không giải thích, không nhắc tên file — bắt đầu ngay bằng dòng 001.")
         )
         return base + "\n\n" + instruction
 
@@ -1032,6 +1082,38 @@ class AutomationService:
         )
         lines = [ln for ln in text.splitlines() if not _META.match(ln.strip())]
         return "\n".join(lines).strip()
+
+    @classmethod
+    def _clean_script_for_tts(cls, path: Path) -> None:
+        """Keep only spoken narration; never send production notes to TTS/SRT."""
+        text = cls._strip_ai_meta(path.read_text(encoding="utf-8-sig", errors="replace"))
+        # Defensive cleanup for providers that returned an SRT-like response
+        # instead of plain script text: timestamps and cue indexes are never
+        # spoken and must not become part of the next SRT.
+        if "-->" in text:
+            text = re.sub(r"\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.]\d{3}", "\n", text)
+            text = re.sub(r"(?m)^\s*\d+\s*$", "", text)
+        text = re.sub(r"\s*(?:---\s*)?(?=##\s*[123][.)])", "\n", text)
+        lines = text.splitlines()
+        # The retention template has hook options before section 2 and an
+        # editorial self-check after section 3. Keep only spoken section 2.
+        start = next((i for i, line in enumerate(lines) if re.match(r"^\s*(?:#+\s*)?(?:BƯỚC\s*)?2\s*[.)-]\s*(?:KỊCH|FULL|SCRIPT)|^\s*(?:KỊCH BẢN|FULL SCRIPT)\b", line, re.I)), 0)
+        end = next((i for i in range(start + 1, len(lines)) if re.match(r"^\s*(?:#+\s*)?(?:BƯỚC\s*)?3\s*[.)-]\s*(?:TỰ|SELF|RETENTION)|^\s*(?:TỰ KIỂM TRA|SELF[- ]CHECK|RETENTION EDITOR)\b", lines[i], re.I)), len(lines))
+        cleaned: list[str] = []
+        for line in lines[start:end]:
+            value = re.sub(r"^\s*#+\s*|\*\*|__", "", line).strip()
+            value = re.sub(r"^(?:2\s*[.)-]\s*)?(?:KỊCH BẢN(?: YOUTUBE)?|FULL SCRIPT)\s*(?:[-:—]\s*)?", "", value, flags=re.I)
+            if not value or re.match(r"^(?:BƯỚC\s*2\b|PART\s*2\b|KỊCH BẢN(?: YOUTUBE)?|FULL SCRIPT|HOOK|MICRO HOOK|CTA|HÌNH ẢNH|B-ROLL|VISUAL|[A-ZÀ-Ỹ ]{3,}:)", value, re.I):
+                continue
+            value = re.sub(r"\[(?:HOOK|MICRO HOOK|MỞ VÒNG LẶP TÒ MÒ|BỐI CẢNH|GIÁ TRỊ|ĐIỂM PHÁ VỠ KHUÔN MẪU|CAO TRÀO|KẾT QUẢ|CTA|HÌNH ẢNH|B-ROLL|VISUAL|IMAGE|SCENE)[^\]]*\]", "", value, flags=re.I)
+            value = re.sub(r"^\s*(?:HOOK|MICRO HOOK|MỞ VÒNG LẶP TÒ MÒ|BỐI CẢNH|GIÁ TRỊ|ĐIỂM PHÁ VỠ KHUÔN MẪU\s*\d*|CAO TRÀO|KẾT QUẢ|CTA)\s*(?:[-:—].*)?$", "", value, flags=re.I)
+            value = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", value)
+            if value:
+                cleaned.append(value)
+        result = "\n".join(cleaned).strip()
+        if not result:
+            raise RuntimeError("AUTOMATION_SCRIPT_CLEAN_EMPTY")
+        path.write_text(result + "\n", encoding="utf-8")
 
     @classmethod
     def _write_text_result(cls, target: Path, artifact: Path | None, content: str) -> None:

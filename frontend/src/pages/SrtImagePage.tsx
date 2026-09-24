@@ -240,6 +240,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
         allowMissingMedia,
         encoder, removeMetadata, subtitleSize, subtitleOffset, subtitleFontFamily, subtitleMargin,
         subtitleBackground, subtitleColor, subtitleBgColor, subtitleOpacity, previewSeconds: preview ? previewSeconds : 0,
+        settingsFingerprint: renderSettingsFingerprint,
         delogo: { enabled: delogoEnabled, ...delogoRect },
         drawing: { enabled: drawingEnabled, mode: drawingMode, tool: drawingTool, handId: drawingHandId, detail: drawingDetail, thickness: drawingThickness, strokeOrder: drawingStrokeOrder, resolution: '1080p' },
         logo: {
@@ -449,6 +450,32 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
     logoEnabled, logoSource, logoText, logoIcon, watermarkPath, logoFontSize,
     logoSize, logoColor, logoOpacity, logoX, logoY, logoMotion, logoScope,
     logoStart, logoEnd, logoVisibleSec, logoHiddenSec, logoFadeSec, logoSafeMargin,
+  ])
+
+  // Keep the final-render cache tied to every setting that can affect pixels,
+  // timing, audio, or encoding.  This prevents an older cache entry from
+  // surviving a settings change while preserving cache hits for identical
+  // Preview/Render requests.
+  const renderSettingsFingerprint = useMemo(() => JSON.stringify({
+    resolution, targetPlatform, fps, crf, effect, transitionDuration, zoom, speed, volume,
+    encoder, removeMetadata, subtitleSize, subtitleOffset, subtitleFontFamily, subtitleMargin,
+    subtitleBackground, subtitleColor, subtitleBgColor, subtitleOpacity,
+    delogoEnabled, delogoAuto, delogoRect,
+    drawingEnabled, drawingMode, drawingTool, drawingHandId, drawingDetail, drawingThickness,
+    drawingStrokeOrder,
+    logoEnabled, logoSource, logoText, logoIcon, logoSize, logoFontSize, logoColor, logoOpacity,
+    logoX, logoY, logoMotion, logoScope, logoStart, logoEnd, logoVisibleSec, logoHiddenSec,
+    logoFadeSec, logoSafeMargin,
+  }), [
+    resolution, targetPlatform, fps, crf, effect, transitionDuration, zoom, speed, volume,
+    encoder, removeMetadata, subtitleSize, subtitleOffset, subtitleFontFamily, subtitleMargin,
+    subtitleBackground, subtitleColor, subtitleBgColor, subtitleOpacity,
+    delogoEnabled, delogoAuto, delogoRect,
+    drawingEnabled, drawingMode, drawingTool, drawingHandId, drawingDetail, drawingThickness,
+    drawingStrokeOrder,
+    logoEnabled, logoSource, logoText, logoIcon, logoSize, logoFontSize, logoColor, logoOpacity,
+    logoX, logoY, logoMotion, logoScope, logoStart, logoEnd, logoVisibleSec, logoHiddenSec,
+    logoFadeSec, logoSafeMargin,
   ])
 
   const busy = sending || job?.status === 'queued' || job?.status === 'processing' || job?.status === 'paused'

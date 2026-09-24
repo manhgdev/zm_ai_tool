@@ -97,9 +97,6 @@ class ChatStore:
                 row.pop("profile_path", None)
                 row.pop("browser_family", None)
                 row["errorCode"] = row.pop("error_code", "")
-                if row.get("email") and "@" in row["email"]:
-                    name, domain = row["email"].split("@", 1)
-                    row["email"] = f"{name[:2]}***@{domain}"
         return rows
 
     def get_account(self, account_id):

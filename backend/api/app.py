@@ -1,8 +1,6 @@
 """FastAPI application factory."""
 from __future__ import annotations
 
-import sys
-import time
 import threading
 from contextlib import asynccontextmanager
 
@@ -40,8 +38,8 @@ def _allowed_origins() -> list[str]:
 
 
 def create_app() -> FastAPI:
-    # ponytail: do NOT import torch/GPU stuff here — blocks main thread 2–10s on Windows.
-    # apply_gpu_process_env runs in warm-models thread below.
+    # ponytail: do NOT import torch/GPU stuff here — blocks the main thread 2–10s.
+    # Model loading remains lazy; the first feature that needs it owns warm-up.
     try:
         from pipeline.core.config import sanitize_httpx_no_proxy
 
@@ -98,56 +96,12 @@ def create_app() -> FastAPI:
             pass
 
         def _run() -> None:
-            # Frozen + dev warm: không pip torch (DLL lock / WinError 5). Chỉ warm model đã cài.
-            if getattr(sys, "frozen", False):
-                # ponytail: delay 5s → uvicorn ready + webview mở trước khi torch chiếm CPU.
-                # Không delay trong dev (reload nhanh không cần).
-                time.sleep(5)
-                return
-            # GPU env vars phải set TRƯỚC khi any child process spawn
+            # Set process environment only. VieNeu/Whisper/Torch are loaded by
+            # their first real task instead of consuming CPU and writing logs
+            # while the UI is idle.
             try:
                 from pipeline.core.accel import apply_gpu_process_env
                 apply_gpu_process_env()
-            except Exception:
-                pass
-            # Windows: CUDA trong worker, không trong uvicorn (heap/stack overrun giết API).
-            if sys.platform == "win32":
-                return
-            try:
-                from pipeline.ocr.extract_parts.runtime import prepare_cuda_dlls
-                prepare_cuda_dlls()
-            except Exception:
-                pass
-            try:
-                from pipeline.core.system_check import ensure_runtime_torch
-
-                # ensure_runtime_torch no-ops pip when torch already loaded
-                ensure_runtime_torch()
-            except Exception as exc:
-                try:
-                    from pipeline.core.app_log import append_exception
-
-                    append_exception("[warm-models] ensure_runtime_torch skipped", exc)
-                except Exception:
-                    print(f"[warm-models] ensure_runtime_torch skipped: {exc}", flush=True)
-            try:
-                from pipeline.core.cuda_dll import prefer_torch_cudnn
-
-                prefer_torch_cudnn()
-            except Exception:
-                pass
-            # VieNeu trước Whisper: Torch CUDA context ổn trước khi ctranslate2 vào
-            try:
-                from pipeline.tts.engines import vieneu as vieneu_engine
-
-                if vieneu_engine.available():
-                    vieneu_engine.warm()
-            except Exception:
-                pass
-            try:
-                from pipeline.asr import warm_whisper
-
-                warm_whisper(0)
             except Exception:
                 pass
 
@@ -160,7 +114,7 @@ def create_app() -> FastAPI:
                 pass
 
         threading.Thread(target=_warm_checks, name="warm-checks", daemon=True).start()
-        threading.Thread(target=_run, name="warm-models", daemon=True).start()
+        threading.Thread(target=_run, name="prepare-accel", daemon=True).start()
         yield
 
     app = FastAPI(title="ZM AI TOOL Local", lifespan=lifespan)

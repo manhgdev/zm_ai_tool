@@ -11,6 +11,8 @@ import './VideoCleanerPage.css'
 export type CleanMethod = 'metadata' | 'reencode' | 'optimize' | 'logo'
 export type JobStatus = 'queued' | 'processing' | 'done' | 'error' | 'cancelled'
 export type ResultTab = 'all' | 'processing' | 'done' | 'error'
+const IMAGE_EXTENSIONS = /\.(png|jpe?g|webp|bmp|tiff?)$/i
+const VIDEO_EXTENSIONS = /\.(mp4|mkv|mov|avi|webm|flv|wmv|m4v|ts)$/i
 
 interface FileInfo {
   file?: File
@@ -172,45 +174,41 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
   useEffect(() => { localStorage.setItem(LS_VC_OUTPUT_DIR, outputDir) }, [outputDir])
   useEffect(() => { void fetch('/api/config').then(async (r) => r.ok && setIsDesktopApp(Boolean((await r.json() as { desktop?: boolean }).desktop))).catch(() => undefined) }, [])
 
-  // Polling real backend jobs
-  useEffect(() => {
-    let active = true
-    const poll = async () => {
-      try {
-        const backendJobs = await cleanerApi.list()
-        if (active) {
-          setJobs(backendJobs)
-          // Browser File objects cannot survive F5, but the backend upload is
-          // still cached by its job. Rehydrate that cache into the file list.
-          setSelectedFiles(previous => {
-            const pending = previous.filter(file => !file.jobId)
-            const byJobId = new Map(previous.filter(file => file.jobId).map(file => [file.jobId, file]))
-            const cached = backendJobs.map(job => {
-              const existing = byJobId.get(job.id)
-              return existing || {
-                name: job.filename,
-                size: job.inputSize || 0,
-                jobId: job.id,
-              }
-            })
-            return [...pending, ...cached]
-          })
-        }
-      } catch (e) {
-        // ignore polling errors
-      }
-    }
-    
-    // Initial fetch
-    poll()
-    
-    // Poll every 1.5s
-    const interval = setInterval(poll, 1500)
-    return () => {
-      active = false
-      clearInterval(interval)
+  // Fetch once while idle; poll only while the backend has work in flight.
+  // This avoids a permanent request/localStorage loop on an otherwise idle UI.
+  const refreshCleanerJobs = useCallback(async () => {
+    try {
+      const backendJobs = await cleanerApi.list()
+      setJobs(backendJobs)
+      // Browser File objects cannot survive F5, but the backend upload is
+      // still cached by its job. Rehydrate that cache into the file list.
+      setSelectedFiles(previous => {
+        const pending = previous.filter(file => !file.jobId)
+        const byJobId = new Map(previous.filter(file => file.jobId).map(file => [file.jobId, file]))
+        const cached = backendJobs.map(job => {
+          const existing = byJobId.get(job.id)
+          return existing || {
+            name: job.filename,
+            size: job.inputSize || 0,
+            jobId: job.id,
+          }
+        })
+        return [...pending, ...cached]
+      })
+    } catch {
+      // A transient refresh failure must not interrupt an active job.
     }
   }, [])
+
+  useEffect(() => {
+    void refreshCleanerJobs()
+  }, [refreshCleanerJobs])
+
+  useEffect(() => {
+    if (!jobs.some(job => ACTIVE_STATES.has(job.status))) return
+    const interval = window.setInterval(() => void refreshCleanerJobs(), 1500)
+    return () => window.clearInterval(interval)
+  }, [jobs, refreshCleanerJobs])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -232,8 +230,8 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
       const valid: FileInfo[] = Array.from(files)
         .filter(f => {
           if (existingNames.has(f.name)) return false
-          if (f.type.startsWith('video/')) return true
-          return /\.(mp4|mkv|mov|avi|webm|flv|wmv|m4v|ts)$/i.test(f.name)
+          if (f.type.startsWith('video/') || f.type.startsWith('image/')) return true
+          return VIDEO_EXTENSIONS.test(f.name) || IMAGE_EXTENSIONS.test(f.name)
         })
         .map(file => ({ file, name: file.name, size: file.size }))
       return valid.length ? [...prev, ...valid] : prev
@@ -356,8 +354,8 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
   return (
     <div className="vc-page">
       <div className="vc-head">
-          <BackTitle onBack={onBack}>Làm sạch video</BackTitle>
-          <p>Xóa metadata không cần thiết và tái mã hóa video để bảo vệ quyền riêng tư.</p>
+          <BackTitle onBack={onBack}>{t('Làm sạch video / ảnh', 'Clean video / images')}</BackTitle>
+          <p>{t('Xóa metadata không cần thiết, tái mã hóa video hoặc làm sạch ảnh để bảo vệ quyền riêng tư.', 'Remove unnecessary metadata, re-encode video, or clean images to protect privacy.')}</p>
         </div>
 
         <div className="vc-grid">
@@ -367,9 +365,9 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
             {/* Card 1 — Tải video */}
             <div className="vc-card">
               <div className="vc-card-title">
-                <h2><span className="vc-num">1</span>Tải video</h2>
+                <h2><span className="vc-num">1</span>{t('Tải video / ảnh', 'Upload video / images')}</h2>
               </div>
-              <input type="file" ref={fileInputRef} style={{ display: 'none' }} multiple onChange={handleFileChange} />
+              <input type="file" ref={fileInputRef} style={{ display: 'none' }} multiple accept="video/*,image/*,.mp4,.mkv,.mov,.avi,.webm,.flv,.wmv,.m4v,.ts,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" onChange={handleFileChange} />
               {selectedFiles.length === 0 ? (
                 <div
                   className={`vc-dropzone${isDragging ? ' is-drag' : ''}`}
@@ -382,7 +380,7 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
                   <div className="vc-dropzone-text">{t('Kéo & thả file vào đây', 'Drag & drop files here')}</div>
                   <div className="vc-dropzone-or">{t('hoặc', 'or')}</div>
                   <button className="vc-btn" type="button" onClick={e => { e.stopPropagation(); fileInputRef.current?.click() }}>{t('Chọn file', 'Choose files')}</button>
-                  <div className="vc-dropzone-note">{t('Hỗ trợ: MP4, MOV, MKV, WebM — tối đa 10GB', 'Supports MP4, MOV, MKV, WebM — up to 10 GB')}</div>
+                  <div className="vc-dropzone-note">{t('Hỗ trợ video và PNG, JPG, WebP, BMP — tối đa 10GB', 'Supports video and PNG, JPG, WebP, BMP — up to 10 GB')}</div>
                 </div>
               ) : (
                 <div className="vc-file-list">
@@ -705,8 +703,8 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
                       .join(' · '),
                     src: `/api/cleaner/jobs/${previewJob.id}/file`,
                     downloadUrl: `/api/cleaner/jobs/${previewJob.id}/file`,
-                    downloadFilename: previewJob.filename.replace(/\.[^.]+$/, '_cleaned.mp4'),
-                    type: 'video',
+                    downloadFilename: previewJob.filename.replace(/\.[^.]+$/, '_cleaned$&'),
+                    type: IMAGE_EXTENSIONS.test(previewJob.filename) ? 'image' : 'video',
                   }
                 : null
             }
