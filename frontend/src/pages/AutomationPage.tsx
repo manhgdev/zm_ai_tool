@@ -626,33 +626,6 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
     const next = { ...settings[group], [key]: value } as AutomationSettings[K]
     void saveSettings({ ...settings, [group]: next })
   }
-  const promptFileInputRef = useRef<HTMLInputElement>(null)
-  const currentPromptEngine = settings.promptEngine || settings.flow?.promptEngine || 'vi'
-  const onSelectPromptEngine = (engine: 'vi' | 'en' | 'ko' | 'custom') => {
-    void saveSettings({
-      ...settings,
-      promptEngine: engine,
-      flow: { ...settings.flow, promptEngine: engine },
-    })
-  }
-  const handlePromptFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    try {
-      const text = await file.text()
-      void saveSettings({
-        ...settings,
-        promptEngine: 'custom',
-        flow: { ...settings.flow, promptEngine: 'custom' },
-        systemPrompt: text,
-      })
-      setNotice(t(`Đã nạp file "${file.name}" vào prompt tuỳ chỉnh.`, `Loaded file "${file.name}" into custom prompt.`))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('Không đọc được file prompt.', 'Could not read prompt file.'))
-    } finally {
-      if (event.target) event.target.value = ''
-    }
-  }
   const selectedTextProvider = chatProviders.find(item => item.id === settings.textProvider)
   const voiceDisplay = (voice: TtsVoiceOption) => [voice.name || voice.label || voice.id, voice.engine, voice.language].filter(Boolean).join(' · ')
   const selectedVoice = ttsVoices.find(voice => voice.id === settings.tts.voice)
