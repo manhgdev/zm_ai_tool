@@ -1984,7 +1984,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     onChange={(concurrency) =>
                       setSettings((current) => ({ ...current, concurrency }))
                     }
-                    options={Array.from({ length: 30 }, (_, index) => String(index + 1))}
+                    options={Array.from({ length: 50 }, (_, index) => String(index + 1))}
                   />
                   <FlowSelect
                     label={t("Định dạng lưu", "Output format")}

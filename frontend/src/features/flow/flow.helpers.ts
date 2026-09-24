@@ -136,7 +136,7 @@ export function readSettings(): FlowSettings {
     if (![1,2,3,4].includes(Number(merged.imageCount))) merged.imageCount = fallback.imageCount;
     if (!["16:9","9:16","1:1","4:3","3:4"].includes(merged.ratio)) merged.ratio = fallback.ratio;
     const concurrency = Number(merged.concurrency);
-    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 30) merged.concurrency = fallback.concurrency;
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 50) merged.concurrency = fallback.concurrency;
     if (!String(merged.outputDir || "").trim() || merged.outputDir === "flow_20250824_143022") {
       merged.outputDir = defaultFlowOutputFolder();
     } else {

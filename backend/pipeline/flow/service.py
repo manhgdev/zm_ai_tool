@@ -27,7 +27,7 @@ from . import store
 _PROJECT_RE = re.compile(r"^(?:https://(?:flow\.google\.com|labs\.google)(?::443)?)?(?:/fx/tools/flow|/flow)?/project/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})(?:[/?#]|$)")
 _TERMINAL = {"done", "failed", "cancelled", "action_required"}
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 8
-_MAX_CONCURRENT_JOBS_PER_ACCOUNT = 30
+_MAX_CONCURRENT_JOBS_PER_ACCOUNT = 50
 _PROFILE_COPY_IGNORES = {
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
     "GraphiteDawnCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache",
