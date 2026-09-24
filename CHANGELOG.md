@@ -1,5 +1,11 @@
 # Changelog
 
+## v8.4.7 — 2026-09-24
+
+- Tắt UPX cho Windows EXE để giảm false positive của Defender.
+- Bỏ `ExecutionPolicy Bypass` khỏi updater PowerShell.
+- Bật audit Defender bắt buộc cho mọi Windows release tag.
+
 ## v8.4.6 — 2026-09-23
 
 - Tạm ẩn Veo 3.1 Lite Lower Priority trên Flow và Flow Series; backend báo model không khả dụng.
