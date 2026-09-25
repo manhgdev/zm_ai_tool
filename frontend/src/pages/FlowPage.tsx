@@ -450,26 +450,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             : accounts;
           if (data.accounts) setAccounts(refreshedAccounts);
           if (deletingAllRef.current) return; // delete-all in flight — don't overwrite cleared UI
-          setJobs((current) => {
-            // Preserve optimistic cancelled/deleted state against the poll
-            const cancelled = cancelledIdsRef.current;
-            const deleted = deletedIdsRef.current;
-            // Drop _opt_ stubs; merge backend state with local overrides
-            const merged = normalizeFlowJobs(data.jobs, refreshedAccounts)
-              .filter((j) => !deleted.has(j.id))
-              .map((j) =>
-                (cancelled.has(j.id) && j.status !== "cancelled")
-                  ? { ...j, status: "cancelled" as const, stage: "cancelled", progress: 0 }
-                  : j,
-              );
-            // Only keep _opt_ stubs while the submit POST is still in flight;
-            // once POST completes (or backend has returned real data), drop them
-            // to avoid showing each prompt twice.
-            const stubs = postInFlightRef.current
-              ? current.filter((j) => j.id.startsWith("_opt_"))
-              : [];
-            return [...merged, ...stubs];
-          });
+          // Backend is source of truth; POST response handler replaces stubs before poll fires
+          setJobs(normalizeFlowJobs(data.jobs, refreshedAccounts));
         })
         .catch((error) => {
           if (active) setApiError(error instanceof Error ? error.message : String(error));
@@ -772,8 +754,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   };
   const actionLock = useRef(false);
-  // True while a batch POST is in flight so the poll keeps stubs visible
-  const postInFlightRef = useRef(false);
   // AbortController to cancel the submit POST fetch if user deletes mid-submit
   const submitAbortRef = useRef<AbortController | null>(null);
   // Blocks poll from overwriting cleared UI while delete-all is running
@@ -792,7 +772,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       // Abort in-flight POST + optimistic cancel active stubs/jobs
       submitAbortRef.current?.abort();
       submitAbortRef.current = null;
-      postInFlightRef.current = false;
       setJobs((current) => current
         .filter((j) => !j.id.startsWith("_opt_"))
         .map((j) => (j.status === "queued" || j.status === "processing")
@@ -980,8 +959,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       actionLock.current = false;
       setActionBusy(false);
       // Mark POST as in-flight so the poll keeps stubs (prevents showing jobs twice)
-      postInFlightRef.current = true;
-      deleteAllRequestedRef.current = false;
       submitAbortRef.current = new AbortController();
       const created = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", {
         signal: submitAbortRef.current.signal,
@@ -1002,7 +979,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           settings: effectiveSettings,
         }),
       });
-      postInFlightRef.current = false;
       submitAbortRef.current = null;
       // If delete-all already cleared UI, fire a second DELETE to catch newly created jobs
       if (deletingAllRef.current) {
@@ -1019,7 +995,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         return [...realJobs, ...others];
       });
     } catch (error) {
-      postInFlightRef.current = false;
       submitAbortRef.current = null;
       if ((error as Error).name === "AbortError") return; // delete-all aborted — no-op
       setApiError(error instanceof Error ? error.message : String(error));
@@ -1158,7 +1133,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         // Abort in-flight POST, drop stubs, mark active jobs cancelled
         submitAbortRef.current?.abort();
         submitAbortRef.current = null;
-        postInFlightRef.current = false;
         setJobs((current) => current
           .filter((j) => !j.id.startsWith("_opt_"))
           .map((j) => (j.status === "queued" || j.status === "processing")
@@ -1197,11 +1171,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         // then cleans up files in background. F5 after this will always see empty queue.
         // Abort any in-flight POST so its response doesn't re-add jobs to UI.
         submitAbortRef.current?.abort();
-        postInFlightRef.current = false;
-        deleteAllRequestedRef.current = true; // Tell POST response to fire a second DELETE
-        // Clear UI immediately
-        cancelledIdsRef.current = new Set();
-        deletedIdsRef.current = new Set();
         deletingAllRef.current = true;
         setJobs([]);
         // Cancel running threads first, then delete from DB
@@ -1241,7 +1210,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             // NOT by job.outputFolder (absolute path on disk).
             const inFolder = String(job.settings.outputDir || "").trim() === String(outputDir || "").trim();
             if (inFolder && (job.status === "queued" || job.status === "processing")) {
-              cancelledIdsRef.current.add(job.id);
               next.push({ ...job, status: "cancelled" as const, stage: "cancelled", progress: 0 });
             } else {
               next.push(job);
@@ -1275,7 +1243,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           const next: FlowJob[] = [];
           for (const job of current) {
             if (String(job.settings.outputDir || "").trim() === String(outputDir || "").trim()) {
-              deletedIdsRef.current.add(job.id);
+              // job will be filtered out — no need to track ID since poll is backend-authoritative
             } else {
               next.push(job);
             }
