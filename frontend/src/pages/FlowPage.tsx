@@ -907,6 +907,43 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         );
         uploaded = data.files.map((item) => item.path);
       }
+      // Optimistic queue: show all jobs immediately without waiting for server IDs.
+      const nowSec = Date.now() / 1000;
+      const optimisticJobs: FlowJob[] = prompts.map((p, i) => ({
+        id: `_opt_${nowSec}_${i}`,
+        index: i + 1,
+        kind: createKind,
+        prompt: p,
+        inputType: "prompt" as const,
+        createdAt: nowSec,
+        status: "queued" as const,
+        stage: "",
+        progress: 0,
+        accountId: account.id,
+        account: account.label,
+        outputs: [],
+        output: "",
+        outputFolder: effectiveSettings.outputDir || "",
+        displayOutputFolder: effectiveSettings.outputDir || "",
+        error: null,
+        settings: {
+          model: effectiveSettings.model || (createKind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"),
+          ratio: effectiveSettings.ratio || "16:9",
+          duration: String(effectiveSettings.duration || "8"),
+          resolution: effectiveSettings.resolution || "1K",
+          outputDir: effectiveSettings.outputDir || "flow",
+        },
+      }));
+      setJobs((current) => [
+        ...optimisticJobs,
+        ...current.filter((j) => !j.id.startsWith("_opt_")),
+      ]);
+      setApiError("");
+      setTab("queue");
+      writeFlowRoutePanel("queue");
+      // Release busy so the queue is interactive while POST is in flight
+      actionLock.current = false;
+      setActionBusy(false);
       const created = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -925,13 +962,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           settings: effectiveSettings,
         }),
       });
+      // Replace optimistic stubs with real server jobs
       setJobs((current) => [
         ...normalizeFlowJobs(created.jobs, accounts),
-        ...current.filter((item) => !created.jobs.some((row) => String(row.id) === item.id)),
+        ...current.filter(
+          (j) => !j.id.startsWith("_opt_") && !created.jobs.some((row) => String(row.id) === j.id),
+        ),
       ]);
-      setApiError("");
-      setTab("queue");
-      writeFlowRoutePanel("queue");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     }
