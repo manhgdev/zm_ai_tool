@@ -3012,7 +3012,8 @@ class FlowService:
                 await self._prepare_ui_format(
                     page,
                     str(settings.get("ratio") or "16:9"),
-                    resolution=str(settings.get("resolution") or ""),
+                    # Image resolution ("1K"/"2K"/"4K") is a plan-tier label only;
+                    # Flow has no UI tab for it — do not pass to avoid FLOW_SETTING_MISMATCH.
                 )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
                 for source in sources:

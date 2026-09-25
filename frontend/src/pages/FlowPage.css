@@ -1000,6 +1000,12 @@
   max-width: 100%;
   max-height: 68vh;
   object-fit: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.flow-preview-media img,
+.flow-preview-media iframe {
+  pointer-events: none;
 }
 .flow-preview-media iframe {
   width: 100%;

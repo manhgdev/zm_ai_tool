@@ -596,8 +596,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     if (!preview) return;
     const navigate = (event: KeyboardEvent) => {
       if (event.key === "Escape") setPreview(null);
-      if (event.key === "ArrowLeft") movePreview(-1);
-      if (event.key === "ArrowRight") movePreview(1);
+      if (event.key === "ArrowLeft") { event.preventDefault(); movePreview(-1); }
+      if (event.key === "ArrowRight") { event.preventDefault(); movePreview(1); }
     };
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
@@ -860,6 +860,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       effectiveSettings = {
         ...effectiveSettings,
         ratio: createKind === "image" ? effectiveSettings.imageRatio : effectiveSettings.ratio,
+        // Normalize resolution: if current value not valid for this kind/plan, use first valid option
+        resolution: resolutionOptions.length && !resolutionOptions.includes(effectiveSettings.resolution)
+          ? resolutionOptions[0]
+          : effectiveSettings.resolution,
       };
 
       if (createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
