@@ -752,6 +752,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   };
   const actionLock = useRef(false);
+  // Track jobs cancelled/deleted while the submit POST is still in flight,
+  // so the POST response can't resurrect them.
+  const cancelledIdsRef = useRef<Set<string>>(new Set());
+  const deletedIdsRef = useRef<Set<string>>(new Set());
   const [actionBusy, setActionBusy] = useState(false);
   const runAction = async (action: () => void | Promise<unknown>) => {
     if (actionLock.current) return;
@@ -763,14 +767,21 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const cancelCreateAction = async () => {
     try {
-      // Optimistic: mark all active jobs as cancelled immediately
-      setJobs((current) =>
-        current.map((job) =>
-          job.status === "queued" || job.status === "processing"
-            ? { ...job, status: "cancelled" as const, stage: "cancelled", progress: 0 }
-            : job,
-        ),
-      );
+      // Optimistic: mark all active jobs as cancelled immediately;
+      // remove _opt_ stubs (no backend state to cancel) and record real IDs.
+      setJobs((current) => {
+        const next: FlowJob[] = [];
+        for (const job of current) {
+          if (job.id.startsWith("_opt_")) continue; // not in backend, just drop
+          if (job.status === "queued" || job.status === "processing") {
+            cancelledIdsRef.current.add(job.id);
+            next.push({ ...job, status: "cancelled" as const, stage: "cancelled", progress: 0 });
+          } else {
+            next.push(job);
+          }
+        }
+        return next;
+      });
       actionLock.current = false;
       setActionBusy(false);
       flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
@@ -970,13 +981,27 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           settings: effectiveSettings,
         }),
       });
-      // Replace optimistic stubs with real server jobs
-      setJobs((current) => [
-        ...normalizeFlowJobs(created.jobs, accounts),
-        ...current.filter(
-          (j) => !j.id.startsWith("_opt_") && !created.jobs.some((row) => String(row.id) === j.id),
-        ),
-      ]);
+      // Replace optimistic stubs with real server jobs,
+      // but preserve cancelled/deleted state that happened while POST was in flight.
+      setJobs((current) => {
+        const cancelled = cancelledIdsRef.current;
+        const deleted = deletedIdsRef.current;
+        const realJobs = normalizeFlowJobs(created.jobs, accounts)
+          .filter((j) => !deleted.has(j.id))
+          .map((j) =>
+            cancelled.has(j.id)
+              ? { ...j, status: "cancelled" as const, stage: "cancelled", progress: 0 }
+              : j,
+          );
+        return [
+          ...realJobs,
+          ...current.filter(
+            (j) => !j.id.startsWith("_opt_") && !created.jobs.some((row) => String(row.id) === j.id),
+          ),
+        ];
+      });
+      cancelledIdsRef.current = new Set();
+      deletedIdsRef.current = new Set();
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     }
@@ -1111,14 +1136,21 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       message: t(`Hủy ${activeCount} job đang chờ/chạy?`, `Cancel ${activeCount} queued/running jobs?`),
       confirmLabel: t("Hủy tất cả", "Cancel all"),
       run: () => {
-        // Optimistic: mark active jobs cancelled immediately
-        setJobs((current) =>
-          current.map((job) =>
-            job.status === "queued" || job.status === "processing"
-              ? { ...job, status: "cancelled" as const, stage: "cancelled", progress: 0 }
-              : job,
-          ),
-        );
+        // Optimistic: mark active jobs cancelled immediately;
+        // remove _opt_ stubs (no backend equivalent) and record real IDs.
+        setJobs((current) => {
+          const next: FlowJob[] = [];
+          for (const job of current) {
+            if (job.id.startsWith("_opt_")) continue; // drop stubs
+            if (job.status === "queued" || job.status === "processing") {
+              cancelledIdsRef.current.add(job.id);
+              next.push({ ...job, status: "cancelled" as const, stage: "cancelled", progress: 0 });
+            } else {
+              next.push(job);
+            }
+          }
+          return next;
+        });
         setApiError("");
         toast.success(t("Đã hủy tất cả job.", "All jobs cancelled."));
         return flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" })
@@ -1150,11 +1182,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       message: t(`Xóa ${jobs.length} job cùng file đầu ra trên đĩa? Không thể hoàn tác.`, `Delete all ${jobs.length} jobs and their output files from disk? This cannot be undone.`),
       confirmLabel: t("Xóa tất cả", "Delete all"),
       run: () => (async () => {
-        const { jobs: rows } = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", { method: "DELETE" });
+        // Optimistic: clear all jobs from UI immediately
+        const realJobs = jobs.filter((j) => !j.id.startsWith("_opt_"));
+        realJobs.forEach((j) => deletedIdsRef.current.add(j.id));
         await Promise.all(jobs.map((job) => deleteWebFlowOutputs(job)));
-        setJobs(normalizeFlowJobs(rows, accounts));
+        setJobs([]);
         setApiError("");
         toast.success(t("Đã xóa tất cả job.", "All jobs deleted."));
+        // Fire backend delete in background
+        flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", { method: "DELETE" }).catch(() => {});
       })().catch(() => {
         const msg = t(
           "Không thể xóa đầy đủ hàng đợi và file output.",
@@ -1174,25 +1210,31 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         `Cancel ${activeCount} queued/running jobs in this folder?`,
       ),
       confirmLabel: t("Hủy", "Cancel"),
-      run: () => flowRequest<{ jobs: Array<Record<string, unknown>> }>(
-        "/api/flow/jobs/cancel-folder",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ outputDir, kind: folderJobs[0]?.kind || "" }),
-        },
-      ).then(({ jobs: rows }) => {
-        setJobs(normalizeFlowJobs(rows, accounts));
-        setApiError("");
-        toast.success(t("Đã hủy các job trong thư mục thành công.", "Folder jobs cancelled successfully."));
-      }).catch(() => {
-        const msg = t(
-          "Không thể hủy các job trong thư mục này.",
-          "Could not cancel the jobs in this folder.",
-        );
-        setApiError(msg);
-        toast.error(msg);
-      }),
+      run: () => {
+        // Optimistic cancel for folder jobs
+        setJobs((current) => {
+          const next: FlowJob[] = [];
+          for (const job of current) {
+            if (job.id.startsWith("_opt_")) continue;
+            const inFolder = String(job.outputFolder || "").trim() === String(outputDir || "").trim();
+            if (inFolder && (job.status === "queued" || job.status === "processing")) {
+              cancelledIdsRef.current.add(job.id);
+              next.push({ ...job, status: "cancelled" as const, stage: "cancelled", progress: 0 });
+            } else {
+              next.push(job);
+            }
+          }
+          return next;
+        });
+        return flowRequest<{ jobs: Array<Record<string, unknown>> }>(
+          "/api/flow/jobs/cancel-folder",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ outputDir, kind: folderJobs[0]?.kind || "" }),
+          },
+        ).catch(() => {});
+      },
     });
   };
   const deleteFolderJobs = (outputDir: string, folderJobs: FlowJob[]) => {
