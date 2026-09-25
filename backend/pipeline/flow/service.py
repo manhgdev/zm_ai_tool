@@ -683,7 +683,12 @@ class FlowService:
                 except OSError:
                     pass
             try:
-                self._output_folder(job, create=False).rmdir()
+                folder = self._output_folder(job, create=False)
+                shared = any(self._output_folder(j, create=False).resolve() == folder.resolve() for j in store.list_rows('jobs'))
+                if not shared and folder.is_dir():
+                    shutil.rmtree(folder, ignore_errors=True)
+                elif folder.is_dir():
+                    folder.rmdir()
             except OSError:
                 pass
         return removed
@@ -741,10 +746,14 @@ class FlowService:
             def _cleanup_files():
                 with ThreadPoolExecutor(max_workers=min(8, max(1, len(output_paths)))) as pool:
                     list(pool.map(lambda p: p.unlink(missing_ok=True), output_paths))
-                folders = [self._output_folder(job, create=False) for job in removed]
-                for folder in folders:
+                unique_folders = {self._output_folder(job, create=False) for job in (selected + removed)}
+                remaining = {self._output_folder(j, create=False).resolve() for j in store.list_rows('jobs')}
+                for folder in unique_folders:
                     try:
-                        folder.rmdir()
+                        if folder.resolve() not in remaining and folder.is_dir():
+                            shutil.rmtree(folder, ignore_errors=True)
+                        elif folder.is_dir():
+                            folder.rmdir()
                     except OSError:
                         pass
             threading.Thread(target=_cleanup_files, daemon=True, name="flow-delete-cleanup").start()
@@ -789,7 +798,7 @@ class FlowService:
         shared = any(self._output_folder(job, create=False).resolve() == folder.resolve()
                      for job in store.list_rows('jobs'))
         if not shared and folder.is_dir():
-            shutil.rmtree(folder)
+            shutil.rmtree(folder, ignore_errors=True)
         return count
 
     def connect(self, account_id: str) -> dict[str, Any]:

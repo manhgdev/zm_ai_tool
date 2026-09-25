@@ -115,15 +115,21 @@ function writeSyncedVersion(version) {
   writeFileSync(packageJsonPath, `${JSON.stringify(nextPkg, null, 2)}\n`, 'utf8')
 }
 
-/** package.json is the only version source. CI validates tags, never rewrites it. */
+/** package.json is the version source; in CI tag builds, sync package.json to the tag version. */
 function resolveAppVersion() {
   const pkg = readPackage()
   const current = pkg.version
-  if (!/^\d+\.\d+\.\d+$/.test(current || '')) throw new Error('Invalid package.json version')
   if (process.env.CI && process.env.GITHUB_REF_TYPE === 'tag') {
     const tagVersion = (process.env.GITHUB_REF_NAME || '').replace(/^(v|action\/)/, '')
-    if (tagVersion !== current) throw new Error(`Tag ${tagVersion} differs from package.json ${current}`)
+    if (/^\d+\.\d+\.\d+$/.test(tagVersion)) {
+      if (tagVersion !== current) {
+        console.log(`Syncing package.json to git tag: ${current} → ${tagVersion}`)
+        writeSyncedVersion(tagVersion)
+      }
+      return tagVersion
+    }
   }
+  if (!/^\d+\.\d+\.\d+$/.test(current || '')) throw new Error('Invalid package.json version')
   if (process.env.CI) return current
   const wantBump = process.env.BUMP_VERSION === '1' || process.env.BUMP_VERSION === 'true'
   if (!wantBump) return current
