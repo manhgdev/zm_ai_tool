@@ -2556,7 +2556,7 @@ class FlowService:
             self._check_cancel(job_id)
             items = await self._project_media_elements(page)
             if api is not None and job is not None and time.monotonic() >= next_project_check:
-                next_project_check = time.monotonic() + 10
+                next_project_check = time.monotonic() + 4
                 fresh_job = store.get_row("jobs", job_id) or job
                 recovered = await self._find_existing_project_media(api, page, fresh_job, kind, expected_count)
                 recovered = [item for item in recovered if str(item['id']) not in baseline_ids]
@@ -2606,7 +2606,7 @@ class FlowService:
                 "progress": max(current_progress, min(88, 20 + int(elapsed / max(1, timeout_s) * 68))),
                 "updatedAt": time.time(),
             })
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
         raise RuntimeError(
             f"FLOW_GENERATION_TIMEOUT: no completed {kind} media appeared after submit"
         )
@@ -3080,14 +3080,17 @@ class FlowService:
                 media_ids = [str(item["id"]) for item in media_items]
                 self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": settings.get("model"), "mediaIds": media_ids})
                 store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "downloading", "progress": 80})
-                await self._sync_credits(api, account["id"])
-                outputs = []
-                for output_index, image in enumerate(media_items, 1):
+                # Download all images in parallel for speed
+                fmt = str(settings.get("format", "png")).lower()
+                async def _dl(image: dict, idx: int) -> str:
                     self._check_cancel(job_id)
-                    output = self._output_path(job, output_index, str(settings.get("format", "png")).lower())
-                    await api.download(str(image["src"]), output)
-                    outputs.append(str(output))
-                    self._log("success", "output_downloaded", job_id=job_id, account_id=account["id"], details={"outputIndex": output_index, "path": str(output)})
+                    out = self._output_path(job, idx, fmt)
+                    await api.download(str(image["src"]), out)
+                    self._log("success", "output_downloaded", job_id=job_id, account_id=account["id"], details={"outputIndex": idx, "path": str(out)})
+                    return str(out)
+                outputs = list(await asyncio.gather(*[_dl(img, i) for i, img in enumerate(media_items, 1)]))
+                # Sync credits after download (non-blocking)
+                asyncio.create_task(self._sync_credits(api, account["id"]))
             output_error = self._output_validation_error(outputs)
             if output_error:
                 raise RuntimeError(output_error)
