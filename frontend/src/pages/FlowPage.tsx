@@ -461,8 +461,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   ? { ...j, status: "cancelled" as const, stage: "cancelled", progress: 0 }
                   : j,
               );
-            // Keep any _opt_ stubs still in flight (before POST response)
-            const stubs = current.filter((j) => j.id.startsWith("_opt_"));
+            // Only keep _opt_ stubs while the submit POST is still in flight;
+            // once POST completes (or backend has returned real data), drop them
+            // to avoid showing each prompt twice.
+            const stubs = postInFlightRef.current
+              ? current.filter((j) => j.id.startsWith("_opt_"))
+              : [];
             return [...merged, ...stubs];
           });
         })
@@ -771,6 +775,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   // so the POST response can't resurrect them.
   const cancelledIdsRef = useRef<Set<string>>(new Set());
   const deletedIdsRef = useRef<Set<string>>(new Set());
+  // True while a batch POST /api/flow/jobs is in flight so the poll keeps stubs
+  const postInFlightRef = useRef(false);
   const [actionBusy, setActionBusy] = useState(false);
   const runAction = async (action: () => void | Promise<unknown>) => {
     if (actionLock.current) return;
@@ -977,6 +983,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       // Release busy so the queue is interactive while POST is in flight
       actionLock.current = false;
       setActionBusy(false);
+      // Mark POST as in-flight so the poll keeps stubs (prevents showing jobs twice)
+      postInFlightRef.current = true;
       const created = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1016,7 +1024,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       });
       cancelledIdsRef.current = new Set();
       deletedIdsRef.current = new Set();
+      postInFlightRef.current = false;
     } catch (error) {
+      postInFlightRef.current = false;
       setApiError(error instanceof Error ? error.message : String(error));
     }
   };
