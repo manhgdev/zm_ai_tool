@@ -2670,7 +2670,7 @@ class FlowService:
                 all_done = all(item.get("hasThumb") and item.get("pct", -1) == -1 for item in info)
                 if all_done and len(info) >= expected_count:
                     break
-            await asyncio.sleep(2.5)
+            await asyncio.sleep(1.5)
         else:
             raise RuntimeError(f"FLOW_GENERATION_TIMEOUT: videos did not complete within {timeout_s}s")
 
@@ -2970,7 +2970,6 @@ class FlowService:
                     await self._click_flow_submit(page)
                     store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model})
-                    await self._sync_credits(api, account["id"])
                     try:
                         captured = await _await_with_job_progress(
                             interceptor.wait_for("batchAsyncGenerateVideoText", timeout=30, require_success=True),
@@ -2983,8 +2982,8 @@ class FlowService:
                         self._log("success", "api_generation_submitted", job_id=job_id, account_id=account["id"], details={"mediaIds": media_ids})
                         store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": 20})
                         from ._flow._api import VideoJob
-                        outputs = []
-                        for output_index, media_id in enumerate(media_ids[:count], 1):
+                        # Wait for all videos in parallel, then download in parallel
+                        async def _wait_and_dl_video(media_id: str, idx: int) -> str:
                             self._check_cancel(job_id)
                             remote_job = VideoJob.__new__(VideoJob)
                             remote_job.media_name = media_id
@@ -2993,14 +2992,20 @@ class FlowService:
                                 remote_job, timeout_s=900,
                                 on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 20 + int(elapsed / 12)), "updatedAt": time.time()}),
                             )
-                            output = self._output_path(job, output_index, "mp4")
-                            await api.download(status.fife_url, output)
-                            outputs.append(str(output))
+                            out = self._output_path(job, idx, "mp4")
+                            await api.download(status.fife_url, out)
+                            return str(out)
+                        outputs = list(await asyncio.gather(*[
+                            _wait_and_dl_video(mid, i)
+                            for i, mid in enumerate(media_ids[:count], 1)
+                        ]))
+                        asyncio.create_task(self._sync_credits(api, account["id"]))
                     else:
                         self._log("warning", "ui_generation_fallback", job_id=job_id, account_id=account["id"], details={"kind": "video"})
                         outputs = await self._wait_and_download_flow_videos(
                             page, job, count, baseline_text, job_id,
                         )
+                        asyncio.create_task(self._sync_credits(api, account["id"]))
             else:
                 model = str(settings.get("model") or "Nano Banana 2")
                 sources = job.get("sourceFiles") or []
