@@ -1178,30 +1178,25 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setConfirmAction({
       message: t(`Xóa ${jobs.length} job cùng file đầu ra trên đĩa? Không thể hoàn tác.`, `Delete all ${jobs.length} jobs and their output files from disk? This cannot be undone.`),
       confirmLabel: t("Xóa tất cả", "Delete all"),
-      run: () => (async () => {
-        // Await backend DELETE first — backend cancels threads + clears DB instantly,
-        // then cleans up files in background. F5 after this will always see empty queue.
-        // Abort any in-flight POST so its response doesn't re-add jobs to UI.
+      run: () => {
+        // 1. Clear UI immediately — toast fires now, no waiting for backend
         submitAbortRef.current?.abort();
+        submitAbortRef.current = null;
         postInFlightRef.current = false;
         deletingAllRef.current = true;
         setJobs([]);
-        // Cancel running threads first, then delete from DB
-        await flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
-        await flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" });
-        deletingAllRef.current = false;
-        await Promise.all(jobs.map((job) => deleteWebFlowOutputs(job)));
         setApiError("");
         toast.success(t("Đã xóa tất cả job.", "All jobs deleted."));
-      })().catch(() => {
-        deletingAllRef.current = false;
-        const msg = t(
-          "Không thể xóa đầy đủ hàng đợi và file output.",
-          "Could not fully delete the queue and its output files.",
-        );
-        setApiError(msg);
-        toast.error(msg);
-      }),
+        // 2. Backend ops in background — don't block run()
+        void (async () => {
+          try {
+            await flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" });
+            await flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" });
+          } finally {
+            deletingAllRef.current = false;
+          }
+        })();
+      },
     });
   };
   const cancelFolderJobs = (outputDir: string, folderJobs: FlowJob[]) => {
