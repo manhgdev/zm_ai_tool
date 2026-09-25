@@ -1262,18 +1262,31 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       ),
       confirmLabel: t("Xóa thư mục", "Delete folder"),
       run: () => (async () => {
-        const { jobs: rows } = await flowRequest<{ jobs: Array<Record<string, unknown>> }>(
+        // Optimistic: remove this folder's jobs immediately using the same key
+        // the group uses (settings.outputDir, NOT job.outputFolder which is absolute)
+        setJobs((current) => {
+          const next: FlowJob[] = [];
+          for (const job of current) {
+            if (String(job.settings.outputDir || "").trim() === String(outputDir || "").trim()) {
+              deletedIdsRef.current.add(job.id);
+            } else {
+              next.push(job);
+            }
+          }
+          return next;
+        });
+        setApiError("");
+        toast.success(t("Đã xóa thư mục và các job thành công.", "Folder and jobs deleted successfully."));
+        // Fire file + backend delete in background
+        await Promise.all(folderJobs.map((job) => deleteWebFlowOutputs(job)));
+        flowRequest<{ ok: boolean }>(
           "/api/flow/jobs/delete-folder",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ outputDir, kind: folderJobs[0]?.kind || "" }),
           },
-        );
-        await Promise.all(folderJobs.map((job) => deleteWebFlowOutputs(job)));
-        setJobs(normalizeFlowJobs(rows, accounts));
-        setApiError("");
-        toast.success(t("Đã xóa thư mục và các job thành công.", "Folder and jobs deleted successfully."));
+        ).catch(() => {});
       })().catch(() => {
         const msg = t(
           "Không thể xóa đầy đủ thư mục và file output.",

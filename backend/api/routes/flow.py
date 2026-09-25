@@ -513,7 +513,6 @@ def jobs_delete_folder(body: OutputFolderIn):
     return {
         "ok": True,
         "deleted": service.delete_output_folder_jobs(body.outputDir, body.kind),
-        "jobs": service.jobs(),
     }
 
 
