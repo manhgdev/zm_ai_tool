@@ -449,6 +449,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             ? normalizeFlowAccounts(data.accounts)
             : accounts;
           if (data.accounts) setAccounts(refreshedAccounts);
+          if (deletingAllRef.current) return; // delete-all in flight — don't overwrite cleared UI
           setJobs((current) => {
             // Preserve optimistic cancelled/deleted state against the poll
             const cancelled = cancelledIdsRef.current;
@@ -781,6 +782,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const submitAbortRef = useRef<AbortController | null>(null);
   // Set when delete-all fires mid-POST so the POST response fires a second DELETE
   const deleteAllRequestedRef = useRef(false);
+  // Blocks poll from overwriting UI while a delete-all is in flight
+  const deletingAllRef = useRef(false);
   const [actionBusy, setActionBusy] = useState(false);
   const runAction = async (action: () => void | Promise<unknown>) => {
     if (actionLock.current) return;
@@ -1015,8 +1018,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       if (deleteAllRequestedRef.current) {
         // delete-all fired while POST was in flight — newly created jobs must be cleaned up
         deleteAllRequestedRef.current = false;
-        flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
-        flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" }).catch(() => {});
+        deletingAllRef.current = true;
+        flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" })
+          .catch(() => {})
+          .finally(() =>
+            flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" })
+              .catch(() => {})
+              .finally(() => { deletingAllRef.current = false; }),
+          );
         return;
       }
       // Replace optimistic stubs with real server jobs,
@@ -1233,14 +1242,17 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         // Clear UI immediately
         cancelledIdsRef.current = new Set();
         deletedIdsRef.current = new Set();
+        deletingAllRef.current = true;
         setJobs([]);
         // Cancel running threads first, then delete from DB
         await flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
         await flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" });
+        deletingAllRef.current = false;
         await Promise.all(jobs.map((job) => deleteWebFlowOutputs(job)));
         setApiError("");
         toast.success(t("Đã xóa tất cả job.", "All jobs deleted."));
       })().catch(() => {
+        deletingAllRef.current = false;
         const msg = t(
           "Không thể xóa đầy đủ hàng đợi và file output.",
           "Could not fully delete the queue and its output files.",
