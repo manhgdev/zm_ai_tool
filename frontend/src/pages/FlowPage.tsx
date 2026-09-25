@@ -456,7 +456,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             return;
           }
           // Backend is source of truth; POST response handler replaces stubs before poll fires
-          setJobs(normalizeFlowJobs(data.jobs, refreshedAccounts));
+          const next = normalizeFlowJobs(data.jobs, refreshedAccounts);
+          const hiding = deletingIdsRef.current;
+          setJobs(hiding.size ? next.filter((job) => !hiding.has(job.id)) : next);
         })
         .catch((error) => {
           if (active) setApiError(error instanceof Error ? error.message : String(error));
@@ -765,6 +767,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const submitAbortRef = useRef<AbortController | null>(null);
   // Blocks poll from overwriting cleared UI while delete-all is running
   const deletingAllRef = useRef(false);
+  // Job ids removed by folder-delete — poll must not resurrect them until API finishes
+  const deletingIdsRef = useRef<Set<string>>(new Set());
   const [actionBusy, setActionBusy] = useState(false);
   const runAction = async (action: () => void | Promise<unknown>) => {
     if (actionLock.current) return;
@@ -1162,8 +1166,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     });
   }, [jobs, t]);
 
+  const canRetryJob = (job: FlowJob) =>
+    job.status === "done"
+    || job.status === "failed"
+    || job.status === "cancelled";
   const retryAllJobs = useCallback(async () => {
-    const retryable = jobs.filter((job) => job.status === "failed" || job.status === "cancelled");
+    const retryable = jobs.filter(canRetryJob);
     if (!retryable.length) return;
     openRetrySettings(retryable);
   }, [jobs, t, accounts]);
@@ -1171,7 +1179,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const retryable = folderJobs.filter((job) =>
       job.kind === kind
       && String(job.settings.outputDir || "").trim() === String(outputDir || "").trim()
-      && (job.status === "failed" || job.status === "cancelled"),
+      && canRetryJob(job),
     );
     if (!retryable.length) return;
     openRetrySettings(retryable);
@@ -1191,13 +1199,19 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         setJobs([]);
         setApiError("");
         toast.success(t("Đã xóa tất cả job.", "All jobs deleted."));
-        // 2. Backend ops in background — don't block run()
+        // 2. Backend wipe in background; keep UI empty until server confirms
         void (async () => {
           try {
             await flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" }).catch(() => {});
+            // One retry if the first wipe raced with a straggler write
+            const check = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs").catch(() => ({ jobs: [] as Array<Record<string, unknown>> }));
+            if ((check.jobs || []).length) {
+              await flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" }).catch(() => {});
+            }
             if (!isDesktopApp && webOutputRootRef.current) {
               await Promise.allSettled(currentJobs.map((job) => deleteWebFlowOutputs(job)));
             }
+            setJobs([]);
           } finally {
             deletingAllRef.current = false;
           }
@@ -1231,7 +1245,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           }
           return next;
         });
-        return flowRequest<{ jobs: Array<Record<string, unknown>> }>(
+        return flowRequest<{ ok: boolean }>(
           "/api/flow/jobs/cancel-folder",
           {
             method: "POST",
@@ -1244,6 +1258,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const deleteFolderJobs = (outputDir: string, folderJobs: FlowJob[]) => {
     if (!folderJobs.length) return;
+    const folderIds = folderJobs.map((job) => job.id);
     setConfirmAction({
       message: t(
         `Xóa toàn bộ ${folderJobs.length} job và file trong thư mục này?`,
@@ -1253,6 +1268,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       run: () => {
         // Optimistic: remove this folder's jobs immediately using the same key
         // the group uses (settings.outputDir, NOT job.outputFolder which is absolute)
+        for (const id of folderIds) deletingIdsRef.current.add(id);
         setJobs((current) => {
           const next: FlowJob[] = [];
           for (const job of current) {
@@ -1282,6 +1298,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             }
           } catch {
             // Background cleanup
+          } finally {
+            for (const id of folderIds) deletingIdsRef.current.delete(id);
           }
         })();
       },
@@ -2238,7 +2256,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     onChange={(concurrency) =>
                       setSettings((current) => ({ ...current, concurrency }))
                     }
-                    options={Array.from({ length: 50 }, (_, index) => String(index + 1))}
+                    options={Array.from({ length: 18 }, (_, index) => String(index + 1))}
                   />
                   <FlowSelect
                     label={t("Định dạng lưu", "Output format")}
@@ -2370,7 +2388,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             <div className="flow-card-title">
               <b>{t(`Hàng đợi (${jobs.length})`, `Queue (${jobs.length})`)}</b>
               <div className="flow-queue-tools">
-                <button className="flow-text-button" type="button" disabled={actionBusy || !jobs.some((job) => job.status === "failed" || job.status === "cancelled")} onClick={retryAllJobs}>{t("Chạy lại tất cả", "Retry all")}</button>
+                <button className="flow-text-button" type="button" disabled={actionBusy || !jobs.some(canRetryJob)} onClick={retryAllJobs}>{t("Chạy lại tất cả", "Retry all")}</button>
                 <button className="flow-text-button" type="button" disabled={!jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={cancelAllJobs}>{t("Hủy tất cả", "Cancel all")}</button>
                 <button className="flow-text-button is-danger" type="button" disabled={!jobs.length} onClick={deleteAllJobs}>{t("Xóa tất cả", "Delete all")}</button>
               </div>
@@ -2429,7 +2447,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </div>
                         <div className="flow-queue-folder-actions">
                           <button className="flow-text-button" type="button" onClick={() => openSrtImageWithFlowFolder(queueFolderLabel(group.kind, group.outputDir, group.outputFolder, group.displayOutputFolder))}>{t("Ghép", "Merge")}</button>
-                          {group.jobs.some((job) => job.status === "failed" || job.status === "cancelled") && (
+                          {group.jobs.some(canRetryJob) && (
                             <button className="flow-text-button is-retry" type="button" disabled={actionBusy} onClick={() => retryFolderJobs(group.outputDir, group.kind, group.jobs)}>
                               {t("Chạy lại", "Retry")}
                             </button>
@@ -2522,8 +2540,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                                   {t("Hủy", "Cancel")}
                                 </button>
                               )}
-                            {(job.status === "failed" ||
-                              job.status === "cancelled") && (
+                            {canRetryJob(job) && (
                                 <button type="button" onClick={() => retryJob(job.id)}>
                                   {t("Chạy lại", "Retry")}
                                 </button>
@@ -2877,7 +2894,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           <div className="flow-preview-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRetryTarget(null); }}>
             <section className="flow-confirm-dialog flow-retry-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-retry-title">
               <header>
-                <div><strong id="flow-retry-title">{t("Cài đặt chạy lại", "Retry settings")}</strong><small>{t(`${retryTarget.jobs.length} job lỗi hoặc đã hủy`, `${retryTarget.jobs.length} failed or cancelled jobs`)}</small></div>
+                <div><strong id="flow-retry-title">{t("Cài đặt chạy lại", "Retry settings")}</strong><small>{t(`${retryTarget.jobs.length} job sẽ tạo lại media mới`, `${retryTarget.jobs.length} jobs will generate new media`)}</small></div>
                 <button type="button" onClick={() => setRetryTarget(null)} aria-label={t("Đóng", "Close")}>×</button>
               </header>
               <div className="flow-retry-fields">
@@ -2914,7 +2931,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   label={t("Luồng chạy", "Concurrent jobs")}
                   value={retryTarget.concurrency}
                   onChange={(concurrency) => setRetryTarget((current) => current ? { ...current, concurrency } : current)}
-                  options={Array.from({ length: 50 }, (_, index) => String(index + 1))}
+                  options={Array.from({ length: 18 }, (_, index) => String(index + 1))}
                 />
               </div>
               <footer>
@@ -2946,7 +2963,20 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   onClick={() => {
                     const run = confirmAction.run;
                     setConfirmAction(null);
-                    void runAction(run);
+                    // Don't route through runAction — a stuck actionLock from a
+                    // prior hung request would silently drop delete/cancel.
+                    actionLock.current = false;
+                    setActionBusy(false);
+                    try {
+                      const result = run();
+                      if (result && typeof (result as Promise<unknown>).then === "function") {
+                        void Promise.resolve(result).catch((error) => {
+                          toast.error(error instanceof Error ? error.message : String(error));
+                        });
+                      }
+                    } catch (error) {
+                      toast.error(error instanceof Error ? error.message : String(error));
+                    }
                   }}
                 >
                   {confirmAction.confirmLabel}

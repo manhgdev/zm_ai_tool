@@ -27,7 +27,7 @@ from . import store
 _PROJECT_RE = re.compile(r"^(?:https://(?:flow\.google\.com|labs\.google)(?::443)?)?(?:/fx/tools/flow|/flow)?/project/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})(?:[/?#]|$)")
 _TERMINAL = {"done", "failed", "cancelled", "action_required"}
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 8
-_MAX_CONCURRENT_JOBS_PER_ACCOUNT = 50
+_MAX_CONCURRENT_JOBS_PER_ACCOUNT = 18
 _PROJECT_MIGRATION_RECOVERY_WINDOW_S = 600
 _PROFILE_COPY_IGNORES = {
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
@@ -480,18 +480,20 @@ class FlowService:
         # Queue order is FIFO: the first prompt stays at the top and is the
         # first job resumed after an app restart.  History can still sort by
         # timestamp in the UI when a newest-first view is appropriate.
+        # Hot path: never run legacy folder migration here — with hundreds of
+        # jobs it rewrites jobs.json / hits disk and starves DELETE / cancel.
         rows: list[dict[str, Any]] = []
         for row in sorted(store.list_rows("jobs"), key=lambda item: item.get("createdAt", 0)):
-            item = self._migrate_legacy_kind_output_folder(dict(row))
-            # The queue must expose the same concrete folder used by the
-            # worker; the saved setting can legitimately be just "test".
+            item = dict(row)
             settings = item.get("settings")
             if isinstance(settings, dict) and str(settings.get("outputDir") or "").strip():
-                output_dir = str(settings.get("outputDir") or "")
-                # The queue must always report the same on-disk folder used
-                # by the worker, including in the browser build.
-                item["displayOutputFolder"] = str(self._display_output_folder(item))
-                item["outputFolder"] = str(self._output_folder(item, create=False))
+                try:
+                    item["displayOutputFolder"] = str(self._display_output_folder(item))
+                    item["outputFolder"] = str(self._output_folder(item, create=False))
+                except OSError:
+                    raw = str(settings.get("outputDir") or "")
+                    item["outputFolder"] = raw
+                    item["displayOutputFolder"] = raw
             rows.append(item)
         return rows
 
@@ -724,33 +726,59 @@ class FlowService:
     def delete_all_jobs(self) -> int:
         self._stop_enqueue = True  # Prevent enqueue from creating more jobs mid-loop
         try:
-            ids = {str(job['id']) for job in store.list_rows('jobs')}
+            selected = store.list_rows("jobs")
+            ids = {str(job["id"]) for job in selected}
             if not ids:
                 return 0
-            # 1. Cancel running threads immediately
-            with self._account_condition:
-                self._cancelled.update(ids)
-                self._account_condition.notify_all()
-            # 2. Remove from DB immediately (F5 will see empty queue after this)
-            selected = [job for job in store.list_rows('jobs') if str(job['id']) in ids]
-            output_paths = [Path(str(raw)) for job in selected for raw in job.get('outputs') or []]
-            removed = store.delete_rows('jobs', ids)
-            # 3. Also catch any jobs that slipped through before _stop_enqueue took effect
-            straggler_ids = {str(job['id']) for job in store.list_rows('jobs')}
-            if straggler_ids:
-                with self._account_condition:
-                    self._cancelled.update(straggler_ids)
+            output_paths = [Path(str(raw)) for job in selected for raw in job.get("outputs") or []]
+            # Mark cancelled without waiting on the worker condition — set updates
+            # are enough for in-flight checks; notify is best-effort below.
+            self._cancelled.update(ids)
+            # Wipe DB first so F5 / GET see an empty queue even if notify is delayed.
+            removed = store.delete_rows("jobs", ids)
+            acquired = self._account_condition.acquire(timeout=0.5)
+            if acquired:
+                try:
                     self._account_condition.notify_all()
-                store.delete_rows('jobs', straggler_ids)
-            # 4. Delete output files in background so the API response is instant
+                finally:
+                    self._account_condition.release()
+            # Catch jobs that slipped through before _stop_enqueue took effect
+            straggler = store.list_rows("jobs")
+            if straggler:
+                straggler_ids = {str(job["id"]) for job in straggler}
+                self._cancelled.update(straggler_ids)
+                store.delete_rows("jobs", straggler_ids)
+                acquired = self._account_condition.acquire(timeout=0.5)
+                if acquired:
+                    try:
+                        self._account_condition.notify_all()
+                    finally:
+                        self._account_condition.release()
+            # Delete output files in background so the API response is instant
             def _cleanup_files():
                 with ThreadPoolExecutor(max_workers=min(8, max(1, len(output_paths)))) as pool:
                     list(pool.map(lambda p: p.unlink(missing_ok=True), output_paths))
-                unique_folders = {self._output_folder(job, create=False) for job in (selected + removed)}
-                remaining = {self._output_folder(j, create=False).resolve() for j in store.list_rows('jobs')}
+                # Prefer remembered absolute folders from the job rows; avoid
+                # _output_folder() which can probe ~/Downloads on every row.
+                unique_folders: set[Path] = set()
+                for job in selected + removed:
+                    raw_folder = str(job.get("outputFolder") or "").strip()
+                    if raw_folder:
+                        unique_folders.add(Path(raw_folder))
+                    else:
+                        try:
+                            unique_folders.add(self._output_folder(job, create=False))
+                        except OSError:
+                            pass
+                remaining = {
+                    Path(str(j.get("outputFolder") or "")).resolve()
+                    for j in store.list_rows("jobs")
+                    if str(j.get("outputFolder") or "").strip()
+                }
                 for folder in unique_folders:
                     try:
-                        if folder.resolve() not in remaining and folder.is_dir():
+                        resolved = folder.resolve()
+                        if resolved not in remaining and folder.is_dir():
                             shutil.rmtree(folder, ignore_errors=True)
                         elif folder.is_dir():
                             folder.rmdir()
@@ -766,40 +794,53 @@ class FlowService:
         selected = str(output_dir or "").strip()
         if not selected:
             return 0
+        # Lightweight list — avoid self.jobs() (folder migrate / path resolve) on the request path.
         matched = [
-            job for job in self.jobs()
+            job for job in store.list_rows("jobs")
             if str((job.get("settings") or {}).get("outputDir") or "").strip() == selected
             and (not kind or str(job.get("kind") or "") == kind)
         ]
         if not matched:
             return 0
-        folder = self._output_folder(matched[0], create=False)
+        raw_folder = str(matched[0].get("outputFolder") or "").strip()
+        try:
+            folder = Path(raw_folder) if raw_folder else self._output_folder(matched[0], create=False)
+        except OSError:
+            folder = Path(raw_folder) if raw_folder else Path()
         ids = {str(job["id"]) for job in matched}
-        with self._account_condition:
-            self._cancelled.update(ids)
-            self._account_condition.notify_all()
-        for job in matched:
-            for raw in job.get("outputs") or []:
-                try:
-                    Path(str(raw)).unlink(missing_ok=True)
-                except OSError:
-                    pass
+        output_paths = [Path(str(raw)) for job in matched for raw in job.get("outputs") or []]
+        self._cancelled.update(ids)
         removed = store.delete_rows("jobs", ids)
-        count = len(removed)
-        for job in removed:
-            for raw in job.get("outputs") or []:
-                try:
-                    Path(str(raw)).unlink(missing_ok=True)
-                except OSError:
-                    pass
-        # Remove untracked remnants too (for example an interrupted download),
-        # but only after restricting the operation to the matched output path.
-        # Never remove another job's outputs when folders are shared.
-        shared = any(self._output_folder(job, create=False).resolve() == folder.resolve()
-                     for job in store.list_rows('jobs'))
-        if not shared and folder.is_dir():
-            shutil.rmtree(folder, ignore_errors=True)
-        return count
+        acquired = self._account_condition.acquire(timeout=0.5)
+        if acquired:
+            try:
+                self._account_condition.notify_all()
+            finally:
+                self._account_condition.release()
+        # File + folder cleanup in background so the API returns as soon as DB is clean.
+        def _cleanup_files():
+            with ThreadPoolExecutor(max_workers=min(8, max(1, len(output_paths)))) as pool:
+                list(pool.map(lambda p: p.unlink(missing_ok=True), output_paths))
+            for job in removed:
+                for raw in job.get("outputs") or []:
+                    try:
+                        Path(str(raw)).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            if not folder.parts:
+                return
+            remaining = {
+                Path(str(j.get("outputFolder") or "")).resolve()
+                for j in store.list_rows("jobs")
+                if str(j.get("outputFolder") or "").strip()
+            }
+            try:
+                if folder.resolve() not in remaining and folder.is_dir():
+                    shutil.rmtree(folder, ignore_errors=True)
+            except OSError:
+                pass
+        threading.Thread(target=_cleanup_files, daemon=True, name="flow-folder-delete-cleanup").start()
+        return len(removed)
 
     def connect(self, account_id: str) -> dict[str, Any]:
         account = store.get_row("accounts", account_id)
@@ -1364,6 +1405,120 @@ class FlowService:
                 self._connecting_accounts.discard(account_id)
 
 
+    async def _create_flow_project_ui(self, page, *, avoid_project_id: str = "") -> str:
+        """Create a brand-new Flow project via the lobby UI. Returns the new project id or \"\"."""
+        from .browser import FLOW_BASE_URL
+        await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
+        await asyncio.sleep(2)
+        match = _PROJECT_RE.search(str(page.url or ""))
+        if match and match.group(1) != avoid_project_id:
+            return match.group(1)
+
+        candidates = [
+            page.get_by_role("button", name=re.compile(r"new project|create project|tạo dự án|dự án mới", re.I)),
+            page.get_by_role("link", name=re.compile(r"new project|create project|tạo dự án|dự án mới", re.I)),
+            page.get_by_text(re.compile(r"^\s*(new project|create project|tạo dự án|dự án mới)\s*$", re.I)),
+            page.locator(
+                '[aria-label*="new project" i], [aria-label*="create project" i], '
+                '[aria-label*="dự án mới" i], [aria-label*="tạo dự án" i]'
+            ),
+            page.locator(
+                'button:has-text("New project"), a:has-text("New project"), '
+                'button:has-text("Create project"), a:has-text("Create project"), '
+                'button:has-text("New Project"), button:has-text("Dự án mới"), '
+                'button:has-text("Tạo dự án")'
+            ),
+            page.locator('[data-testid*="create-project" i], [data-testid*="new-project" i]'),
+        ]
+        clicked = False
+        for locator in candidates:
+            try:
+                target = locator.first
+                if await target.count() == 0:
+                    continue
+                if not await target.is_visible():
+                    continue
+                await target.click(force=True)
+                clicked = True
+                break
+            except Exception:
+                continue
+        if not clicked:
+            return ""
+
+        def _is_replacement(url: str) -> bool:
+            found = _PROJECT_RE.search(url or "")
+            return bool(found and found.group(1) != avoid_project_id)
+
+        try:
+            await page.wait_for_url(_is_replacement, timeout=15_000)
+        except Exception:
+            create = page.get_by_role(
+                "button", name=re.compile(r"^create$|^tạo$|^tạo dự án$|^done$|^xong$|^continue$|^tiếp$", re.I),
+            ).first
+            if await create.count():
+                await create.click(force=True)
+                try:
+                    await page.wait_for_url(_is_replacement, timeout=15_000)
+                except Exception:
+                    return ""
+            else:
+                return ""
+        match = _PROJECT_RE.search(str(page.url or ""))
+        if match and match.group(1) != avoid_project_id:
+            return match.group(1)
+        return ""
+
+    @staticmethod
+    def _bind_flow_project(api, client, project_id: str) -> None:
+        """Point API + client at a replacement project without rebuilding the browser."""
+        api.project_id = project_id
+        api._project_page_url = f"https://flow.google.com/project/{project_id}" if project_id else ""
+        client.project_id = project_id
+        client._project_url = f"https://flow.google.com/project/{project_id}"
+
+    async def _ensure_account_project_page(self, page, *, api, client, account: dict[str, Any], job_id: str = "") -> dict[str, Any]:
+        """Open the account project; if deleted, create a replacement and continue."""
+        try:
+            await client._ensure_project_page(page)
+            return account
+        except RuntimeError as exc:
+            if "FLOW_PROJECT_NOT_FOUND" not in str(exc):
+                raise
+        old_id = str(account.get("projectId") or client.project_id or "")
+        self._log(
+            "warning",
+            "project_missing_creating_replacement",
+            job_id=job_id,
+            account_id=str(account.get("id") or ""),
+            details={"oldProjectId": old_id, "url": str(page.url or "")},
+        )
+        new_id = await self._create_flow_project_ui(page, avoid_project_id=old_id)
+        if not new_id:
+            raise RuntimeError(
+                f"FLOW_PROJECT_NOT_FOUND: Could not create a replacement project "
+                f"(old id: {old_id or 'none'}; current url: {page.url})"
+            )
+        patch: dict[str, Any] = {
+            "projectId": new_id,
+            "previousProjectId": old_id,
+            "projectChangedAt": time.time(),
+            "status": "online",
+            "error": None,
+            "updatedAt": time.time(),
+        }
+        store.patch_row("accounts", str(account["id"]), patch)
+        self._bind_flow_project(api, client, new_id)
+        self._log(
+            "success",
+            "project_replaced",
+            job_id=job_id,
+            account_id=str(account.get("id") or ""),
+            details={"oldProjectId": old_id, "projectId": new_id},
+        )
+        await client._ensure_project_page(page)
+        return {**account, **patch}
+
     async def _try_headless_reconnect(self, account_id: str, project_id: str) -> bool:
         """Attempt a quick headless session to verify the saved cookie is still valid.
 
@@ -1424,49 +1579,20 @@ class FlowService:
                 match = _PROJECT_RE.search(page.url)
                 if match and not project_missing:
                     confirmed_id = match.group(1)
-            if not confirmed_id:
-                # Try following a project link from the lobby.
+            if not confirmed_id and not project_missing:
+                # No deleted-id case: open an existing lobby project if present.
                 if "accounts.google.com" not in page.url and ("flow.google.com" in page.url or "labs.google" in page.url):
                     links = await page.locator('a[href*="/project/"]').all()
                     if links:
                         href = await links[0].get_attribute("href") or ""
                         m = _PROJECT_RE.search(href)
-                        if m and m.group(1) != project_id:
+                        if m:
                             confirmed_id = m.group(1)
 
-            if not confirmed_id and project_id:
-                # The saved project was deleted. Always create a replacement:
-                # selecting another existing project would mix unrelated jobs.
-                await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
-                await asyncio.sleep(2)
-                new_project = page.get_by_role(
-                    "button", name=re.compile(r"new project|create project|tạo dự án|dự án mới", re.I),
-                ).first
-                if not await new_project.count():
-                    new_project = page.get_by_role(
-                        "link", name=re.compile(r"new project|create project|tạo dự án|dự án mới", re.I),
-                    ).first
-                if await new_project.count():
-                    await new_project.click(force=True)
-                    try:
-                        await page.wait_for_url(
-                            lambda url: bool(_PROJECT_RE.search(url)) and project_id not in url,
-                            timeout=15_000,
-                        )
-                    except Exception:
-                        # Some Flow builds open a naming dialog before creating.
-                        create = page.get_by_role(
-                            "button", name=re.compile(r"^create$|^tạo$|^tạo dự án$", re.I),
-                        ).first
-                        if await create.count():
-                            await create.click(force=True)
-                            await page.wait_for_url(
-                                lambda url: bool(_PROJECT_RE.search(url)) and project_id not in url,
-                                timeout=15_000,
-                            )
-                    match = _PROJECT_RE.search(page.url)
-                    if match and match.group(1) != project_id:
-                        confirmed_id = match.group(1)
+            if not confirmed_id:
+                # Missing/deleted saved project → always create a clean replacement
+                # so jobs do not land in an unrelated gallery.
+                confirmed_id = await self._create_flow_project_ui(page, avoid_project_id=project_id)
 
             if confirmed_id and confirmed_id != project_id and confirmed_id not in str(page.url or ""):
                 # A project link exposes its ID without opening it. Open it
@@ -1576,8 +1702,10 @@ class FlowService:
             with self._account_condition:
                 order = self._account_next_order.get(account_id)
                 if order is None:
+                    # Lightweight rows only — never call self.jobs() under this lock
+                    # (jobs() migrates folders / resolves paths and blocks delete-all).
                     persisted_orders = [
-                        int(row.get("queueOrder")) for row in self.jobs()
+                        int(row.get("queueOrder")) for row in store.list_rows("jobs")
                         if row.get("accountId") == account_id and str(row.get("queueOrder", "")).isdigit()
                     ]
                     order = max(persisted_orders, default=-1) + 1
@@ -1624,8 +1752,9 @@ class FlowService:
         order = int(job.get("queueOrder", job.get("inputIndex", 0)))
         with self._account_condition:
             def next_queued_order() -> int | None:
+                # store.list_rows only — self.jobs() under this lock starves delete_all notify_all.
                 pending_orders = [
-                    int(row.get("queueOrder")) for row in self.jobs()
+                    int(row.get("queueOrder")) for row in store.list_rows("jobs")
                     if row.get("accountId") == account_id
                     and row.get("status") == "queued"
                     and str(row.get("id") or "") not in self._cancelled
@@ -2888,7 +3017,9 @@ class FlowService:
             store.patch_row("jobs", job_id, {"status": "processing", "stage": "submitting", "progress": 5, "updatedAt": time.time()})
             if job.get("submissionStartedAt") or job.get("mediaIds") or job.get("resumeOnly"):
                 page = await browser.page()
-                await client._ensure_project_page(page)
+                account = await self._ensure_account_project_page(
+                    page, api=api, client=client, account=account, job_id=job_id,
+                )
                 media_ids = list(job.get("mediaIds") or [])
                 if not media_ids:
                     media_ids = await self._recover_submitted_media(api, page, job)
@@ -2921,7 +3052,9 @@ class FlowService:
                 model = _normalize_video_model(settings.get("model"))
                 ratio = str(settings.get("ratio") or "16:9")
                 page = await browser.page()
-                await client._ensure_project_page(page)
+                account = await self._ensure_account_project_page(
+                    page, api=api, client=client, account=account, job_id=job_id,
+                )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
                 await self._prepare_ui_model(page, "video", model, ui=client._ui)
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 12, "updatedAt": time.time()})
@@ -3045,7 +3178,9 @@ class FlowService:
                 model = str(settings.get("model") or "Nano Banana 2")
                 sources = job.get("sourceFiles") or []
                 page = await browser.page()
-                await client._ensure_project_page(page)
+                account = await self._ensure_account_project_page(
+                    page, api=api, client=client, account=account, job_id=job_id,
+                )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
                 await self._prepare_ui_model(page, "image", model, ui=client._ui)
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 12, "updatedAt": time.time()})
@@ -3252,14 +3387,20 @@ class FlowService:
             if last_error_signature:
                 self._claimed_error_tiles.discard(last_error_signature)
             orders = [
-                int(row.get("queueOrder")) for row in self.jobs()
+                int(row.get("queueOrder")) for row in store.list_rows("jobs")
                 if row.get("accountId") == account_id and str(row.get("queueOrder", "")).isdigit()
             ]
             order = max(orders, default=-1) + 1
             self._account_next_order[account_id] = max(self._account_next_order.get(account_id, 0), order + 1)
             self._cancelled.discard(job_id)
+            # Explicit "Chạy lại" always regenerates: clear submission identity so the
+            # worker does not resume/download the previous mediaIds (done jobs want new outputs).
             job = store.patch_row("jobs", job_id, {
-                "resumeOnly": bool(existing.get("resumeOnly") or existing.get("submissionStartedAt") or existing.get("mediaIds")),
+                "resumeOnly": False,
+                "submissionStartedAt": None,
+                "submissionProjectId": None,
+                "baselineMediaIds": [],
+                "mediaIds": [],
                 "status": "queued", "stage": "queued", "progress": 0,
                 "queueOrder": order, "error": None, "outputs": [], "updatedAt": time.time(),
                 "accountId": account_id, "settings": settings,

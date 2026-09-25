@@ -499,7 +499,6 @@ def jobs_cancel_folder(body: OutputFolderIn):
     return {
         "ok": True,
         "cancelled": service.cancel_output_folder_jobs(body.outputDir, body.kind),
-        "jobs": service.jobs(),
     }
 
 
