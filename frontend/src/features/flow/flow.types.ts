@@ -16,6 +16,7 @@ export type FlowJob = {
   inputType: PromptInputType;
   createdAt: number;
   status: JobStatus;
+  stage?: string;
   progress: number;
   account: string;
   output?: string;
@@ -31,7 +32,26 @@ export type FlowJob = {
     duration: string;
     resolution: string;
     outputDir: string;
+    concurrency?: string;
   };
+};
+
+export type FlowModelCapability = {
+  name: string;
+  ratios: string[];
+  durations: string[];
+  resolutions: string[];
+  defaultRatio?: string;
+  defaultDuration?: string;
+  defaultResolution?: string;
+};
+
+export type FlowCapabilityCatalog = {
+  version: number;
+  source: string;
+  syncedAt: number;
+  image: { defaultModel?: string; models: FlowModelCapability[] };
+  video: { defaultModel?: string; models: FlowModelCapability[] };
 };
 
 export type FlowAccount = {
@@ -52,6 +72,10 @@ export type FlowAccount = {
   flowTier?: string;
   flowSku?: string;
   flowServiceTier?: string;
+  capabilityCatalog?: FlowCapabilityCatalog | null;
+  capabilityStatus?: "verified" | "stale" | "unknown";
+  capabilitySyncedAt?: number | null;
+  capabilityError?: string;
 };
 
 export type FlowLog = {

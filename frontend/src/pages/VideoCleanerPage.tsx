@@ -155,6 +155,12 @@ import { cleanerApi } from '@/features/cleaner/cleaner.api'
 export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
+  const cleanerError = (error?: string) => {
+    if (error === 'CLEANER_LOGO_NOT_DETECTED') return t('Chưa xác định được watermark chắc chắn; file gốc được giữ nguyên.', 'No reliable watermark match; the original file is unchanged.')
+    if (error === 'CLEANER_IMAGE_DEPTH_UNSUPPORTED') return t('Xóa watermark hiện hỗ trợ ảnh 8-bit. File gốc được giữ nguyên.', 'Watermark removal currently supports 8-bit images. The original file is unchanged.')
+    if (error === 'CLEANER_INVALID_LOGO_MASK') return t('Vùng watermark không khớp kích thước ảnh.', 'The watermark region does not match the image dimensions.')
+    return error
+  }
   const [selectedFiles, setSelectedFiles] = useState<FileInfo[]>([])
   const [method, setMethod] = useState<CleanMethod>(loadMethod)
   const [options, setOptions] = useState<AdvancedOptions>(loadOpts)
@@ -428,8 +434,8 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
                     desc: t('H.264/H.265 · chuẩn hóa pixel format', 'H.264/H.265 · normalize pixel format') },
                   { key: 'optimize' as const, title: t('Tối ưu dung lượng', 'Optimize file size'), badge: t('Tiết kiệm', 'Smaller file'), badgeCls: 'amber',
                     desc: t('CRF nén · giảm kích thước file', 'CRF compression · smaller file') },
-                  { key: 'logo' as const, title: t('Xóa logo / watermark', 'Remove logo / watermark'), badge: t('OCR tự nhận diện', 'OCR detection'), badgeCls: 'blue',
-                    desc: t('Quét watermark chữ ở góc: Veo, Grok, Kling, TikTok, UID…', 'Scans text corner marks: Veo, Grok, Kling, TikTok, UID…') },
+                  { key: 'logo' as const, title: t('Xóa logo / watermark', 'Remove logo / watermark'), badge: t('Xử lý local', 'Local processing'), badgeCls: 'blue',
+                    desc: t('Khử lớp phủ sao bán trong suốt; OCR xử lý logo chữ. Chạy trên máy.', 'Recover translucent sparkle overlays; OCR handles text logos. Runs locally.') },
                 ]).map(m => (
                   <button type="button" key={m.key} className={`vc-method${method === m.key ? ' is-active' : ''}`} onClick={() => setMethod(m.key)}>
                     <div className="vc-check"><SvgCheck /></div>
@@ -441,8 +447,8 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
               </div>
               {method === 'logo' ? (
                 <div className="vc-logo-targets">
-                  <strong>{t('Tự nhận diện logo/watermark chữ', 'Automatic text-logo detection')}</strong>
-                  <span>{t('Quét mọi nhãn chữ ổn định ở góc video. Veo, Grok và Kling chỉ là ví dụ; logo thuần hình không có chữ cần xử lý thủ công.', 'Scans any stable text label at video edges. Veo, Grok, and Kling are examples; image-only logos need manual treatment.')}</span>
+                  <strong>{t('Xử lý logo/watermark local', 'Local logo/watermark processing')}</strong>
+                  <span>{t('Giữ chi tiết nền khi khử biểu tượng sao bán trong suốt. Chỉ xử lý vùng nhận diện được, không xóa góc cố định. Logo đục vẫn có thể để lại dấu phục hồi.', 'Preserves background detail when removing translucent sparkles. Only matched regions are processed, never a fixed corner. Opaque logos may still leave repair artifacts.')}</span>
                 </div>
               ) : null}
             </div>
@@ -582,7 +588,7 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
                           <td title={job.filename} style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{job.filename}</td>
                           <td>{methodLabel(job.method, t)}</td>
                           <td>
-                            <span className={`vc-status ${job.status}`} title={job.status === 'error' ? job.error : undefined}>
+                            <span className={`vc-status ${job.status}`} title={job.status === 'error' ? cleanerError(job.error) : undefined}>
                               {job.status === 'error' ? t('Lỗi', 'Failed') : job.status === 'cancelled' ? t('Đã hủy', 'Cancelled') : job.status === 'queued' ? t('Chờ xử lý', 'Queued') : job.status === 'processing' ? t('Đang xử lý', 'Processing') : t('Hoàn thành', 'Done')}
                             </span>
                             {job.status === 'processing' && (
@@ -591,7 +597,7 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
                               </div>
                             )}
                             {job.status === 'error' && job.error ? (
-                              <div className="vc-error-message" title={job.error}>{job.error}</div>
+                              <div className="vc-error-message" title={cleanerError(job.error)}>{cleanerError(job.error)}</div>
                             ) : null}
                           </td>
                           <td>{job.outputSize ? formatBytes(job.outputSize) : '—'}</td>

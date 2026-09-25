@@ -10,7 +10,7 @@
   width: 52px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   overflow: hidden;
   border-right: 1px solid var(--line);
   padding: 8px 6px;
@@ -23,7 +23,7 @@
 .flow-rail-toggle {
   display: grid !important;
   place-content: center;
-  gap: 4px;
+  gap: 16px;
   width: 38px;
   height: 34px;
   padding: 0 !important;
@@ -614,14 +614,28 @@
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   margin-left: auto;
 }
 .flow-queue-folder-actions .flow-text-button.is-warning {
   color: #c57913 !important;
+  background: color-mix(in srgb, #8b5cf6 10%, transparent) !important;
+  border-radius: 6px;
+}
+.flow-queue-folder-actions .flow-text-button {
+  padding-inline: 5px;
+  background: color-mix(in srgb, #8b5cf6 10%, transparent) !important;
+  border-radius: 6px;
+}
+.flow-queue-folder-actions .flow-text-button.is-retry {
+  color: #6d28d9 !important;
+  background: color-mix(in srgb, #8b5cf6 10%, transparent) !important;
+  border-radius: 6px;
 }
 .flow-queue-folder-actions .flow-text-button.is-danger {
   color: #c93646 !important;
+  background: color-mix(in srgb, #8b5cf6 10%, transparent) !important;
+  border-radius: 6px;
 }
 /* Row 2: progress bar */
 .flow-queue-folder-summary {
@@ -1106,6 +1120,35 @@
   border-color: #c93646;
   background: #c93646;
   color: #fff;
+}
+.flow-retry-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  padding: 10px 14px 12px;
+  background: var(--surface);
+}
+.flow-retry-dialog { width: min(460px, 92vw) !important; }
+.flow-retry-dialog > header { padding: 12px 14px; }
+.flow-retry-dialog > header strong { display: block; font-size: 0.86rem; }
+.flow-retry-dialog > header small { display: block; margin-top: 2px; color: var(--muted-foreground); font-size: 0.65rem; font-weight: 600; }
+.flow-retry-dialog > footer { padding: 9px 14px; }
+.flow-retry-dialog > footer button.is-primary { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
+.flow-retry-fields label {
+  display: grid;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  color: var(--muted-foreground);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+.flow-retry-fields label:last-child { grid-column: auto; }
+.flow-retry-fields .flow-select-wrap,
+.flow-retry-fields select { width: 100%; min-width: 0; }
+.flow-retry-fields select { min-height: 29px; padding: 0 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--background); color: var(--ink); font-size: 0.7rem; font-weight: 750; }
+@media (max-width: 680px) {
+  .flow-retry-fields { grid-template-columns: 1fr; }
 }
 .flow-history-scroll {
   max-height: min(62vh, 620px);

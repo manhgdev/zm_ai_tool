@@ -22,11 +22,12 @@ export const COLLAPSED_FOLDERS_KEY = "zm-flow-veo:collapsed-folders:v1";
 // ── Model lists ───────────────────────────────────────────────────────────────
 export const FLOW_VIDEO_MODELS = [
   "Veo 3.1 - Lite",
-  "Veo 3.1 - Lite [Lower Priority]",
   "Veo 3.1 - Fast",
   "Veo 3.1 - Quality",
-  "Omni Flash",
+  "Omni 1.1 Flash",
 ] as const;
+
+export const FLOW_OMNI_FLASH_DURATIONS = ["4", "6", "8", "10"] as const;
 
 export const FLOW_IMAGE_MODELS = [
   "Nano Banana Pro",
@@ -45,9 +46,7 @@ export function settingsForCreateKind(settings: FlowSettings, kind: CreateKind):
   const model = kind === "image" ? settings.imageModel : settings.videoModel;
   return {
     ...settings,
-    model: kind === "image"
-      ? isImageModel(model) ? model : "Nano Banana 2"
-      : isVideoModel(model) ? model : "Veo 3.1 - Fast",
+    model: model || (kind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"),
   };
 }
 
@@ -129,9 +128,12 @@ export function readSettings(): FlowSettings {
     const merged = { ...fallback, ...saved };
     if (merged.model === "Veo 3.1 Fast") merged.model = "Veo 3.1 - Fast";
     if (merged.model === "Veo 3.1 Quality") merged.model = "Veo 3.1 - Quality";
+    if (merged.model === "Omni Flash") merged.model = "Omni 1.1 Flash";
+    if (merged.videoModel === "Omni Flash") merged.videoModel = "Omni 1.1 Flash";
+    if (merged.model === "Veo 3.1 - Lite [Lower Priority]") merged.model = fallback.videoModel;
     if (/^Imagen 3/i.test(merged.model)) merged.model = "Nano Banana 2";
-    if (!isVideoModel(merged.videoModel)) merged.videoModel = isVideoModel(merged.model) ? merged.model : fallback.videoModel;
-    if (!isImageModel(merged.imageModel)) merged.imageModel = isImageModel(merged.model) ? merged.model : fallback.imageModel;
+    if (!String(merged.videoModel || "").trim()) merged.videoModel = fallback.videoModel;
+    if (!String(merged.imageModel || "").trim()) merged.imageModel = fallback.imageModel;
     if (!["16:9","9:16","1:1","4:3","3:4"].includes(merged.imageRatio)) merged.imageRatio = fallback.imageRatio;
     if (![1,2,3,4].includes(Number(merged.imageCount))) merged.imageCount = fallback.imageCount;
     if (!["16:9","9:16","1:1","4:3","3:4"].includes(merged.ratio)) merged.ratio = fallback.ratio;
@@ -175,6 +177,7 @@ export function writeFlowRoutePanel(panel: FlowRoutePanel) {
 export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts: FlowAccount[]): FlowJob[] {
   return rows.map((raw) => {
     const s = raw.settings && typeof raw.settings === "object" ? raw.settings as Record<string, unknown> : {};
+    const savedModel = String(s.model || (raw.kind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"));
     return {
       id: String(raw.id),
       index: Number(raw.inputIndex || 0),
@@ -183,6 +186,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       inputType: ["txt","csv","json"].includes(raw.inputType as string) ? raw.inputType as "txt"|"csv"|"json" : "prompt",
       createdAt: Number(raw.createdAt || Date.now() / 1000),
       status: ["processing","queued","done","cancelled"].includes(raw.status as string) ? raw.status as FlowJob["status"] : "failed",
+      stage: String(raw.stage || ""),
       progress: Number(raw.progress || 0),
       accountId: String(raw.accountId || ""),
       account: accounts.find((a) => a.id === raw.accountId)?.label || String(raw.accountId || ""),
@@ -193,7 +197,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       seriesContext: raw.seriesContext && typeof raw.seriesContext === "object" ? raw.seriesContext as FlowJob["seriesContext"] : undefined,
       error: raw.error ? String(raw.error) : null,
       settings: {
-        model: String(s.model || (raw.kind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast")),
+        model: savedModel === "Veo 3.1 - Lite [Lower Priority]" ? "Veo 3.1 - Fast" : savedModel,
         ratio: String(s.ratio || "16:9"),
         duration: String(s.duration || "8"),
         resolution: String(s.resolution || "1K"),

@@ -71,6 +71,7 @@ class AutomationService:
             "scriptBrief": {
                 "niche": "",
                 "audience": "",
+                "character": "",
                 "durationMinutes": 8,
                 "videoType": "educational",
                 "tone": "Tự nhiên, sắc bén, dễ nghe",
@@ -644,6 +645,9 @@ class AutomationService:
 
         if target_idx <= stages_order.index("tts"):
             if not audio and script:
+                # Every script source (AI, upload, or checkpoint) must pass
+                # through the same narration-only sanitizer before TTS.
+                self._clean_script_for_tts(script)
                 self.set_stage(job_id, "tts", 24, "Đang tạo audio và SRT bằng TTS.")
                 tts_cfg = settings.get("tts") if isinstance(settings.get("tts"), dict) else {}
                 from pipeline.tts.studio import synth_text_job, ensure_wav, ensure_mp3
@@ -798,12 +802,12 @@ class AutomationService:
         language = "English" if language_code == "en" else ("Korean" if language_code == "ko" else "Vietnamese")
         brief = settings.get("scriptBrief") if isinstance(settings.get("scriptBrief"), dict) else {}
         brief_lines = (
-            f"Topic: {topic}\nNiche: {brief.get('niche') or 'general education'}\nAudience: {brief.get('audience') or 'curious general viewers'}\n"
+            f"Topic: {topic}\nNiche: {brief.get('niche') or 'general education'}\nAudience: {brief.get('audience') or 'curious general viewers'}\nMain character: {brief.get('character') or 'none specified'}\n"
             f"Target duration: {brief.get('durationMinutes') or 8} minutes\nVideo type: {brief.get('videoType') or 'educational'}\nTone: {brief.get('tone') or 'natural and clear'}\n"
             f"Platform: {brief.get('platform') or 'YouTube'}\nPrimary goal: {brief.get('primaryGoal') or 'watch time'}\nCommon mistake to correct: {brief.get('commonMistake') or 'none specified'}"
         )
         brief_lines_vi = (
-            f"Chủ đề: {topic}\nNgách: {brief.get('niche') or 'giáo dục đại chúng'}\nĐối tượng: {brief.get('audience') or 'người xem tò mò'}\n"
+            f"Chủ đề: {topic}\nNgách: {brief.get('niche') or 'giáo dục đại chúng'}\nĐối tượng: {brief.get('audience') or 'người xem tò mò'}\nNhân vật chính: {brief.get('character') or 'không chỉ định'}\n"
             f"Độ dài mục tiêu: {brief.get('durationMinutes') or 8} phút\nDạng video: {brief.get('videoType') or 'giáo dục'}\nTone: {brief.get('tone') or 'tự nhiên, rõ ràng'}\n"
             f"Nền tảng: {brief.get('platform') or 'YouTube'}\nMục tiêu chính: {brief.get('primaryGoal') or 'thời lượng xem'}\nSai lầm cần sửa: {brief.get('commonMistake') or 'không nêu'}"
         )
@@ -1093,6 +1097,7 @@ class AutomationService:
         if "-->" in text:
             text = re.sub(r"\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.]\d{3}", "\n", text)
             text = re.sub(r"(?m)^\s*\d+\s*$", "", text)
+        text = re.sub(r"(?i)kịch\s*bản\s*youtube\s*\n\s*hoàn\s*\n\s*chỉnh", "Kịch bản YouTube hoàn chỉnh", text)
         text = re.sub(r"\s*(?:---\s*)?(?=##\s*[123][.)])", "\n", text)
         lines = text.splitlines()
         # The retention template has hook options before section 2 and an
@@ -1103,14 +1108,20 @@ class AutomationService:
         for line in lines[start:end]:
             value = re.sub(r"^\s*#+\s*|\*\*|__", "", line).strip()
             value = re.sub(r"^(?:2\s*[.)-]\s*)?(?:KỊCH BẢN(?: YOUTUBE)?|FULL SCRIPT)\s*(?:[-:—]\s*)?", "", value, flags=re.I)
-            if not value or re.match(r"^(?:BƯỚC\s*2\b|PART\s*2\b|KỊCH BẢN(?: YOUTUBE)?|FULL SCRIPT|HOOK|MICRO HOOK|CTA|HÌNH ẢNH|B-ROLL|VISUAL|[A-ZÀ-Ỹ ]{3,}:)", value, re.I):
+            value = re.sub(r"KỊCH BẢN\s+YOUTUBE\s+HOÀN CHỈNH\s*", "", value, flags=re.I)
+            if not value or re.match(r"^(?:BƯỚC\s*2\b|PART\s*2\b|KỊCH BẢN(?: YOUTUBE)?|FULL SCRIPT|HOÀN\s*CHỈNH$|HOOK|MICRO HOOK|CTA|HÌNH ẢNH|B-ROLL|VISUAL|[A-ZÀ-Ỹ ]{3,}:)", value, re.I):
                 continue
             value = re.sub(r"\[(?:HOOK|MICRO HOOK|MỞ VÒNG LẶP TÒ MÒ|BỐI CẢNH|GIÁ TRỊ|ĐIỂM PHÁ VỠ KHUÔN MẪU|CAO TRÀO|KẾT QUẢ|CTA|HÌNH ẢNH|B-ROLL|VISUAL|IMAGE|SCENE)[^\]]*\]", "", value, flags=re.I)
+            value = re.sub(r"\s*[-—]?\s*\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}\s*", " ", value)
+            value = re.sub(r"\s*---\s*", " ", value)
             value = re.sub(r"^\s*(?:HOOK|MICRO HOOK|MỞ VÒNG LẶP TÒ MÒ|BỐI CẢNH|GIÁ TRỊ|ĐIỂM PHÁ VỠ KHUÔN MẪU\s*\d*|CAO TRÀO|KẾT QUẢ|CTA)\s*(?:[-:—].*)?$", "", value, flags=re.I)
             value = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", value)
             if value:
                 cleaned.append(value)
         result = "\n".join(cleaned).strip()
+        result = re.sub(r"(?i)kịch\s*bản\s*youtube\s+hoàn\s+chỉnh", "", result)
+        result = re.sub(r"(?im)^\s*(?:script|kịch\s*bản)(?:\s+youtube)?\s*:?\s*$", "", result)
+        result = re.sub(r"\n{3,}", "\n\n", result).strip()
         if not result:
             raise RuntimeError("AUTOMATION_SCRIPT_CLEAN_EMPTY")
         path.write_text(result + "\n", encoding="utf-8")

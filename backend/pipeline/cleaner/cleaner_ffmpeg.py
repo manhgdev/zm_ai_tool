@@ -8,7 +8,7 @@ from pathlib import Path
 
 import sys
 
-from pipeline.core.media import _ff_bin, ffprobe_duration, h264_encoder_args, h264_hardware_encoder, video_size
+from pipeline.core.media import _ff_bin, ffprobe_duration, h264_encoder_args, h264_hardware_encoder
 from pipeline.core.artifact_cache import ArtifactCache
 from pipeline.cleaner.cleaner_jobs import (
     update_job,
@@ -19,17 +19,69 @@ from pipeline.cleaner.cleaner_jobs import (
 )
 
 CREATE_NO_WINDOW = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)) if sys.platform == "win32" else 0
-_CACHE = ArtifactCache("video-cleaner", version=3)
+_CACHE = ArtifactCache("video-cleaner", version=6)
+
+
+def _pixel_masks(detection: dict, width: int, height: int) -> list[tuple[int, int, int, int]]:
+    raw_masks = detection.get("masks") or [detection.get("bbox")]
+    boxes: list[tuple[int, int, int, int]] = []
+    for mask in raw_masks:
+        if not isinstance(mask, dict):
+            continue
+        x = max(0, min(width - 1, round(float(mask.get("x") or 0) * width)))
+        y = max(0, min(height - 1, round(float(mask.get("y") or 0) * height)))
+        right = min(width, x + round(float(mask.get("w") or 0) * width))
+        bottom = min(height, y + round(float(mask.get("h") or 0) * height))
+        if right > x and bottom > y:
+            boxes.append((x, y, right, bottom))
+    return boxes
+
+
+def _inpaint_image(input_path: str, output: str, job_id: str) -> None:
+    """Process still images locally; never route an image through video code."""
+    from pipeline.core.runtime_site import ensure_cv2
+    from pipeline.cleaner.sparkle import find_sparkle, remove_sparkle
+    from pipeline.export.cover_mask import _inpaint_region
+    import numpy as np
+
+    cv2 = ensure_cv2()
+    # imdecode/fromfile supports Windows paths containing non-ASCII characters.
+    image = cv2.imdecode(np.fromfile(input_path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise RuntimeError("Không đọc được ảnh đầu vào / Cannot decode input image")
+    if image.dtype != np.uint8:
+        raise RuntimeError('CLEANER_IMAGE_DEPTH_UNSUPPORTED')
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    overlay = find_sparkle(image[:, :, :3])
+    if overlay:
+        remove_sparkle(image, overlay)
+        append_job_log(job_id, f"Local alpha recovery: box={overlay.box}, opacity={overlay.opacity:.3f}, match={overlay.score:.3f}")
+    else:
+        detection = _detect_logo_with_retry(input_path, job_id) or {}
+        boxes = _pixel_masks(detection, image.shape[1], image.shape[0])
+        if not boxes:
+            # Absence of a detection must never authorize erasing an arbitrary
+            # rectangle of scene content or returning a fake cleaned result.
+            raise RuntimeError('CLEANER_LOGO_NOT_DETECTED')
+        for box in boxes:
+            rgb = image[:, :, :3].copy()
+            image[:, :, :3] = _inpaint_region(rgb, box)
+    ext = Path(output).suffix.lower()
+    params = [int(cv2.IMWRITE_JPEG_QUALITY), 98] if ext in {".jpg", ".jpeg"} else []
+    if ext == '.webp':
+        params = [int(cv2.IMWRITE_WEBP_QUALITY), 101]  # lossless
+    ok, encoded = cv2.imencode(ext, image, params)
+    if not ok:
+        raise RuntimeError("Không thể ghi ảnh đã xử lý / Cannot write cleaned image")
+    encoded.tofile(output)
 
 
 def _inpaint_video(input_path: str, output: str, job_id: str) -> None:
-    import cv2
+    from pipeline.core.runtime_site import ensure_cv2
+    from pipeline.cleaner.sparkle import find_sparkle, remove_sparkle
     from pipeline.export.cover_mask import _inpaint_region
-    detection = _detect_logo_with_retry(input_path, job_id) or {}
-    masks = detection.get('masks') or [detection.get('bbox')]
-    masks = [m for m in masks if isinstance(m, dict)]
-    if not masks:
-        raise RuntimeError('Không nhận diện được logo / No logo detected')
+    cv2 = ensure_cv2()
     cap = cv2.VideoCapture(input_path)
     encoder = None
     try:
@@ -39,16 +91,29 @@ def _inpaint_video(input_path: str, output: str, job_id: str) -> None:
         height, width = frame.shape[:2]
         fps = float(cap.get(cv2.CAP_PROP_FPS) or 30)
         total = max(1, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+        # A video overlay must be consistent across anchor frames before the
+        # same alpha map is applied. This path supports static corner marks.
+        overlay = find_sparkle(frame)
+        if overlay:
+            for position in sorted({total // 2, max(0, total - 2)}):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, position)
+                decoded, anchor = cap.read()
+                other = find_sparkle(anchor) if decoded else None
+                if other is None or max(abs(a - b) for a, b in zip(overlay.box, other.box)) > 3 or abs(overlay.opacity - other.opacity) > .08:
+                    overlay = None
+                    break
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame = cap.read()
+            if not ok:
+                raise RuntimeError('Cannot decode source video')
         boxes = []
-        for m in masks:
-            x = max(0, min(width, round(float(m.get('x', 0)) * width)))
-            y = max(0, min(height, round(float(m.get('y', 0)) * height)))
-            right = min(width, x + round(float(m.get('w', 0)) * width))
-            bottom = min(height, y + round(float(m.get('h', 0)) * height))
-            if right > x and bottom > y:
-                boxes.append((x, y, right, bottom))
-        if not boxes:
-            raise RuntimeError('Invalid logo mask')
+        if overlay:
+            append_job_log(job_id, f"Local alpha recovery (static video): box={overlay.box}, opacity={overlay.opacity:.3f}")
+        else:
+            detection = _detect_logo_with_retry(input_path, job_id) or {}
+            boxes = _pixel_masks(detection, width, height)
+            if not boxes:
+                raise RuntimeError('CLEANER_LOGO_NOT_DETECTED')
         # File-backed stderr prevents pipe deadlock while feeding raw frames.
         with tempfile.TemporaryFile() as errors:
             encoder = subprocess.Popen([
@@ -67,6 +132,8 @@ def _inpaint_video(input_path: str, output: str, job_id: str) -> None:
                     return
                 for box in boxes:
                     frame = _inpaint_region(frame, box)
+                if overlay:
+                    remove_sparkle(frame, overlay)
                 encoder.stdin.write(frame.tobytes())
                 count += 1
                 if count % max(1, round(fps)) == 0:
@@ -83,12 +150,6 @@ def _inpaint_video(input_path: str, output: str, job_id: str) -> None:
             encoder.kill()
             encoder.wait()
         unregister_proc(job_id)
-
-# Gemini's sparkle watermark is intentionally icon-only, so an OCR-only probe
-# cannot describe it.  This small lower-right region matches that mark without
-# affecting the usual caption area at the bottom of vertical videos.
-_ICON_ONLY_WATERMARK_MASK = {"x": 0.80, "y": 0.89, "w": 0.08, "h": 0.06}
-
 
 def _retryable_ocr_load_error(exc: BaseException) -> bool:
     message = str(exc).casefold()
@@ -122,38 +183,6 @@ def _detect_logo_with_retry(input_path: str, job_id: str | None = None):
         return detect_logo_bbox_inprocess(input_path)
 
 
-def _logo_filter(input_path: str, job_id: str | None = None) -> str:
-    """Return an FFmpeg delogo filter from OCR, with an icon-only fallback."""
-    detection = _detect_logo_with_retry(input_path, job_id)
-    bbox = (detection or {}).get("bbox")
-    # A visible Gemini sparkle has no readable text.  Give the cleaner a
-    # conservative fallback rather than failing every icon-only video before
-    # FFmpeg starts.  Textual watermark detections always take priority.
-    if not isinstance(bbox, dict):
-        bbox = _ICON_ONLY_WATERMARK_MASK
-    width, height = video_size(Path(input_path))
-    if width < 1 or height < 1:
-        raise RuntimeError("Không đọc được kích thước video để xoá logo")
-    raw_masks = (detection or {}).get("masks")
-    masks = raw_masks if isinstance(raw_masks, list) and raw_masks else [bbox]
-    filters: list[str] = []
-    for mask in masks:
-        if not isinstance(mask, dict):
-            continue
-        # FFmpeg delogo rejects a region touching the top/left boundary even
-        # when its dimensions are valid. Keep a one-pixel border and clip it.
-        x = max(1, min(width - 3, round(float(mask.get("x") or 0) * width)))
-        y = max(1, min(height - 3, round(float(mask.get("y") or 0) * height)))
-        w = max(2, min(width - x - 1, round(float(mask.get("w") or 0) * width)))
-        h = max(2, min(height - y - 1, round(float(mask.get("h") or 0) * height)))
-        filters.append(f"delogo=x={x}:y={y}:w={w}:h={h}:show=0")
-    if not filters:
-        raise RuntimeError("Không có vùng logo/watermark hợp lệ để xoá")
-    # FFmpeg applies each static mask sequentially; this covers a wordmark and
-    # a separate corner glyph in the same video.
-    return ",".join(filters)
-
-
 def run_cleaner_job_sync(job_id: str) -> None:
     job = get_job(job_id)
     if not job:
@@ -163,6 +192,7 @@ def run_cleaner_job_sync(job_id: str) -> None:
     output_path = job["output_path"]
     method = job["method"]
     options = job["options"]
+    is_image = Path(input_path).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
     
     update_job(job_id, {"status": "processing", "startedAt": time.time(), "progress": 0})
     append_job_log(job_id, f"Bắt đầu xử lý · {method}")
@@ -171,7 +201,7 @@ def run_cleaner_job_sync(job_id: str) -> None:
         cache_key = _CACHE.key(
             inputs=[Path(input_path)], settings=options, values={"method": method},
         )
-        if _CACHE.restore(cache_key, {"output": Path(output_path)}):
+        if method != 'logo' and _CACHE.restore(cache_key, {"output": Path(output_path)}):
             out_size = Path(output_path).stat().st_size
             update_job(job_id, {
                 "status": "done", "progress": 100.0, "outputSize": out_size,
@@ -179,10 +209,14 @@ def run_cleaner_job_sync(job_id: str) -> None:
             })
             append_job_log(job_id, "Hoàn thành · Cache")
             return
-        duration_s = ffprobe_duration(input_path) or 100.0
+        duration_s = ffprobe_duration(input_path) or (1.0 if is_image else 100.0)
         if method == 'logo':
-            append_job_log(job_id, 'Tái tạo nền logo từng khung hình / Inpainting logo per frame')
-            _inpaint_video(input_path, output_path, job_id)
+            if is_image:
+                append_job_log(job_id, 'Xử lý ảnh bằng OpenCV local / Processing image with local OpenCV')
+                _inpaint_image(input_path, output_path, job_id)
+            else:
+                append_job_log(job_id, 'Tái tạo nền logo từng khung hình / Inpainting logo per frame')
+                _inpaint_video(input_path, output_path, job_id)
             if (get_job(job_id) or {}).get('status') == 'cancelled':
                 return
             out_size = Path(output_path).stat().st_size
@@ -240,16 +274,6 @@ def run_cleaner_job_sync(job_id: str) -> None:
                 cmd.extend(["-c:v", "libx264", "-preset", "faster", "-crf", "26"])
             cmd.extend(["-movflags", "+faststart", "-c:a", "aac"])
 
-        elif method == "logo":
-            append_job_log(job_id, "Đang nhận diện logo bằng OCR · Detecting logo with OCR")
-            cmd.extend(["-vf", _logo_filter(input_path, job_id)])
-            append_job_log(job_id, "Đã xác định vùng xóa logo · Logo removal region ready")
-            if h264_hardware_encoder():
-                cmd.extend(h264_encoder_args(quality=20))
-            else:
-                cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "20"])
-            cmd.extend(["-c:a", "copy", "-map_metadata", "-1", "-movflags", "+faststart"])
-            
         cmd.append(output_path)
         append_job_log(job_id, "FFmpeg: " + subprocess.list2cmdline(cmd))
         

@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { localize, useLocale } from '@/app/i18n'
 import { FLOW_IMAGE_MODELS } from '@/features/flow/flow.helpers'
+import type { FlowCapabilityCatalog } from '@/features/flow/flow.types'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { MediaPreviewModal, type MediaPreviewAction, type MediaPreviewItem } from '@/shared/components/MediaPreviewModal'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
@@ -31,7 +32,7 @@ type AutomationSettings = {
   chatModel: string
   systemPrompt?: string
   promptEngine?: 'vi' | 'en' | 'ko' | 'custom'
-  scriptBrief: { niche: string; audience: string; durationMinutes: number; videoType: string; tone: string; platform: string; primaryGoal: string; commonMistake: string }
+  scriptBrief: { niche: string; audience: string; character: string; durationMinutes: number; videoType: string; tone: string; platform: string; primaryGoal: string; commonMistake: string }
   tts: { voice: string; speed: number; volume: number; pitch: number; style: string }
   flow: { accountId: string; model: string; ratio: string; resolution: string; concurrency: string; promptEngine: 'vi' | 'en' | 'ko' | 'custom'; count?: string }
   compose: {
@@ -54,6 +55,8 @@ type FlowAccountOption = {
   plan?: string
   credits?: number | null
   isDefault?: boolean
+  capabilityCatalog?: FlowCapabilityCatalog | null
+  capabilityStatus?: 'verified' | 'stale' | 'unknown'
 }
 
 type TtsVoiceOption = {
@@ -76,7 +79,7 @@ const AUTOMATION_SETTINGS_TAB_KEY = 'zm_ai_tool.automation-settings-tab.v1'
 const DEFAULT_SETTINGS: AutomationSettings = {
   language: 'vi', textProvider: 'openrouter', textModel: 'openrouter/free', chatModel: 'GPT-5.6 Sol',
   promptEngine: 'vi',
-  scriptBrief: { niche: '', audience: '', durationMinutes: 8, videoType: 'educational', tone: 'Tự nhiên, sắc bén, dễ nghe', platform: 'YouTube', primaryGoal: 'watch_time', commonMistake: '' },
+  scriptBrief: { niche: '', audience: '', character: '', durationMinutes: 8, videoType: 'educational', tone: 'Tự nhiên, sắc bén, dễ nghe', platform: 'YouTube', primaryGoal: 'watch_time', commonMistake: '' },
   tts: { voice: 'system', speed: 1, volume: 1, pitch: 0, style: 'tu_nhien' },
   flow: { accountId: '', model: 'Nano Banana 2', ratio: '16:9', resolution: '1K', concurrency: '3', promptEngine: 'vi', count: '1' },
   compose: { resolution: 'auto', targetPlatform: 'auto', fps: 30, crf: 20, encoder: 'auto', effect: 'none', transitionDuration: .28, zoom: 'off', speed: 100, volume: 100, previewSeconds: 0, allowMissingMedia: false, subtitleEnabled: true, removeMetadata: false, subtitleFontFamily: 'system', subtitleSize: 8, subtitleOffset: 0, subtitleMargin: 34, subtitleBackground: 'solid', subtitleColor: '#ffffff', subtitleBgColor: '#000000', subtitleOpacity: 55, drawingEnabled: false, drawingMode: 'hand', drawingTool: 'pen', drawingHandId: 'pen', drawingDetail: 72, drawingThickness: 2, drawingStrokeOrder: 'natural', delogoEnabled: false, delogoAuto: true, delogoX: 80, delogoY: 82, delogoW: 18, delogoH: 12, logoEnabled: false, logoSource: 'text', logoText: 'ZM AI TOOL', logoIcon: '★', logoFontSize: 32, logoColor: '#ffffff', logoSize: 8, logoOpacity: 85, logoX: 88, logoY: 88, logoMotion: 'fixed', logoScope: 'full', logoStart: 0, logoEnd: 10, logoVisibleSec: 4, logoHiddenSec: 2, logoFadeSec: .5, logoSafeMargin: 4 }, outputDir: '',
@@ -140,6 +143,8 @@ function normalizeFlowAccounts(raw: unknown): FlowAccountOption[] {
       plan: row.plan ? String(row.plan) : undefined,
       credits: typeof row.credits === 'number' ? row.credits : null,
       isDefault: Boolean(row.isDefault),
+      capabilityCatalog: row.capabilityCatalog as FlowCapabilityCatalog | null | undefined,
+      capabilityStatus: row.capabilityStatus === 'verified' || row.capabilityStatus === 'stale' ? row.capabilityStatus : 'unknown',
     })
     return result
   }, [])
@@ -629,6 +634,11 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
   const selectedTextProvider = chatProviders.find(item => item.id === settings.textProvider)
   const voiceDisplay = (voice: TtsVoiceOption) => [voice.name || voice.label || voice.id, voice.engine, voice.language].filter(Boolean).join(' · ')
   const selectedVoice = ttsVoices.find(voice => voice.id === settings.tts.voice)
+  const selectedFlowAccount = flowAccounts.find(account => account.id === settings.flow.accountId) || flowAccounts.find(account => account.isDefault)
+  const flowImageCapabilities = selectedFlowAccount?.capabilityStatus === 'verified' ? selectedFlowAccount.capabilityCatalog?.image.models || [] : []
+  const flowImageModels = flowImageCapabilities.length ? flowImageCapabilities.map(item => item.name) : [...FLOW_IMAGE_MODELS]
+  const selectedFlowImageCapability = flowImageCapabilities.find(item => item.name === settings.flow.model)
+  const flowRatioOptions = selectedFlowImageCapability?.ratios.length ? selectedFlowImageCapability.ratios : ['16:9', '9:16', '1:1']
   const languageOptions = [['vi', 'Tiếng Việt', 'Vietnamese'], ['en', 'Tiếng Anh', 'English'], ['ko', '한국어', 'Korean'], ['ja', '日本語', 'Japanese'], ['zh', '中文', 'Chinese'], ['th', 'ไทย', 'Thai'], ['es', 'Español', 'Spanish'], ['fr', 'Français', 'French'], ['de', 'Deutsch', 'German'], ['pt', 'Português', 'Portuguese'], ['id', 'Bahasa Indonesia', 'Indonesian'], ['hi', 'हिन्दी', 'Hindi'], ['ar', 'العربية', 'Arabic']] as const
   const selectedLanguage = languageOptions.some(([code]) => code === settings.language) ? settings.language : 'custom'
   const compatibleVoices = ttsVoices.filter(voice => !voice.language || voice.language.toLowerCase().startsWith(String(settings.language).toLowerCase()))
@@ -739,7 +749,8 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
             <label><span>{t('Ngách', 'Niche')}</span><input value={settings.scriptBrief.niche} onChange={event => updateNested('scriptBrief', 'niche', event.target.value)} placeholder={t('Ví dụ: lịch sử, tài chính cá nhân', 'e.g. history, personal finance')} /></label>
             <label><span>{t('Đối tượng khán giả', 'Audience')}</span><input value={settings.scriptBrief.audience} onChange={event => updateNested('scriptBrief', 'audience', event.target.value)} placeholder={t('Ví dụ: người mới bắt đầu', 'e.g. beginners')} /></label>
             <label><span>{t('Độ dài (phút)', 'Duration (minutes)')}</span><input type="number" min="1" max="180" value={settings.scriptBrief.durationMinutes} onChange={event => updateNested('scriptBrief', 'durationMinutes', Number(event.target.value) || 8)} /></label>
-            <label><span>{t('Dạng video', 'Video type')}</span><select value={settings.scriptBrief.videoType} onChange={event => updateNested('scriptBrief', 'videoType', event.target.value)}><option value="educational">{t('Giáo dục', 'Educational')}</option><option value="storytelling">{t('Kể chuyện', 'Storytelling')}</option><option value="tutorial">Tutorial</option><option value="review">Review</option></select></label>
+            <label><span>{t('Dạng video', 'Video type')}</span><select value={settings.scriptBrief.videoType} onChange={event => updateNested('scriptBrief', 'videoType', event.target.value)}><option value="educational">{t('Giáo dục', 'Educational')}</option><option value="character">{t('Nhân vật', 'Character-driven')}</option><option value="storytelling">{t('Kể chuyện', 'Storytelling')}</option><option value="tutorial">Tutorial</option><option value="review">Review</option></select></label>
+            <label><span>{t('Nhân vật chính', 'Main character')}</span><input value={settings.scriptBrief.character} onChange={event => updateNested('scriptBrief', 'character', event.target.value)} placeholder={t('Ví dụ: Ngô Quyền, một người mới bắt đầu…', 'e.g. Ngo Quyen, a beginner…')} /></label>
             <label className="automation-field-full"><span>{t('Tone giọng', 'Voice tone')}</span><input value={settings.scriptBrief.tone} onChange={event => updateNested('scriptBrief', 'tone', event.target.value)} /></label>
             <label><span>{t('Nền tảng', 'Platform')}</span><select value={settings.scriptBrief.platform} onChange={event => updateNested('scriptBrief', 'platform', event.target.value)}><option>YouTube</option><option>TikTok</option><option>Reels</option><option>Podcast</option></select></label>
             <label><span>{t('Mục tiêu chính', 'Primary goal')}</span><select value={settings.scriptBrief.primaryGoal} onChange={event => updateNested('scriptBrief', 'primaryGoal', event.target.value)}><option value="watch_time">{t('Thời lượng xem', 'Watch time')}</option><option value="subscribers">{t('Subscribers', 'Subscribers')}</option><option value="sales">{t('Sales', 'Sales')}</option><option value="shares">{t('Lượt chia sẻ', 'Shares')}</option></select></label>
@@ -759,10 +770,10 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
           <ol className="automation-guide-list"><li>{t('Chọn tài khoản Flow đang online.', 'Select an online Flow account.')}</li><li>{t('Chọn model, tỷ lệ và số ảnh mỗi prompt phù hợp nền tảng.', 'Choose the model, ratio, and images per prompt for your platform.')}</li><li>{t('Automation sẽ gửi prompt ảnh theo thứ tự visual beat và chờ ảnh hoàn tất.', 'Automation submits image prompts in visual-beat order and waits for completion.')}</li><li>{t('Nếu một chặng lỗi, dùng “Chạy lại chặng lỗi” hoặc “Hàng đợi Flow” để tiếp tục từ checkpoint.', 'If a stage fails, use “Retry failed stage” or “Flow queue” to resume from the checkpoint.')}</li></ol>
         </details>
         <label className="automation-field-full"><span>{t('Tài khoản Flow', 'Flow account')}</span><select value={settings.flow.accountId} onChange={event => updateNested('flow', 'accountId', event.target.value)} disabled={optionsLoading && !flowAccounts.length}><option value="">{optionsLoading ? t('Đang tải tài khoản…', 'Loading accounts…') : t('Chọn tài khoản Flow', 'Select a Flow account')}</option>{flowAccounts.filter(account => account.status === 'online').map(account => <option key={account.id} value={account.id}>{account.label}{account.plan ? ` · ${account.plan}` : ''}</option>)}</select></label>
-        <label><span>{t('Model Flow ảnh', 'Flow image model')}</span><select value={settings.flow.model} onChange={event => updateNested('flow', 'model', event.target.value)}>{FLOW_IMAGE_MODELS.map(model => <option key={model} value={model}>{model}</option>)}</select></label>
-        <label><span>{t('Tỷ lệ khung hình', 'Aspect ratio')}</span><select value={settings.flow.ratio} onChange={event => updateNested('flow', 'ratio', event.target.value)}><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
+        <label><span>{t('Model Flow ảnh', 'Flow image model')}</span><select value={flowImageModels.includes(settings.flow.model) ? settings.flow.model : flowImageModels[0]} onChange={event => { const model = event.target.value; const capability = flowImageCapabilities.find(item => item.name === model); void saveSettings({ ...settings, flow: { ...settings.flow, model, ratio: capability?.ratios.includes(settings.flow.ratio) ? settings.flow.ratio : capability?.defaultRatio || capability?.ratios[0] || settings.flow.ratio } }) }}>{flowImageModels.map(model => <option key={model} value={model}>{model}</option>)}</select></label>
+        <label><span>{t('Tỷ lệ khung hình', 'Aspect ratio')}</span><select value={flowRatioOptions.includes(settings.flow.ratio) ? settings.flow.ratio : flowRatioOptions[0]} onChange={event => updateNested('flow', 'ratio', event.target.value)}>{flowRatioOptions.map(ratio => <option key={ratio}>{ratio}</option>)}</select></label>
         <label><span>{t('Số ảnh mỗi prompt', 'Images per prompt')}</span><select value={settings.flow.count ?? '1'} onChange={event => updateNested('flow', 'count', event.target.value)}><option value="1">1</option><option value="2">2</option><option value="4">4</option></select></label>
-        <label><span>{t('Số luồng Flow', 'Flow concurrency')}</span><input type="number" min="1" max="16" value={settings.flow.concurrency} onChange={event => updateNested('flow', 'concurrency', event.target.value)} /></label>
+        <label><span>{t('Số luồng Flow (tối đa 50)', 'Flow concurrency (max 50)')}</span><input type="number" min="1" max="50" value={settings.flow.concurrency} onChange={event => updateNested('flow', 'concurrency', String(Math.max(1, Math.min(50, Number(event.target.value) || 1))))} /></label>
       </div> : settingsTab === 'compose' ? <div id="automation-settings-compose" className="automation-setting-grid" role="tabpanel">
         <label><span>{t('Chất lượng xuất', 'Output quality')}</span><select value={settings.compose.resolution} onChange={event => updateNested('compose', 'resolution', event.target.value)}><option value="auto">{t('Auto theo media · 1080p', 'Auto from media · 1080p')}</option><option value="1920x1080">{t('1080p ngang', '1080p landscape')}</option><option value="1080x1920">{t('1080p dọc', '1080p portrait')}</option><option value="1080x1080">{t('1080p vuông', '1080p square')}</option><option value="1280x720">{t('720p ngang', '720p landscape')}</option></select></label>
         <label><span>{t('FPS xuất video', 'Output FPS')}</span><input type="number" min="1" max="120" value={settings.compose.fps} onChange={event => updateNested('compose', 'fps', Number(event.target.value) || 30)} /></label>

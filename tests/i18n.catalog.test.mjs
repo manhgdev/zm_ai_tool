@@ -2,6 +2,17 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+test('local cleaner explains conservative matching and localizes its stable errors', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/VideoCleanerPage.tsx', import.meta.url), 'utf8')
+  for (const code of ['CLEANER_LOGO_NOT_DETECTED', 'CLEANER_IMAGE_DEPTH_UNSUPPORTED', 'CLEANER_INVALID_LOGO_MASK']) {
+    assert.match(source, new RegExp(`error === '${code}'\\) return t\\('[^']+', '[^']+'\\)`))
+  }
+  assert.match(source, /cleanerError\(job.error\)/)
+  assert.match(source, /Khử lớp phủ sao bán trong suốt/)
+  assert.match(source, /Recover translucent sparkle overlays/)
+  assert.doesNotMatch(source, /Using local sparkle mask|fallback still creates a result file/)
+})
+
 test('technical status is localized without translating provider names', () => {
   const labels = readFileSync(new URL('../frontend/src/features/configuration/setupLabels.ts', import.meta.url), 'utf8')
   const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')

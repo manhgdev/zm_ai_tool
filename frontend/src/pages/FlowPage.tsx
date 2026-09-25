@@ -21,15 +21,14 @@ import { FlowTemplatesPanel } from "@/features/flow/FlowTemplatesPanel";
 import {
   type FlowTab, type FlowRoutePanel, type RailItem, type JobStatus,
   type CreateKind, type ImageMode, type PromptInputType,
-  type FlowJob, type FlowAccount, type FlowLog, type FlowSettings,
+  type FlowJob, type FlowAccount, type FlowLog, type FlowSettings, type FlowModelCapability,
   type BrowserDirectoryHandle, type BrowserDirectoryWindow,
 } from "@/features/flow/flow.types";
 import {
   DRAFT_VIDEO_KEY, DRAFT_IMAGE_KEY, DRAFT_LEGACY_KEY, SETTINGS_KEY,
   WEB_AUTO_DOWNLOAD_DEFAULT_KEY, WEB_OUTPUT_ROOT_KEY, TAB_KEY, RAIL_KEY,
   ACCOUNTS_KEY, CREATE_KIND_KEY, ACTIVE_PANEL_KEY, IMAGE_MODE_KEY, COLLAPSED_FOLDERS_KEY,
-  FLOW_VIDEO_MODELS, FLOW_IMAGE_MODELS,
-  isImageModel,
+  FLOW_VIDEO_MODELS, FLOW_IMAGE_MODELS, FLOW_OMNI_FLASH_DURATIONS,
   settingsForCreateKind, settingsWithSelectedModel,
   defaultFlowOutputFolder as buildDefaultFlowOutputFolder,
   flowConfiguredOutputFolder as buildFlowConfiguredOutputFolder,
@@ -87,6 +86,48 @@ function selectedFlowAccount(accounts: FlowAccount[], accountLabel: string) {
     || accounts.find((account) => account.isDefault)
     || accounts.find((account) => account.status === "online")
     || resolveSelectedFlowAccount(accounts, accountLabel);
+}
+
+function accountCapabilityModels(account: FlowAccount | undefined, kind: CreateKind): FlowModelCapability[] {
+  if (account?.capabilityStatus !== "verified") return [];
+  return account.capabilityCatalog?.[kind]?.models || [];
+}
+
+function applyAccountCapabilities(
+  account: FlowAccount | undefined,
+  current: FlowSettings,
+  kind: CreateKind,
+  requestedModel: string,
+): FlowSettings {
+  const section = account?.capabilityStatus === "verified" ? account.capabilityCatalog?.[kind] : undefined;
+  const models = section?.models || [];
+  if (!models.length) return settingsWithSelectedModel(current, kind, requestedModel);
+  const selected = models.find((item) => item.name === requestedModel)
+    || models.find((item) => item.name === section?.defaultModel)
+    || models[0];
+  const ratioKey = kind === "image" ? "imageRatio" : "ratio";
+  const ratio = selected.ratios.includes(current[ratioKey])
+    ? current[ratioKey]
+    : selected.defaultRatio || selected.ratios[0] || current[ratioKey];
+  const duration = kind === "video" && selected.durations.length && !selected.durations.includes(current.duration)
+    ? selected.defaultDuration || selected.durations[0]
+    : current.duration;
+  const resolution = selected.resolutions.length && !selected.resolutions.includes(current.resolution.toLowerCase())
+    ? selected.defaultResolution || selected.resolutions[0]
+    : current.resolution;
+  const next = {
+    ...settingsWithSelectedModel(current, kind, selected.name),
+    [ratioKey]: ratio,
+    duration,
+    resolution,
+  };
+  return next.model === current.model
+    && next.videoModel === current.videoModel
+    && next.imageModel === current.imageModel
+    && next.ratio === current.ratio
+    && next.imageRatio === current.imageRatio
+    && next.duration === current.duration
+    && next.resolution === current.resolution ? current : next;
 }
 
 function flowRouteQueryPanel() {
@@ -217,6 +258,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     job: FlowJob;
     outputIndex: number;
   } | null>(null);
+  const [retryTarget, setRetryTarget] = useState<{
+    job: FlowJob;
+    jobs: FlowJob[];
+    model: string;
+    ratio: string;
+    concurrency: string;
+    accountId: string;
+  } | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     message: string;
     confirmLabel: string;
@@ -339,6 +388,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       setSettings((current) => ({ ...current, account: fallback.label }));
     }
   }, [accounts, settings.account]);
+  useEffect(() => {
+    const account = selectedFlowAccount(accounts, settings.account);
+    if (!account?.capabilityCatalog || account.capabilityStatus !== "verified") return;
+    setSettings((current) => applyAccountCapabilities(
+      account,
+      current,
+      createKind,
+      createKind === "image" ? current.imageModel : current.videoModel,
+    ));
+  }, [accounts, settings.account, createKind]);
   useEffect(() => {
     let active = true;
     const loadInitialSnapshot = async () => {
@@ -556,6 +615,38 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     (job) => job.kind === "video" && job.status === "done" && job.outputs?.length,
   );
   const displayedAccount = selectedFlowAccount(accounts, settings.account);
+  const accountOptionLabels = Object.fromEntries(
+    accounts.map((account) => [
+      account.label,
+      `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`,
+    ]),
+  );
+  const capabilityModels = accountCapabilityModels(displayedAccount, createKind);
+  const capabilityModel = capabilityModels.find((item) => item.name === settings.model);
+  const modelOptions = capabilityModels.length
+    ? capabilityModels.map((item) => item.name)
+    : createKind === "video" ? [...FLOW_VIDEO_MODELS] : [...FLOW_IMAGE_MODELS];
+  const ratioOptions = capabilityModel?.ratios.length
+    ? capabilityModel.ratios
+    : createKind === "video" ? ["16:9", "9:16"] : ["1:1", "16:9", "9:16", "4:3", "3:4"];
+  const isOmniFlash = createKind === "video" && /omni.*flash/i.test(settings.model);
+  const durationOptions = capabilityModel?.durations.length
+    ? capabilityModel.durations
+    : isOmniFlash
+      ? [...FLOW_OMNI_FLASH_DURATIONS]
+      : [settings.duration || "8"];
+  const resolutionOptions = capabilityModel?.resolutions.length
+    ? capabilityModel.resolutions
+    : [settings.resolution || "1K"];
+  const retryAccount = accounts.find((account) => account.id === retryTarget?.accountId);
+  const retryCapabilities = retryTarget ? accountCapabilityModels(retryAccount, retryTarget.job.kind) : [];
+  const retryModelCapability = retryCapabilities.find((item) => item.name === retryTarget?.model);
+  const retryModelOptions = retryCapabilities.length
+    ? retryCapabilities.map((item) => item.name)
+    : retryTarget?.job.kind === "video" ? [...FLOW_VIDEO_MODELS] : [...FLOW_IMAGE_MODELS];
+  const retryRatioOptions = retryModelCapability?.ratios.length
+    ? retryModelCapability.ratios
+    : retryTarget?.job.kind === "video" ? ["16:9", "9:16"] : ["1:1", "16:9", "9:16", "4:3", "3:4"];
   const previewOutput = preview?.job.outputs?.[preview.outputIndex] || "";
   const previewMediaKind = preview ? flowOutputMediaKind(previewOutput, preview.job.kind) : "file";
   const previewSrc = preview ? `/api/flow/jobs/${preview.job.id}/outputs/${preview.outputIndex}` : "";
@@ -569,12 +660,32 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           : status === "cancelled"
             ? t("Đã hủy", "Cancelled")
             : t("Lỗi", "Failed");
+  const jobStatusText = (job: FlowJob) => {
+    if (job.status !== "processing") return statusText(job.status);
+    if (job.stage === "retrying") return t("Đang thử tạo lại", "Retrying generation");
+    if (job.stage === "recovering") return t("Đang tìm kết quả đã gửi", "Recovering submitted result");
+    if (job.stage === "resubmitting" || job.stage === "submitting") return t("Đang gửi yêu cầu", "Submitting request");
+    if (job.stage === "downloading") return t("Đang tải kết quả", "Downloading result");
+    if (job.stage === "generating") return t("Flow đang tạo", "Generating in Flow");
+    if (job.stage === "preparing" || job.stage === "starting") return t("Đang chuẩn bị", "Preparing");
+    return statusText(job.status);
+  };
   const jobErrorText = (error: string) =>
     error.startsWith("FLOW_EMPTY_OUTPUT")
       ? t(
           "Flow không trả về file video/ảnh. Job chưa thành công.",
           "Flow returned no video/image file. The job did not succeed.",
         )
+      : error.startsWith("FLOW_RESULT_NOT_FOUND")
+        ? t(
+            "Flow không có kết quả đang chờ hoặc đã hoàn thành cho lần gửi này. Hãy chạy lại để gửi yêu cầu mới.",
+            "Flow has no pending or completed result for this submission. Retry to send a new request.",
+          )
+      : error.startsWith("FLOW_GENERATION_REJECTED")
+        ? t(
+            "Flow báo không tạo được nội dung này và không tính phí. Hãy điều chỉnh prompt hoặc cài đặt rồi chạy lại.",
+            "Flow could not generate this content and did not charge for it. Adjust the prompt or settings, then retry.",
+          )
       : error;
   const showCreate = tab === "create";
   const activateRail = (item: RailItem) => {
@@ -738,6 +849,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       let effectiveSettings = settings.outputDir.trim()
         ? settings
         : { ...settings, outputDir: defaultFlowOutputFolder() };
+      effectiveSettings = {
+        ...effectiveSettings,
+        ratio: createKind === "image" ? effectiveSettings.imageRatio : effectiveSettings.ratio,
+      };
 
       if (createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
         effectiveSettings = { ...effectiveSettings, model: "Nano Banana 2", imageModel: "Nano Banana 2" };
@@ -869,17 +984,42 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         setApiError(msg);
         toast.error(msg);
       });
-  const retryJob = (id: string) =>
-    void flowRequest<Record<string, unknown>>(`/api/flow/jobs/${id}/retry`, { method: "POST" })
-      .then((raw) => {
-        updateJob(raw);
-        toast.success(t("Đã gửi lại job vào hàng đợi.", "Job queued for retry."));
+  const openRetrySettings = (retryJobs: FlowJob[]) => {
+    const job = retryJobs[0];
+    if (!job) return;
+    setRetryTarget({
+      job,
+      jobs: retryJobs,
+      model: job.settings.model,
+      ratio: job.settings.ratio,
+      concurrency: String(job.settings.concurrency || settings.concurrency),
+      accountId: job.accountId || accounts.find((account) => account.label === job.account)?.id || "",
+    });
+  };
+  const retryJob = (id: string) => {
+    const job = jobs.find((item) => item.id === id);
+    if (job) openRetrySettings([job]);
+  };
+  const confirmRetryJob = () => {
+    if (!retryTarget) return;
+    const { jobs: retryJobs, model, ratio, concurrency, accountId } = retryTarget;
+    setRetryTarget(null);
+    void Promise.all(retryJobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId, settings: { model, ratio, concurrency } }),
+    })))
+      .then(async () => {
+        const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
+        setJobs(normalizeFlowJobs(data.jobs, accounts));
+        toast.success(t(`Đã đưa ${retryJobs.length} job vào hàng đợi chạy lại.`, `Queued ${retryJobs.length} jobs for retry.`));
       })
       .catch((error) => {
         const msg = error instanceof Error ? error.message : String(error);
         setApiError(msg);
         toast.error(msg);
       });
+  };
   const deleteWebFlowOutputs = async (job: FlowJob) => {
     const root = webOutputRootRef.current;
     if (isDesktopApp || !root) return;
@@ -929,21 +1069,17 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const retryAllJobs = useCallback(async () => {
     const retryable = jobs.filter((job) => job.status === "failed" || job.status === "cancelled");
     if (!retryable.length) return;
-    setConfirmAction({
-      message: t(`Chạy lại ${retryable.length} job đã lỗi/hủy?`, `Retry ${retryable.length} failed/cancelled jobs?`),
-      confirmLabel: t("Chạy lại tất cả", "Retry all"),
-      run: async () => {
-        try {
-          for (const job of retryable) await flowRequest(`/api/flow/jobs/${job.id}/retry`, { method: "POST" });
-          const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
-          setJobs(normalizeFlowJobs(data.jobs, accounts));
-          toast.success(t(`Đã đưa ${retryable.length} job vào hàng đợi chạy lại.`, `Queued ${retryable.length} jobs for retry.`));
-        } catch (err) {
-          toast.error(err instanceof Error ? err.message : String(err));
-        }
-      },
-    });
+    openRetrySettings(retryable);
   }, [jobs, t, accounts]);
+  const retryFolderJobs = (outputDir: string, kind: CreateKind, folderJobs: FlowJob[]) => {
+    const retryable = folderJobs.filter((job) =>
+      job.kind === kind
+      && String(job.settings.outputDir || "").trim() === String(outputDir || "").trim()
+      && (job.status === "failed" || job.status === "cancelled"),
+    );
+    if (!retryable.length) return;
+    openRetrySettings(retryable);
+  };
   const deleteAllJobs = () => {
     if (!jobs.length) return;
     setConfirmAction({
@@ -1075,11 +1211,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const syncAccount = (account: FlowAccount) => {
     if (syncingAccountIds.has(account.id)) return;
     setSyncingAccountIds((s) => new Set(s).add(account.id));
-    toast.info(t("Đang đồng bộ credits...", "Syncing credits..."));
+    toast.info(t("Đang đồng bộ tài khoản và cấu hình Flow...", "Syncing account and Flow capabilities..."));
     void flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/sync`, { method: "POST" })
       .then((updated) => {
         setAccounts((current) => current.map((item) => item.id === updated.id ? updated : item));
-        toast.success(t("Đồng bộ credits thành công", "Credits synced successfully"));
+        toast.success(updated.capabilityStatus === "verified"
+          ? t("Đã đồng bộ credits, model, tỷ lệ và thời lượng", "Credits, models, ratios, and durations synced")
+          : t("Đã đồng bộ credits; cấu hình Flow đang dùng bản lưu gần nhất", "Credits synced; Flow capabilities are using the latest saved snapshot"));
       })
       .catch((error) => {
         const msg = error instanceof Error ? error.message : String(error);
@@ -1580,7 +1718,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         )}
         {utilityView === "series" && (
           <FlowSeriesPanel
-            accounts={accounts.map((acc) => ({ id: acc.id, label: acc.label, status: acc.status, plan: acc.plan }))}
+            accounts={accounts.map((acc) => ({
+              id: acc.id, label: acc.label, status: acc.status, plan: acc.plan,
+              capabilityCatalog: acc.capabilityCatalog, capabilityStatus: acc.capabilityStatus,
+            }))}
             onOpenScene={(context) => {
               setSeriesDraft(context);
               setUtilityView(null);
@@ -1595,7 +1736,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             onGenerateAnchor={async (seriesId, anchorPrompt) => {
               const account = selectedFlowAccount(accounts, settings.account);
               if (!account) throw new Error(t("Cần tài khoản Flow đã kết nối để tạo ảnh neo.", "A connected Flow account is required to generate an anchor image."));
-              const imageSettings = { ...settings, model: isImageModel(settings.model) ? settings.model : "Nano Banana 2", count: 1 };
+              const accountSettings = applyAccountCapabilities(account, settings, "image", settings.imageModel);
+              const imageSettings = { ...accountSettings, model: accountSettings.imageModel, ratio: accountSettings.imageRatio, count: 1 };
               const created = await flowRequest<{ jobs: Array<Record<string, unknown>> }>(`/api/flow/series/${seriesId}/anchors/generate`, {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ prompt: anchorPrompt, accountId: account.id, settings: imageSettings }),
@@ -1856,19 +1998,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   label={t("Model", "Model")}
                   value={settings.model}
                   onChange={(model) =>
-                    setSettings((current) => settingsWithSelectedModel(current, createKind, model))
+                    setSettings((current) => applyAccountCapabilities(displayedAccount, current, createKind, model))
                   }
-                  options={
-                    createKind === "video"
-                      ? FLOW_VIDEO_MODELS.filter(
-                          (m) =>
-                            m !== "Veo 3.1 - Lite [Lower Priority]",
-                        )
-                      : selectedFlowAccount(accounts, settings.account)?.planStatus === "verified" &&
-                        selectedFlowAccount(accounts, settings.account)?.plan === "Free"
-                        ? FLOW_IMAGE_MODELS.filter((m) => m !== "Nano Banana Pro")
-                        : [...FLOW_IMAGE_MODELS]
-                  }
+                  options={modelOptions}
                 />
                 <FlowSelect
                   label={t("Tỷ lệ", "Ratio")}
@@ -1880,44 +2012,39 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         : { ...current, ratio: value }
                     )
                   }
-                  options={
-                    createKind === "video"
-                      ? ["16:9", "9:16"]
-                      : ["1:1", "16:9", "9:16", "4:3", "3:4"]
-                  }
+                  options={ratioOptions}
                 />
-                {createKind === "video" ? (() => {
-                  const plan = selectedFlowAccount(accounts, settings.account)?.plan;
-                  const isOmni = settings.model === "Omni Flash";
-                  const isQuality = settings.model === "Veo 3.1 - Quality";
-                  const isSelectable = isOmni && selectedFlowAccount(accounts, settings.account)?.planStatus === "verified"
-                    || (plan === "Ultra" && selectedFlowAccount(accounts, settings.account)?.planStatus === "verified" && isQuality);
-                  const durationOptions = isOmni
-                    ? ["4", "6", "8", "10"]
-                    : isQuality && plan === "Ultra" && selectedFlowAccount(accounts, settings.account)?.planStatus === "verified"
-                      ? ["4", "6", "8"]
-                      : ["8"];
-                  const currentValue = durationOptions.includes(settings.duration) ? settings.duration : "8";
-                  return (
-                    <FlowSelect
-                      label={t("Thời lượng", "Duration")}
-                      value={currentValue}
-                      onChange={(duration) =>
-                        setSettings((current) => ({ ...current, duration }))
-                      }
-                      options={durationOptions}
-                      disabled={!isSelectable}
-                      suffix={t(" giây", " sec")}
-                    />
-                  );
-                })() : (
+                {createKind === "video" ? (
+                    <>
+                      <FlowSelect
+                        label={t("Thời lượng", "Duration")}
+                        value={durationOptions.includes(settings.duration) ? settings.duration : durationOptions[0]}
+                        onChange={(duration) =>
+                          setSettings((current) => ({ ...current, duration }))
+                        }
+                        options={durationOptions}
+                        disabled={durationOptions.length < 2}
+                        suffix={t(" giây", " sec")}
+                      />
+                      <FlowSelect
+                        label={t("Độ phân giải", "Resolution")}
+                        value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
+                        onChange={(resolution) =>
+                          setSettings((current) => ({ ...current, resolution }))
+                        }
+                        options={resolutionOptions}
+                        disabled={resolutionOptions.length < 2}
+                      />
+                    </>
+                ) : (
                   <FlowSelect
                     label={t("Độ phân giải", "Resolution")}
-                    value={settings.resolution}
+                    value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
                     onChange={(resolution) =>
                       setSettings((current) => ({ ...current, resolution }))
                     }
-                    options={["1K", "2K", "4K"]}
+                    options={resolutionOptions}
+                    disabled={resolutionOptions.length < 2}
                   />
                 )}
                 <label>
@@ -1965,6 +2092,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     setSettings((current) => ({ ...current, account }))
                   }
                   options={accounts.map((account) => account.label)}
+                  optionLabels={accountOptionLabels}
                   online
                 />
               </div>
@@ -2175,6 +2303,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </div>
                         <div className="flow-queue-folder-actions">
                           <button className="flow-text-button" type="button" onClick={() => openSrtImageWithFlowFolder(queueFolderLabel(group.kind, group.outputDir, group.outputFolder, group.displayOutputFolder))}>{t("Ghép", "Merge")}</button>
+                          {group.jobs.some((job) => job.status === "failed" || job.status === "cancelled") && (
+                            <button className="flow-text-button is-retry" type="button" disabled={actionBusy} onClick={() => retryFolderJobs(group.outputDir, group.kind, group.jobs)}>
+                              {t("Chạy lại", "Retry")}
+                            </button>
+                          )}
                           <button className="flow-text-button is-warning" type="button" disabled={actionBusy || !group.jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={() => cancelFolderJobs(group.outputDir, group.jobs)}>{t("Hủy", "Cancel")}</button>
                           <button className="flow-text-button is-danger" type="button" onClick={() => deleteFolderJobs(group.outputDir, group.jobs)}>{t("Xóa", "Delete")}</button>
                         </div>
@@ -2255,7 +2388,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     )}
                   </div>
                   <aside>
-                    <mark>{statusText(job.status)}</mark>
+                    <mark>{jobStatusText(job)}</mark>
                     <div className="flow-job-actions">
                       {(job.status === "queued" ||
                         job.status === "processing") && (
@@ -2452,7 +2585,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       <td title={job.account}>{job.account}</td>
                       <td>
                         <mark className={`flow-status-${job.status}`}>
-                          {statusText(job.status)}
+                          {jobStatusText(job)}
                         </mark>
                       </td>
                       <td>
@@ -2614,6 +2747,57 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           </section>
         )}
         {actionBusy && <p role="status" aria-live="polite">{t("Đang xử lý yêu cầu, vui lòng chờ…", "Processing your request, please wait…")}</p>}
+        {retryTarget && (
+          <div className="flow-preview-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRetryTarget(null); }}>
+            <section className="flow-confirm-dialog flow-retry-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-retry-title">
+              <header>
+                <div><strong id="flow-retry-title">{t("Cài đặt chạy lại", "Retry settings")}</strong><small>{t(`${retryTarget.jobs.length} job lỗi hoặc đã hủy`, `${retryTarget.jobs.length} failed or cancelled jobs`)}</small></div>
+                <button type="button" onClick={() => setRetryTarget(null)} aria-label={t("Đóng", "Close")}>×</button>
+              </header>
+              <div className="flow-retry-fields">
+                <FlowSelect
+                  label={t("Model", "Model")}
+                  value={retryTarget.model}
+                  onChange={(model) => setRetryTarget((current) => {
+                    if (!current) return current;
+                    const capability = retryCapabilities.find((item) => item.name === model);
+                    const ratio = capability?.ratios.includes(current.ratio)
+                      ? current.ratio
+                      : capability?.defaultRatio || capability?.ratios[0] || current.ratio;
+                    return { ...current, model, ratio };
+                  })}
+                  options={retryModelOptions}
+                />
+                <FlowSelect
+                  label={t("Tỷ lệ", "Ratio")}
+                  value={retryTarget.ratio}
+                  onChange={(ratio) => setRetryTarget((current) => current ? { ...current, ratio } : current)}
+                  options={retryRatioOptions}
+                />
+                <FlowSelect
+                  label={t("Tài khoản", "Account")}
+                  value={retryTarget.accountId}
+                  onChange={(accountId) => setRetryTarget((current) => current ? { ...current, accountId } : current)}
+                  options={accounts.filter((account) => account.status === "online").map((account) => account.id)}
+                  optionLabels={Object.fromEntries(accounts.map((account) => [
+                    account.id,
+                    `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`,
+                  ]))}
+                />
+                <FlowSelect
+                  label={t("Luồng chạy", "Concurrent jobs")}
+                  value={retryTarget.concurrency}
+                  onChange={(concurrency) => setRetryTarget((current) => current ? { ...current, concurrency } : current)}
+                  options={Array.from({ length: 50 }, (_, index) => String(index + 1))}
+                />
+              </div>
+              <footer>
+                <button type="button" onClick={() => setRetryTarget(null)}>{t("Quay lại", "Go back")}</button>
+                <button type="button" className="is-primary" onClick={confirmRetryJob}>{t("Chạy lại", "Retry")}</button>
+              </footer>
+            </section>
+          </div>
+        )}
         {confirmAction && (
           <div
             className="flow-preview-backdrop"
@@ -2763,6 +2947,7 @@ function FlowSelect({
   suffix = "",
   online = false,
   disabled = false,
+  optionLabels,
 }: {
   label: string;
   value: string;
@@ -2771,6 +2956,7 @@ function FlowSelect({
   suffix?: string;
   online?: boolean;
   disabled?: boolean;
+  optionLabels?: Record<string, string>;
 }) {
   return (
     <label>
@@ -2783,7 +2969,7 @@ function FlowSelect({
         >
           {options.map((option) => (
             <option key={option} value={option}>
-              {option}
+              {optionLabels?.[option] || option}
               {suffix}
             </option>
           ))}

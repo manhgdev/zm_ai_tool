@@ -57,7 +57,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
     const saved = readSeriesSettings()
     return {
       accountId: saved.accountId || accounts[0]?.id || '',
-      model: saved.model || 'Veo 3.1 - Lite',
+      model: saved.model || 'Veo 3.1 - Fast',
       ratio: saved.ratio || '16:9',
       duration: saved.duration || '8',
       resolution: saved.resolution || '1K',
@@ -86,6 +86,36 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const [imageModel, setImageModel] = useState(() => {
     try { return JSON.parse(localStorage.getItem(SERIES_SETTINGS_KEY) || '{}').imageModel || 'Nano Banana 2' } catch { return 'Nano Banana 2' }
   })
+  const selectedAccount = accounts.find((account) => account.id === seriesSettings.accountId) || accounts[0]
+  const videoSection = selectedAccount?.capabilityStatus === 'verified' ? selectedAccount.capabilityCatalog?.video : undefined
+  const imageSection = selectedAccount?.capabilityStatus === 'verified' ? selectedAccount.capabilityCatalog?.image : undefined
+  const videoModelOptions = videoSection?.models.map((item) => item.name) || [...VIDEO_MODELS]
+  const imageModelOptions = imageSection?.models.map((item) => item.name) || [...IMAGE_MODELS]
+  const selectedVideoCapability = videoSection?.models.find((item) => item.name === seriesSettings.model)
+  const seriesRatioOptions = selectedVideoCapability?.ratios.length ? selectedVideoCapability.ratios : ['16:9', '9:16']
+  const seriesDurationOptions = selectedVideoCapability?.durations.length ? selectedVideoCapability.durations : [seriesSettings.duration || '8']
+  const seriesResolutionOptions = selectedVideoCapability?.resolutions.length
+    ? selectedVideoCapability.resolutions
+    : [seriesSettings.resolution || '1K']
+
+  useEffect(() => {
+    if (!videoSection?.models.length) return
+    setSeriesSettings((current) => {
+      const selectedModel = videoSection.models.find((item) => item.name === current.model)
+        || videoSection.models.find((item) => item.name === videoSection.defaultModel)
+        || videoSection.models[0]
+      const ratio = selectedModel.ratios.includes(current.ratio) ? current.ratio : selectedModel.defaultRatio || selectedModel.ratios[0] || current.ratio
+      const duration = selectedModel.durations.includes(current.duration) ? current.duration : selectedModel.defaultDuration || selectedModel.durations[0] || current.duration
+      const resolution = selectedModel.resolutions.length
+        ? (selectedModel.resolutions.includes(current.resolution) ? current.resolution : selectedModel.defaultResolution || selectedModel.resolutions[0] || current.resolution)
+        : current.resolution
+      if (selectedModel.name === current.model && ratio === current.ratio && duration === current.duration && resolution === current.resolution) return current
+      return { ...current, model: selectedModel.name, ratio, duration, resolution }
+    })
+    if (imageSection?.models.length && !imageSection.models.some((item) => item.name === imageModel)) {
+      setImageModel(imageSection.defaultModel || imageSection.models[0].name)
+    }
+  }, [videoSection, imageSection, imageModel, seriesSettings.model])
 
   useEffect(() => {
     try {
@@ -152,7 +182,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
           accountId,
           episodeId: episodeId || '',
           settings: {
-            model: VIDEO_MODELS.includes(seriesSettings.model as typeof VIDEO_MODELS[number]) ? seriesSettings.model : 'Veo 3.1 - Lite',
+            model: videoModelOptions.includes(seriesSettings.model) ? seriesSettings.model : videoModelOptions[0],
             ratio: seriesSettings.ratio,
             duration: seriesSettings.duration,
             resolution: seriesSettings.resolution,
@@ -199,7 +229,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
           artifact,
           accountId,
           settings: {
-            model: isKeyframe ? (IMAGE_MODELS.includes(seriesSettings.model as typeof IMAGE_MODELS[number]) ? seriesSettings.model : 'Nano Banana 2') : (VIDEO_MODELS.includes(seriesSettings.model as typeof VIDEO_MODELS[number]) ? seriesSettings.model : 'Veo 3.1 - Lite'),
+            model: isKeyframe ? (imageModelOptions.includes(imageModel) ? imageModel : imageModelOptions[0]) : (videoModelOptions.includes(seriesSettings.model) ? seriesSettings.model : videoModelOptions[0]),
             ratio: seriesSettings.ratio,
             duration: seriesSettings.duration,
             resolution: seriesSettings.resolution,
@@ -701,7 +731,11 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                             onChange={(e) => saveSeriesSettings({ accountId: e.target.value })}
                             aria-label={t('Tài khoản', 'Account')}
                           >
-                            {accounts.map((acc) => <option key={acc.id} value={acc.id}>{acc.label}</option>)}
+                            {accounts.map((acc) => (
+                              <option key={acc.id} value={acc.id}>
+                                {acc.label} · {t(`Gói ${acc.plan}`, `${acc.plan} plan`)}
+                              </option>
+                            ))}
                           </select>
                         </div>
                       )}
@@ -712,7 +746,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           onChange={(e) => saveSeriesSettings({ model: e.target.value })}
                           aria-label={t('Model video', 'Video model')}
                         >
-                          {VIDEO_MODELS.filter((m) => m !== 'Veo 3.1 - Lite [Lower Priority]').map((m) => <option key={m} value={m}>{m}</option>)}
+                          {videoModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
                         </select>
                       </div>
                       <div className="fsp-auto-field">
@@ -725,7 +759,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           }}
                           aria-label={t('Model ảnh', 'Image model')}
                         >
-                          {IMAGE_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+                          {imageModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
                         </select>
                       </div>
                       <div className="fsp-auto-field fsp-field-xs">
@@ -735,39 +769,29 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           onChange={(e) => saveSeriesSettings({ ratio: e.target.value })}
                           aria-label={t('Tỷ lệ', 'Ratio')}
                         >
-                          {['16:9', '9:16', '1:1', '4:3', '3:4'].map((r) => <option key={r} value={r}>{r}</option>)}
+                          {seriesRatioOptions.map((r) => <option key={r} value={r}>{r}</option>)}
                         </select>
                       </div>
                       <div className="fsp-auto-field fsp-field-xs">
                         <label>{t('Thời lượng', 'Duration')}</label>
                         <select
-                          value={
-                            seriesSettings.model === 'Omni Flash'
-                              ? seriesSettings.duration
-                              : seriesSettings.model === 'Veo 3.1 - Quality'
-                                ? (['4', '6', '8'].includes(seriesSettings.duration) ? seriesSettings.duration : '8')
-                                : '8'
-                          }
+                          value={seriesDurationOptions.includes(seriesSettings.duration) ? seriesSettings.duration : seriesDurationOptions[0]}
                           onChange={(e) => saveSeriesSettings({ duration: e.target.value })}
                           aria-label={t('Thời lượng', 'Duration')}
-                          disabled={seriesSettings.model !== 'Omni Flash' && seriesSettings.model !== 'Veo 3.1 - Quality'}
+                          disabled={seriesDurationOptions.length < 2}
                         >
-                          {seriesSettings.model === 'Omni Flash' ? (
-                            <>
-                              <option value="4">4s</option>
-                              <option value="6">6s</option>
-                              <option value="8">8s</option>
-                              <option value="10">10s</option>
-                            </>
-                          ) : seriesSettings.model === 'Veo 3.1 - Quality' ? (
-                            <>
-                              <option value="4">4s</option>
-                              <option value="6">6s</option>
-                              <option value="8">8s</option>
-                            </>
-                          ) : (
-                            <option value="8">8s</option>
-                          )}
+                          {seriesDurationOptions.map((duration) => <option key={duration} value={duration}>{duration}s</option>)}
+                        </select>
+                      </div>
+                      <div className="fsp-auto-field fsp-field-xs">
+                        <label>{t('Độ phân giải', 'Resolution')}</label>
+                        <select
+                          value={seriesResolutionOptions.includes(seriesSettings.resolution) ? seriesSettings.resolution : seriesResolutionOptions[0]}
+                          onChange={(e) => saveSeriesSettings({ resolution: e.target.value })}
+                          aria-label={t('Độ phân giải', 'Resolution')}
+                          disabled={seriesResolutionOptions.length < 2}
+                        >
+                          {seriesResolutionOptions.map((resolution) => <option key={resolution} value={resolution}>{resolution}</option>)}
                         </select>
                       </div>
                       <div className="fsp-auto-field fsp-field-xs">

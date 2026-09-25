@@ -38,6 +38,11 @@ class GenerateIn(BaseModel):
     seriesContext: dict[str, Any] | None = None
 
 
+class RetryIn(BaseModel):
+    accountId: str | None = None
+    settings: dict[str, Any] = {}
+
+
 class OutputFolderIn(BaseModel):
     outputDir: str = Field(min_length=1, max_length=1000)
     kind: str = Field(default="", pattern="^(|image|video)$")
@@ -521,8 +526,9 @@ def jobs_cancel(job_id: str):
 
 
 @router.post("/jobs/{job_id}/retry")
-def jobs_retry(job_id: str):
-    job = service.retry(job_id)
+def jobs_retry(job_id: str, body: RetryIn | None = None):
+    payload = body.model_dump() if body else {}
+    job = service.retry(job_id, payload)
     if not job:
         raise HTTPException(404, "Flow job not found")
     return job
@@ -579,4 +585,3 @@ def flow_open_folder(output_dir: str = "", kind: str = "video"):
     else:
         subprocess.Popen(["xdg-open", str(folder)])
     return {"ok": True, "path": str(folder)}
-

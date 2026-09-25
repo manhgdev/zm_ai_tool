@@ -402,6 +402,24 @@ def detect_logo_bbox_inprocess(
     prepare_cv2_import_path()
     cv2 = ensure_cv2()
     path = Path(video)
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+    if path.suffix.casefold() in image_exts:
+        frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if frame is None or frame.size == 0:
+            return None
+        fh, fw = frame.shape[:2]
+        ocr = rapidocr_labels()
+        exclude_texts = {
+            "".join(str(segment.get("source") or "").lower().split())
+            for segment in (segments or [])
+            if str(segment.get("source") or "").strip()
+        }
+        hits = _logo_candidates(frame, ocr, 0, exclude_texts)
+        hits.extend(_logo_candidates_corners(frame, ocr, 0, exclude_texts))
+        static = pick_logo_detection([hits], fw, fh)
+        if static:
+            static["total"] = 1
+        return static
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         return None

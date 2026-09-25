@@ -1,4 +1,5 @@
 // Types và helpers cho FlowSeriesPanel
+import type { FlowCapabilityCatalog } from './flow.types'
 
 export type SeriesArtifact = 'keyframe' | 'video'
 export type FlowSeriesSceneContext = {
@@ -19,7 +20,11 @@ export type SeriesGenSettings = {
   resolution: string
   concurrency?: string
 }
-export type FlowSeriesAccount = { id: string; label: string; status: string; plan?: 'Ultra' | 'Pro' | 'Free' }
+export type FlowSeriesAccount = {
+  id: string; label: string; status: string; plan?: 'Ultra' | 'Pro' | 'Free'
+  capabilityCatalog?: FlowCapabilityCatalog | null
+  capabilityStatus?: 'verified' | 'stale' | 'unknown'
+}
 
 export type SeriesRun = {
   runId: string; status: string; total: number; done: number
@@ -38,7 +43,7 @@ export type Episode = { id: string; index: number; title: string; state: string;
 export type Asset = { id: string; name: string; label: string; locked: boolean }
 export type Series = { id: string; title: string; description: string; bible: string; anchorAssets: string[]; assets: Asset[]; episodes: Episode[] }
 
-export const VIDEO_MODELS = ['Veo 3.1 - Lite', 'Veo 3.1 - Lite [Lower Priority]', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Omni Flash'] as const
+export const VIDEO_MODELS = ['Veo 3.1 - Lite', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Omni 1.1 Flash'] as const
 export const IMAGE_MODELS = ['Nano Banana Pro', 'Nano Banana 2', 'Nano Banana 2 Lite'] as const
 export const SERIES_SETTINGS_KEY = 'zm-flow-series:settings:v1'
 export const SERIES_SELECTED_ID_KEY = 'zm-flow-series:selected-id:v1'
@@ -85,12 +90,18 @@ export function sceneStatusMeta(status: string, t: (vi: string, en: string) => s
 export function readSeriesSettings(): SeriesGenSettings {
   try {
     const raw = localStorage.getItem(SERIES_SETTINGS_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const saved = JSON.parse(raw)
+      return {
+        ...saved,
+        model: saved.model === 'Veo 3.1 - Lite [Lower Priority]' ? 'Veo 3.1 - Fast' : saved.model || 'Veo 3.1 - Fast',
+      }
+    }
     const flowRaw = localStorage.getItem('zm-flow-veo:settings:v1')
     if (flowRaw) {
       const flow = JSON.parse(flowRaw)
       return {
-        accountId: '', model: flow.model || 'Veo 3.1 - Lite',
+        accountId: '', model: flow.model === 'Veo 3.1 - Lite [Lower Priority]' ? 'Veo 3.1 - Fast' : flow.model || 'Veo 3.1 - Fast',
         ratio: flow.ratio || '16:9', duration: flow.duration || '8',
         resolution: flow.resolution || '1K', concurrency: flow.concurrency || '8',
       }

@@ -28,6 +28,7 @@ _PROJECT_RE = re.compile(r"^(?:https://(?:flow\.google\.com|labs\.google)(?::443
 _TERMINAL = {"done", "failed", "cancelled", "action_required"}
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 8
 _MAX_CONCURRENT_JOBS_PER_ACCOUNT = 50
+_PROJECT_MIGRATION_RECOVERY_WINDOW_S = 600
 _PROFILE_COPY_IGNORES = {
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
     "GraphiteDawnCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache",
@@ -38,11 +39,23 @@ _PROFILE_COPY_IGNORES = {
 }
 _IMAGE_UI_MODELS = {"Nano Banana Pro", "Nano Banana 2", "Nano Banana 2 Lite"}
 _VIDEO_UI_MODELS = {
-    "Omni Flash", "Veo 3.1 - Lite", "Veo 3.1 - Fast",
+    "Omni 1.1 Flash", "Veo 3.1 - Lite", "Veo 3.1 - Fast",
     "Veo 3.1 - Quality", "Veo 3.1 - Lite [Lower Priority]",
 }
 # Temporarily disabled upstream; remove this entry to re-enable when Flow restores it.
 _DISABLED_VIDEO_MODELS = {"Veo 3.1 - Lite [Lower Priority]"}
+_DEFAULT_VIDEO_MODEL = "Veo 3.1 - Fast"
+
+
+def _normalize_video_model(value: Any) -> str:
+    """Migrate saved jobs away from models Flow has temporarily removed."""
+    model = str(value or _DEFAULT_VIDEO_MODEL).strip()
+    if model == "Omni Flash":
+        model = "Omni 1.1 Flash"
+    model = model.replace("Veo 3.1 Fast", _DEFAULT_VIDEO_MODEL).replace(
+        "Veo 3.1 Quality", "Veo 3.1 - Quality",
+    )
+    return _DEFAULT_VIDEO_MODEL if model in _DISABLED_VIDEO_MODELS else model
 
 
 def _flow_submit_button_score(text: str = "", aria_label: str = "") -> int:
@@ -178,6 +191,86 @@ def _match_model_choice(requested: str, text: str) -> bool:
     if "nano banana" in req:
         return "nano" in t or "banana" in t or "imagen" in t
     return False
+
+
+def _clean_flow_model_name(value: str) -> str:
+    """Strip UI-only emoji/material icons while preserving Flow's model name."""
+    text = re.sub(r"\barrow_drop_down\b", "", str(value or ""), flags=re.I)
+    return re.sub(r"^[^\w]+", "", re.sub(r"\s+", " ", text).strip()).strip()
+
+
+def _capability_entry(name: str, controls: list[tuple[str, bool]]) -> dict[str, Any]:
+    """Build one serializable model capability from visible Flow controls."""
+    ratios: list[str] = []
+    durations: list[str] = []
+    resolutions: list[str] = []
+    selected_ratio = selected_duration = selected_resolution = ""
+    for raw_text, selected in controls:
+        text = re.sub(r"\s+", " ", str(raw_text or "")).strip()
+        ratio_match = re.search(r"(?<!\d)(\d{1,2}:\d{1,2})(?!\d)", text)
+        duration_match = re.search(rf"(?<!\d)(\d{{1,3}})\s*{_DURATION_UNITS}(?!\w)", text, re.I)
+        resolution_match = re.search(r"(?<!\d)(\d{3,4}p)(?!\w)", text, re.I)
+        if ratio_match and ratio_match.group(1) not in ratios:
+            ratios.append(ratio_match.group(1))
+            if selected:
+                selected_ratio = ratio_match.group(1)
+        if duration_match and duration_match.group(1) not in durations:
+            durations.append(duration_match.group(1))
+            if selected:
+                selected_duration = duration_match.group(1)
+        if resolution_match:
+            resolution = resolution_match.group(1).lower()
+            if resolution not in resolutions:
+                resolutions.append(resolution)
+            if selected:
+                selected_resolution = resolution
+    return {
+        "name": _clean_flow_model_name(name),
+        "ratios": ratios,
+        "durations": durations,
+        "resolutions": resolutions,
+        "defaultRatio": selected_ratio or (ratios[0] if ratios else ""),
+        "defaultDuration": selected_duration or (durations[0] if durations else ""),
+        "defaultResolution": selected_resolution or (resolutions[0] if resolutions else ""),
+    }
+
+
+def _catalog_section(account: dict[str, Any], kind: str) -> dict[str, Any]:
+    catalog = account.get("capabilityCatalog")
+    if not isinstance(catalog, dict) or account.get("capabilityStatus") != "verified":
+        return {}
+    section = catalog.get(kind)
+    return section if isinstance(section, dict) else {}
+
+
+def _normalize_catalog_settings(
+    account: dict[str, Any], kind: str, settings: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Select only model/ratio/duration values verified for this account."""
+    section = _catalog_section(account, kind)
+    models = [item for item in section.get("models", []) if isinstance(item, dict) and item.get("name")]
+    if not models:
+        return dict(settings), False
+    requested = str(settings.get("model") or "")
+    selected = next((item for item in models if item["name"] == requested), None)
+    if selected is None:
+        selected = next((item for item in models if _match_model_choice(requested, str(item["name"]))), None)
+    if selected is None:
+        default_model = str(section.get("defaultModel") or "")
+        selected = next((item for item in models if item["name"] == default_model), models[0])
+    normalized = dict(settings)
+    normalized["model"] = str(selected["name"])
+    ratios = [str(value) for value in selected.get("ratios", []) if str(value)]
+    if ratios and str(normalized.get("ratio") or "") not in ratios:
+        normalized["ratio"] = str(selected.get("defaultRatio") or ratios[0])
+    durations = [str(value) for value in selected.get("durations", []) if str(value)]
+    if kind == "video" and durations and str(normalized.get("duration") or "") not in durations:
+        normalized["duration"] = str(selected.get("defaultDuration") or durations[0])
+    resolutions = [str(value).lower() for value in selected.get("resolutions", []) if str(value)]
+    requested_resolution = str(normalized.get("resolution") or "").lower()
+    if resolutions and requested_resolution not in resolutions:
+        normalized["resolution"] = str(selected.get("defaultResolution") or resolutions[0])
+    return normalized, normalized != settings
 
 
 def _mode_tab_icon(kind: str) -> str:
@@ -345,7 +438,9 @@ class FlowService:
         self._account_next_start: dict[str, int] = {}
         self._connecting_accounts: set[str] = set()
         self._syncing_accounts: set[str] = set()  # guard concurrent credit syncs
+        self._running_jobs: set[str] = set()
         self._claimed_media_ids: set[str] = set()
+        self._claimed_error_tiles: set[str] = set()
         self._cancelled: set[str] = set()
         self._guard = threading.RLock()
         self._account_condition = threading.Condition(self._guard)
@@ -536,6 +631,10 @@ class FlowService:
             "flowTier": existing.get("flowTier", ""),
             "flowSku": existing.get("flowSku", ""),
             "flowServiceTier": existing.get("flowServiceTier", ""),
+            "capabilityCatalog": existing.get("capabilityCatalog"),
+            "capabilityStatus": existing.get("capabilityStatus", "unknown"),
+            "capabilitySyncedAt": existing.get("capabilitySyncedAt"),
+            "capabilityError": existing.get("capabilityError", ""),
             "isDefault": bool(payload.get("isDefault", existing.get("isDefault", not self.accounts()))),
             "createdAt": existing.get("createdAt", now),
             "updatedAt": now,
@@ -738,6 +837,15 @@ class FlowService:
             _log.info("sync_credits_for_account: fetching credits project=%s account=%s", project_id, account_id)
             credit_info = await asyncio.wait_for(api.get_credits(), timeout=30.0)
             detected_plan = _detect_plan(credit_info)
+            capability_catalog = None
+            capability_error = ""
+            try:
+                capability_catalog = await asyncio.wait_for(
+                    self._read_capability_catalog(browser, project_id), timeout=45.0,
+                )
+            except Exception as catalog_exc:
+                capability_error = str(catalog_exc)
+                _log.warning("Flow capability sync failed for %s: %s", account_id, catalog_exc)
             patch: dict[str, Any] = {
                 "credits": int(credit_info.credits),
                 "creditsSyncedAt": time.time(),
@@ -751,6 +859,18 @@ class FlowService:
                 "status": "online",
                 "error": None,
             }
+            if capability_catalog:
+                patch.update({
+                    "capabilityCatalog": capability_catalog,
+                    "capabilityStatus": "verified",
+                    "capabilitySyncedAt": capability_catalog["syncedAt"],
+                    "capabilityError": "",
+                })
+            else:
+                patch.update({
+                    "capabilityStatus": "stale" if account.get("capabilityCatalog") else "unknown",
+                    "capabilityError": capability_error,
+                })
             if getattr(credit_info, "email", ""):
                 patch["email"] = credit_info.email
             if detected_plan:
@@ -789,6 +909,150 @@ class FlowService:
                 pass
         return store.get_row("accounts", account_id) or account
 
+    async def _read_capability_catalog(self, browser, project_id: str) -> dict[str, Any]:
+        """Read the model/ratio/duration controls actually exposed to this account."""
+        from .browser import FLOW_BASE_URL
+
+        page = await browser.page()
+        if project_id not in str(page.url or ""):
+            await page.goto(
+                f"{FLOW_BASE_URL}/project/{project_id}",
+                wait_until="domcontentloaded", timeout=30_000,
+            )
+        await page.wait_for_selector(".settings-trigger-button", state="visible", timeout=15_000)
+        controls = page.locator(_FLOW_CONTROL_SELECTOR)
+
+        async def model_selector():
+            selectors = page.locator("button:has(.model-select-trigger-content)")
+            for index in range(await selectors.count()):
+                candidate = selectors.nth(index)
+                if await candidate.is_visible():
+                    return candidate
+            return None
+
+        async def ensure_panel() -> None:
+            if await model_selector() is not None:
+                return
+            triggers = page.locator(".settings-trigger-button")
+            for index in range(await triggers.count()):
+                candidate = triggers.nth(index)
+                if await candidate.is_visible():
+                    await candidate.click(force=True)
+                    await asyncio.sleep(0.5)
+                    break
+            if await model_selector() is None:
+                raise RuntimeError("FLOW_CAPABILITY_SYNC_FAILED: model selector was not found")
+
+        async def switch_kind(kind: str) -> None:
+            await ensure_panel()
+            icon = _mode_tab_icon(kind)
+            target = None
+            for index in range(await controls.count()):
+                candidate = controls.nth(index)
+                if not await candidate.is_visible():
+                    continue
+                text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip()).lower()
+                matches_kind = (
+                    text.startswith(icon)
+                    or (kind == "image" and bool(re.search(r"\bimage\b|hình ảnh", text)))
+                    or (kind == "video" and bool(re.search(r"\bvideo\b", text)))
+                )
+                if matches_kind:
+                    target = candidate
+                    break
+            if target is None:
+                raise RuntimeError(f"FLOW_CAPABILITY_SYNC_FAILED: {kind} mode was not found")
+            if not await _flow_control_is_selected(target):
+                await target.click(force=True)
+                await asyncio.sleep(0.5)
+            await ensure_panel()
+
+        async def current_model_name() -> str:
+            selector = await model_selector()
+            return _clean_flow_model_name(await selector.inner_text()) if selector is not None else ""
+
+        async def list_model_names() -> list[str]:
+            selector = await model_selector()
+            if selector is None:
+                return []
+            await selector.click(force=True)
+            await asyncio.sleep(0.25)
+            result: list[str] = []
+            options = page.locator('[role="menuitem"], [role="option"]')
+            for index in range(await options.count()):
+                option = options.nth(index)
+                if not await option.is_visible() or await option.is_disabled():
+                    continue
+                label = option.locator(".label")
+                raw_name = await label.inner_text() if await label.count() else await option.inner_text()
+                name = _clean_flow_model_name(raw_name)
+                if name and name not in result:
+                    result.append(name)
+            return result
+
+        async def select_model(name: str) -> None:
+            selector = await model_selector()
+            if selector is None:
+                raise RuntimeError("FLOW_CAPABILITY_SYNC_FAILED: model selector disappeared")
+            if _match_model_choice(name, await selector.inner_text()):
+                return
+            options = page.locator('[role="menuitem"], [role="option"]')
+            if not any([await options.nth(index).is_visible() for index in range(await options.count())]):
+                await selector.click(force=True)
+                await asyncio.sleep(0.5)
+            for index in range(await options.count()):
+                option = options.nth(index)
+                if not await option.is_visible() or await option.is_disabled():
+                    continue
+                label = option.locator(".label")
+                raw_name = await label.inner_text() if await label.count() else await option.inner_text()
+                if _clean_flow_model_name(raw_name) == name:
+                    await option.click(force=True)
+                    await asyncio.sleep(0.35)
+                    return
+            await page.keyboard.press("Escape")
+            raise RuntimeError(f"FLOW_CAPABILITY_SYNC_FAILED: model disappeared: {name}")
+
+        async def control_snapshot() -> list[tuple[str, bool]]:
+            snapshot: list[tuple[str, bool]] = []
+            for index in range(await controls.count()):
+                control = controls.nth(index)
+                if not await control.is_visible() or await control.is_disabled():
+                    continue
+                snapshot.append(((await control.inner_text()).strip(), await _flow_control_is_selected(control)))
+            return snapshot
+
+        catalog: dict[str, Any] = {"version": 1, "source": "flow_ui", "syncedAt": time.time()}
+        original_kind = "video"
+        for index in range(await controls.count()):
+            control = controls.nth(index)
+            if await control.is_visible() and await _flow_control_is_selected(control):
+                text = re.sub(r"\s+", " ", (await control.inner_text()).strip()).lower()
+                if text.startswith("image") or "hình ảnh" in text:
+                    original_kind = "image"
+                    break
+                if text.startswith("videocam") or re.search(r"\bvideo\b", text):
+                    break
+
+        for kind in ("image", "video"):
+            await switch_kind(kind)
+            original_model = await current_model_name()
+            names = await list_model_names()
+            models = []
+            for name in names:
+                await select_model(name)
+                models.append(_capability_entry(name, await control_snapshot()))
+            if original_model and any(item["name"] == original_model for item in models):
+                await select_model(original_model)
+            catalog[kind] = {
+                "defaultModel": original_model if any(item["name"] == original_model for item in models) else (models[0]["name"] if models else ""),
+                "models": models,
+            }
+        await switch_kind(original_kind)
+        if not catalog["image"]["models"] or not catalog["video"]["models"]:
+            raise RuntimeError("FLOW_CAPABILITY_SYNC_FAILED: Flow returned an empty model catalog")
+        return catalog
+
     def _verify_account_plan_before_enqueue(self, account_id: str) -> dict[str, Any]:
         """Refresh Flow entitlement before every generation entry point.
 
@@ -800,7 +1064,18 @@ class FlowService:
         if not account:
             raise ValueError("FLOW_PLAN_SYNC_REQUIRED: Flow account was not found")
         if account.get("status") != "online" or not account.get("projectId"):
-            raise ValueError("FLOW_PLAN_SYNC_REQUIRED: Đồng bộ tài khoản Flow rồi thử lại")
+            # A queued job may start before the asynchronous account refresh
+            # finishes, or after Flow has dropped only the project. Reuse the
+            # saved browser session first; ask for manual work only if that
+            # session can no longer restore an online project.
+            restored = asyncio.run(
+                self._try_headless_reconnect(account_id, str(account.get("projectId") or ""))
+            )
+            account = store.get_row("accounts", account_id) or account
+            if not restored or account.get("status") != "online" or not account.get("projectId"):
+                raise ValueError(
+                    "FLOW_LOGIN_REQUIRED: Không thể tự đồng bộ tài khoản Flow; hãy kết nối lại trong Cài đặt"
+                )
         try:
             refreshed = asyncio.run(self.sync_credits_for_account(account_id))
         except Exception as exc:
@@ -852,6 +1127,13 @@ class FlowService:
                     return
             except Exception as probe_exc:
                 _log.debug("_login headless probe failed for %s, falling back to visible: %s", account_id, probe_exc)
+            # The saved project may have been deleted. Start at Flow home so
+            # the authenticated session can select/create a replacement.
+            existing_project_id = ""
+            store.patch_row("accounts", account_id, {
+                "status": "reconnect", "projectId": "", "error": "FLOW_PROJECT_NOT_FOUND",
+                "updatedAt": time.time(),
+            })
 
         browser = None
         try:
@@ -979,20 +1261,18 @@ class FlowService:
                                 except Exception:
                                     pass
                                 break
-                        elif existing_project_id:
-                            try:
-                                await page.goto(
-                                    f"https://flow.google.com/project/{existing_project_id}",
-                                    wait_until="domcontentloaded",
-                                    timeout=15_000,
-                                )
-                                await asyncio.sleep(2.0)
-                                is_auth2, pid2 = await _is_flow_authenticated()
-                                if is_auth2 and pid2:
-                                    project_id = pid2
-                                    break
-                            except Exception:
-                                pass
+                        else:
+                            create = page.get_by_role("button", name=re.compile(r"new project|create project|tạo dự án|dự án mới", re.I)).first
+                            if await create.count():
+                                try:
+                                    await create.click(force=True)
+                                    await page.wait_for_url(lambda url: bool(_PROJECT_RE.search(url)), timeout=15_000)
+                                    m = _PROJECT_RE.search(page.url)
+                                    if m:
+                                        project_id = m.group(1)
+                                        break
+                                except Exception:
+                                    pass
                     await asyncio.sleep(1.5)
 
             if not project_id:
@@ -1074,6 +1354,11 @@ class FlowService:
         try:
             browser = BrowserManager(headless=True, profile_dir=store.profile_dir(account_id))
             await browser.start()
+            # Another worker may already have replaced a deleted project while
+            # this worker was waiting for the shared browser profile.
+            persisted_project_id = str((store.get_row("accounts", account_id) or {}).get("projectId") or "")
+            if persisted_project_id and persisted_project_id != project_id:
+                project_id = persisted_project_id
             page = await browser.page()
             target_url = (
                 f"https://flow.google.com/project/{project_id}"
@@ -1081,11 +1366,21 @@ class FlowService:
                 else FLOW_BASE_URL
             )
             await page.goto(target_url, wait_until="domcontentloaded", timeout=15_000)
+            # Flow is a SPA: goto() can finish while the address bar still
+            # contains the deleted project, then redirect to /404 shortly
+            # afterwards. Never accept the stored ID before that redirect has
+            # settled.
+            await asyncio.sleep(2)
+            settled_url = str(page.url or "")
+            project_missing = bool(
+                project_id
+                and ("/404" in settled_url or project_id not in settled_url)
+            )
 
             # Try wait_for_url first (most reliable when session is valid).
             confirmed_id = ""
             match = _PROJECT_RE.search(page.url)
-            if match:
+            if match and not project_missing:
                 confirmed_id = match.group(1)
             else:
                 try:
@@ -1094,7 +1389,7 @@ class FlowService:
                         timeout=5_000,
                     )
                     match = _PROJECT_RE.search(page.url)
-                    if match:
+                    if match and not project_missing:
                         confirmed_id = match.group(1)
                 except Exception:
                     pass
@@ -1103,7 +1398,7 @@ class FlowService:
                 # Fallback: give Google a few more seconds then try the lobby link.
                 await asyncio.sleep(2)
                 match = _PROJECT_RE.search(page.url)
-                if match:
+                if match and not project_missing:
                     confirmed_id = match.group(1)
             if not confirmed_id:
                 # Try following a project link from the lobby.
@@ -1112,10 +1407,55 @@ class FlowService:
                     if links:
                         href = await links[0].get_attribute("href") or ""
                         m = _PROJECT_RE.search(href)
-                        if m:
+                        if m and m.group(1) != project_id:
                             confirmed_id = m.group(1)
 
-            if not confirmed_id or not _PROJECT_RE.search(str(page.url)):
+            if not confirmed_id and project_id:
+                # The saved project was deleted. Always create a replacement:
+                # selecting another existing project would mix unrelated jobs.
+                await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
+                await asyncio.sleep(2)
+                new_project = page.get_by_role(
+                    "button", name=re.compile(r"new project|create project|tạo dự án|dự án mới", re.I),
+                ).first
+                if not await new_project.count():
+                    new_project = page.get_by_role(
+                        "link", name=re.compile(r"new project|create project|tạo dự án|dự án mới", re.I),
+                    ).first
+                if await new_project.count():
+                    await new_project.click(force=True)
+                    try:
+                        await page.wait_for_url(
+                            lambda url: bool(_PROJECT_RE.search(url)) and project_id not in url,
+                            timeout=15_000,
+                        )
+                    except Exception:
+                        # Some Flow builds open a naming dialog before creating.
+                        create = page.get_by_role(
+                            "button", name=re.compile(r"^create$|^tạo$|^tạo dự án$", re.I),
+                        ).first
+                        if await create.count():
+                            await create.click(force=True)
+                            await page.wait_for_url(
+                                lambda url: bool(_PROJECT_RE.search(url)) and project_id not in url,
+                                timeout=15_000,
+                            )
+                    match = _PROJECT_RE.search(page.url)
+                    if match and match.group(1) != project_id:
+                        confirmed_id = match.group(1)
+
+            if confirmed_id and confirmed_id != project_id and confirmed_id not in str(page.url or ""):
+                # A project link exposes its ID without opening it. Open it
+                # before accepting it, otherwise the next job would retain
+                # the deleted ID and immediately fail at /404 again.
+                await page.goto(
+                    f"https://flow.google.com/project/{confirmed_id}",
+                    wait_until="domcontentloaded",
+                    timeout=15_000,
+                )
+                await asyncio.sleep(2)
+
+            if not confirmed_id or confirmed_id not in str(page.url or ""):
                 return False
             authenticated = await page.evaluate("() => Boolean(window.WIZ_global_data?.SNlM0e || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email)")
             if not authenticated:
@@ -1144,6 +1484,9 @@ class FlowService:
                 "updatedAt": time.time(),
                 "error": None,
             }
+            if project_id and confirmed_id != project_id:
+                patch["previousProjectId"] = project_id
+                patch["projectChangedAt"] = time.time()
             if detected_plan:
                 patch["plan"] = detected_plan
             store.patch_row("accounts", account_id, patch)
@@ -1186,15 +1529,17 @@ class FlowService:
             if settings.get("model") == "Nano Banana Pro":
                 settings["model"] = "Nano Banana 2"
 
+        settings, _ = _normalize_catalog_settings(account, kind, settings)
+
         if kind == "image":
-            if str(settings.get("model") or "Nano Banana 2") not in _IMAGE_UI_MODELS:
+            if not _catalog_section(account, kind) and str(settings.get("model") or "Nano Banana 2") not in _IMAGE_UI_MODELS:
                 raise ValueError(f"Unsupported Flow image model: {settings.get('model')}")
             if mode != "text" and not source_files:
                 raise ValueError("Image edit/reference mode requires at least one source image")
         else:
-            if str(settings.get("model") or "Veo 3.1 - Fast") in _DISABLED_VIDEO_MODELS:
-                raise ValueError(f"FLOW_MODEL_UNAVAILABLE: {settings.get('model')}")
-            if str(settings.get("model") or "Veo 3.1 - Fast") not in _VIDEO_UI_MODELS:
+            if not _catalog_section(account, kind):
+                settings["model"] = _normalize_video_model(settings.get("model"))
+            if not _catalog_section(account, kind) and settings["model"] not in _VIDEO_UI_MODELS:
                 raise ValueError(f"Unsupported Flow video model: {settings.get('model')}")
         created = []
         for index, prompt in enumerate(prompts, 1):
@@ -1217,6 +1562,7 @@ class FlowService:
                 "settings": settings, "sourceFiles": source_files,
                 "seriesContext": series_context,
                 "status": "queued", "stage": "queued", "progress": 0, "mediaIds": [], "outputs": [],
+                "generationRejectRetryCount": 0,
                 "error": None, "createdAt": now, "updatedAt": now,
             }
             job["outputFolder"] = str(self._output_folder(job, create=False))
@@ -1234,6 +1580,11 @@ class FlowService:
         job = store.get_row("jobs", job_id)
         if not job:
             return
+        with self._account_condition:
+            latest = store.get_row("jobs", job_id) or job
+            if latest.get("status") in _TERMINAL or job_id in self._running_jobs:
+                return
+            self._running_jobs.add(job_id)
         account_id = str(job["accountId"])
         concurrency = _job_concurrency(job.get("settings") or {})
         order = int(job.get("queueOrder", job.get("inputIndex", 0)))
@@ -1259,6 +1610,7 @@ class FlowService:
                     if order == self._account_next_start[account_id]:
                         self._account_next_start[account_id] += 1
                         self._account_condition.notify_all()
+                    self._running_jobs.discard(job_id)
                     return
                 # Deleted/cancelled jobs can leave gaps in queueOrder. Advance
                 # to the first real queued row instead of sleeping forever.
@@ -1271,6 +1623,7 @@ class FlowService:
             if job_id in self._cancelled:
                 self._account_next_start[account_id] += 1
                 self._account_condition.notify_all()
+                self._running_jobs.discard(job_id)
                 return
             # Remove the admitted row from the queued set before another
             # waiter recalculates the first pending order.
@@ -1284,7 +1637,7 @@ class FlowService:
         # Once Flow accepts a job, retrying can create a duplicate and charge
         # credits twice; media recovery owns all post-submit timeouts.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT",
+            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_RESULT_NOT_FOUND",
             re.I,
         )
         profile_ready = False
@@ -1294,22 +1647,72 @@ class FlowService:
             verified_account = self._verify_account_plan_before_enqueue(account_id)
             if verified_account.get("plan") == "Free" and job.get("kind") == "video":
                 raise ValueError("Tài khoản gói thường chỉ hỗ trợ tạo ảnh (Free accounts only support image generation)")
-            runtime_profile: Path | None = None
-            try:
-                runtime_profile = self._clone_runtime_profile(account_id, job_id)
-                profile_ready = True
-                asyncio.run(self._run(job_id, profile_dir=runtime_profile))
-            finally:
-                if runtime_profile is not None:
-                    shutil.rmtree(runtime_profile, ignore_errors=True)
+            for auth_attempt in range(2):
+                runtime_profile: Path | None = None
+                try:
+                    runtime_profile = self._clone_runtime_profile(account_id, job_id)
+                    profile_ready = True
+                    asyncio.run(self._run(job_id, profile_dir=runtime_profile))
+                finally:
+                    if runtime_profile is not None:
+                        shutil.rmtree(runtime_profile, ignore_errors=True)
+                finished = store.get_row("jobs", job_id) or {}
+                auth_error = finished.get("status") == "action_required" and _session_needs_login(Exception(str(finished.get("error") or "")))
+                if not auth_error or auth_attempt:
+                    break
+                project_id = str(verified_account.get("projectId") or account_id)
+                _log.warning("Flow session expired for %s; attempting automatic reconnect", account_id)
+                if not asyncio.run(self._try_headless_reconnect(account_id, project_id)):
+                    break
+                store.patch_row("jobs", job_id, {
+                    "status": "queued", "stage": "queued", "progress": 0,
+                    "error": None, "updatedAt": time.time(),
+                })
+                _log.info("Automatic Flow reconnect succeeded; resuming job %s", job_id)
 
             # Check whether _run marked the job as a transient failure → auto-retry once
             finished = store.get_row("jobs", job_id) or {}
-            if finished.get("status") == "failed" and not _HARD_ERROR.search(str(finished.get("error") or "")):
+            project_error = finished.get("status") == "failed" and "FLOW_PROJECT_NOT_FOUND" in str(finished.get("error") or "")
+            if project_error:
+                _log.warning("Flow project missing for %s; creating a replacement project from the saved session before retrying %s", account_id, job_id)
+                old_project_id = str(verified_account.get("projectId") or "")
+                # The Google session is still valid; only the project was
+                # deleted. Headless recovery creates/selects a replacement
+                # without opening the login flow or asking the user to connect again.
+                asyncio.run(self._try_headless_reconnect(account_id, old_project_id))
+                refreshed = store.get_row("accounts", account_id) or {}
+                if refreshed.get("status") == "online" and refreshed.get("projectId"):
+                    store.patch_row("jobs", job_id, {"status": "queued", "stage": "queued", "progress": 0, "error": None, "updatedAt": time.time()})
+                    runtime_profile2: Path | None = None
+                    try:
+                        runtime_profile2 = self._clone_runtime_profile(account_id, job_id)
+                        profile_ready = True
+                        asyncio.run(self._run(job_id, profile_dir=runtime_profile2))
+                    finally:
+                        if runtime_profile2 is not None:
+                            shutil.rmtree(runtime_profile2, ignore_errors=True)
+                    finished = store.get_row("jobs", job_id) or {}
+            finished_error = str(finished.get("error") or "")
+            rejected = "FLOW_GENERATION_REJECTED" in finished_error
+            rejection_retry_count = int(finished.get("generationRejectRetryCount") or 0)
+            should_auto_retry = finished.get("status") == "failed" and (
+                (rejected and rejection_retry_count < 1)
+                or (not rejected and not _HARD_ERROR.search(finished_error))
+            )
+            if should_auto_retry:
                 _log.warning(
                     "auto-retry job %s after transient failure: %s",
                     job_id, finished.get("error"),
                 )
+                if rejected:
+                    store.patch_row("jobs", job_id, {
+                        "status": "processing",
+                        "stage": "retrying",
+                        "progress": 0,
+                        "error": None,
+                        "generationRejectRetryCount": rejection_retry_count + 1,
+                        "updatedAt": time.time(),
+                    })
                 time.sleep(3)
                 store.patch_row("jobs", job_id, {"status": "queued", "stage": "queued", "progress": 0, "error": None, "outputs": []})
                 runtime_profile2: Path | None = None
@@ -1349,7 +1752,8 @@ class FlowService:
                 )
         finally:
             with self._account_condition:
-                self._account_active[account_id] -= 1
+                self._account_active[account_id] = max(0, self._account_active.get(account_id, 1) - 1)
+                self._running_jobs.discard(job_id)
                 self._account_condition.notify_all()
 
     def _clone_runtime_profile(self, account_id: str, job_id: str) -> Path:
@@ -1685,7 +2089,13 @@ class FlowService:
                 raise RuntimeError(f"FLOW_MODEL_UNAVAILABLE: {model} — available: {visible_texts}")
 
 
-    async def _prepare_ui_format(self, page, ratio: str, duration: str | None = None) -> None:
+    async def _prepare_ui_format(
+        self,
+        page,
+        ratio: str,
+        duration: str | None = None,
+        resolution: str | None = None,
+    ) -> None:
         """Select current numeric Flow tabs and verify the requested format.
 
         Recent Flow builds label aspect tabs ``16:9``/``9:16``/``1:1`` rather
@@ -1702,7 +2112,9 @@ class FlowService:
                     return candidate
             return None
 
-        ratio_label = ratio if ratio in {"16:9", "9:16", "1:1", "4:3", "3:4"} else "16:9"
+        ratio_label = str(ratio or "").strip()
+        if not re.fullmatch(r"\d{1,2}:\d{1,2}", ratio_label):
+            raise RuntimeError(f"FLOW_SETTING_MISMATCH: invalid aspect ratio {ratio_label!r}")
         # Fast path: if the trigger button pill already shows this ratio, skip clicking
         pill_loc = page.locator(".settings-trigger-button, .settings-summary")
         for i in range(await pill_loc.count()):
@@ -1711,7 +2123,7 @@ class FlowService:
                 text = await candidate.inner_text()
                 safe_ratio = ratio_label.replace(":", "_")
                 if ratio_label in text or f"crop_{safe_ratio}" in text:
-                    if duration is None:
+                    if duration is None and not resolution:
                         _log.info("_prepare_ui_format: ratio %s already selected on pill", ratio_label)
                         return
         ratio_tab = None
@@ -1766,28 +2178,38 @@ class FlowService:
             raise RuntimeError(f"FLOW_SETTING_MISMATCH: aspect ratio {ratio_label} was not selected")
 
 
-        if duration is None:
-            return
-        duration_value = str(duration).strip() if str(duration).strip() in {"4", "6", "8", "10"} else "8"
-        duration_label = f"{duration_value}s"
-        duration_tab = await visible_tab(_duration_pattern(duration_value))
-        if duration_tab is None:
-            # Current Flow builds hide the duration control for models whose
-            # only supported duration is the default 8 seconds.  In that UI
-            # there is nothing to select; failing here prevents a valid video
-            # job from ever being submitted.  Non-default durations still
-            # require an explicit control so we never silently change them.
-            if duration_value == "8":
-                _log.info(
-                    "_prepare_ui_format: duration 8s control is hidden; using Flow model default",
-                )
+        if duration is not None:
+            duration_value = str(duration).strip()
+            if not re.fullmatch(r"\d{1,3}", duration_value):
+                raise RuntimeError(f"FLOW_SETTING_MISMATCH: invalid duration {duration_value!r}")
+            duration_label = f"{duration_value}s"
+            duration_tab = await visible_tab(_duration_pattern(duration_value))
+            if duration_tab is not None:
+                if not await _flow_control_is_selected(duration_tab):
+                    await duration_tab.click(force=True)
+                    await asyncio.sleep(0.3)
+                if not await _flow_control_is_selected(duration_tab):
+                    raise RuntimeError(f"FLOW_SETTING_MISMATCH: duration {duration_label} was not selected")
+            else:
+                # A hidden control only supports Flow's default duration. Never
+                # silently run a different duration than the one requested.
+                if duration_value != "8":
+                    raise RuntimeError(f"FLOW_SETTING_MISMATCH: duration {duration_label} was not found")
+                _log.info("_prepare_ui_format: duration %s control is hidden; using Flow model default", duration_label)
+
+        if resolution:
+            resolution_value = str(resolution).strip().lower()
+            if not re.fullmatch(r"\d{3,4}p", resolution_value):
+                raise RuntimeError(f"FLOW_SETTING_MISMATCH: invalid resolution {resolution!r}")
+            resolution_tab = await visible_tab(re.compile(rf"(?<!\d){re.escape(resolution_value)}(?!\w)", re.I))
+            if resolution_tab is None:
+                _log.info("_prepare_ui_format: resolution %s control is hidden; using Flow model default", resolution_value)
                 return
-            raise RuntimeError(f"FLOW_UI_CHANGED: duration {duration_label} was not found")
-        if not await _flow_control_is_selected(duration_tab):
-            await duration_tab.click(force=True)
-            await asyncio.sleep(0.3)
-        if not await _flow_control_is_selected(duration_tab):
-            raise RuntimeError(f"FLOW_SETTING_MISMATCH: duration {duration_label} was not selected")
+            if not await _flow_control_is_selected(resolution_tab):
+                await resolution_tab.click(force=True)
+                await asyncio.sleep(0.3)
+            if not await _flow_control_is_selected(resolution_tab):
+                raise RuntimeError(f"FLOW_SETTING_MISMATCH: resolution {resolution_value} was not selected")
 
     async def _click_flow_submit(self, page) -> None:
         """Click the submit control used by the current Flow project page.
@@ -1889,11 +2311,17 @@ class FlowService:
         try:
             data = await api.get_project_data()
         except Exception:
-            return []
-        minimum_time = float(job.get("createdAt") or 0) - 60
+            data = {}
+        minimum_time = float(job.get("submissionStartedAt") or job.get("createdAt") or 0) - 60
         records: list[dict[str, Any]] = []
+        used_ids = set()
+        if not job.get("mediaIds") and (job.get("resumeOnly") or job.get("submissionStartedAt")):
+            used_ids = {str(mid) for row in self.jobs() if row.get("id") != job.get("id") for mid in row.get("mediaIds") or []}
+            used_ids.update(self._claimed_media_ids)
         for media in data.get("projectContents", {}).get("media", []):
             if not isinstance(media, dict) or not media.get("name"):
+                continue
+            if str(media['name']) in used_ids:
                 continue
             if kind == "image" and not media.get("image"):
                 continue
@@ -1910,14 +2338,62 @@ class FlowService:
                     "MEDIA_GENERATION_STATUS_SUCCESSFUL",
                 }:
                     continue
-            if not _media_prompt_matches(media, str(job.get("prompt") or "")):
+            media_ids = set(job.get("mediaIds") or [])
+            if not media_ids and str(media['name']) in set(job.get("baselineMediaIds") or []):
+                continue
+            if media_ids and str(media['name']) not in media_ids:
+                continue
+            if not media_ids and not _media_prompt_matches(media, str(job.get("prompt") or "")):
                 continue
             created_at = _media_created_timestamp(media)
-            if created_at and created_at < minimum_time:
+            if not media_ids and created_at and created_at < minimum_time:
                 continue
             records.append(media)
         if not records:
-            return []
+            # The current Angular Flow UI can show completed tiles while its
+            # project-data endpoint still returns an empty media list. DOM
+            # recovery is safe only for an already-submitted request: baseline
+            # and global claims keep concurrent jobs from taking old/duplicate
+            # outputs.
+            if not (job.get("mediaIds") or job.get("resumeOnly") or job.get("submissionStartedAt")):
+                return []
+            expected_tag = "img" if kind == "image" else "video"
+            baseline_ids = {str(media_id) for media_id in job.get("baselineMediaIds") or []}
+            account = store.get_row("accounts", str(job.get("accountId") or "")) or {}
+            project_changed_at = float(account.get("projectChangedAt") or 0)
+            # Jobs queued around a forced project replacement share a new,
+            # initially empty gallery. Concurrent submissions can make one
+            # worker snapshot another worker's fresh output as its baseline;
+            # global media claims are authoritative during this short cohort.
+            if (
+                project_changed_at
+                and float(job.get("createdAt") or 0)
+                <= project_changed_at + _PROJECT_MIGRATION_RECOVERY_WINDOW_S
+            ):
+                baseline_ids.clear()
+            required_ids = {str(media_id) for media_id in job.get("mediaIds") or []}
+            found: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for item in await self._project_media_elements(page):
+                media_id = str(item.get("id") or "")
+                src = str(item.get("src") or "")
+                if (
+                    not media_id
+                    or media_id in seen
+                    or media_id in used_ids
+                    or media_id in baseline_ids
+                    or (required_ids and media_id not in required_ids)
+                    or item.get("tag") != expected_tag
+                    or not src.startswith("http")
+                ):
+                    continue
+                if kind == "image" and int(item.get("width") or 0) <= 0:
+                    continue
+                seen.add(media_id)
+                found.append(item)
+                if len(found) >= max(1, int(count or 1)):
+                    break
+            return found
         by_id = {
             str(item.get("id")): item
             for item in await self._project_media_elements(page)
@@ -1928,16 +2404,129 @@ class FlowService:
         found: list[dict[str, Any]] = []
         for media in sorted(records, key=lambda item: _media_created_timestamp(item)):
             item = by_id.get(str(media.get("name")))
-            if kind == 'image':
-                image = media.get('image') or {}
+            if kind in {'image', 'video'}:
+                image = media.get(kind) or {}
                 url = str(image.get('fifeUrl') if isinstance(image, dict) else image or '')
                 if url.startswith('https://'):
-                    item = {'id': str(media['name']), 'tag': 'img', 'src': url}
+                    item = {'id': str(media['name']), 'tag': 'img' if kind == 'image' else 'video', 'src': url}
             if item:
                 found.append(item)
             if len(found) >= max(1, int(count or 1)):
                 break
         return found
+
+    async def _recover_submitted_media(self, api, page, job, timeout_s=900):
+        """Poll the original project and persist ownership before downloading."""
+        count = len(job.get("mediaIds") or []) or max(1, min(4, int((job.get("settings") or {}).get("count", 1))))
+        deadline = time.monotonic() + timeout_s
+        empty_checks = 0
+        while time.monotonic() < deadline:
+            self._check_cancel(job["id"])
+            items = await self._find_existing_project_media(api, page, job, job["kind"], count)
+            if len(items) >= count:
+                ids = list(job.get("mediaIds") or [])
+                if not ids:
+                    ids = self._claim_media_ids([str(item['id']) for item in items], count)
+                if ids:
+                    store.patch_row("jobs", job["id"], {"mediaIds": ids, "stage": "downloading", "progress": 90, "updatedAt": time.time()})
+                    return ids
+            flow_error = await self._claim_visible_flow_error(page, job, count)
+            if flow_error:
+                store.patch_row("jobs", job["id"], {
+                    "submissionStartedAt": None,
+                    "submissionProjectId": None,
+                    "baselineMediaIds": [],
+                    "mediaIds": [],
+                    "resumeOnly": False,
+                    "progress": 0,
+                    "updatedAt": time.time(),
+                })
+                raise RuntimeError(f"FLOW_GENERATION_REJECTED: {flow_error}")
+            empty_checks += 1
+            if empty_checks >= 6 and page is not None:
+                try:
+                    has_pending = bool(await page.evaluate("""() =>
+                        [...document.querySelectorAll('flow-grid-tile-container')].some(tile =>
+                            !tile.querySelector('[data-media-id]') && Boolean(
+                                tile.querySelector('[role="progressbar"], mat-progress-spinner, mat-spinner, .loading, .generating')
+                                || /(?:generating|đang tạo|processing|%)/i.test(tile.innerText || '')
+                            )
+                        )
+                    """))
+                except Exception:
+                    has_pending = True
+                if not has_pending:
+                    store.patch_row("jobs", job["id"], {
+                        "submissionStartedAt": None,
+                        "submissionProjectId": None,
+                        "baselineMediaIds": [],
+                        "mediaIds": [],
+                        "resumeOnly": False,
+                        "progress": 0,
+                        "updatedAt": time.time(),
+                    })
+                    raise RuntimeError(
+                        "FLOW_RESULT_NOT_FOUND: Flow has no pending or completed result for this submission"
+                    )
+            store.patch_row("jobs", job["id"], {"stage": "recovering", "progress": 84, "updatedAt": time.time()})
+            await asyncio.sleep(5)
+        raise RuntimeError("FLOW_GENERATION_TIMEOUT: original result is not ready; retry continues recovery")
+
+    async def _claim_visible_flow_error(
+        self,
+        page,
+        job: dict[str, Any],
+        tile_limit: int,
+    ) -> str:
+        """Claim one visible failed Flow tile so concurrent jobs do not share it."""
+        if page is None:
+            return ""
+        try:
+            errors = await page.evaluate("""(limit) =>
+                [...document.querySelectorAll('flow-grid-tile-container')]
+                    .slice(0, Math.max(1, limit || 1))
+                    .map((tile, index) => {
+                        const error = tile.querySelector('.error-message');
+                        if (!error || error.getClientRects().length === 0) return null;
+                        return {
+                            index,
+                            text: (error.innerText || '').trim().replace(/\\s+/g, ' '),
+                        };
+                    })
+                    .filter(Boolean)
+            """, max(1, int(tile_limit or 1)))
+        except Exception:
+            return ""
+        account = store.get_row("accounts", str(job.get("accountId") or "")) or {}
+        project_id = str(account.get("projectId") or "")
+        current_job = store.get_row("jobs", str(job.get("id") or "")) or job
+        current_submission_at = float(current_job.get("submissionStartedAt") or 0)
+        last_rejected_submission_at = float(current_job.get("lastGenerationRejectedSubmissionAt") or 0)
+        rejection_retry_count = int(current_job.get("generationRejectRetryCount") or 0)
+        with self._guard:
+            for item in errors or []:
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+                signature = f"{project_id}:{int(item.get('index') or 0)}:{text}"
+                if signature in self._claimed_error_tiles:
+                    # The same gallery position/text can fail again on the one
+                    # permitted retry. Accept it only for that job's newer
+                    # submission; concurrent first attempts still cannot share
+                    # one failed tile.
+                    if not (
+                        rejection_retry_count >= 1
+                        and current_submission_at > last_rejected_submission_at
+                    ):
+                        continue
+                self._claimed_error_tiles.add(signature)
+                store.patch_row("jobs", str(job.get("id") or ""), {
+                    "lastFlowErrorSignature": signature,
+                    "lastGenerationRejectedSubmissionAt": current_submission_at,
+                    "updatedAt": time.time(),
+                })
+                return text
+        return ""
 
     async def _wait_for_project_media(
         self,
@@ -1985,6 +2574,22 @@ class FlowService:
                 fresh.append(item)
             if len(fresh) >= max(1, expected_count):
                 return fresh[:max(1, expected_count)]
+            flow_error = await self._claim_visible_flow_error(
+                page,
+                job or (store.get_row("jobs", job_id) or {"id": job_id}),
+                expected_count,
+            )
+            if flow_error:
+                store.patch_row("jobs", job_id, {
+                    "submissionStartedAt": None,
+                    "submissionProjectId": None,
+                    "baselineMediaIds": [],
+                    "mediaIds": [],
+                    "resumeOnly": False,
+                    "progress": 0,
+                    "updatedAt": time.time(),
+                })
+                raise RuntimeError(f"FLOW_GENERATION_REJECTED: {flow_error}")
             elapsed = timeout_s - max(0.0, deadline - time.monotonic())
             current_progress = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
             store.patch_row("jobs", job_id, {
@@ -2015,6 +2620,18 @@ class FlowService:
         started = False
         while time.monotonic() < deadline:
             self._check_cancel(job_id)
+            flow_error = await self._claim_visible_flow_error(page, job, expected_count)
+            if flow_error:
+                store.patch_row("jobs", job_id, {
+                    "submissionStartedAt": None,
+                    "submissionProjectId": None,
+                    "baselineMediaIds": [],
+                    "mediaIds": [],
+                    "resumeOnly": False,
+                    "progress": 0,
+                    "updatedAt": time.time(),
+                })
+                raise RuntimeError(f"FLOW_GENERATION_REJECTED: {flow_error}")
             info = await page.evaluate("""(expCount) => {
                 const tiles = Array.from(document.querySelectorAll('flow-grid-tile-container')).slice(0, expCount);
                 if (!tiles.length) return null;
@@ -2030,9 +2647,6 @@ class FlowService:
             if not info:
                 await asyncio.sleep(2)
                 continue
-            for item in info:
-                if item.get("hasError"):
-                    raise RuntimeError(f"FLOW_GENERATION_FAILED: {item['text']}")
             top_text = info[0].get("text", "")
             if not started:
                 prompt_sub = str(job.get("prompt") or "")[:15].lower()
@@ -2177,17 +2791,105 @@ class FlowService:
             api = FlowAPI(browser, project_id=account["projectId"], default_timeout_s=600)
             client = FlowClient(api, browser, account["projectId"])
             settings = job.get("settings") or {}
+            settings, catalog_changed = _normalize_catalog_settings(account, str(job["kind"]), settings)
+            if job["kind"] == "video" and not _catalog_section(account, "video"):
+                fallback_model = _normalize_video_model(settings.get("model"))
+                catalog_changed = catalog_changed or fallback_model != settings.get("model")
+                settings = {**settings, "model": fallback_model}
+            if catalog_changed:
+                store.patch_row("jobs", job_id, {"settings": settings, "updatedAt": time.time()})
+                job = {**job, "settings": settings}
+                self._log(
+                    "info", "capability_settings_migrated", job_id=job_id,
+                    account_id=account["id"], details={
+                        "model": settings.get("model"), "ratio": settings.get("ratio"),
+                        "duration": settings.get("duration"),
+                    },
+                )
+            submission_project_id = str(job.get("submissionProjectId") or "")
+            project_changed_at = float(account.get("projectChangedAt") or 0)
+            submitted_at = float(job.get("submissionStartedAt") or 0)
+            submission_project_missing = bool(
+                (submission_project_id and submission_project_id != account["projectId"])
+                or (
+                    not submission_project_id
+                    and submitted_at
+                    and project_changed_at
+                    and submitted_at < project_changed_at
+                )
+            )
+            if submission_project_missing:
+                # A result submitted to a deleted project cannot appear in the
+                # replacement project. Clear recovery identity and submit the
+                # same local job once, instead of pretending it is still at 84%.
+                reset = {
+                    "submissionStartedAt": None,
+                    "submissionProjectId": None,
+                    "baselineMediaIds": [],
+                    "mediaIds": [],
+                    "resumeOnly": False,
+                    "stage": "resubmitting",
+                    "progress": 3,
+                    "updatedAt": time.time(),
+                }
+                store.patch_row("jobs", job_id, reset)
+                job = {**job, **reset}
+                self._log(
+                    "warning",
+                    "submission_project_missing",
+                    job_id=job_id,
+                    account_id=account["id"],
+                    details={
+                        "submissionProjectId": submission_project_id,
+                        "currentProjectId": account["projectId"],
+                    },
+                )
             store.patch_row("jobs", job_id, {"status": "processing", "stage": "submitting", "progress": 5, "updatedAt": time.time()})
-            if job["kind"] == "video":
+            if job.get("submissionStartedAt") or job.get("mediaIds") or job.get("resumeOnly"):
+                page = await browser.page()
+                await client._ensure_project_page(page)
+                media_ids = list(job.get("mediaIds") or [])
+                if not media_ids:
+                    media_ids = await self._recover_submitted_media(api, page, job)
+                    job = {**job, "mediaIds": media_ids}
+                outputs = []
+                if job["kind"] == "video":
+                    from ._flow._api import VideoJob
+                    for index, media_id in enumerate(media_ids, 1):
+                        self._check_cancel(job_id)
+                        remote_job = VideoJob.__new__(VideoJob)
+                        remote_job.media_name = media_id
+                        remote_job.project_id = account["projectId"]
+                        status = await api.wait_for_video(remote_job, timeout_s=900)
+                        output = self._output_path(job, index, "mp4")
+                        await api.download(status.fife_url, output)
+                        outputs.append(str(output))
+                else:
+                    await self._recover_submitted_media(api, page, job)
+                    items = await self._find_existing_project_media(api, page, job, "image", len(media_ids))
+                    by_id = {str(item['id']): item for item in items}
+                    if any(media_id not in by_id for media_id in media_ids):
+                        raise RuntimeError("FLOW_GENERATION_TIMEOUT: original image media is not available yet")
+                    for index, media_id in enumerate(media_ids, 1):
+                        self._check_cancel(job_id)
+                        output = self._output_path(job, index, str(settings.get("format", "png")).lower())
+                        await api.download(str(by_id[media_id]['src']), output)
+                        outputs.append(str(output))
+            elif job["kind"] == "video":
                 source = next(iter(job.get("sourceFiles") or []), None)
-                model = str(settings.get("model") or "Veo 3.1 - Fast").replace("3.1 Fast", "3.1 - Fast").replace("3.1 Quality", "3.1 - Quality")
+                model = _normalize_video_model(settings.get("model"))
                 ratio = str(settings.get("ratio") or "16:9")
                 page = await browser.page()
                 await client._ensure_project_page(page)
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
                 await self._prepare_ui_model(page, "video", model, ui=client._ui)
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 12, "updatedAt": time.time()})
-                await self._prepare_ui_format(page, ratio, str(settings.get("duration") or "8"))
+                await self._prepare_ui_format(
+                    page,
+                    ratio,
+                    str(settings.get("duration") or "8"),
+                    str(settings.get("resolution") or ""),
+                )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
                 baseline_media = await self._project_media_elements(page)
                 baseline_ids = {str(item.get("id")) for item in baseline_media if item.get("id")}
@@ -2227,11 +2929,12 @@ class FlowService:
                     workflow_id = str(media.get("workflowId") or "")
                     if not workflow_id:
                         raise RuntimeError("FLOW_EXTEND_WORKFLOW_MISSING: prior video has no workflow")
+                    store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)})
                     remote = [await client.extend_video(media_id, workflow_id, job["prompt"])]
                     media_ids = [item.media_name for item in remote]
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model, "mediaIds": media_ids})
-                    await self._sync_credits(api, account["id"])
                     store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": 20})
+                    await self._sync_credits(api, account["id"])
                     outputs = []
                     for output_index, media_id in enumerate(media_ids, 1):
                         self._check_cancel(job_id)
@@ -2257,6 +2960,7 @@ class FlowService:
                     from ._flow._exceptions import GenerationTimeout
                     interceptor = UIInterceptor()
                     interceptor.attach(page)
+                    store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)})
                     await self._click_flow_submit(page)
                     store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model})
@@ -2299,7 +3003,11 @@ class FlowService:
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
                 await self._prepare_ui_model(page, "image", model, ui=client._ui)
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 12, "updatedAt": time.time()})
-                await self._prepare_ui_format(page, str(settings.get("ratio") or "16:9"))
+                await self._prepare_ui_format(
+                    page,
+                    str(settings.get("ratio") or "16:9"),
+                    resolution=str(settings.get("resolution") or ""),
+                )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
                 for source in sources:
                     await client._ui.upload_image(page, source)
@@ -2317,6 +3025,7 @@ class FlowService:
                     from ._flow._exceptions import GenerationTimeout
                     interceptor = UIInterceptor()
                     interceptor.attach(page)
+                    store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)})
                     await self._click_flow_submit(page)
                     store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                     try:
@@ -2337,8 +3046,8 @@ class FlowService:
                         )
                 media_ids = [str(item["id"]) for item in media_items]
                 self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": settings.get("model"), "mediaIds": media_ids})
-                await self._sync_credits(api, account["id"])
                 store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "downloading", "progress": 80})
+                await self._sync_credits(api, account["id"])
                 outputs = []
                 for output_index, image in enumerate(media_items, 1):
                     self._check_cancel(job_id)
@@ -2358,6 +3067,16 @@ class FlowService:
             store.patch_row("jobs", job_id, {"status": "cancelled", "stage": "cancelled", "progress": 0, "updatedAt": time.time()})
             self._log("warning", "job_cancelled", job_id=job_id, account_id=account["id"])
         except Exception as exc:
+            current = store.get_row("jobs", job_id) or {}
+            if current.get("status") == "done":
+                self._log(
+                    "warning",
+                    "late_worker_error_ignored",
+                    job_id=job_id,
+                    account_id=account["id"],
+                    message=str(exc),
+                )
+                return
             needs_login = _session_needs_login(exc)
             action = "action_required" if needs_login else "failed"
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")
@@ -2437,12 +3156,24 @@ class FlowService:
             self._log("warning", "job_cancel_requested", job_id=job_id, account_id=str(job.get("accountId") or ""))
         return job
 
-    def retry(self, job_id: str) -> dict[str, Any] | None:
+    def retry(self, job_id: str, overrides: dict[str, Any] | None = None) -> dict[str, Any] | None:
         existing = store.get_row("jobs", job_id)
         if not existing:
             return None
-        account_id = str(existing.get("accountId") or "")
+        overrides = overrides or {}
+        account_id = str(overrides.get("accountId") or existing.get("accountId") or "")
+        settings = dict(existing.get("settings") or {})
+        settings.update({key: value for key, value in dict(overrides.get("settings") or {}).items() if value not in (None, "")})
+        account = store.get_row("accounts", account_id) or {}
+        settings, _ = _normalize_catalog_settings(account, str(existing.get("kind") or "video"), settings)
+        if existing.get("kind") == "video" and not _catalog_section(account, "video"):
+            settings["model"] = _normalize_video_model(settings.get("model"))
+        if account_id and not account:
+            raise ValueError("Flow account not found")
         with self._account_condition:
+            last_error_signature = str(existing.get("lastFlowErrorSignature") or "")
+            if last_error_signature:
+                self._claimed_error_tiles.discard(last_error_signature)
             orders = [
                 int(row.get("queueOrder")) for row in self.jobs()
                 if row.get("accountId") == account_id and str(row.get("queueOrder", "")).isdigit()
@@ -2451,8 +3182,11 @@ class FlowService:
             self._account_next_order[account_id] = max(self._account_next_order.get(account_id, 0), order + 1)
             self._cancelled.discard(job_id)
             job = store.patch_row("jobs", job_id, {
+                "resumeOnly": bool(existing.get("resumeOnly") or existing.get("submissionStartedAt") or existing.get("mediaIds")),
                 "status": "queued", "stage": "queued", "progress": 0,
                 "queueOrder": order, "error": None, "outputs": [], "updatedAt": time.time(),
+                "accountId": account_id, "settings": settings,
+                "generationRejectRetryCount": 0,
             })
             self._account_condition.notify_all()
         if job:
