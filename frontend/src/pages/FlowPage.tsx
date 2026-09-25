@@ -449,7 +449,22 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             ? normalizeFlowAccounts(data.accounts)
             : accounts;
           if (data.accounts) setAccounts(refreshedAccounts);
-          setJobs(normalizeFlowJobs(data.jobs, refreshedAccounts));
+          setJobs((current) => {
+            // Preserve optimistic cancelled/deleted state against the poll
+            const cancelled = cancelledIdsRef.current;
+            const deleted = deletedIdsRef.current;
+            // Drop _opt_ stubs; merge backend state with local overrides
+            const merged = normalizeFlowJobs(data.jobs, refreshedAccounts)
+              .filter((j) => !deleted.has(j.id))
+              .map((j) =>
+                (cancelled.has(j.id) && j.status !== "cancelled")
+                  ? { ...j, status: "cancelled" as const, stage: "cancelled", progress: 0 }
+                  : j,
+              );
+            // Keep any _opt_ stubs still in flight (before POST response)
+            const stubs = current.filter((j) => j.id.startsWith("_opt_"));
+            return [...merged, ...stubs];
+          });
         })
         .catch((error) => {
           if (active) setApiError(error instanceof Error ? error.message : String(error));
@@ -784,9 +799,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       });
       actionLock.current = false;
       setActionBusy(false);
+      // Fire cancel-all in background; do NOT re-fetch jobs (poll will sync later)
       flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
-      const snapshot = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
-      setJobs(normalizeFlowJobs(snapshot.jobs, accounts));
       toast.success(t("Đã hủy các job đang chờ/chạy.", "Queued and running jobs cancelled."));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -1216,7 +1230,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           const next: FlowJob[] = [];
           for (const job of current) {
             if (job.id.startsWith("_opt_")) continue;
-            const inFolder = String(job.outputFolder || "").trim() === String(outputDir || "").trim();
+            // Match by settings.outputDir (relative key used as group key),
+            // NOT by job.outputFolder (absolute path on disk).
+            const inFolder = String(job.settings.outputDir || "").trim() === String(outputDir || "").trim();
             if (inFolder && (job.status === "queued" || job.status === "processing")) {
               cancelledIdsRef.current.add(job.id);
               next.push({ ...job, status: "cancelled" as const, stage: "cancelled", progress: 0 });
