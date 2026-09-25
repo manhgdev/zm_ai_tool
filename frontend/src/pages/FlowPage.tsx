@@ -344,42 +344,42 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   useEffect(() => {
     try {
       localStorage.setItem(DRAFT_VIDEO_KEY, videoPrompt);
-    } catch {}
+    } catch { }
   }, [videoPrompt]);
   useEffect(() => {
     try {
       localStorage.setItem(DRAFT_IMAGE_KEY, imagePrompt);
-    } catch {}
+    } catch { }
   }, [imagePrompt]);
   useEffect(() => {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-    } catch {}
+    } catch { }
   }, [settings]);
   useEffect(() => {
     try {
       localStorage.setItem(TAB_KEY, tab);
-    } catch {}
+    } catch { }
   }, [tab]);
   useEffect(() => {
     try {
       localStorage.setItem(RAIL_KEY, railOpen ? "1" : "0");
-    } catch {}
+    } catch { }
   }, [railOpen]);
   useEffect(() => {
     try {
       localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-    } catch {}
+    } catch { }
   }, [accounts]);
   useEffect(() => {
     try {
       localStorage.setItem(CREATE_KIND_KEY, createKind);
-    } catch {}
+    } catch { }
   }, [createKind]);
   useEffect(() => {
     try {
       localStorage.setItem(IMAGE_MODE_KEY, imageMode);
-    } catch {}
+    } catch { }
   }, [imageMode]);
   useEffect(() => {
     if (!accounts.length || accounts.some((account) => account.label === settings.account)) return;
@@ -526,10 +526,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const completed = jobs.flatMap((job) =>
       job.status === "done"
         ? (job.outputs || []).map((_output, outputIndex) => ({
-            key: `${job.id}:${outputIndex}`,
-            job,
-            outputIndex,
-          }))
+          key: `${job.id}:${outputIndex}`,
+          job,
+          outputIndex,
+        }))
         : [],
     );
     if (!completedOutputsRef.current) completedOutputsRef.current = new Set();
@@ -635,9 +635,17 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     : isOmniFlash
       ? [...FLOW_OMNI_FLASH_DURATIONS]
       : [settings.duration || "8"];
+  // Resolution: chỉ Omni Flash video mới có catalog resolutions.
+  // Veo 3.1 không có resolution control trên Flow UI → ẩn.
+  // Image: theo plan tier.
+  const accountPlan = displayedAccount?.plan ?? "Free";
+  const imageResolutionOptions =
+    accountPlan === "Ultra" ? ["1K", "2K", "4K"]
+    : accountPlan === "Pro"  ? ["1K", "2K"]
+    : ["1K"];
   const resolutionOptions = capabilityModel?.resolutions.length
     ? capabilityModel.resolutions
-    : [settings.resolution || "1K"];
+    : createKind === "image" ? imageResolutionOptions : [];
   const retryAccount = accounts.find((account) => account.id === retryTarget?.accountId);
   const retryCapabilities = retryTarget ? accountCapabilityModels(retryAccount, retryTarget.job.kind) : [];
   const retryModelCapability = retryCapabilities.find((item) => item.name === retryTarget?.model);
@@ -673,24 +681,24 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const jobErrorText = (error: string) =>
     error.startsWith("FLOW_EMPTY_OUTPUT")
       ? t(
-          "Flow không trả về file video/ảnh. Job chưa thành công.",
-          "Flow returned no video/image file. The job did not succeed.",
-        )
+        "Flow không trả về file video/ảnh. Job chưa thành công.",
+        "Flow returned no video/image file. The job did not succeed.",
+      )
       : error.startsWith("FLOW_RESULT_NOT_FOUND")
         ? t(
-            "Flow không có kết quả đang chờ hoặc đã hoàn thành cho lần gửi này. Hãy chạy lại để gửi yêu cầu mới.",
-            "Flow has no pending or completed result for this submission. Retry to send a new request.",
-          )
-      : error.startsWith("FLOW_GENERATION_REJECTED")
-        ? t(
+          "Flow không có kết quả đang chờ hoặc đã hoàn thành cho lần gửi này. Hãy chạy lại để gửi yêu cầu mới.",
+          "Flow has no pending or completed result for this submission. Retry to send a new request.",
+        )
+        : error.startsWith("FLOW_GENERATION_REJECTED")
+          ? t(
             "Flow báo không tạo được nội dung này và không tính phí. Hãy điều chỉnh prompt hoặc cài đặt rồi chạy lại.",
             "Flow could not generate this content and did not charge for it. Adjust the prompt or settings, then retry.",
           )
-      : error;
+          : error;
   const showCreate = tab === "create";
   const activateRail = (item: RailItem) => {
     const panelName = item === "createImage" ? "image" : (item === "createVideo" ? "video" : item);
-    try { localStorage.setItem(ACTIVE_PANEL_KEY, panelName); } catch {}
+    try { localStorage.setItem(ACTIVE_PANEL_KEY, panelName); } catch { }
     if (item === "createImage" || item === "createVideo") {
       setUtilityView(null);
       selectCreateKind(item === "createImage" ? "image" : "video");
@@ -1431,11 +1439,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 ((!utilityView && id === "createImage" &&
                   tab === "create" &&
                   createKind === "image") ||
-                (!utilityView && id === "createVideo" &&
-                  tab === "create" &&
-                  createKind === "video") ||
-                (!utilityView && id === tab) ||
-                id === utilityView
+                  (!utilityView && id === "createVideo" &&
+                    tab === "create" &&
+                    createKind === "video") ||
+                  (!utilityView && id === tab) ||
+                  id === utilityView
                   ? "is-active "
                   : "") + (id === "accounts" || id === "help" ? "is-muted" : "")
               }
@@ -1597,9 +1605,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   className={account.isDefault ? "is-default" : ""}
                 >
                   <div className="flow-account-head">
-                    <span>{account.planStatus !== "verified"
-                      ? t("Chưa xác minh", "Unverified")
-                      : account.plan === "Free" ? t("Gói thường", "Free") : account.plan}</span>
+                    <span>{account.plan === "Free" || account.plan === "Pro" || account.plan === "Ultra"
+                      ? account.plan
+                      : t("Chưa xác minh", "Unverified")}</span>
                     <mark className={account.status}>
                       {account.status === "online"
                         ? t("Online", "Online")
@@ -1835,13 +1843,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       <small>
                         {imageMode === "edit"
                           ? t(
-                              "Một ảnh để chỉnh sửa hoặc biến thể",
-                              "One image to edit or create variants",
-                            )
+                            "Một ảnh để chỉnh sửa hoặc biến thể",
+                            "One image to edit or create variants",
+                          )
                           : t(
-                              "Tối đa 3 ảnh giữ nhân vật/phong cách",
-                              "Up to 3 images for subject/style consistency",
-                            )}
+                            "Tối đa 3 ảnh giữ nhân vật/phong cách",
+                            "Up to 3 images for subject/style consistency",
+                          )}
                       </small>
                     </span>
                   </div>
@@ -1929,13 +1937,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 placeholder={
                   createKind === "video"
                     ? t(
-                        "Mô tả cảnh, chuyển động camera và âm thanh mong muốn.",
-                        "Describe the scene, camera movement, and desired audio.",
-                      )
+                      "Mô tả cảnh, chuyển động camera và âm thanh mong muốn.",
+                      "Describe the scene, camera movement, and desired audio.",
+                    )
                     : t(
-                        "Mô tả chủ thể, bối cảnh, ánh sáng và phong cách ảnh.",
-                        "Describe the subject, setting, lighting, and image style.",
-                      )
+                      "Mô tả chủ thể, bối cảnh, ánh sáng và phong cách ảnh.",
+                      "Describe the subject, setting, lighting, and image style.",
+                    )
                 }
               />
               <div className="flow-prompt-foot">
@@ -2015,37 +2023,37 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   options={ratioOptions}
                 />
                 {createKind === "video" ? (
-                    <>
-                      <FlowSelect
-                        label={t("Thời lượng", "Duration")}
-                        value={durationOptions.includes(settings.duration) ? settings.duration : durationOptions[0]}
-                        onChange={(duration) =>
-                          setSettings((current) => ({ ...current, duration }))
-                        }
-                        options={durationOptions}
-                        disabled={durationOptions.length < 2}
-                        suffix={t(" giây", " sec")}
-                      />
-                      <FlowSelect
-                        label={t("Độ phân giải", "Resolution")}
-                        value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
-                        onChange={(resolution) =>
-                          setSettings((current) => ({ ...current, resolution }))
-                        }
-                        options={resolutionOptions}
-                        disabled={resolutionOptions.length < 2}
-                      />
-                    </>
+                  <>
+                    <FlowSelect
+                      label={t("Thời lượng", "Duration")}
+                      value={durationOptions.includes(settings.duration) ? settings.duration : durationOptions[0]}
+                      onChange={(duration) =>
+                        setSettings((current) => ({ ...current, duration }))
+                      }
+                      options={durationOptions}
+                      disabled={durationOptions.length < 2}
+                      suffix={t(" giây", " sec")}
+                    />
+                    <FlowSelect
+                      label={t("Độ phân giải", "Resolution")}
+                      value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
+                      onChange={(resolution) =>
+                        setSettings((current) => ({ ...current, resolution }))
+                      }
+                      options={resolutionOptions}
+                    />
+                  </>
                 ) : (
-                  <FlowSelect
-                    label={t("Độ phân giải", "Resolution")}
-                    value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
-                    onChange={(resolution) =>
-                      setSettings((current) => ({ ...current, resolution }))
-                    }
-                    options={resolutionOptions}
-                    disabled={resolutionOptions.length < 2}
-                  />
+                  <>
+                    <FlowSelect
+                      label={t("Độ phân giải", "Resolution")}
+                      value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
+                      onChange={(resolution) =>
+                        setSettings((current) => ({ ...current, resolution }))
+                      }
+                      options={resolutionOptions}
+                    />
+                  </>
                 )}
                 <label>
                   <span>
@@ -2094,6 +2102,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   options={accounts.map((account) => account.label)}
                   optionLabels={accountOptionLabels}
                   online
+                  className="flow-select-account"
                 />
               </div>
               {advancedOpen && (
@@ -2333,122 +2342,122 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         key={job.id}
                         className={`flow-queue-job flow-queue-job--${job.status}`}
                       >
-                  <button
-                    className="flow-job-thumb"
-                    type="button"
-                    disabled={!job.outputs?.length}
-                    onClick={() =>
-                      job.outputs?.length && setPreview({ job, outputIndex: 0 })
-                    }
-                    aria-label={
-                      job.outputs?.length
-                        ? t("Xem trước output", "Preview output")
-                        : t("Output chưa sẵn sàng", "Output not ready")
-                    }
-                  >
-                    {job.outputs?.length ? (
-                      job.kind === "video" ? (
-                        <video
-                          src={`/api/flow/jobs/${job.id}/outputs/0`}
-                          muted
-                          playsInline
-                          preload="metadata"
-                        />
-                      ) : (
-                        <img
-                          src={`/api/flow/jobs/${job.id}/outputs/0`}
-                          alt=""
-                          loading="lazy"
-                        />
-                      )
-                    ) : job.kind === "video" ? (
-                      <IconPlay size={15} />
-                    ) : (
-                      <IconImage size={17} />
-                    )}
-                  </button>
-                  <div>
-                    <strong>
-                      {String(job.index).padStart(3, "0")} · {job.prompt}
-                    </strong>
-                    <span>
-                      {job.kind === "video"
-                        ? `${job.settings.model} · ${job.settings.ratio} · ${job.settings.duration}s`
-                        : `${job.settings.model} · ${job.settings.ratio} · ${job.settings.resolution}`}{" "}
-                      · {job.account}
-                    </span>
-                    <div className="flow-job-progress">
-                      <i>
-                        <em style={{ width: `${job.progress}%` }} />
-                      </i>
-                      <small>{job.progress}%</small>
-                    </div>
-                    {job.error && (
-                      <small className="flow-job-error">{jobErrorText(job.error)}</small>
-                    )}
-                  </div>
-                  <aside>
-                    <mark>{jobStatusText(job)}</mark>
-                    <div className="flow-job-actions">
-                      {(job.status === "queued" ||
-                        job.status === "processing") && (
-                        <button type="button" onClick={() => cancelJob(job.id)}>
-                          {t("Hủy", "Cancel")}
+                        <button
+                          className="flow-job-thumb"
+                          type="button"
+                          disabled={!job.outputs?.length}
+                          onClick={() =>
+                            job.outputs?.length && setPreview({ job, outputIndex: 0 })
+                          }
+                          aria-label={
+                            job.outputs?.length
+                              ? t("Xem trước output", "Preview output")
+                              : t("Output chưa sẵn sàng", "Output not ready")
+                          }
+                        >
+                          {job.outputs?.length ? (
+                            job.kind === "video" ? (
+                              <video
+                                src={`/api/flow/jobs/${job.id}/outputs/0`}
+                                muted
+                                playsInline
+                                preload="metadata"
+                              />
+                            ) : (
+                              <img
+                                src={`/api/flow/jobs/${job.id}/outputs/0`}
+                                alt=""
+                                loading="lazy"
+                              />
+                            )
+                          ) : job.kind === "video" ? (
+                            <IconPlay size={15} />
+                          ) : (
+                            <IconImage size={17} />
+                          )}
                         </button>
-                      )}
-                      {(job.status === "failed" ||
-                        job.status === "cancelled") && (
-                        <button type="button" onClick={() => retryJob(job.id)}>
-                          {t("Chạy lại", "Retry")}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="is-danger"
-                        onClick={() => deleteJob(job.id)}
-                      >
-                        {t("Xóa", "Delete")}
-                      </button>
-                    </div>
-                    {job.outputs?.length ? (
-                      <div className="flow-queue-outputs">
-                        {job.outputs.map((_output, outputIndex) => (
-                          <span key={outputIndex}>
-                            <button
-                              type="button"
-                              onClick={() => setPreview({ job, outputIndex })}
-                            >
-                              {t("Xem trước", "Preview")}{" "}
-                              {job.outputs!.length > 1 ? outputIndex + 1 : ""}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                revealOutput(job.id, outputIndex)
-                              }
-                            >
-                              {t("Mở thư mục", "Open folder")}
-                            </button>
-                            {!isDesktopApp && (
-                              <a
-                                href={`/api/flow/jobs/${job.id}/outputs/${outputIndex}?download=1`}
-                                download
-                              >
-                                {t("Tải về", "Download")}
-                              </a>
-                            )}
+                        <div>
+                          <strong>
+                            {String(job.index).padStart(3, "0")} · {job.prompt}
+                          </strong>
+                          <span>
+                            {job.kind === "video"
+                              ? `${job.settings.model} · ${job.settings.ratio} · ${job.settings.duration}s`
+                              : `${job.settings.model} · ${job.settings.ratio} · ${job.settings.resolution}`}{" "}
+                            · {job.account}
                           </span>
+                          <div className="flow-job-progress">
+                            <i>
+                              <em style={{ width: `${job.progress}%` }} />
+                            </i>
+                            <small>{job.progress}%</small>
+                          </div>
+                          {job.error && (
+                            <small className="flow-job-error">{jobErrorText(job.error)}</small>
+                          )}
+                        </div>
+                        <aside>
+                          <mark>{jobStatusText(job)}</mark>
+                          <div className="flow-job-actions">
+                            {(job.status === "queued" ||
+                              job.status === "processing") && (
+                                <button type="button" onClick={() => cancelJob(job.id)}>
+                                  {t("Hủy", "Cancel")}
+                                </button>
+                              )}
+                            {(job.status === "failed" ||
+                              job.status === "cancelled") && (
+                                <button type="button" onClick={() => retryJob(job.id)}>
+                                  {t("Chạy lại", "Retry")}
+                                </button>
+                              )}
+                            <button
+                              type="button"
+                              className="is-danger"
+                              onClick={() => deleteJob(job.id)}
+                            >
+                              {t("Xóa", "Delete")}
+                            </button>
+                          </div>
+                          {job.outputs?.length ? (
+                            <div className="flow-queue-outputs">
+                              {job.outputs.map((_output, outputIndex) => (
+                                <span key={outputIndex}>
+                                  <button
+                                    type="button"
+                                    onClick={() => setPreview({ job, outputIndex })}
+                                  >
+                                    {t("Xem trước", "Preview")}{" "}
+                                    {job.outputs!.length > 1 ? outputIndex + 1 : ""}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      revealOutput(job.id, outputIndex)
+                                    }
+                                  >
+                                    {t("Mở thư mục", "Open folder")}
+                                  </button>
+                                  {!isDesktopApp && (
+                                    <a
+                                      href={`/api/flow/jobs/${job.id}/outputs/${outputIndex}?download=1`}
+                                      download
+                                    >
+                                      {t("Tải về", "Download")}
+                                    </a>
+                                  )}
+                                </span>
 
-                        ))}
-                      </div>
-                    ) : null}
-                  </aside>
-                  </article>
-                ))}
-              </div>
-            );
-          })}
-        </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </aside>
+                      </article>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
           </section>
         )}
         {!utilityView && tab === "create" && (
@@ -2533,13 +2542,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               {!jobs.some(
                 (job) => job.kind === createKind && job.status === "done",
               ) && (
-                <div className="flow-results-empty">
-                  {t(
-                    "Chưa có kết quả thật. Kết quả tải xong sẽ xuất hiện tại đây.",
-                    "No real results yet. Completed downloads will appear here.",
-                  )}
-                </div>
-              )}
+                  <div className="flow-results-empty">
+                    {t(
+                      "Chưa có kết quả thật. Kết quả tải xong sẽ xuất hiện tại đây.",
+                      "No real results yet. Completed downloads will appear here.",
+                    )}
+                  </div>
+                )}
             </div>
           </section>
         )}
@@ -2591,46 +2600,46 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       <td>
                         {job.outputs?.length
                           ? job.outputs.map((_output, outputIndex) => (
-                              <span
-                                className="flow-output-actions"
-                                key={outputIndex}
+                            <span
+                              className="flow-output-actions"
+                              key={outputIndex}
+                            >
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPreview({ job, outputIndex })
+                                }
                               >
+                                {t("Xem", "View")}{" "}
+                                {(job.outputs?.length || 0) > 1
+                                  ? outputIndex + 1
+                                  : ""}
+                              </button>
+                              {isDesktopApp ? (
                                 <button
                                   type="button"
                                   onClick={() =>
-                                    setPreview({ job, outputIndex })
+                                    revealOutput(job.id, outputIndex)
                                   }
                                 >
-                                  {t("Xem", "View")}{" "}
-                                  {(job.outputs?.length || 0) > 1
-                                    ? outputIndex + 1
-                                    : ""}
+                                  {t("Mở", "Open")}
                                 </button>
-                                {isDesktopApp ? (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      revealOutput(job.id, outputIndex)
-                                    }
-                                  >
-                                    {t("Mở", "Open")}
-                                  </button>
-                                ) : (
-                                  <a
-                                    href={`/api/flow/jobs/${job.id}/outputs/${outputIndex}?download=1`}
-                                    download
-                                  >
-                                    {t("Tải", "Save")}
-                                  </a>
-                                )}
-                              </span>
-                            ))
+                              ) : (
+                                <a
+                                  href={`/api/flow/jobs/${job.id}/outputs/${outputIndex}?download=1`}
+                                  download
+                                >
+                                  {t("Tải", "Save")}
+                                </a>
+                              )}
+                            </span>
+                          ))
                           : "—"}
                       </td>
                       <td>
                         <div className="flow-table-actions">
                           {job.status === "queued" ||
-                          job.status === "processing" ? (
+                            job.status === "processing" ? (
                             <button
                               type="button"
                               onClick={() => cancelJob(job.id)}
@@ -2948,6 +2957,7 @@ function FlowSelect({
   online = false,
   disabled = false,
   optionLabels,
+  className,
 }: {
   label: string;
   value: string;
@@ -2957,9 +2967,10 @@ function FlowSelect({
   online?: boolean;
   disabled?: boolean;
   optionLabels?: Record<string, string>;
+  className?: string;
 }) {
   return (
-    <label>
+    <label className={className}>
       <span>{label}</span>
       <div className="flow-select-wrap">
         <select

@@ -155,7 +155,7 @@ def _detect_plan(credit_info: Any) -> str | None:
         return "Ultra"
     if "pro" in combined or "tier_one" in combined or "tier_1" in combined:
         return "Pro"
-    if "tier_0" in combined or "free" in combined or "standard" in combined:
+    if "tier_0" in combined or "tier_3" in combined or "free" in combined or "standard" in combined:
         return "Free"
     return None
 
@@ -209,7 +209,8 @@ def _capability_entry(name: str, controls: list[tuple[str, bool]]) -> dict[str, 
         text = re.sub(r"\s+", " ", str(raw_text or "")).strip()
         ratio_match = re.search(r"(?<!\d)(\d{1,2}:\d{1,2})(?!\d)", text)
         duration_match = re.search(rf"(?<!\d)(\d{{1,3}})\s*{_DURATION_UNITS}(?!\w)", text, re.I)
-        resolution_match = re.search(r"(?<!\d)(\d{3,4}p)(?!\w)", text, re.I)
+        # ponytail: match both "720p"/"1080p" style AND "1K"/"2K"/"4K" style
+        resolution_match = re.search(r"(?<!\d)(\d{3,4}p|[1-9]\d{0,1}[Kk])(?!\w)", text, re.I)
         if ratio_match and ratio_match.group(1) not in ratios:
             ratios.append(ratio_match.group(1))
             if selected:

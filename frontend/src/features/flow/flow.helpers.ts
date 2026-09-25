@@ -29,6 +29,8 @@ export const FLOW_VIDEO_MODELS = [
 
 export const FLOW_OMNI_FLASH_DURATIONS = ["4", "6", "8", "10"] as const;
 
+export const FLOW_RESOLUTIONS = ["480p", "720p", "1080p"] as const;
+
 export const FLOW_IMAGE_MODELS = [
   "Nano Banana Pro",
   "Nano Banana 2",
@@ -134,9 +136,9 @@ export function readSettings(): FlowSettings {
     if (/^Imagen 3/i.test(merged.model)) merged.model = "Nano Banana 2";
     if (!String(merged.videoModel || "").trim()) merged.videoModel = fallback.videoModel;
     if (!String(merged.imageModel || "").trim()) merged.imageModel = fallback.imageModel;
-    if (!["16:9","9:16","1:1","4:3","3:4"].includes(merged.imageRatio)) merged.imageRatio = fallback.imageRatio;
-    if (![1,2,3,4].includes(Number(merged.imageCount))) merged.imageCount = fallback.imageCount;
-    if (!["16:9","9:16","1:1","4:3","3:4"].includes(merged.ratio)) merged.ratio = fallback.ratio;
+    if (!["16:9", "9:16", "1:1", "4:3", "3:4"].includes(merged.imageRatio)) merged.imageRatio = fallback.imageRatio;
+    if (![1, 2, 3, 4].includes(Number(merged.imageCount))) merged.imageCount = fallback.imageCount;
+    if (!["16:9", "9:16", "1:1", "4:3", "3:4"].includes(merged.ratio)) merged.ratio = fallback.ratio;
     const concurrency = Number(merged.concurrency);
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 50) merged.concurrency = fallback.concurrency;
     if (!String(merged.outputDir || "").trim() || merged.outputDir === "flow_20250824_143022") {
@@ -160,7 +162,7 @@ export function readAccounts(): FlowAccount[] {
 export function flowRoutePanel(): FlowRoutePanel | null {
   if (typeof window === "undefined") return null;
   const panel = new URLSearchParams(window.location.search).get("p") || "";
-  return ["image","video","series","queue","history","logs","accounts","help"].includes(panel)
+  return ["image", "video", "series", "queue", "history", "logs", "accounts", "help"].includes(panel)
     ? panel as FlowRoutePanel : null;
 }
 
@@ -183,9 +185,9 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       index: Number(raw.inputIndex || 0),
       kind: raw.kind === "image" ? "image" : "video",
       prompt: String(raw.prompt || ""),
-      inputType: ["txt","csv","json"].includes(raw.inputType as string) ? raw.inputType as "txt"|"csv"|"json" : "prompt",
+      inputType: ["txt", "csv", "json"].includes(raw.inputType as string) ? raw.inputType as "txt" | "csv" | "json" : "prompt",
       createdAt: Number(raw.createdAt || Date.now() / 1000),
-      status: ["processing","queued","done","cancelled"].includes(raw.status as string) ? raw.status as FlowJob["status"] : "failed",
+      status: ["processing", "queued", "done", "cancelled"].includes(raw.status as string) ? raw.status as FlowJob["status"] : "failed",
       stage: String(raw.stage || ""),
       progress: Number(raw.progress || 0),
       accountId: String(raw.accountId || ""),

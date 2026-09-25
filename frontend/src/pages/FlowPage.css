@@ -322,7 +322,7 @@
 }
 .flow-settings-grid {
   display: grid;
-  grid-template-columns: 1.2fr 0.85fr 0.9fr 0.8fr 1.15fr;
+  grid-template-columns: 1.9fr 0.75fr 0.85fr 0.8fr 0.85fr;
   gap: 9px;
 }
 .flow-settings-grid label,
@@ -352,17 +352,22 @@
 }
 .flow-select-wrap i {
   position: absolute;
-  top: 8px;
-  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  right: 24px;
   border-radius: 99px;
   background: #d9f7e4;
   padding: 2px 5px;
   color: #16884b;
   font-size: 0.58rem;
   font-style: normal;
+  pointer-events: none;
 }
 .flow-settings-grid label:has(.flow-select-wrap i) select {
-  padding-right: 49px;
+  padding-right: 68px;
+}
+.flow-settings-grid .flow-select-account {
+  grid-column: 1 / -1;
 }
 .flow-counter {
   display: grid;
