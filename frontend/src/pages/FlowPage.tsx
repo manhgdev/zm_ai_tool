@@ -777,6 +777,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const deletedIdsRef = useRef<Set<string>>(new Set());
   // True while a batch POST /api/flow/jobs is in flight so the poll keeps stubs
   const postInFlightRef = useRef(false);
+  // AbortController for the submit POST fetch
+  const submitAbortRef = useRef<AbortController | null>(null);
+  // Set when delete-all fires mid-POST so the POST response fires a second DELETE
+  const deleteAllRequestedRef = useRef(false);
   const [actionBusy, setActionBusy] = useState(false);
   const runAction = async (action: () => void | Promise<unknown>) => {
     if (actionLock.current) return;
@@ -985,7 +989,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       setActionBusy(false);
       // Mark POST as in-flight so the poll keeps stubs (prevents showing jobs twice)
       postInFlightRef.current = true;
+      deleteAllRequestedRef.current = false;
+      submitAbortRef.current = new AbortController();
       const created = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", {
+        signal: submitAbortRef.current.signal,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1003,6 +1010,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           settings: effectiveSettings,
         }),
       });
+      postInFlightRef.current = false;
+      submitAbortRef.current = null;
+      if (deleteAllRequestedRef.current) {
+        // delete-all fired while POST was in flight — newly created jobs must be cleaned up
+        deleteAllRequestedRef.current = false;
+        flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
+        flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" }).catch(() => {});
+        return;
+      }
       // Replace optimistic stubs with real server jobs,
       // but preserve cancelled/deleted state that happened while POST was in flight.
       setJobs((current) => {
@@ -1027,6 +1043,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       postInFlightRef.current = false;
     } catch (error) {
       postInFlightRef.current = false;
+      submitAbortRef.current = null;
+      if ((error as Error).name === "AbortError") return; // delete-all aborted the fetch — no-op
       setApiError(error instanceof Error ? error.message : String(error));
     }
   };
@@ -1208,11 +1226,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       run: () => (async () => {
         // Await backend DELETE first — backend cancels threads + clears DB instantly,
         // then cleans up files in background. F5 after this will always see empty queue.
+        // Abort any in-flight POST so its response doesn't re-add jobs to UI.
+        submitAbortRef.current?.abort();
+        postInFlightRef.current = false;
+        deleteAllRequestedRef.current = true; // Tell POST response to fire a second DELETE
+        // Clear UI immediately
+        cancelledIdsRef.current = new Set();
+        deletedIdsRef.current = new Set();
+        setJobs([]);
+        // Cancel running threads first, then delete from DB
+        await flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
         await flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" });
         await Promise.all(jobs.map((job) => deleteWebFlowOutputs(job)));
-        deletedIdsRef.current = new Set();
-        cancelledIdsRef.current = new Set();
-        setJobs([]);
         setApiError("");
         toast.success(t("Đã xóa tất cả job.", "All jobs deleted."));
       })().catch(() => {
