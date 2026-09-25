@@ -2553,7 +2553,8 @@ class FlowService:
             items = await self._project_media_elements(page)
             if api is not None and job is not None and time.monotonic() >= next_project_check:
                 next_project_check = time.monotonic() + 10
-                recovered = await self._find_existing_project_media(api, page, job, kind, expected_count)
+                fresh_job = store.get_row("jobs", job_id) or job
+                recovered = await self._find_existing_project_media(api, page, fresh_job, kind, expected_count)
                 recovered = [item for item in recovered if str(item['id']) not in baseline_ids]
                 if len(recovered) >= max(1, expected_count):
                     return recovered[:max(1, expected_count)]
@@ -2570,7 +2571,7 @@ class FlowService:
                 src = str(item.get("src") or "")
                 if not src.startswith("http"):
                     continue
-                if kind == "image" and int(item.get("width") or 0) <= 0:
+                if kind == "image" and not src.startswith("https://"):
                     continue
                 fresh.append(item)
             if len(fresh) >= max(1, expected_count):
@@ -3015,9 +3016,7 @@ class FlowService:
                 count = max(1, min(4, int(settings.get("count", 1))))
                 baseline_media = await self._project_media_elements(page)
                 baseline_ids = {str(item.get("id")) for item in baseline_media if item.get("id")}
-                media_items = await self._find_existing_project_media(
-                    api, page, job, "image", count,
-                )
+                media_items: list[dict[str, Any]] = []
                 if not media_items:
                     await self._set_flow_count(page, count)
                     if not await client._ui.fill_prompt(page, job["prompt"]):
@@ -3026,7 +3025,9 @@ class FlowService:
                     from ._flow._exceptions import GenerationTimeout
                     interceptor = UIInterceptor()
                     interceptor.attach(page)
-                    store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)})
+                    submission_patch = {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)}
+                    store.patch_row("jobs", job_id, submission_patch)
+                    job = {**job, **submission_patch}  # keep local var in sync
                     await self._click_flow_submit(page)
                     store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                     try:
