@@ -1196,15 +1196,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       message: t(`Xóa ${jobs.length} job cùng file đầu ra trên đĩa? Không thể hoàn tác.`, `Delete all ${jobs.length} jobs and their output files from disk? This cannot be undone.`),
       confirmLabel: t("Xóa tất cả", "Delete all"),
       run: () => (async () => {
-        // Optimistic: clear all jobs from UI immediately
-        const realJobs = jobs.filter((j) => !j.id.startsWith("_opt_"));
-        realJobs.forEach((j) => deletedIdsRef.current.add(j.id));
+        // Await backend DELETE first — backend cancels threads + clears DB instantly,
+        // then cleans up files in background. F5 after this will always see empty queue.
+        await flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" });
         await Promise.all(jobs.map((job) => deleteWebFlowOutputs(job)));
+        deletedIdsRef.current = new Set();
+        cancelledIdsRef.current = new Set();
         setJobs([]);
         setApiError("");
         toast.success(t("Đã xóa tất cả job.", "All jobs deleted."));
-        // Fire backend delete in background
-        flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", { method: "DELETE" }).catch(() => {});
       })().catch(() => {
         const msg = t(
           "Không thể xóa đầy đủ hàng đợi và file output.",

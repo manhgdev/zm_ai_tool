@@ -505,7 +505,7 @@ def jobs_cancel_folder(body: OutputFolderIn):
 
 @router.delete("/jobs")
 def jobs_delete_all():
-    return {"ok": True, "deleted": service.delete_all_jobs(), "jobs": service.jobs()}
+    return {"ok": True, "deleted": service.delete_all_jobs()}
 
 
 @router.post("/jobs/delete-folder")

@@ -716,26 +716,27 @@ class FlowService:
 
     def delete_all_jobs(self) -> int:
         ids = {str(job['id']) for job in store.list_rows('jobs')}
+        if not ids:
+            return 0
+        # 1. Cancel running threads immediately
         with self._account_condition:
             self._cancelled.update(ids)
             self._account_condition.notify_all()
+        # 2. Remove from DB immediately (F5 will see empty queue after this)
         selected = [job for job in store.list_rows('jobs') if str(job['id']) in ids]
         output_paths = [Path(str(raw)) for job in selected for raw in job.get('outputs') or []]
-        with ThreadPoolExecutor(max_workers=min(8, max(1, len(output_paths)))) as pool:
-            list(pool.map(lambda path: path.unlink(missing_ok=True), output_paths))
         removed = store.delete_rows('jobs', ids)
-        folders = [self._output_folder(job, create=False) for job in removed]
-        for job in removed:
-            for raw in job.get('outputs') or []:
+        # 3. Delete output files in background so the API response is instant
+        def _cleanup_files():
+            with ThreadPoolExecutor(max_workers=min(8, max(1, len(output_paths)))) as pool:
+                list(pool.map(lambda p: p.unlink(missing_ok=True), output_paths))
+            folders = [self._output_folder(job, create=False) for job in removed]
+            for folder in folders:
                 try:
-                    Path(str(raw)).unlink(missing_ok=True)
+                    folder.rmdir()
                 except OSError:
                     pass
-        for folder in folders:
-            try:
-                folder.rmdir()
-            except OSError:
-                pass
+        threading.Thread(target=_cleanup_files, daemon=True, name="flow-delete-cleanup").start()
         return len(removed)
 
     def delete_output_folder_jobs(self, output_dir: str, kind: str = "") -> int:
