@@ -445,6 +445,8 @@ class FlowService:
         self._cancelled: set[str] = set()
         self._guard = threading.RLock()
         self._account_condition = threading.Condition(self._guard)
+        # Set to True during delete_all_jobs to stop enqueue from creating new jobs mid-loop
+        self._stop_enqueue: bool = False
 
     def _claim_media_ids(self, candidates: list[str], expected_count: int) -> list[str]:
         """Atomically assign project media so concurrent jobs cannot share one output."""
@@ -715,29 +717,40 @@ class FlowService:
         return store.cancel_active_jobs(ids, time.time())
 
     def delete_all_jobs(self) -> int:
-        ids = {str(job['id']) for job in store.list_rows('jobs')}
-        if not ids:
-            return 0
-        # 1. Cancel running threads immediately
-        with self._account_condition:
-            self._cancelled.update(ids)
-            self._account_condition.notify_all()
-        # 2. Remove from DB immediately (F5 will see empty queue after this)
-        selected = [job for job in store.list_rows('jobs') if str(job['id']) in ids]
-        output_paths = [Path(str(raw)) for job in selected for raw in job.get('outputs') or []]
-        removed = store.delete_rows('jobs', ids)
-        # 3. Delete output files in background so the API response is instant
-        def _cleanup_files():
-            with ThreadPoolExecutor(max_workers=min(8, max(1, len(output_paths)))) as pool:
-                list(pool.map(lambda p: p.unlink(missing_ok=True), output_paths))
-            folders = [self._output_folder(job, create=False) for job in removed]
-            for folder in folders:
-                try:
-                    folder.rmdir()
-                except OSError:
-                    pass
-        threading.Thread(target=_cleanup_files, daemon=True, name="flow-delete-cleanup").start()
-        return len(removed)
+        self._stop_enqueue = True  # Prevent enqueue from creating more jobs mid-loop
+        try:
+            ids = {str(job['id']) for job in store.list_rows('jobs')}
+            if not ids:
+                return 0
+            # 1. Cancel running threads immediately
+            with self._account_condition:
+                self._cancelled.update(ids)
+                self._account_condition.notify_all()
+            # 2. Remove from DB immediately (F5 will see empty queue after this)
+            selected = [job for job in store.list_rows('jobs') if str(job['id']) in ids]
+            output_paths = [Path(str(raw)) for job in selected for raw in job.get('outputs') or []]
+            removed = store.delete_rows('jobs', ids)
+            # 3. Also catch any jobs that slipped through before _stop_enqueue took effect
+            straggler_ids = {str(job['id']) for job in store.list_rows('jobs')}
+            if straggler_ids:
+                with self._account_condition:
+                    self._cancelled.update(straggler_ids)
+                    self._account_condition.notify_all()
+                store.delete_rows('jobs', straggler_ids)
+            # 4. Delete output files in background so the API response is instant
+            def _cleanup_files():
+                with ThreadPoolExecutor(max_workers=min(8, max(1, len(output_paths)))) as pool:
+                    list(pool.map(lambda p: p.unlink(missing_ok=True), output_paths))
+                folders = [self._output_folder(job, create=False) for job in removed]
+                for folder in folders:
+                    try:
+                        folder.rmdir()
+                    except OSError:
+                        pass
+            threading.Thread(target=_cleanup_files, daemon=True, name="flow-delete-cleanup").start()
+            return len(removed)
+        finally:
+            self._stop_enqueue = False
 
     def delete_output_folder_jobs(self, output_dir: str, kind: str = "") -> int:
         """Delete only the jobs and real artifacts belonging to one Flow folder."""
@@ -1545,6 +1558,9 @@ class FlowService:
                 raise ValueError(f"Unsupported Flow video model: {settings.get('model')}")
         created = []
         for index, prompt in enumerate(prompts, 1):
+            if self._stop_enqueue:
+                # delete-all fired mid-submission — stop creating jobs immediately
+                break
             now = time.time()
             job_input_index = int(payload.get("inputIndex") or series_context.get("sceneIndex") or index)
             with self._account_condition:
