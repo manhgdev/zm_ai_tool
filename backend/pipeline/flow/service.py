@@ -1557,11 +1557,12 @@ class FlowService:
             if not _catalog_section(account, kind) and settings["model"] not in _VIDEO_UI_MODELS:
                 raise ValueError(f"Unsupported Flow video model: {settings.get('model')}")
         created = []
+        pending: list[dict] = []
+        now = time.time()
         for index, prompt in enumerate(prompts, 1):
             if self._stop_enqueue:
                 # delete-all fired mid-submission — stop creating jobs immediately
                 break
-            now = time.time()
             job_input_index = int(payload.get("inputIndex") or series_context.get("sceneIndex") or index)
             with self._account_condition:
                 order = self._account_next_order.get(account_id)
@@ -1585,16 +1586,22 @@ class FlowService:
             }
             job["outputFolder"] = str(self._output_folder(job, create=False))
             job["displayOutputFolder"] = str(self._display_output_folder(job))
-            store.put_row("jobs", job)
+            pending.append(job)
+
+        # Batch insert: one read + one write for all N jobs (O(N) vs O(N²) for N put_row calls)
+        store.put_rows("jobs", pending)
+
+        for job in pending:
             if series_context:
                 from . import series
                 series.register_job(job)
-            self._log("info", "job_queued", job_id=job["id"], account_id=account_id, details={"kind": job["kind"], "inputIndex": job_input_index})
+            self._log("info", "job_queued", job_id=job["id"], account_id=account_id, details={"kind": job["kind"], "inputIndex": job["inputIndex"]})
             created.append(job)
             threading.Thread(target=self._run_sync, args=(job["id"],), daemon=True, name=f"flow-job-{job['id']}").start()
         return created
 
     def _run_sync(self, job_id: str) -> None:
+
         job = store.get_row("jobs", job_id)
         if not job:
             return

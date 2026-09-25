@@ -62,6 +62,23 @@ def put_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
         return dict(row)
 
 
+def put_rows(name: str, new_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Batch upsert: one read + one write regardless of N. O(N) vs O(N²) for N put_row calls."""
+    if not new_rows:
+        return []
+    with _LOCK:
+        rows = _read(name)
+        idx = {str(row.get("id")): i for i, row in enumerate(rows) if row.get("id")}
+        for row in new_rows:
+            rid = str(row.get("id") or "")
+            if rid and rid in idx:
+                rows[idx[rid]] = dict(row)
+            else:
+                rows.append(dict(row))
+        _write(name, rows)
+    return [dict(r) for r in new_rows]
+
+
 def patch_row(name: str, row_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     with _LOCK:
         rows = _read(name)
