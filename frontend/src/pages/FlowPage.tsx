@@ -763,9 +763,17 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const cancelCreateAction = async () => {
     try {
-      await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs/cancel-all", { method: "POST" });
+      // Optimistic: mark all active jobs as cancelled immediately
+      setJobs((current) =>
+        current.map((job) =>
+          job.status === "queued" || job.status === "processing"
+            ? { ...job, status: "cancelled" as const, stage: "cancelled", progress: 0 }
+            : job,
+        ),
+      );
       actionLock.current = false;
       setActionBusy(false);
+      flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
       const snapshot = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
       setJobs(normalizeFlowJobs(snapshot.jobs, accounts));
       toast.success(t("Đã hủy các job đang chờ/chạy.", "Queued and running jobs cancelled."));
@@ -1102,17 +1110,24 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setConfirmAction({
       message: t(`Hủy ${activeCount} job đang chờ/chạy?`, `Cancel ${activeCount} queued/running jobs?`),
       confirmLabel: t("Hủy tất cả", "Cancel all"),
-      run: () => flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs/cancel-all", { method: "POST" })
-        .then(({ jobs: rows }) => {
-          setJobs(normalizeFlowJobs(rows, accounts));
-          setApiError("");
-          toast.success(t("Đã hủy tất cả job.", "All jobs cancelled."));
-        })
-        .catch((error) => {
-          const msg = error instanceof Error ? error.message : String(error);
-          setApiError(msg);
-          toast.error(msg);
-        }),
+      run: () => {
+        // Optimistic: mark active jobs cancelled immediately
+        setJobs((current) =>
+          current.map((job) =>
+            job.status === "queued" || job.status === "processing"
+              ? { ...job, status: "cancelled" as const, stage: "cancelled", progress: 0 }
+              : job,
+          ),
+        );
+        setApiError("");
+        toast.success(t("Đã hủy tất cả job.", "All jobs cancelled."));
+        return flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" })
+          .catch((error) => {
+            const msg = error instanceof Error ? error.message : String(error);
+            setApiError(msg);
+            toast.error(msg);
+          });
+      },
     });
   }, [jobs, t]);
   const retryAllJobs = useCallback(async () => {

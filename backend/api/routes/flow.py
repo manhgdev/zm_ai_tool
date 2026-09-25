@@ -491,7 +491,7 @@ def series_run_stop(series_id: str, run_id: str):
 
 @router.post("/jobs/cancel-all")
 def jobs_cancel_all():
-    return {"ok": True, "cancelled": service.cancel_all(), "jobs": service.jobs()}
+    return {"ok": True, "cancelled": service.cancel_all()}
 
 
 @router.post("/jobs/cancel-folder")

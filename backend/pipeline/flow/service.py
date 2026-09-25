@@ -1725,6 +1725,8 @@ class FlowService:
                 finally:
                     if runtime_profile2 is not None:
                         shutil.rmtree(runtime_profile2, ignore_errors=True)
+        except asyncio.CancelledError:
+            pass  # Job was cancelled; store already updated by cancel()
         except Exception as exc:
             # Profile copy and worker bootstrap happen outside Flow's async
             # error boundary. Convert an unexpected failure here into a
