@@ -2313,7 +2313,11 @@ class FlowService:
             data = await api.get_project_data()
         except Exception:
             data = {}
-        minimum_time = float(job.get("submissionStartedAt") or job.get("createdAt") or 0) - 60
+        submission_time = float(job.get("submissionStartedAt") or 0)
+        # Recovery mode: submissionStartedAt is known → use time filter, not prompt match.
+        # Pre-check mode: no submissionStartedAt → require prompt match to avoid false positives.
+        recovery_mode = bool(submission_time or job.get("mediaIds") or job.get("resumeOnly"))
+        minimum_time = (submission_time - 30) if submission_time else (float(job.get("createdAt") or 0) - 60)
         records: list[dict[str, Any]] = []
         used_ids = set()
         if not job.get("mediaIds") and (job.get("resumeOnly") or job.get("submissionStartedAt")):
@@ -2344,7 +2348,7 @@ class FlowService:
                 continue
             if media_ids and str(media['name']) not in media_ids:
                 continue
-            if not media_ids and not _media_prompt_matches(media, str(job.get("prompt") or "")):
+            if not media_ids and not recovery_mode and not _media_prompt_matches(media, str(job.get("prompt") or "")):
                 continue
             created_at = _media_created_timestamp(media)
             if not media_ids and created_at and created_at < minimum_time:
@@ -3030,22 +3034,49 @@ class FlowService:
                     job = {**job, **submission_patch}  # keep local var in sync
                     await self._click_flow_submit(page)
                     store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
-                    try:
-                        captured = await _await_with_job_progress(
-                            interceptor.wait_for("batchGenerateImages", timeout=180, require_success=True),
-                            job_id, timeout_s=180, ceiling=75,
-                        )
-                    except GenerationTimeout:
-                        captured = None
-                    media_items = _captured_image_items(captured.resp or {}) if captured else []
-                    if media_items:
-                        self._log("success", "api_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
-                    else:
-                        self._log("warning", "ui_generation_fallback", job_id=job_id, account_id=account["id"], details={"kind": "image"})
-                        media_items = await self._wait_for_project_media(
+                    # Race: interceptor RPC capture vs project-API polling.
+                    # batchGenerateImages may be async (returns 200 without fifeUrl),
+                    # so don't wait 180s for it — poll project media in parallel.
+                    intercept_task = asyncio.create_task(
+                        interceptor.wait_for("batchGenerateImages", timeout=120, require_success=True)
+                    )
+                    poll_task = asyncio.create_task(
+                        self._wait_for_project_media(
                             page, baseline_ids, "image", count, job_id,
-                            api=api, job=job,
+                            api=api, job=job, timeout_s=900,
                         )
+                    )
+                    try:
+                        done, pending = await asyncio.wait(
+                            {intercept_task, poll_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        # Cancel the loser
+                        for t in pending:
+                            t.cancel()
+                            await asyncio.gather(t, return_exceptions=True)
+                        finished = next(iter(done))
+                        result = finished.result()
+                        if finished is intercept_task:
+                            captured_resp = result.resp or {}
+                            media_items = _captured_image_items(captured_resp)
+                            if media_items:
+                                self._log("success", "api_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
+                            else:
+                                # RPC returned but no fifeUrl → use poll result
+                                media_items = await poll_task if not poll_task.cancelled() else await self._wait_for_project_media(
+                                    page, baseline_ids, "image", count, job_id, api=api, job=job, timeout_s=900,
+                                )
+                        else:
+                            # Poll task won
+                            media_items = result
+                            self._log("success", "poll_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
+                    except (GenerationTimeout, Exception):
+                        for t in [intercept_task, poll_task]:
+                            if not t.done():
+                                t.cancel()
+                                await asyncio.gather(t, return_exceptions=True)
+                        raise
                 media_ids = [str(item["id"]) for item in media_items]
                 self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": settings.get("model"), "mediaIds": media_ids})
                 store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "downloading", "progress": 80})
