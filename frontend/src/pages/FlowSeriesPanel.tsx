@@ -83,7 +83,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
       return 'full'
     }
   })
-  const [autoApprove, setAutoApprove] = useState(() => {
+  const [autoApprove] = useState(() => {
     try {
       const saved = localStorage.getItem(SERIES_AUTO_APPROVE_KEY)
       return saved !== null ? saved === '1' : true
