@@ -232,9 +232,39 @@ class PortableLayoutTest(unittest.TestCase):
         self.assertIn("ditto -x -k", script)
         self.assertIn("launch_and_wait", script)
         self.assertIn("restore_backup", script)
+        self.assertIn("remove_duplicate_apps", script)
+        self.assertIn("sudo -n /usr/sbin/installer -pkg", script)
         self.assertIn('$HOME/Applications/ZM AI TOOL.app', script)
         self.assertNotIn("administrator privileges", script)
-        self.assertNotIn("installer -pkg", script)
+
+    def test_macos_removes_older_duplicate_app_bundle(self) -> None:
+        import plistlib
+
+        from portable_layout import remove_stale_macos_app_duplicates
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            keep_root = root / "keep-apps"
+            stale_root = root / "stale-apps"
+            keep = keep_root / "ZM AI TOOL.app"
+            stale = stale_root / "ZM AI TOOL.app"
+            newer = root / "newer-apps" / "ZM AI TOOL.app"
+            for app, version in (
+                (keep, "8.5.9"),
+                (stale, "8.5.8"),
+                (newer, "8.5.10"),
+            ):
+                info = app / "Contents" / "Info.plist"
+                info.parent.mkdir(parents=True)
+                info.write_bytes(plistlib.dumps({"CFBundleShortVersionString": version}))
+
+            removed = remove_stale_macos_app_duplicates(
+                keep, roots=[keep_root, stale_root, newer.parent]
+            )
+            self.assertEqual(removed, [str(stale.resolve())])
+            self.assertFalse(stale.exists())
+            self.assertTrue(keep.is_dir())
+            self.assertTrue(newer.is_dir())
 
     def test_release_assets_match_unelevated_update_packages(self) -> None:
         from api.routes import system

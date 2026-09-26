@@ -263,3 +263,68 @@ def sync_windows_portable_root(
         except OSError:
             pass
     return previous
+
+
+_MACOS_APP_NAME = "ZM AI TOOL.app"
+
+
+def macos_app_bundle_for_executable(executable: Path) -> Path | None:
+    """Return the .app bundle that contains *executable*, if any."""
+    for parent in Path(executable).resolve().parents:
+        if parent.suffix.lower() == ".app":
+            return parent
+    return None
+
+
+def macos_bundle_version(app: Path) -> tuple[int, int, int]:
+    """Read CFBundleShortVersionString from an app bundle Info.plist."""
+    try:
+        import plistlib
+
+        with (app / "Contents" / "Info.plist").open("rb") as handle:
+            data = plistlib.load(handle)
+        raw = str(data.get("CFBundleShortVersionString") or "0.0.0").strip()
+    except (OSError, ValueError, TypeError, AttributeError):
+        return (0, 0, 0)
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", raw)
+    return tuple(map(int, match.groups())) if match else (0, 0, 0)
+
+
+def remove_stale_macos_app_duplicates(
+    current_app: Path,
+    *,
+    home: Path | None = None,
+    roots: Sequence[Path] | None = None,
+) -> list[str]:
+    """Remove older/equal ZM AI TOOL.app copies left beside the running install.
+
+    In-app updates fall back to ~/Applications when /Applications is root-owned,
+    which previously left both bundles discoverable in Spotlight/Launchpad.
+    """
+    keep = Path(current_app).resolve()
+    keep_ver = macos_bundle_version(keep)
+    scan_roots = (
+        list(roots)
+        if roots is not None
+        else [Path("/Applications"), (home or Path.home()) / "Applications"]
+    )
+    removed: list[str] = []
+    for root in scan_roots:
+        other = Path(root) / _MACOS_APP_NAME
+        try:
+            if not other.is_dir():
+                continue
+            other_res = other.resolve()
+            if _same_path(other_res, keep):
+                continue
+            other_ver = macos_bundle_version(other_res)
+            if other_ver > keep_ver and keep_ver != (0, 0, 0):
+                continue
+            parent = other_res.parent
+            if not (os.access(parent, os.W_OK) or os.access(other_res, os.W_OK)):
+                continue
+            shutil.rmtree(other_res)
+            removed.append(str(other_res))
+        except OSError:
+            continue
+    return removed

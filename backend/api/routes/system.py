@@ -1380,6 +1380,8 @@ PACKAGE="$2"
 TARGET_APP="$3"
 LOG_FILE="$(/usr/bin/dirname "$PACKAGE")/macos-update.log"
 TMP_DIR="$(/usr/bin/dirname "$PACKAGE")/macos-extracted-$(/bin/date +%Y%m%d%H%M%S)-$$"
+SYSTEM_APP="/Applications/ZM AI TOOL.app"
+USER_APP="$HOME/Applications/ZM AI TOOL.app"
 
 log() {
   /bin/echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
@@ -1387,6 +1389,37 @@ log() {
 
 show_error() {
   /usr/bin/osascript -e "display dialog \"Cập nhật thất bại / Update failed:\\n$1\\n\\nLog: $LOG_FILE\" with title \"ZM AI TOOL\" buttons {\"OK\"} default button \"OK\"" >/dev/null 2>&1 || true
+}
+
+same_app() {
+  left="$(cd "$(/usr/bin/dirname "$1")" 2>/dev/null && /bin/pwd)/$(/usr/bin/basename "$1")"
+  right="$(cd "$(/usr/bin/dirname "$2")" 2>/dev/null && /bin/pwd)/$(/usr/bin/basename "$2")"
+  [ "$left" = "$right" ]
+}
+
+remove_app_if_possible() {
+  app="$1"
+  [ -d "$app" ] || return 0
+  parent="$(/usr/bin/dirname "$app")"
+  if [ -w "$parent" ] || [ -w "$app" ]; then
+    /bin/rm -rf "$app" && { log "Da xoa ban trung: $app"; return 0; }
+  fi
+  if /usr/bin/sudo -n /bin/rm -rf "$app" >/dev/null 2>&1; then
+    log "Da xoa ban trung (sudo -n): $app"
+    return 0
+  fi
+  log "Khong xoa duoc ban trung: $app"
+  return 1
+}
+
+# Keep a single install after update (Spotlight/Launchpad otherwise show both).
+remove_duplicate_apps() {
+  keep="$1"
+  for other in "$SYSTEM_APP" "$USER_APP"; do
+    [ -d "$other" ] || continue
+    same_app "$other" "$keep" && continue
+    remove_app_if_possible "$other" || true
+  done
 }
 
 launch_and_wait() {
@@ -1461,6 +1494,13 @@ install_app() {
   return 1
 }
 
+finish_success() {
+  keep="$1"
+  remove_duplicate_apps "$keep"
+  /bin/rm -rf "$TMP_DIR" "$PACKAGE"
+  exit 0
+}
+
 case "$TARGET_APP" in
   *.app) ;;
   *) show_error "Đường dẫn ứng dụng không hợp lệ."; exit 1 ;;
@@ -1513,16 +1553,25 @@ fi
 
 if install_app "$TARGET_APP"; then
   log "Cap nhat thanh cong vao $TARGET_APP"
-  /bin/rm -rf "$TMP_DIR" "$PACKAGE"
-  exit 0
+  finish_success "$TARGET_APP"
 fi
 
-USER_APP="$HOME/Applications/ZM AI TOOL.app"
-if [ "$TARGET_APP" != "$USER_APP" ] && install_app "$USER_APP"; then
+# Prefer silent pkg overwrite of /Applications over creating a second copy.
+case "$PACKAGE" in
+  *.pkg)
+    if /usr/bin/sudo -n /usr/sbin/installer -pkg "$PACKAGE" -target / >/dev/null 2>&1; then
+      log "Cap nhat $SYSTEM_APP bang installer (sudo -n)"
+      if launch_and_wait "$SYSTEM_APP"; then
+        finish_success "$SYSTEM_APP"
+      fi
+    fi
+    ;;
+esac
+
+if ! same_app "$TARGET_APP" "$USER_APP" && install_app "$USER_APP"; then
   log "Da chuyen ban moi sang $USER_APP vi target cu khong cho ghi"
   /usr/bin/osascript -e 'display notification "Đã mở bản mới từ thư mục Applications của tài khoản." with title "ZM AI TOOL"' >/dev/null 2>&1 || true
-  /bin/rm -rf "$TMP_DIR" "$PACKAGE"
-  exit 0
+  finish_success "$USER_APP"
 fi
 
 show_error "Không thể ghi bản cập nhật hoặc bản mới không khởi động được."

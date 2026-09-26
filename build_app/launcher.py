@@ -190,6 +190,19 @@ if sys.platform == "win32":
 else:
     home = app_home()
     home.mkdir(parents=True, exist_ok=True)
+    # Drop older dual installs left by updates that fell back to ~/Applications.
+    if getattr(sys, "frozen", False):
+        try:
+            from portable_layout import (
+                macos_app_bundle_for_executable,
+                remove_stale_macos_app_duplicates,
+            )
+
+            _mac_app = macos_app_bundle_for_executable(Path(sys.executable))
+            if _mac_app is not None:
+                remove_stale_macos_app_duplicates(_mac_app)
+        except Exception:
+            pass
 
 
 def configure_stable_temp_directory(app_data: Path) -> Path:

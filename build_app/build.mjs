@@ -154,9 +154,9 @@ function canWritePath(target) {
 }
 
 /**
- * Overwrite installed ZM AI TOOL.app.
- * ~/Applications: always ditto (user-owned).
- * /Applications: only ditto if writable; else install .pkg (root-owned apps cannot be ditto'd).
+ * Overwrite a single ZM AI TOOL.app install.
+ * Prefer /Applications when writable (or via .pkg); else ~/Applications.
+ * Always remove the other location so Spotlight/Launchpad do not show dual apps.
  */
 function installMacOverwrite(appPath, pkgPath = '') {
   if (process.env.SKIP_INSTALL === '1' || process.env.SKIP_INSTALL === 'true') return
@@ -173,19 +173,19 @@ function installMacOverwrite(appPath, pkgPath = '') {
     timeout: 5000,
   })
 
-  mkdirSync(path.dirname(homeApp), { recursive: true })
-  const home = spawnSync('/usr/bin/ditto', [appPath, homeApp], { encoding: 'utf8' })
-  if (home.status === 0) {
-    spawnSync('/usr/bin/xattr', ['-cr', homeApp], { stdio: 'ignore' })
-    console.log(`Đã cài đè: ${homeApp}`)
-  } else {
-    console.warn(`Không cài được ${homeApp}`)
+  const removeQuiet = (target) => {
+    try {
+      if (existsSync(target)) rmSync(target, { recursive: true, force: true })
+    } catch {
+      /* root-owned sibling may remain; launch cleanup retries later */
+    }
   }
 
-  if (canWritePath(systemApp)) {
+  if (canWritePath(systemApp) || (!existsSync(systemApp) && canWritePath('/Applications'))) {
     const sys = spawnSync('/usr/bin/ditto', [appPath, systemApp], { encoding: 'utf8' })
     if (sys.status === 0) {
       spawnSync('/usr/bin/xattr', ['-cr', systemApp], { stdio: 'ignore' })
+      removeQuiet(homeApp)
       console.log(`Đã cài đè: ${systemApp}`)
       return
     }
@@ -197,6 +197,7 @@ function installMacOverwrite(appPath, pkgPath = '') {
       encoding: 'utf8',
     })
     if (elevated.status === 0) {
+      removeQuiet(homeApp)
       console.log(`Đã cài đè /Applications bằng pkg: ${path.basename(pkgPath)}`)
       return
     }
@@ -204,9 +205,17 @@ function installMacOverwrite(appPath, pkgPath = '') {
       `/Applications/${appName} thuộc root — không ditto được. Chạy:\n` +
         `  sudo installer -pkg "${pkgPath}" -target /`,
     )
+  }
+
+  mkdirSync(path.dirname(homeApp), { recursive: true })
+  const home = spawnSync('/usr/bin/ditto', [appPath, homeApp], { encoding: 'utf8' })
+  if (home.status === 0) {
+    spawnSync('/usr/bin/xattr', ['-cr', homeApp], { stdio: 'ignore' })
+    removeQuiet(systemApp)
+    console.log(`Đã cài đè: ${homeApp}`)
     return
   }
-  console.warn(`Bỏ qua /Applications (không ghi được, thiếu .pkg).`)
+  console.warn(`Không cài được ${homeApp}`)
 }
 
 const FF_MIN_BYTES = 2_000_000 // Chocolatey ShimGen ~400KB; Gyan/full là chục–trăm MB.
@@ -333,6 +342,7 @@ const args = [
   '--workpath', path.join(root, 'build_app', '.work'),
   '--specpath', path.join(root, 'build_app'),
   '--paths', path.join(root, 'backend'),
+  '--paths', path.join(root, 'build_app'),
   // ── Cross-platform data ────────────────────────────────────────────────────
   '--add-data', `${path.join(root, 'frontend', 'dist')}${dataSep}dist`,
   '--add-data', `${path.join(root, 'backend', 'pipeline')}${dataSep}pipeline`,
@@ -346,6 +356,7 @@ const args = [
   '--collect-all', 'yt_dlp',
   '--collect-all', 'playwright',
   // Hidden imports: stdlib + third-party hay bị PyInstaller miss
+  '--hidden-import', 'portable_layout',
   '--hidden-import', 'timeit',
   '--hidden-import', 'pickletools',
   '--hidden-import', 'filecmp',
