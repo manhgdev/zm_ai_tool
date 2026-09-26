@@ -5,7 +5,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from pipeline.flow.service import FlowService, _normalize_catalog_settings, _normalize_video_model, _video_ui_resolution
+from pipeline.flow.service import (
+    FlowService, _normalize_catalog_settings, _normalize_video_model,
+    _video_ui_duration, _video_ui_resolution,
+)
 
 
 class DisabledFlowModelTests(unittest.TestCase):
@@ -73,9 +76,46 @@ class DisabledFlowModelTests(unittest.TestCase):
         settings, changed = _normalize_catalog_settings({}, "video", {
             "model": "Veo 3.1 - Lite",
             "resolution": "1K",
+            "duration": "8",
         })
         self.assertTrue(changed)
         self.assertEqual(settings["resolution"], "")
+        self.assertEqual(settings["duration"], "")
+
+    def test_veo_duration_is_not_selected_without_catalog_radios(self):
+        self.assertIsNone(_video_ui_duration({}, {"model": "Veo 3.1 - Lite", "duration": "8"}))
+        self.assertIsNone(_video_ui_duration({}, {"model": "Veo 3.1 - Fast", "duration": "8"}))
+        self.assertEqual(
+            _video_ui_duration({}, {"model": "Omni 1.1 Flash", "duration": "6"}),
+            "6",
+        )
+
+    def test_veo_catalog_without_durations_skips_ui_duration(self):
+        account = {
+            "capabilityStatus": "verified",
+            "capabilityCatalog": {
+                "video": {
+                    "defaultModel": "Veo 3.1 - Lite",
+                    "models": [{
+                        "name": "Veo 3.1 - Lite",
+                        "ratios": ["16:9"],
+                        "durations": [],
+                        "resolutions": [],
+                        "defaultRatio": "16:9",
+                        "defaultDuration": "",
+                        "defaultResolution": "",
+                    }],
+                },
+            },
+        }
+        settings, changed = _normalize_catalog_settings(account, "video", {
+            "model": "Veo 3.1 - Lite",
+            "ratio": "16:9",
+            "duration": "8",
+        })
+        self.assertTrue(changed)
+        self.assertEqual(settings["duration"], "")
+        self.assertIsNone(_video_ui_duration(account, settings))
 
     def test_retry_falls_back_when_account_id_is_stale(self):
         service = FlowService()

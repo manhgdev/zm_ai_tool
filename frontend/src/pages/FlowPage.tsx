@@ -19,6 +19,12 @@ import { copyText } from "@/shared/lib/clipboard";
 import FlowSeriesPanel, { type FlowSeriesSceneContext } from "./FlowSeriesPanel";
 import { FlowTemplatesPanel } from "@/features/flow/FlowTemplatesPanel";
 import {
+  explainFlowError,
+  explainFlowEvent,
+  flowStageLabel,
+  formatFlowExplain,
+} from "@/features/flow/flow.explain";
+import {
   type FlowTab, type FlowRoutePanel, type RailItem, type JobStatus,
   type CreateKind, type ImageMode, type PromptInputType,
   type FlowJob, type FlowAccount, type FlowLog, type FlowSettings, type FlowModelCapability,
@@ -109,8 +115,12 @@ function applyAccountCapabilities(
   const ratio = selected.ratios.includes(current[ratioKey])
     ? current[ratioKey]
     : selected.defaultRatio || selected.ratios[0] || current[ratioKey];
-  const duration = kind === "video" && selected.durations.length && !selected.durations.includes(current.duration)
-    ? selected.defaultDuration || selected.durations[0]
+  const duration = kind === "video"
+    ? (selected.durations.length
+      ? (selected.durations.includes(current.duration)
+        ? current.duration
+        : selected.defaultDuration || selected.durations[0])
+      : "")
     : current.duration;
   const modelResolutions = kind === "video"
     ? selected.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
@@ -651,11 +661,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     ? capabilityModel.ratios
     : createKind === "video" ? ["16:9", "9:16"] : ["1:1", "16:9", "9:16", "4:3", "3:4"];
   const isOmniFlash = createKind === "video" && /omni.*flash/i.test(settings.model);
+  // Duration radios exist only when Flow exposes them (Omni Flash / catalog).
+  // Veo is fixed-length — never invent a fake "8" option.
   const durationOptions = capabilityModel?.durations.length
     ? capabilityModel.durations
     : isOmniFlash
       ? [...FLOW_OMNI_FLASH_DURATIONS]
-      : [settings.duration || "8"];
+      : [];
   // Resolution: chỉ Omni Flash video mới có catalog resolutions.
   // Veo 3.1 không có resolution control trên Flow UI → ẩn.
   // Image: theo plan tier.
@@ -701,23 +713,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     if (job.stage === "preparing" || job.stage === "starting") return t("Đang chuẩn bị", "Preparing");
     return statusText(job.status);
   };
-  const jobErrorText = (error: string) =>
-    error.startsWith("FLOW_EMPTY_OUTPUT")
-      ? t(
-        "Flow không trả về file video/ảnh. Job chưa thành công.",
-        "Flow returned no video/image file. The job did not succeed.",
-      )
-      : error.startsWith("FLOW_RESULT_NOT_FOUND")
-        ? t(
-          "Flow không có kết quả đang chờ hoặc đã hoàn thành cho lần gửi này. Hãy chạy lại để gửi yêu cầu mới.",
-          "Flow has no pending or completed result for this submission. Retry to send a new request.",
-        )
-        : error.startsWith("FLOW_GENERATION_REJECTED")
-          ? t(
-            "Flow báo không tạo được nội dung này và không tính phí. Hãy điều chỉnh prompt hoặc cài đặt rồi chạy lại.",
-            "Flow could not generate this content and did not charge for it. Adjust the prompt or settings, then retry.",
-          )
-          : error;
+  const jobErrorText = (error: string) => {
+    const explained = formatFlowExplain(explainFlowError(error), t);
+    return `${explained.title}. ${explained.action}`;
+  };
   const showCreate = tab === "create";
   const activateRail = (item: RailItem) => {
     const panelName = item === "createImage" ? "image" : (item === "createVideo" ? "video" : item);
@@ -900,6 +899,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       effectiveSettings = {
         ...effectiveSettings,
         ratio: createKind === "image" ? effectiveSettings.imageRatio : effectiveSettings.ratio,
+        // Veo has no duration tabs — never send a leftover "8" that workers then chase.
+        duration: createKind === "video"
+          ? (durationOptions.length
+            ? (durationOptions.includes(effectiveSettings.duration)
+              ? effectiveSettings.duration
+              : durationOptions[0])
+            : "")
+          : effectiveSettings.duration,
         // Veo has no resolution tabs — never send leftover image tiers (1K/2K/4K).
         // Omni/catalog video uses 720p-style options only.
         resolution: resolutionOptions.length
@@ -1541,18 +1548,27 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const copyLogs = async () => {
     const text = logs
       .map((entry) => {
+        const eventLabel = explainFlowEvent(entry.event);
+        const title = t(eventLabel.titleVi, eventLabel.titleEn);
+        const account = accounts.find((item) => item.id === entry.accountId);
+        const explainedRaw = entry.message ? explainFlowError(entry.message) : null;
+        const explained = explainedRaw ? formatFlowExplain(explainedRaw, t) : null;
+        const stage = entry.details?.stage != null ? flowStageLabel(String(entry.details.stage), t) : "";
         const context = [
           entry.jobId ? `job=${entry.jobId}` : "",
-          entry.accountId ? `account=${entry.accountId}` : "",
-        ]
-          .filter(Boolean)
-          .join(" ");
+          entry.accountId ? `account=${account?.label || entry.accountId}` : "",
+          stage ? `stage=${stage}` : "",
+          explainedRaw?.code ? `code=${explainedRaw.code}` : "",
+        ].filter(Boolean).join(" ");
+        const body = explained
+          ? `${explained.title}\n  ${explained.summary}\n  → ${explained.action}\n  raw: ${entry.message}`
+          : (entry.message || "");
         const details = Object.keys(entry.details || {}).length
-          ? ` details=${JSON.stringify(entry.details)}`
+          ? `\n  details=${JSON.stringify(entry.details)}`
           : "";
-        return `[${new Date(entry.createdAt * 1000).toISOString()}] [${entry.level.toUpperCase()}] ${entry.event}${context ? ` ${context}` : ""}${entry.message ? ` - ${entry.message}` : ""}${details}`;
+        return `[${new Date(entry.createdAt * 1000).toISOString()}] [${entry.level.toUpperCase()}] ${title}${context ? ` ${context}` : ""}${body ? `\n  ${body}` : ""}${details}`;
       })
-      .join("\n");
+      .join("\n\n");
     try {
       await copyText(text, t('Đã sao chép log.', 'Logs copied.'));
       setLogsCopied(true);
@@ -1562,25 +1578,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   };
   const logEventText = (event: string) => {
-    const labels: Record<string, string> = {
-      account_connecting: t("Đang kết nối tài khoản", "Connecting account"),
-      account_connected: t("Đã kết nối tài khoản", "Account connected"),
-      account_connect_failed: t(
-        "Kết nối tài khoản thất bại",
-        "Account connection failed",
-      ),
-      job_queued: t("Đã thêm vào hàng đợi", "Added to queue"),
-      job_started: t("Bắt đầu xử lý", "Processing started"),
-      browser_ready: t("Session trình duyệt sẵn sàng", "Browser session ready"),
-      generation_submitted: t("Đã gửi yêu cầu tạo", "Generation submitted"),
-      output_downloaded: t("Đã tải output", "Output downloaded"),
-      job_completed: t("Job hoàn thành", "Job completed"),
-      job_cancel_requested: t("Đã yêu cầu hủy", "Cancellation requested"),
-      job_cancelled: t("Job đã hủy", "Job cancelled"),
-      job_retry: t("Đang chạy lại job", "Retrying job"),
-      job_failed: t("Job gặp lỗi", "Job failed"),
-    };
-    return labels[event] || event;
+    const label = explainFlowEvent(event);
+    return t(label.titleVi, label.titleEn);
   };
 
   return (
@@ -2209,16 +2208,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 />
                 {createKind === "video" ? (
                   <>
-                    <FlowSelect
-                      label={t("Thời lượng", "Duration")}
-                      value={durationOptions.includes(settings.duration) ? settings.duration : durationOptions[0]}
-                      onChange={(duration) =>
-                        setSettings((current) => ({ ...current, duration }))
-                      }
-                      options={durationOptions}
-                      disabled={durationOptions.length < 2}
-                      suffix={t(" giây", " sec")}
-                    />
+                    {durationOptions.length > 0 ? (
+                      <FlowSelect
+                        label={t("Thời lượng", "Duration")}
+                        value={durationOptions.includes(settings.duration) ? settings.duration : durationOptions[0]}
+                        onChange={(duration) =>
+                          setSettings((current) => ({ ...current, duration }))
+                        }
+                        options={durationOptions}
+                        disabled={durationOptions.length < 2}
+                        suffix={t(" giây", " sec")}
+                      />
+                    ) : null}
                     {resolutionOptions.length > 0 ? (
                       <FlowSelect
                         label={t("Độ phân giải", "Resolution")}
@@ -2569,7 +2570,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           </strong>
                           <span>
                             {job.kind === "video"
-                              ? `${job.settings.model} · ${job.settings.ratio} · ${job.settings.duration}s`
+                              ? `${job.settings.model} · ${job.settings.ratio}${job.settings.duration ? ` · ${job.settings.duration}s` : ""}`
                               : `${job.settings.model} · ${job.settings.ratio} · ${job.settings.resolution}`}{" "}
                             · {job.account}
                           </span>
@@ -2863,8 +2864,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 <b>{t("Log hoạt động Flow", "Flow activity logs")}</b>
                 <span>
                   {t(
-                    "Theo dõi tạo nội dung, tải output và lỗi backend",
-                    "Track generation, output downloads, and backend errors",
+                    "Mỗi lỗi có nguyên nhân + cách xử lý. Chi tiết kỹ thuật nằm ở phần thu gọn.",
+                    "Each error shows cause + next step. Technical detail stays collapsed.",
                   )}
                 </span>
               </div>
@@ -2895,32 +2896,79 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   const account = accounts.find(
                     (item) => item.id === entry.accountId,
                   );
-                  const detailText = Object.keys(entry.details || {}).length
-                    ? JSON.stringify(entry.details)
+                  const explained = entry.message
+                    ? formatFlowExplain(explainFlowError(entry.message), t)
+                    : null;
+                  const explainMeta = entry.message ? explainFlowError(entry.message) : null;
+                  const stageRaw = entry.details?.stage != null ? String(entry.details.stage) : "";
+                  const model = entry.details?.model != null ? String(entry.details.model) : "";
+                  const kind = entry.details?.kind != null ? String(entry.details.kind) : "";
+                  const detailKeys = Object.keys(entry.details || {}).filter(
+                    (key) => !["stage", "model", "kind"].includes(key),
+                  );
+                  const extraDetails = detailKeys.length
+                    ? JSON.stringify(
+                      Object.fromEntries(detailKeys.map((key) => [key, (entry.details || {})[key]])),
+                    )
                     : "";
                   return (
                     <article
                       className={`flow-log-row is-${entry.level}`}
                       key={entry.id}
                     >
-                      <time>
-                        {new Date(entry.createdAt * 1000).toLocaleString(
-                          locale === "vi" ? "vi-VN" : "en-US",
-                        )}
-                      </time>
-                      <mark>{entry.level.toUpperCase()}</mark>
+                      <header className="flow-log-head">
+                        <time>
+                          {new Date(entry.createdAt * 1000).toLocaleString(
+                            locale === "vi" ? "vi-VN" : "en-US",
+                          )}
+                        </time>
+                        <mark>{entry.level.toUpperCase()}</mark>
+                        {explainMeta?.code ? <code className="flow-log-code">{explainMeta.code}</code> : null}
+                      </header>
                       <div className="flow-log-message">
-                        <strong>{logEventText(entry.event)}</strong>
-                        {entry.message && <p>{entry.message}</p>}
-                        {detailText && <code>{detailText}</code>}
-                      </div>
-                      <div className="flow-log-context">
-                        {entry.jobId && <span>Job: {entry.jobId}</span>}
-                        {entry.accountId && (
-                          <span>
-                            {t("Tài khoản", "Account")}:{" "}
-                            {account?.label || entry.accountId}
-                          </span>
+                        <strong>
+                          {explained?.title || logEventText(entry.event)}
+                        </strong>
+                        {explained ? (
+                          <>
+                            <p className="flow-log-summary">{explained.summary}</p>
+                            <p className="flow-log-action">
+                              <span>{t("Cách xử lý", "Next step")}:</span> {explained.action}
+                            </p>
+                          </>
+                        ) : entry.message ? (
+                          <p>{entry.message}</p>
+                        ) : null}
+                        <div className="flow-log-context">
+                          {entry.jobId && <span>Job: {entry.jobId}</span>}
+                          {entry.accountId && (
+                            <span>
+                              {t("Tài khoản", "Account")}:{" "}
+                              {account?.label || entry.accountId}
+                            </span>
+                          )}
+                          {stageRaw && (
+                            <span>
+                              {t("Giai đoạn", "Stage")}: {flowStageLabel(stageRaw, t)}
+                            </span>
+                          )}
+                          {kind && (
+                            <span>
+                              {t("Loại", "Kind")}: {kind}
+                            </span>
+                          )}
+                          {model && (
+                            <span>
+                              {t("Model", "Model")}: {model}
+                            </span>
+                          )}
+                        </div>
+                        {(entry.message || extraDetails) && (
+                          <details className="flow-log-tech">
+                            <summary>{t("Chi tiết kỹ thuật", "Technical detail")}</summary>
+                            {entry.message && <pre>{entry.message}</pre>}
+                            {extraDetails && <pre>{extraDetails}</pre>}
+                          </details>
                         )}
                       </div>
                     </article>

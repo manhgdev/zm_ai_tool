@@ -1878,10 +1878,9 @@
 }
 .flow-log-row {
   display: grid;
-  grid-template-columns: 155px 68px minmax(260px, 1fr) minmax(150px, 220px);
-  gap: 12px;
+  gap: 8px;
   align-items: start;
-  padding: 11px 14px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--line);
   border-left: 3px solid
     color-mix(in srgb, var(--muted-foreground) 45%, transparent);
@@ -1900,7 +1899,13 @@
   border-left-color: #d34b58;
   background: color-mix(in srgb, #d34b58 4%, var(--surface));
 }
-.flow-log-row time,
+.flow-log-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: center;
+}
+.flow-log-head time,
 .flow-log-context {
   color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
@@ -1918,28 +1923,74 @@
   background: color-mix(in srgb, #d34b58 12%, var(--surface));
   color: #c93646;
 }
-.flow-log-message,
-.flow-log-context {
+.flow-log-code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.62rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.flow-log-message {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
 }
-.flow-log-message p {
+.flow-log-message strong {
+  font-size: 0.86rem;
+  line-height: 1.35;
+  color: var(--ink);
+}
+.flow-log-summary {
   margin: 0;
-  color: #c93646;
+  color: var(--ink);
+  font-size: 0.78rem;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.flow-log-message code {
-  overflow: hidden;
+.flow-log-action {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+.flow-log-action span {
   color: var(--muted-foreground);
-  font-size: 0.65rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 750;
+}
+.flow-log-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
 }
 .flow-log-context span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.flow-log-tech {
+  margin-top: 2px;
+  border-top: 1px dashed var(--line);
+  padding-top: 6px;
+}
+.flow-log-tech summary {
+  cursor: pointer;
+  color: var(--muted-foreground);
+  font-size: 0.68rem;
+  font-weight: 750;
+  user-select: none;
+}
+.flow-log-tech pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.66rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .flow-logs-empty {
   display: grid;
@@ -1951,14 +2002,6 @@
 }
 .flow-logs-empty span {
   font-size: 0.75rem;
-}
-@media (max-width: 980px) {
-  .flow-log-row {
-    grid-template-columns: 130px 62px minmax(220px, 1fr);
-  }
-  .flow-log-context {
-    grid-column: 3;
-  }
 }
 @media (max-width: 720px) {
   .flow-rail,
@@ -1984,13 +2027,6 @@
   }
   .flow-tabs button {
     flex: 0 0 auto;
-  }
-  .flow-log-row {
-    grid-template-columns: 1fr auto;
-  }
-  .flow-log-message,
-  .flow-log-context {
-    grid-column: 1 / -1;
   }
 }
 .flow-series-breadcrumb { grid-column:1 / -1; display:flex; align-items:center; gap:10px; padding:10px 13px; border:1px solid #b9dce9; border-radius:10px; background:#f2fbff; color:#176f99; font-size:13px; }

@@ -93,7 +93,10 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const imageModelOptions = imageSection?.models.map((item) => item.name) || [...IMAGE_MODELS]
   const selectedVideoCapability = videoSection?.models.find((item) => item.name === seriesSettings.model)
   const seriesRatioOptions = selectedVideoCapability?.ratios.length ? selectedVideoCapability.ratios : ['16:9', '9:16']
-  const seriesDurationOptions = selectedVideoCapability?.durations.length ? selectedVideoCapability.durations : [seriesSettings.duration || '8']
+  const seriesDurationOptions = selectedVideoCapability?.durations.length
+    ? selectedVideoCapability.durations
+    : (/omni.*flash/i.test(seriesSettings.model) ? ['4', '6', '8', '10'] : [])
+
   const seriesResolutionOptions = (selectedVideoCapability?.resolutions || [])
     .filter((value) => /^\d{3,4}p$/i.test(value))
 
@@ -104,7 +107,9 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
         || videoSection.models.find((item) => item.name === videoSection.defaultModel)
         || videoSection.models[0]
       const ratio = selectedModel.ratios.includes(current.ratio) ? current.ratio : selectedModel.defaultRatio || selectedModel.ratios[0] || current.ratio
-      const duration = selectedModel.durations.includes(current.duration) ? current.duration : selectedModel.defaultDuration || selectedModel.durations[0] || current.duration
+      const duration = selectedModel.durations.length
+        ? (selectedModel.durations.includes(current.duration) ? current.duration : selectedModel.defaultDuration || selectedModel.durations[0] || current.duration)
+        : ''
       const resolution = selectedModel.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
       const nextResolution = resolution.length
         ? (resolution.includes(current.resolution) ? current.resolution : selectedModel.defaultResolution && resolution.includes(selectedModel.defaultResolution) ? selectedModel.defaultResolution : resolution[0])
@@ -772,6 +777,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           {seriesRatioOptions.map((r) => <option key={r} value={r}>{r}</option>)}
                         </select>
                       </div>
+                      {seriesDurationOptions.length > 0 ? (
                       <div className="fsp-auto-field fsp-field-xs">
                         <label>{t('Thời lượng', 'Duration')}</label>
                         <select
@@ -783,6 +789,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           {seriesDurationOptions.map((duration) => <option key={duration} value={duration}>{duration}s</option>)}
                         </select>
                       </div>
+                      ) : null}
                       {seriesResolutionOptions.length > 0 ? (
                       <div className="fsp-auto-field fsp-field-xs">
                         <label>{t('Độ phân giải', 'Resolution')}</label>

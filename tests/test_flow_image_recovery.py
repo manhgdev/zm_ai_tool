@@ -56,9 +56,9 @@ class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_hidden_default_duration_uses_flow_model_default(self):
         await FlowService()._prepare_ui_format(_DurationPage(), "16:9", "8")
 
-    async def test_hidden_non_default_duration_remains_an_error(self):
-        with self.assertRaisesRegex(RuntimeError, "duration 6s was not found"):
-            await FlowService()._prepare_ui_format(_DurationPage(), "16:9", "6")
+    async def test_hidden_duration_is_skipped_for_any_value(self):
+        # Veo has no duration radios — do not fail when 6s/8s is absent.
+        await FlowService()._prepare_ui_format(_DurationPage(), "16:9", "6")
 
     async def test_image_plan_resolution_is_ignored_for_video_format(self):
         # Shared settings often keep 1K/2K/4K; Veo has no such tabs.

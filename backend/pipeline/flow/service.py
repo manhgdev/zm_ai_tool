@@ -250,6 +250,43 @@ def _video_ui_resolution(value: Any) -> str:
     return text if re.fullmatch(r"\d{3,4}p", text, re.I) else ""
 
 
+def _video_model_entry(account: dict[str, Any], model: str) -> dict[str, Any] | None:
+    """Return the verified video catalog entry for this model, if any."""
+    section = _catalog_section(account, "video")
+    models = [item for item in section.get("models", []) if isinstance(item, dict) and item.get("name")]
+    if not models:
+        return None
+    selected = next((item for item in models if item["name"] == model), None)
+    if selected is None:
+        selected = next((item for item in models if _match_model_choice(model, str(item["name"]))), None)
+    return selected
+
+
+def _video_ui_duration(account: dict[str, Any], settings: dict[str, Any]) -> str | None:
+    """Duration to click in Flow UI, or None when the model has no duration tabs.
+
+    Veo (Free/Pro/Ultra) exposes a fixed length — no 4/6/8/10s radios. Only Omni
+    Flash (and catalog entries that list durations) should attempt selection.
+    Passing a default ``8`` for Veo makes Playwright wait for a missing control.
+    """
+    model = _normalize_video_model(settings.get("model"))
+    selected = _video_model_entry(account, model)
+    if selected is not None:
+        durations = [str(value).strip() for value in selected.get("durations") or [] if str(value).strip()]
+        if not durations:
+            return None
+        requested = str(settings.get("duration") or "").strip()
+        if requested in durations:
+            return requested
+        fallback = str(selected.get("defaultDuration") or durations[0]).strip()
+        return fallback if fallback in durations else durations[0]
+    # No verified catalog yet: Omni Flash has duration radios; Veo does not.
+    if re.search(r"omni|flash", model, re.I):
+        requested = str(settings.get("duration") or "8").strip()
+        return requested if re.fullmatch(r"\d{1,3}", requested) else "8"
+    return None
+
+
 def _normalize_catalog_settings(
     account: dict[str, Any], kind: str, settings: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
@@ -260,11 +297,17 @@ def _normalize_catalog_settings(
         normalized = dict(settings)
         # Shared UI settings default to image tiers; strip them from video jobs
         # even when the account catalog has not been verified yet.
+        changed = False
         if kind == "video" and not _video_ui_resolution(normalized.get("resolution")):
             if str(normalized.get("resolution") or "").strip():
                 normalized["resolution"] = ""
-            return normalized, normalized != settings
-        return normalized, False
+                changed = True
+        if kind == "video" and _video_ui_duration(account, normalized) is None:
+            if str(normalized.get("duration") or "").strip():
+                # Keep display value empty so workers do not chase missing 8s tabs.
+                normalized["duration"] = ""
+                changed = True
+        return normalized, changed
     requested = str(settings.get("model") or "")
     selected = next((item for item in models if item["name"] == requested), None)
     if selected is None:
@@ -278,8 +321,12 @@ def _normalize_catalog_settings(
     if ratios and str(normalized.get("ratio") or "") not in ratios:
         normalized["ratio"] = str(selected.get("defaultRatio") or ratios[0])
     durations = [str(value) for value in selected.get("durations", []) if str(value)]
-    if kind == "video" and durations and str(normalized.get("duration") or "") not in durations:
-        normalized["duration"] = str(selected.get("defaultDuration") or durations[0])
+    if kind == "video":
+        if durations:
+            if str(normalized.get("duration") or "") not in durations:
+                normalized["duration"] = str(selected.get("defaultDuration") or durations[0])
+        elif str(normalized.get("duration") or "").strip():
+            normalized["duration"] = ""
     resolutions = [str(value).lower() for value in selected.get("resolutions", []) if str(value)]
     if kind == "video":
         resolutions = [value for value in resolutions if _video_ui_resolution(value)]
@@ -2371,15 +2418,21 @@ class FlowService:
             duration_tab = await visible_tab(_duration_pattern(duration_value))
             if duration_tab is not None:
                 if not await _flow_control_is_selected(duration_tab):
-                    await duration_tab.click(force=True)
-                    await asyncio.sleep(0.3)
-                if not await _flow_control_is_selected(duration_tab):
+                    try:
+                        await duration_tab.click(force=True, timeout=5_000)
+                    except Exception:
+                        _log.info(
+                            "_prepare_ui_format: duration %s click failed; using Flow model default",
+                            duration_label,
+                        )
+                        duration_tab = None
+                    else:
+                        await asyncio.sleep(0.3)
+                if duration_tab is not None and not await _flow_control_is_selected(duration_tab):
                     raise RuntimeError(f"FLOW_SETTING_MISMATCH: duration {duration_label} was not selected")
             else:
-                # A hidden control only supports Flow's default duration. Never
-                # silently run a different duration than the one requested.
-                if duration_value != "8":
-                    raise RuntimeError(f"FLOW_SETTING_MISMATCH: duration {duration_label} was not found")
+                # Model has no duration radios (typical Veo) or the panel closed —
+                # never wait for a missing 8s control.
                 _log.info("_prepare_ui_format: duration %s control is hidden; using Flow model default", duration_label)
 
         if resolution:
@@ -2811,6 +2864,7 @@ class FlowService:
         deadline = time.monotonic() + timeout_s
         expected_count = max(1, min(4, int(count or 1)))
         started = False
+        started_at = time.monotonic()
         while time.monotonic() < deadline:
             self._check_cancel(job_id)
             flow_error = await self._claim_visible_flow_error(page, job, expected_count)
@@ -2834,29 +2888,56 @@ class FlowService:
                     const pctMatch = text.match(/(\\d+)%/);
                     const pct = pctMatch ? parseInt(pctMatch[1], 10) : -1;
                     const hasError = /lỗi|thất bại|failed|error|rejected|hoạt động bất thường|không thành công/i.test(text);
-                    return { text, hasThumb, pct, hasError };
+                    const generating = !!(
+                        t.querySelector('[role="progressbar"], mat-progress-spinner, mat-spinner, .loading, .generating')
+                        || /(?:generating|đang tạo|processing|%)/i.test(text)
+                    );
+                    return { text, hasThumb, pct, hasError, generating };
                 });
             }""", expected_count)
+            elapsed = time.monotonic() - started_at
+            current_progress = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
+            # Always tick past the old 30% RPC ceiling even when Flow tiles omit "%".
+            time_progress = max(30, min(88, 30 + int(elapsed / max(1, timeout_s) * 58)))
             if not info:
+                store.patch_row("jobs", job_id, {
+                    "stage": "generating",
+                    "progress": max(current_progress, time_progress),
+                    "updatedAt": time.time(),
+                })
                 await asyncio.sleep(2)
                 continue
             top_text = info[0].get("text", "")
             if not started:
                 prompt_sub = str(job.get("prompt") or "")[:15].lower()
-                if top_text != baseline_text or prompt_sub in top_text.lower():
+                if (
+                    top_text != baseline_text
+                    or prompt_sub in top_text.lower()
+                    or any(item.get("generating") or item.get("hasThumb") or item.get("pct", -1) >= 0 for item in info)
+                ):
                     started = True
             if started:
                 pcts = [item["pct"] for item in info if item.get("pct", -1) != -1]
-                if pcts:
-                    avg_pct = sum(pcts) // len(pcts)
-                    store.patch_row("jobs", job_id, {
-                        "stage": "generating",
-                        "progress": max(20, min(90, avg_pct)),
-                        "updatedAt": time.time(),
-                    })
-                all_done = all(item.get("hasThumb") and item.get("pct", -1) == -1 for item in info)
-                if all_done and len(info) >= expected_count:
+                tile_progress = (sum(pcts) // len(pcts)) if pcts else time_progress
+                store.patch_row("jobs", job_id, {
+                    "stage": "generating",
+                    "progress": max(current_progress, min(90, max(tile_progress, time_progress))),
+                    "updatedAt": time.time(),
+                })
+                all_done = (
+                    len(info) >= expected_count
+                    and all(item.get("hasThumb") for item in info)
+                    and not any(item.get("generating") for item in info)
+                    and not any(item.get("pct", -1) >= 0 for item in info)
+                )
+                if all_done:
                     break
+            else:
+                store.patch_row("jobs", job_id, {
+                    "stage": "generating",
+                    "progress": max(current_progress, time_progress),
+                    "updatedAt": time.time(),
+                })
             await asyncio.sleep(1.5)
         else:
             raise RuntimeError(f"FLOW_GENERATION_TIMEOUT: videos did not complete within {timeout_s}s")
@@ -2942,10 +3023,11 @@ class FlowService:
                     return claimed
             store.patch_row("jobs", job_id, {
                 "stage": "generating",
-                "progress": min(90, 20 + int((timeout_s - (deadline - time.monotonic())) / 12)),
+                # Smooth 20→88 over the full wait window (old elapsed/12 froze near 30%).
+                "progress": min(88, 20 + int((timeout_s - max(0.0, deadline - time.monotonic())) / max(1, timeout_s) * 68)),
                 "updatedAt": time.time(),
             })
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
         raise RuntimeError("FLOW_GENERATION_TIMEOUT: no completed video appeared in project data")
 
     async def _sync_credits(self, api, account_id: str) -> None:
@@ -3084,7 +3166,7 @@ class FlowService:
                 await self._prepare_ui_format(
                     page,
                     ratio,
-                    str(settings.get("duration") or "8"),
+                    _video_ui_duration(account, settings),
                     _video_ui_resolution(settings.get("resolution")) or None,
                 )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
@@ -3161,19 +3243,82 @@ class FlowService:
                     await self._click_flow_submit(page)
                     store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model})
-                    try:
-                        captured = await _await_with_job_progress(
-                            interceptor.wait_for("batchAsyncGenerateVideoText", timeout=30, require_success=True),
-                            job_id, timeout_s=30, ceiling=30,
+                    # Race interceptor RPC vs project-data poll — same pattern as images.
+                    # Omni/Veo often omit mediaIds from the RPC (or use a renamed
+                    # endpoint); waiting only on batchAsyncGenerateVideoText capped
+                    # progress at 30% then hung in the brittle UI-tile fallback.
+                    intercept_task = asyncio.create_task(
+                        interceptor.wait_for(
+                            "batchAsyncGenerateVideo",
+                            timeout=90,
+                            require_success=True,
                         )
+                    )
+                    poll_task = asyncio.create_task(
+                        self._wait_for_project_videos(
+                            api, baseline_ids, count, job_id, timeout_s=900,
+                        )
+                    )
+                    media_ids: list[str] = []
+                    try:
+                        done, pending = await asyncio.wait(
+                            {intercept_task, poll_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        for task in pending:
+                            task.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        finished = next(iter(done))
+                        result = finished.result()
+                        if finished is intercept_task:
+                            media_ids = _captured_video_ids((result.resp or {}) if result else {})
+                            if media_ids:
+                                self._log(
+                                    "success", "api_generation_submitted",
+                                    job_id=job_id, account_id=account["id"],
+                                    details={"mediaIds": media_ids},
+                                )
+                            else:
+                                self._log(
+                                    "warning", "ui_generation_fallback",
+                                    job_id=job_id, account_id=account["id"],
+                                    details={"kind": "video", "reason": "rpc_empty_jobs"},
+                                )
+                                media_ids = await self._wait_for_project_videos(
+                                    api, baseline_ids, count, job_id, timeout_s=900,
+                                )
+                        else:
+                            media_ids = list(result or [])
+                            self._log(
+                                "success", "poll_generation_complete",
+                                job_id=job_id, account_id=account["id"],
+                                details={"mediaIds": media_ids},
+                            )
                     except GenerationTimeout:
-                        captured = None
-                    media_ids = _captured_video_ids(captured.resp or {}) if captured else []
+                        for task in (intercept_task, poll_task):
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(intercept_task, poll_task, return_exceptions=True)
+                        self._log(
+                            "warning", "ui_generation_fallback",
+                            job_id=job_id, account_id=account["id"],
+                            details={"kind": "video", "reason": "rpc_timeout"},
+                        )
+                        try:
+                            media_ids = await self._wait_for_project_videos(
+                                api, baseline_ids, count, job_id, timeout_s=900,
+                            )
+                        except Exception:
+                            media_ids = []
+                    except Exception:
+                        for task in (intercept_task, poll_task):
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(intercept_task, poll_task, return_exceptions=True)
+                        raise
                     if media_ids:
-                        self._log("success", "api_generation_submitted", job_id=job_id, account_id=account["id"], details={"mediaIds": media_ids})
-                        store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": 20})
+                        store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": max(30, int((store.get_row("jobs", job_id) or {}).get("progress") or 30)), "updatedAt": time.time()})
                         from ._flow._api import VideoJob
-                        # Wait for all videos in parallel, then download in parallel
                         async def _wait_and_dl_video(media_id: str, idx: int) -> str:
                             self._check_cancel(job_id)
                             remote_job = VideoJob.__new__(VideoJob)
@@ -3181,7 +3326,7 @@ class FlowService:
                             remote_job.project_id = account["projectId"]
                             status = await api.wait_for_video(
                                 remote_job, timeout_s=900,
-                                on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 20 + int(elapsed / 12)), "updatedAt": time.time()}),
+                                on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 30 + int(elapsed / 12)), "updatedAt": time.time()}),
                             )
                             out = self._output_path(job, idx, "mp4")
                             await api.download(status.fife_url, out)
@@ -3192,7 +3337,11 @@ class FlowService:
                         ]))
                         asyncio.create_task(self._sync_credits(api, account["id"]))
                     else:
-                        self._log("warning", "ui_generation_fallback", job_id=job_id, account_id=account["id"], details={"kind": "video"})
+                        self._log(
+                            "warning", "ui_generation_fallback",
+                            job_id=job_id, account_id=account["id"],
+                            details={"kind": "video", "reason": "no_media_ids"},
+                        )
                         outputs = await self._wait_and_download_flow_videos(
                             page, job, count, baseline_text, job_id,
                         )
@@ -3323,7 +3472,13 @@ class FlowService:
             if job.get("seriesContext"):
                 from . import series
                 series.mark_job_error(job, str(exc))
-            self._log("error", "job_failed", job_id=job_id, account_id=account["id"], message=str(exc), details={"stage": failed_stage})
+            self._log("error", "job_failed", job_id=job_id, account_id=account["id"], message=str(exc), details={
+                "stage": failed_stage,
+                "kind": job.get("kind"),
+                "model": (job.get("settings") or {}).get("model"),
+                "ratio": (job.get("settings") or {}).get("ratio"),
+                "duration": (job.get("settings") or {}).get("duration"),
+            })
         finally:
             if browser:
                 await browser.stop()
