@@ -596,6 +596,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
               <div className="fsp-tab-content fsp-assets">
                 <div className="fsp-assets-head">
                   <p className="fsp-assets-hint">{t('Tối đa 3 ảnh theo thứ tự: nhân vật → đạo cụ/bối cảnh → bổ sung. Ảnh khóa luôn được dùng.', 'Up to 3 images in order: character → prop/background → extra. Locked images are always used.')}</p>
+                  <p className="fsp-assets-hint">{t('Phim xuyên suốt: khóa Tom/Jerry (nhân vật), bật nối cảnh — mỗi video bắt đầu từ khung cuối cảnh trước (Veo Frames), không tạo lại từ đầu.', 'Film continuity: lock Tom/Jerry characters, keep scene linking on — each video starts from the previous end frame (Veo Frames), not from scratch.')}</p>
                   <button type="button" className="fsp-btn fsp-btn-secondary" onClick={() => assetInput.current?.click()}>
                     + {t('Thêm ảnh', 'Add image')}
                   </button>

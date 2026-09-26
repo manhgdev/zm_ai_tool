@@ -413,7 +413,11 @@ def series_scene_generate(series_id: str, episode_id: str, scene_id: str, body: 
             "prompts": [context["prompt"]],
             "inputIndex": int(context.get("sceneIndex") or 1),
             "kind": "image" if body.artifact == "keyframe" else "video",
-            "mode": "reference" if body.artifact == "keyframe" and context.get("sourceFiles") else "text",
+            "mode": (
+                "reference" if body.artifact == "keyframe" and context.get("sourceFiles")
+                else "frame" if body.artifact == "video" and context.get("sourceFiles")
+                else "text"
+            ),
             "accountId": body.accountId,
             "settings": {**body.settings, "outputDir": context["outputDir"]},
             "sourceFiles": context.get("sourceFiles") or [],

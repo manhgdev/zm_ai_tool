@@ -391,14 +391,95 @@ def asset_path(series_id: str, asset_id: str) -> Path | None:
 
 
 def _previous_scene(series: dict[str, Any], episode_id: str, scene_id: str) -> dict[str, Any] | None:
-    flattened = [scene for episode in series.get("episodes") or [] for scene in episode.get("scenes") or []]
-    current_index = next((index for index, scene in enumerate(flattened) if str(scene.get("id")) == scene_id), -1)
-    return flattened[current_index - 1] if current_index > 0 else None
+    """Prior scene inside the same episode only (film continuity, not cross-episode)."""
+    _episode_index, episode = _find_episode(series, episode_id)
+    if episode is None:
+        return None
+    scenes = list(episode.get("scenes") or [])
+    current_index = next(
+        (index for index, scene in enumerate(scenes) if str(scene.get("id")) == scene_id),
+        -1,
+    )
+    return dict(scenes[current_index - 1]) if current_index > 0 else None
 
 
 def _asset_paths(series: dict[str, Any], ids: list[str]) -> list[str]:
     by_id = {str(item.get("id")): str(item.get("path")) for item in series.get("assets") or []}
     return [path for asset_id in ids if (path := by_id.get(str(asset_id))) and Path(path).is_file()]
+
+
+def extract_video_end_frame(video: Path, dest: Path) -> bool:
+    """Grab the last frame of a Series clip without forcing a portrait canvas.
+
+    Older builds scaled to 768x1376 (9:16), which warped landscape Tom&Jerry-style
+    films and broke continuity into the next Veo Frames shot.
+    """
+    video = Path(video)
+    dest = Path(dest)
+    if not video.is_file():
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp = dest.with_suffix(".tmp.png")
+    try:
+        # Keep aspect; cap long edge so Flow upload stays light.
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-sseof", "-0.08", "-i", str(video),
+                "-vf", "scale='min(1280,iw)':-2",
+                "-frames:v", "1", str(temp),
+            ],
+            check=True,
+            timeout=60,
+        )
+        if not temp.is_file() or temp.stat().st_size < 64:
+            temp.unlink(missing_ok=True)
+            return False
+        temp.replace(dest)
+        return dest.is_file()
+    except (OSError, subprocess.SubprocessError):
+        temp.unlink(missing_ok=True)
+        return False
+
+
+def ensure_scene_end_frame(series_id: str, scene: dict[str, Any], *, episode_id: str = "") -> Path | None:
+    """Return an on-disk end frame, extracting from videoOutput when missing."""
+    existing = Path(str(scene.get("endFrame") or ""))
+    if existing.is_file():
+        return existing
+    video = Path(str(scene.get("videoOutput") or ""))
+    if not video.is_file():
+        return None
+    dest = _asset_folder(series_id) / f"{str(scene.get('id') or 'scene')}_end.png"
+    if not extract_video_end_frame(video, dest):
+        return None
+    ep_id = episode_id or _episode_id_for_scene(series_id, str(scene.get("id") or "")) or ""
+    scene_id = str(scene.get("id") or "")
+    if ep_id and scene_id:
+        update_scene(series_id, ep_id, scene_id, {"endFrame": str(dest)})
+    return dest if dest.is_file() else None
+
+
+def _episode_id_for_scene(series_id: str, scene_id: str) -> str | None:
+    series = get_series(series_id)
+    if not series:
+        return None
+    for episode in series.get("episodes") or []:
+        for scene in episode.get("scenes") or []:
+            if str(scene.get("id")) == scene_id:
+                return str(episode.get("id") or "")
+    return None
+
+
+def _locked_anchor_paths(series: dict[str, Any]) -> list[str]:
+    """Character/prop lock images (anchor order, locked preferred)."""
+    anchor_ids = [str(value) for value in series.get("anchorAssets") or []]
+    locked_ids = [
+        str(asset.get("id")) for asset in series.get("assets") or []
+        if asset.get("locked") and str(asset.get("id")) in anchor_ids
+    ]
+    ordered = list(dict.fromkeys([*locked_ids, *anchor_ids]))
+    return _asset_paths(series, ordered)[:3]
 
 
 def generation_context(series_id: str, episode_id: str, scene_id: str, artifact: str, prompt_override: str = "") -> dict[str, Any]:
@@ -412,23 +493,55 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
         raise ValueError("Unsupported Series artifact")
     scene_number = int(scene.get("index") or 1)
     previous = _previous_scene(series, episode_id, scene_id)
-    end_frame = Path(str((previous or {}).get("endFrame") or ""))
-    continuation = artifact == "video" and bool(scene.get("continuityEnabled", True)) and end_frame.is_file()
+    previous_end: Path | None = None
+    if previous and bool(scene.get("continuityEnabled", True)):
+        previous_end = ensure_scene_end_frame(series_id, previous, episode_id=episode_id)
+        if previous_end is None:
+            series = get_series(series_id) or series
+            previous = _previous_scene(series, episode_id, scene_id) or previous
+            candidate = Path(str((previous or {}).get("endFrame") or ""))
+            previous_end = candidate if candidate.is_file() else None
+    continuation = (
+        artifact == "video"
+        and bool(scene.get("continuityEnabled", True))
+        and previous is not None
+        and previous_end is not None
+        and previous_end.is_file()
+    )
+    locked_labels = [
+        str(asset.get("label") or asset.get("name") or "").strip()
+        for asset in series.get("assets") or []
+        if asset.get("locked") and str(asset.get("id")) in {str(v) for v in series.get("anchorAssets") or []}
+    ]
+    locked_labels = [label for label in locked_labels if label][:3]
+    lock_line = (
+        f"LOCKED CHARACTERS/PROPS (keep identical): {', '.join(locked_labels)}."
+        if locked_labels else
+        "Keep recurring character appearance, wardrobe, and art style identical across shots."
+    )
     prompt_parts = [
         str(series.get("bible") or "").strip(),
         str(episode.get("state") or "").strip(),
-        f"SHOT {scene_number}: render only this scene's stated action. Do not repeat a previous scene, skip ahead, change the locked character, or introduce a realistic human. Begin from this shot's stated START STATE and finish on its stated END STATE.",
+        lock_line,
+        (
+            f"SHOT {scene_number}: render only this scene's stated action. "
+            "Do not repeat a previous scene, skip ahead, redesign locked characters, "
+            "or introduce a realistic human. Begin from this shot's START STATE and "
+            "finish on its END STATE so the next shot can continue seamlessly."
+        ),
         str(scene.get("prompt") or "").strip(),
         str(prompt_override or scene.get("promptOverride") or "").strip(),
     ]
     if continuation:
-        # For continuation videos: character appearance, world, and style come from
-        # the visual start frame (endFrame). Including the full bible causes Veo to
-        # regenerate the character from text, which overrides the visual reference
-        # and creates drift across scenes.
-        # ponytail: only pass the action; image carries everything else.
+        # Visual start frame carries look/world; keep lock names + action only so
+        # Veo does not redraw characters from a long bible.
         prompt_parts = [
-            "Continue the exact preceding video. Keep identical character appearance, world, lighting, and camera from the start frame.",
+            (
+                "Continue the exact preceding video from the provided start frame. "
+                "Identical character appearance, wardrobe, proportions, world, lighting, and camera language. "
+                "Do not restart the story, do not reintroduce characters, do not reset the set."
+            ),
+            lock_line,
             str(scene.get("prompt") or "").strip(),
             str(prompt_override or scene.get("promptOverride") or "").strip(),
         ]
@@ -448,38 +561,37 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
         "sceneIndex": int(scene.get("index") or 1),
         "outputDir": output_dir,
         "prompt": prompt,
+        "continuity": continuation,
     }
     if artifact == "video":
-        if continuation:
-            # Veo must start from the real prior final frame. A newly generated
-            # keyframe is useful for review, but it can drift from that frame.
-            context["sourceFiles"] = [str(end_frame)]
+        if continuation and previous_end is not None:
+            # Must start from prior final frame — never a freshly drifted keyframe.
+            context["sourceFiles"] = [str(previous_end)]
             return context
+        if previous and bool(scene.get("continuityEnabled", True)) and previous_end is None:
+            raise ValueError(
+                "SERIES_CONTINUITY_MISSING_END_FRAME: hoàn thành video cảnh trước (có end frame) "
+                "trước khi nối cảnh này / finish the previous scene video first"
+            )
         keyframe = Path(str(scene.get("approvedKeyframe") or ""))
         if keyframe.is_file():
             context["sourceFiles"] = [str(keyframe)]
             return context
-        # Fallback to series anchor assets or reference assets if no approved keyframe
-        anchor_ids = [str(value) for value in series.get("anchorAssets") or []]
-        requested_ids = [str(value) for value in scene.get("referenceAssetIds") or []] or anchor_ids
-        source_paths = _asset_paths(series, requested_ids)
-        context["sourceFiles"] = source_paths[:1] if source_paths else []
+        # First shot fallback: locked character anchors as start stills.
+        anchors = _locked_anchor_paths(series)
+        context["sourceFiles"] = anchors[:1]
         return context
+    # Keyframe: previous end frame (continuity) + locked character anchors.
+    source_paths: list[str] = []
+    if previous_end is not None and previous_end.is_file():
+        source_paths.append(str(previous_end))
+    requested_ids = [str(value) for value in scene.get("referenceAssetIds") or []]
     anchor_ids = [str(value) for value in series.get("anchorAssets") or []]
     locked_ids = [
         str(asset.get("id")) for asset in series.get("assets") or []
         if asset.get("locked") and str(asset.get("id")) in anchor_ids
     ]
-    requested_ids = [str(value) for value in scene.get("referenceAssetIds") or []] or anchor_ids
-    # Locked Bible anchors always survive a per-scene reference override. The
-    # saved anchor order is the priority: character, prop/background, extra.
-    reference_ids = list(dict.fromkeys([*locked_ids, *requested_ids]))[:3]
-    source_paths: list[str] = []
-    previous = _previous_scene(series, episode_id, scene_id)
-    if bool(scene.get("continuityEnabled", True)) and previous:
-        end_frame = Path(str(previous.get("endFrame") or ""))
-        if end_frame.is_file():
-            source_paths.append(str(end_frame))
+    reference_ids = list(dict.fromkeys([*locked_ids, *requested_ids, *anchor_ids]))[:3]
     source_paths.extend(_asset_paths(series, reference_ids))
     context["sourceFiles"] = list(dict.fromkeys(source_paths))[:3]
     return context
@@ -522,14 +634,7 @@ def mark_job_complete(job: dict[str, Any], outputs: list[str]) -> None:
     if artifact == "video":
         video = Path(str(outputs[0]))
         end_frame = _asset_folder(series_id) / f"{scene_id}_end.png"
-        temp = end_frame.with_suffix(".tmp.png")
-        try:
-            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-sseof", "-0.05", "-i", str(video), "-vf", "scale=768:1376", "-frames:v", "1", str(temp)], check=True, timeout=60)
-            temp.replace(end_frame)
-            end_frame_value = str(end_frame)
-        except (OSError, subprocess.SubprocessError):
-            temp.unlink(missing_ok=True)
-            end_frame_value = ""
+        end_frame_value = str(end_frame) if extract_video_end_frame(video, end_frame) else ""
         update_scene(series_id, episode_id, scene_id, {"status": "complete", "videoOutput": str(video), "endFrame": end_frame_value, "error": ""})
 
 

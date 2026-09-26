@@ -31,8 +31,11 @@ Return exactly this syntax:
 # TẬP 01 — episode title
 001_[00.00_00.00-00.00_08.00] visual scene prompt
 
-Create exactly {episodes} episode(s), each with exactly {scenes_per_episode} scene(s). Scene numbering restarts at 001 in every episode. Timecodes must be continuous 8-second blocks inside each episode. Every scene prompt must be visual, concrete, and preserve recurring character appearance, clothes, props, setting and art style. Do not add any text outside the requested TXT."""
-
+Create exactly {episodes} episode(s), each with exactly {scenes_per_episode} scene(s). Scene numbering restarts at 001 in every episode. Timecodes must be continuous 8-second blocks inside each episode. Every scene prompt must include:
+- START STATE: where characters/camera begin (matches previous END when continuing)
+- ACTION: what happens in this 8-second shot only
+- END STATE: freeze-frame pose/set for the next shot to continue from
+Preserve locked character appearance, clothes, props, setting and cartoon art style. Do not restart the plot each scene. Do not add any text outside the requested TXT."""
 
 def draft_script(*, provider: str, idea: str, episodes: int, scenes_per_episode: int) -> str:
     provider = (provider or "").strip().lower()
