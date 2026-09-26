@@ -1154,6 +1154,24 @@
   font-size: 0.62rem;
   font-weight: 700;
 }
+.flow-retry-fields label.flow-retry-include-done {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--background);
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.flow-retry-fields label.flow-retry-include-done input {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
 .flow-retry-fields label:last-child { grid-column: auto; }
 .flow-retry-fields .flow-select-wrap,
 .flow-retry-fields select { width: 100%; min-width: 0; }

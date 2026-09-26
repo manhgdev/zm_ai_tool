@@ -261,6 +261,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const [retryTarget, setRetryTarget] = useState<{
     job: FlowJob;
     jobs: FlowJob[];
+    pool: FlowJob[];
+    includeDone: boolean;
+    showIncludeDone: boolean;
     model: string;
     ratio: string;
     concurrency: string;
@@ -1075,12 +1078,21 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         setApiError(msg);
         toast.error(msg);
       });
-  const openRetrySettings = (retryJobs: FlowJob[]) => {
+  const openRetrySettings = (retryJobs: FlowJob[], opts?: { askIncludeDone?: boolean }) => {
     const job = retryJobs[0];
     if (!job) return;
+    const doneJobs = retryJobs.filter((item) => item.status === "done");
+    const retryOnlyJobs = retryJobs.filter((item) => item.status === "failed" || item.status === "cancelled");
+    const showIncludeDone = Boolean(opts?.askIncludeDone && doneJobs.length > 0 && retryOnlyJobs.length > 0);
+    // Batch "Chạy lại tất cả": mặc định chỉ lỗi/hủy; bật checkbox mới kèm job hoàn thành.
+    // Nếu pool toàn done (Tạo mới) hoặc single job → giữ nguyên danh sách.
+    const initialJobs = showIncludeDone ? retryOnlyJobs : retryJobs;
     setRetryTarget({
-      job,
-      jobs: retryJobs,
+      job: initialJobs[0] || job,
+      jobs: initialJobs,
+      pool: retryJobs,
+      includeDone: !showIncludeDone && doneJobs.length > 0 && retryOnlyJobs.length === 0,
+      showIncludeDone,
       model: job.settings.model,
       ratio: job.settings.ratio,
       concurrency: String(job.settings.concurrency || settings.concurrency),
@@ -1103,7 +1115,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       .then(async () => {
         const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
         setJobs(normalizeFlowJobs(data.jobs, accounts));
-        toast.success(t(`Đã đưa ${retryJobs.length} job vào hàng đợi chạy lại.`, `Queued ${retryJobs.length} jobs for retry.`));
+        toast.success(
+          retryJobs.every((job) => job.status === "done")
+            ? t(`Đã đưa ${retryJobs.length} job vào hàng đợi tạo mới.`, `Queued ${retryJobs.length} jobs to create new media.`)
+            : t(`Đã đưa ${retryJobs.length} job vào hàng đợi chạy lại.`, `Queued ${retryJobs.length} jobs for retry.`),
+        );
       })
       .catch((error) => {
         const msg = error instanceof Error ? error.message : String(error);
@@ -1170,10 +1186,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     job.status === "done"
     || job.status === "failed"
     || job.status === "cancelled";
+  const isFreshCreateJob = (job: FlowJob) => job.status === "done";
+  const retryActionLabel = (jobsOrJob: FlowJob | FlowJob[]) => {
+    const list = Array.isArray(jobsOrJob) ? jobsOrJob : [jobsOrJob];
+    if (list.length && list.every(isFreshCreateJob)) {
+      return t("Tạo mới", "Create new");
+    }
+    return t("Chạy lại", "Retry");
+  };
   const retryAllJobs = useCallback(async () => {
     const retryable = jobs.filter(canRetryJob);
     if (!retryable.length) return;
-    openRetrySettings(retryable);
+    openRetrySettings(retryable, { askIncludeDone: true });
   }, [jobs, t, accounts]);
   const retryFolderJobs = (outputDir: string, kind: CreateKind, folderJobs: FlowJob[]) => {
     const retryable = folderJobs.filter((job) =>
@@ -1182,7 +1206,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       && canRetryJob(job),
     );
     if (!retryable.length) return;
-    openRetrySettings(retryable);
+    openRetrySettings(retryable, { askIncludeDone: true });
   };
   const deleteAllJobs = () => {
     if (!jobs.length) return;
@@ -2388,7 +2412,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             <div className="flow-card-title">
               <b>{t(`Hàng đợi (${jobs.length})`, `Queue (${jobs.length})`)}</b>
               <div className="flow-queue-tools">
-                <button className="flow-text-button" type="button" disabled={actionBusy || !jobs.some(canRetryJob)} onClick={retryAllJobs}>{t("Chạy lại tất cả", "Retry all")}</button>
+                <button className="flow-text-button" type="button" disabled={actionBusy || !jobs.some(canRetryJob)} onClick={retryAllJobs}>{jobs.filter(canRetryJob).every(isFreshCreateJob) && jobs.some(canRetryJob) ? t("Tạo mới tất cả", "Create all new") : t("Chạy lại tất cả", "Retry all")}</button>
                 <button className="flow-text-button" type="button" disabled={!jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={cancelAllJobs}>{t("Hủy tất cả", "Cancel all")}</button>
                 <button className="flow-text-button is-danger" type="button" disabled={!jobs.length} onClick={deleteAllJobs}>{t("Xóa tất cả", "Delete all")}</button>
               </div>
@@ -2449,7 +2473,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           <button className="flow-text-button" type="button" onClick={() => openSrtImageWithFlowFolder(queueFolderLabel(group.kind, group.outputDir, group.outputFolder, group.displayOutputFolder))}>{t("Ghép", "Merge")}</button>
                           {group.jobs.some(canRetryJob) && (
                             <button className="flow-text-button is-retry" type="button" disabled={actionBusy} onClick={() => retryFolderJobs(group.outputDir, group.kind, group.jobs)}>
-                              {t("Chạy lại", "Retry")}
+                              {retryActionLabel(group.jobs.filter(canRetryJob))}
                             </button>
                           )}
                           <button className="flow-text-button is-warning" type="button" disabled={actionBusy || !group.jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={() => cancelFolderJobs(group.outputDir, group.jobs)}>{t("Hủy", "Cancel")}</button>
@@ -2542,7 +2566,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                               )}
                             {canRetryJob(job) && (
                                 <button type="button" onClick={() => retryJob(job.id)}>
-                                  {t("Chạy lại", "Retry")}
+                                  {retryActionLabel(job)}
                                 </button>
                               )}
                             <button
@@ -2785,7 +2809,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                               type="button"
                               onClick={() => retryJob(job.id)}
                             >
-                              {t("Chạy lại", "Retry")}
+                              {retryActionLabel(job)}
                             </button>
                           )}
                           <button
@@ -2894,10 +2918,39 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           <div className="flow-preview-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRetryTarget(null); }}>
             <section className="flow-confirm-dialog flow-retry-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-retry-title">
               <header>
-                <div><strong id="flow-retry-title">{t("Cài đặt chạy lại", "Retry settings")}</strong><small>{t(`${retryTarget.jobs.length} job sẽ tạo lại media mới`, `${retryTarget.jobs.length} jobs will generate new media`)}</small></div>
+                <div><strong id="flow-retry-title">{retryTarget.jobs.every(isFreshCreateJob) ? t("Cài đặt tạo mới", "Create-new settings") : t("Cài đặt chạy lại", "Retry settings")}</strong><small>{t(`${retryTarget.jobs.length} job sẽ tạo media mới`, `${retryTarget.jobs.length} jobs will generate new media`)}</small></div>
                 <button type="button" onClick={() => setRetryTarget(null)} aria-label={t("Đóng", "Close")}>×</button>
               </header>
               <div className="flow-retry-fields">
+                {retryTarget.showIncludeDone && (
+                  <label className="flow-retry-include-done">
+                    <input
+                      type="checkbox"
+                      checked={retryTarget.includeDone}
+                      onChange={(event) => {
+                        const includeDone = event.target.checked;
+                        setRetryTarget((current) => {
+                          if (!current) return current;
+                          const nextJobs = includeDone
+                            ? current.pool
+                            : current.pool.filter((item) => item.status === "failed" || item.status === "cancelled");
+                          return {
+                            ...current,
+                            includeDone,
+                            jobs: nextJobs,
+                            job: nextJobs[0] || current.job,
+                          };
+                        });
+                      }}
+                    />
+                    <span>
+                      {t(
+                        `Cũng tạo mới ${retryTarget.pool.filter((item) => item.status === "done").length} job đã hoàn thành`,
+                        `Also create new for ${retryTarget.pool.filter((item) => item.status === "done").length} completed jobs`,
+                      )}
+                    </span>
+                  </label>
+                )}
                 <FlowSelect
                   label={t("Model", "Model")}
                   value={retryTarget.model}
@@ -2936,7 +2989,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               </div>
               <footer>
                 <button type="button" onClick={() => setRetryTarget(null)}>{t("Quay lại", "Go back")}</button>
-                <button type="button" className="is-primary" onClick={confirmRetryJob}>{t("Chạy lại", "Retry")}</button>
+                <button type="button" className="is-primary" onClick={confirmRetryJob} disabled={!retryTarget.jobs.length}>{retryActionLabel(retryTarget.jobs)}</button>
               </footer>
             </section>
           </div>

@@ -148,6 +148,37 @@ def set_job_progress(job_id: str, current: int, total: int, message: str = "") -
         }
 
 
+def set_job_progress_pct(
+    job_id: str,
+    pct: float,
+    message: str = "",
+    *,
+    current: float | None = None,
+    total: int | None = None,
+) -> None:
+    """Publish an absolute progress percent (1–99) without inventing fake ticks."""
+    if not job_id:
+        return
+    with _jobs_lock:
+        prev = dict(_job_progress.get(job_id) or {})
+        total_safe = max(1, int(total if total is not None else prev.get("total") or 1))
+        if current is None:
+            current_safe = float(prev.get("current") or 0)
+        else:
+            current_safe = max(0.0, min(float(current), float(total_safe)))
+        pct_safe = int(min(99, max(1, round(pct))))
+        # Never move backwards within the same job (parallel chunks race).
+        prev_pct = int(prev.get("pct") or 0)
+        if pct_safe < prev_pct:
+            pct_safe = prev_pct
+        _job_progress[job_id] = {
+            "current": current_safe,
+            "total": total_safe,
+            "pct": pct_safe,
+            "message": message or str(prev.get("message") or f"Đang xử lý ({pct_safe}%)"),
+        }
+
+
 def get_job_progress(job_id: str) -> dict[str, Any]:
     """Lấy tiến độ thực tế hiện tại của job."""
     if not job_id:
@@ -371,14 +402,14 @@ def synth_text_job(
         else:
             max_workers = adaptive_workers(None, kind="network", cap=24, tasks=total_chunks)
 
-        # Nếu VieNeu chưa nạp model → báo rõ để người dùng không tưởng bị treo
+        # Phase: model load (VieNeu) — only when state is actually cold/loading
         if engine_type == "vieneu":
             try:
-                from pipeline.tts.engines.vieneu import _load_state as _vn_state
-                if _vn_state in ("cold", "loading"):
-                    set_job_progress(
-                        job_id, 0, total_chunks,
-                        "Đang nạp model VieNeu vào GPU lần đầu, vui lòng chờ 30–60s…"
+                from pipeline.tts.engines import vieneu as vieneu_mod
+                if vieneu_mod._load_state in ("cold", "loading"):
+                    set_job_progress_pct(
+                        job_id, 3, "Đang nạp model VieNeu vào GPU lần đầu…",
+                        current=0, total=total_chunks,
                     )
             except Exception:
                 pass
@@ -387,28 +418,52 @@ def synth_text_job(
         for i in range(total_chunks):
             part_paths.append(job_dir / f"part_{i:03d}.wav")
 
+        chunk_frac = [0.0] * total_chunks
+        frac_lock = threading.Lock()
+
+        def _publish_frac(message: str = "") -> None:
+            with frac_lock:
+                done_sum = sum(chunk_frac)
+                # Synth band occupies up to 92%; concat phase uses 92–99.
+                pct = min(92.0, max(1.0, (done_sum / max(1, total_chunks)) * 92.0))
+                set_job_progress_pct(
+                    job_id, pct, message,
+                    current=done_sum, total=total_chunks,
+                )
+
         def _process_chunk(i: int, chunk: str, part: Path):
             if _is_cancelled(job_id):
                 return
+
+            def _on_progress(frac: float) -> None:
+                if _is_cancelled(job_id):
+                    return
+                with frac_lock:
+                    chunk_frac[i] = max(chunk_frac[i], min(1.0, float(frac)))
+                _publish_frac(f"Đang tạo câu {i + 1}/{total_chunks}…")
+
             tts_segment(
                 chunk, voice, part, None, "none",
                 lang=lang, speed=speed, volume=volume, pitch=pitch, style=style,
                 cancel_check=lambda: _is_cancelled(job_id),
+                on_progress=_on_progress,
             )
+            with frac_lock:
+                chunk_frac[i] = 1.0
+            _publish_frac(f"Đã xong câu {i + 1}/{total_chunks}…")
 
-        completed = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_process_chunk, i, chunks[i], part_paths[i]): i for i in range(total_chunks)}
             for future in concurrent.futures.as_completed(futures):
                 if _is_cancelled(job_id):
                     raise RuntimeError("Job đã hủy")
                 future.result()
-                completed += 1
-                set_job_progress(job_id, completed, total_chunks, f"Đã hoàn thành {completed}/{total_chunks} câu…")
-
 
         part_durs: list[float] = [ffprobe_duration(p) for p in part_paths]
-        set_job_progress(job_id, total_chunks, total_chunks, "Đang ghép nối âm thanh và tạo phụ đề…")
+        set_job_progress_pct(
+            job_id, 95, "Đang ghép nối âm thanh và tạo phụ đề…",
+            current=total_chunks, total=total_chunks,
+        )
         gap = max(0, int(gap_ms)) / 1000.0
         # CapCut: cue ngắn (~42 ký tự), timeline ∝ audio từng part
         cues = cues_from_parts(
@@ -546,12 +601,35 @@ def synth_srt_job(
             max_workers = tts_local_workers(None, tasks=total_cues)
         else:
             max_workers = adaptive_workers(None, kind="network", cap=24, tasks=total_cues)
+
+        if engine_type == "vieneu":
+            try:
+                from pipeline.tts.engines import vieneu as vieneu_mod
+                if vieneu_mod._load_state in ("cold", "loading"):
+                    set_job_progress_pct(
+                        job_id, 3, "Đang nạp model VieNeu vào GPU lần đầu…",
+                        current=0, total=total_cues,
+                    )
+            except Exception:
+                pass
         
         match = effective_match if effective_match in ("none", "natural", "stretch", "preferVideo") else "stretch"
         use_match = "none" if match in ("none", "preferVideo") else match
         
         for i in range(total_cues):
             part_paths.append(job_dir / f"cue_{i:03d}.wav")
+
+        cue_frac = [0.0] * total_cues
+        frac_lock = threading.Lock()
+
+        def _publish_frac(message: str = "") -> None:
+            with frac_lock:
+                done_sum = sum(cue_frac)
+                pct = min(92.0, max(1.0, (done_sum / max(1, total_cues)) * 92.0))
+                set_job_progress_pct(
+                    job_id, pct, message,
+                    current=done_sum, total=total_cues,
+                )
             
         def _process_cue(i: int, cue: dict, part: Path):
             if _is_cancelled(job_id):
@@ -559,21 +637,30 @@ def synth_srt_job(
             text = str(cue.get("text") or "").strip() or "…"
             slot = max(0.15, float(cue["end"]) - float(cue["start"]))
             target = slot if use_match != "none" else None
+
+            def _on_progress(frac: float) -> None:
+                if _is_cancelled(job_id):
+                    return
+                with frac_lock:
+                    cue_frac[i] = max(cue_frac[i], min(1.0, float(frac)))
+                _publish_frac(f"Đang tạo đoạn SRT {i + 1}/{total_cues}…")
+
             tts_segment(
                 text, voice, part, target, use_match,
                 lang=lang, speed=speed, volume=volume, pitch=pitch, style=style,
                 cancel_check=lambda: _is_cancelled(job_id),
+                on_progress=_on_progress,
             )
+            with frac_lock:
+                cue_frac[i] = 1.0
+            _publish_frac(f"Đã xong đoạn SRT {i + 1}/{total_cues}…")
 
-        completed = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_process_cue, i, cues[i], part_paths[i]): i for i in range(total_cues)}
             for future in concurrent.futures.as_completed(futures):
                 if _is_cancelled(job_id):
                     raise RuntimeError("Job đã hủy")
                 future.result()
-                completed += 1
-                set_job_progress(job_id, completed, total_cues, f"Đã hoàn thành {completed}/{total_cues} đoạn SRT…")
 
         for i, cue in enumerate(cues):
             part = part_paths[i]
@@ -601,7 +688,10 @@ def synth_srt_job(
                     "_srcEnd": src_end,
                 }
             )
-        set_job_progress(job_id, total_cues, total_cues, "Đang xuất file âm thanh và phụ đề SRT…")
+        set_job_progress_pct(
+            job_id, 95, "Đang xuất file âm thanh và phụ đề SRT…",
+            current=total_cues, total=total_cues,
+        )
         wav = job_dir / "audio.wav"
         if keep_timeline:
             # Mix theo đúng timestamp SRT; _mix_timeline chặn từng audio trong slot.

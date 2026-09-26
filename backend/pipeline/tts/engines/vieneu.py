@@ -437,7 +437,7 @@ def status() -> dict[str, Any]:
         "name": "VieNeu Local",
         "local": True,
         "installed": installed,
-        "ready": installed and _load_state in ("ready", "cold"),
+        "ready": installed and _load_state == "ready",
         "loaded": _load_state == "ready",
         "loadState": _load_state,
         "device": "—",
@@ -797,6 +797,7 @@ def synthesize(
     *,
     style: str = "tu_nhien",
     cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[float], None] | None = None,
 ) -> None:
     parsed = parse_voice(voice)
     if not parsed:
@@ -815,7 +816,11 @@ def synthesize(
 
         if cancel_check and cancel_check():
             raise RuntimeError("Job đã hủy")
+        if on_progress:
+            on_progress(0.02)
         get_client()  # prepares PyTorch/MPS or CUDA before resolving the worker
+        if on_progress:
+            on_progress(0.08)
         backend, device = vieneu_frozen.resolve_backend()
         clone_ref = None
         voice_arg = name
@@ -842,9 +847,15 @@ def synthesize(
             device=device,
             clone_ref=clone_ref,
         )
+        if on_progress:
+            on_progress(1.0)
         return
 
+    if on_progress:
+        on_progress(0.02)
     client = get_client()
+    if on_progress:
+        on_progress(0.08)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     text = (text or ".").strip() or "."
     if style not in ("tu_nhien", "tin_tuc", "doc_truyen"):
@@ -863,20 +874,29 @@ def synthesize(
     else:
         infer_kwargs["voice"] = name
 
-    if cancel_check:
+    # Stream path when we need cancel checks and/or real progress ticks.
+    use_stream = bool(cancel_check or on_progress)
+    if use_stream:
         import numpy as np
 
+        # ~14 chars/sec speech × 48 kHz ≈ 3400 samples/char; clamp estimate floor to 1s.
+        estimated = max(48_000, len(text) * 3_400)
         stream = client.infer_stream(text, **infer_kwargs)
         chunks: list[Any] = []
+        received = 0
         try:
             for chunk in stream:
-                if cancel_check():
+                if cancel_check and cancel_check():
                     raise RuntimeError("Job đã hủy")
-                chunks.append(chunk)
+                arr = np.asarray(chunk, dtype=np.float32).reshape(-1)
+                chunks.append(arr)
+                received += int(arr.size)
+                if on_progress:
+                    on_progress(min(0.95, received / estimated))
         finally:
-            if cancel_check() and hasattr(stream, "close"):
+            if cancel_check and cancel_check() and hasattr(stream, "close"):
                 stream.close()
-        if cancel_check():
+        if cancel_check and cancel_check():
             raise RuntimeError("Job đã hủy")
         audio = np.concatenate(chunks) if chunks else np.array([], dtype=np.float32)
     else:
@@ -894,6 +914,8 @@ def synthesize(
 
         arr = np.asarray(audio, dtype=np.float32).reshape(-1)
         _write_wav_pcm16(out_wav, arr, 48000)
+    if on_progress:
+        on_progress(1.0)
 
 
 def _write_wav_pcm16(path: Path, samples: Any, sr: int) -> None:

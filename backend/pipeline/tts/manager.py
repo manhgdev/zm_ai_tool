@@ -243,6 +243,7 @@ def tts_segment(
     pitch: float = 0.0,
     style: str = "tu_nhien",
     cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[float], None] | None = None,
 ) -> float:
     """Synth (if needed) + optional speed/volume/pitch + duration fit.
 
@@ -261,9 +262,14 @@ def tts_segment(
                 out_wav,
                 style=style,
                 cancel_check=cancel_check,
+                on_progress=on_progress,
             )
         else:
+            if on_progress:
+                on_progress(0.05)
             synthesize_raw(text, voice, out_wav, lang=lang, style=style)
+            if on_progress:
+                on_progress(1.0)
         if abs(speed - 1.0) > 0.02 or abs(volume - 1.0) > 0.02 or abs(pitch) > 0.1:
             audio_utils.apply_playback(
                 out_wav, speed=speed, volume=volume, pitch_semitones=pitch

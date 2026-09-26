@@ -525,12 +525,26 @@ export default function TtsStudio({
   }, [loadStatus, loadHistory])
 
   const vieneu = status.vieneu
+  const vieneuLoadState = String(vieneu?.loadState || '')
+  const vieneuLoadOk = Boolean(vieneu?.installed && (vieneu?.ready || vieneuLoadState === 'ready'))
+  const vieneuLoadWarn = vieneuLoadState === 'loading' || (Boolean(vieneu?.installed) && vieneuLoadState === 'cold')
+  const vieneuStatusLabel = !vieneu
+    ? t('Đang kiểm tra…', 'Checking…')
+    : !vieneu.installed
+      ? t('Chưa cài', 'Not installed')
+      : vieneuLoadState === 'loading'
+        ? t('Đang nạp model…', 'Loading model…')
+        : vieneuLoadState === 'error'
+          ? t('Lỗi nạp model', 'Model load error')
+          : vieneuLoadOk
+            ? t('Sẵn sàng', 'Ready')
+            : t('Đã cài — chưa nạp', 'Installed — not loaded')
 
   useEffect(() => {
-    if (vieneu?.loadState !== 'loading') return
+    if (vieneuLoadState !== 'loading' && !busy) return
     const timer = window.setInterval(() => void loadStatus(), 2000)
     return () => window.clearInterval(timer)
-  }, [vieneu?.loadState, loadStatus])
+  }, [vieneuLoadState, busy, loadStatus])
 
   function go(id: string) {
     // input/srt gộp vào dashboard Tổng quan (không còn tab sidebar riêng)
@@ -739,6 +753,7 @@ export default function TtsStudio({
         setBusy(false)
         setBusyKind(null)
       }
+      void loadStatus()
     }
   }
 
@@ -1391,28 +1406,28 @@ export default function TtsStudio({
           </div>
           <div className="meta">
             <div className="meta-row">
-              <span className="meta-lab">Trạng thái</span>
-              <strong className={vieneu?.ready ? 'ok' : 'bad'}>
-                {!vieneu ? t('Đang kiểm tra…', 'Checking…') : vieneu.ready ? t('Sẵn sàng', 'Ready') : vieneu.installed ? t('Đã cài — chưa sẵn sàng', 'Installed — not ready') : t('Chưa cài', 'Not installed')}
+              <span className="meta-lab">{t('Trạng thái', 'Status')}</span>
+              <strong className={vieneuLoadOk ? 'ok' : vieneuLoadWarn ? 'warn' : 'bad'}>
+                {vieneuStatusLabel}
               </strong>
             </div>
             <div className="meta-row">
-              <span className="meta-lab">Thiết bị</span>
+              <span className="meta-lab">{t('Thiết bị', 'Device')}</span>
               <span className="meta-val">{vieneu?.device || '—'}</span>
             </div>
             <div className="meta-row">
-              <span className="meta-lab">Model</span>
+              <span className="meta-lab">{t('Model', 'Model')}</span>
               <span className="meta-val" title={vieneu?.model || 'VieNeu-TTS-v3-Turbo'}>
                 {(vieneu?.model || 'VieNeu-TTS-v3-Turbo').replace('VieNeu-TTS-', 'v')}
               </span>
             </div>
             <div className="meta-row">
-              <span className="meta-lab">Preset</span>
+              <span className="meta-lab">{t('Preset', 'Preset')}</span>
               <span className="meta-val">{vieneu?.presetCount ?? 0}</span>
             </div>
           </div>
           <div className="tts-ram">
-            <i style={{ width: vieneu?.loaded ? '42%' : vieneu?.installed ? '18%' : '6%' }} />
+            <i style={{ width: vieneuLoadOk ? '42%' : vieneu?.loadState === 'loading' ? '28%' : vieneu?.installed ? '18%' : '6%' }} />
           </div>
           {vieneu && !vieneu.installed && (
             <p className="tts-engine-hint">

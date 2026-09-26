@@ -295,6 +295,10 @@ html.dark .tts-studio {
   color: var(--tts-green);
 }
 
+.tts-engine-card .meta strong.warn {
+  color: #b45309;
+}
+
 .tts-engine-card .meta strong.bad {
   color: #dc2626;
   font-weight: 600;
