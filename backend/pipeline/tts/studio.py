@@ -198,7 +198,7 @@ def get_job_progress(job_id: str) -> dict[str, Any]:
     return prog
 
 
-def set_job_error(job_id: str, error: Exception | str) -> None:
+def set_job_error(job_id: str, error: Exception | str, *, message: str = "Tạo giọng thất bại.") -> None:
     """Keep a terminal error for the UI instead of silently losing a worker failure."""
     if not job_id:
         return
@@ -208,24 +208,34 @@ def set_job_error(job_id: str, error: Exception | str) -> None:
             "current": int(current.get("current") or 0),
             "total": max(1, int(current.get("total") or 1)),
             "pct": max(1, min(99, int(current.get("pct") or 1))),
-            "message": "Tạo giọng thất bại.",
-            "error": str(error) or "Tạo giọng thất bại",
+            "message": message,
+            "error": str(error) or message,
         }
+        _running.pop(job_id, None)
 
 
-def set_job_complete(job_id: str, message: str = "Đã hoàn thành tạo giọng.", *, result_job_id: str = "") -> None:
+def set_job_complete(
+    job_id: str,
+    message: str = "Đã hoàn thành tạo giọng.",
+    *,
+    result_job_id: str = "",
+    text: str = "",
+) -> None:
     """Publish completion for the request ID, including cache-hit requests."""
     if not job_id:
         return
     with _jobs_lock:
         current = dict(_job_progress.get(job_id) or {})
-        _job_progress[job_id] = {
+        payload: dict[str, Any] = {
             "current": max(1, int(current.get("total") or current.get("current") or 1)),
             "total": max(1, int(current.get("total") or 1)),
             "pct": 99,
             "message": message,
             "resultJobId": result_job_id or job_id,
         }
+        if text:
+            payload["text"] = text
+        _job_progress[job_id] = payload
         _running.pop(job_id, None)
 
 

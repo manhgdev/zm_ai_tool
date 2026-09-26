@@ -38,17 +38,16 @@ export const WAVE_BARS = Array.from({ length: 180 }, (_, i) => {
 })
 
 export const FULL_DASHBOARD = new Set(['overview', 'make'])
-export const COMING_SOON = new Set(['engines', 'audio', 'match', 'advanced'])
+export const COMING_SOON = new Set<string>()
 
 export const SECTION_LABELS: Record<string, string> = {
   overview: 'Tổng quan', input: 'Nhập văn bản', srt: 'Nhập SRT / Phụ đề',
   make: 'Tạo giọng nói', history: 'Lịch sử tạo', voice: 'Danh sách giọng',
-  clone: 'Clone giọng nói', engines: 'TTS Engines', audio: 'Cấu hình âm thanh',
-  match: 'Khớp thời lượng', advanced: 'Tùy chọn nâng cao',
+  clone: 'Clone giọng nói', transcribe: 'Chép lời',
 }
 
 export const TTS_URL_SECTIONS = new Set([
-  'overview', 'history', 'voice', 'clone', 'engines', 'audio', 'match', 'advanced',
+  'overview', 'history', 'voice', 'clone', 'transcribe',
 ])
 
 export function sectionFromUrl(): string {

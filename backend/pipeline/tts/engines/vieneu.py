@@ -34,6 +34,99 @@ _reference_cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
 _clone_lock = threading.Lock()
 _clone_cache: dict[str, tuple[int, int]] = {}
 
+# VieNeu model modes (SDK factory). v3 full = coming soon — not selectable yet.
+MODE_V3 = "v3"
+MODE_TURBO = "v3turbo"
+MODE_NANO = "v3nano"
+SELECTABLE_MODES = frozenset({MODE_TURBO, MODE_NANO})
+DEFAULT_MODE = MODE_TURBO
+
+MODEL_CATALOG: list[dict[str, Any]] = [
+    {
+        "id": MODE_V3,
+        "name": "VieNeu-TTS-v3",
+        "status": "coming_soon",
+        "format": "PyTorch",
+        "device": "GPU",
+        "bilingual": True,
+        "features": "—",
+        "speed": "—",
+        "selectable": False,
+    },
+    {
+        "id": MODE_TURBO,
+        "name": "VieNeu-TTS-v3-Turbo",
+        "status": "current",
+        "format": "PyTorch/ONNX",
+        "device": "GPU/CPU",
+        "bilingual": True,
+        "features": "48 kHz, ~23 preset, Cloning, Emotion, Streaming",
+        "speed": "Ultra Fast — GPU RTF ≈ 0.02; CPU RTF ≈ 0.5",
+        "selectable": True,
+        "sampleRate": 48000,
+        "assets": "voices_v3_turbo.json",
+    },
+    {
+        "id": MODE_NANO,
+        "name": "VieNeu-TTS-v3-Nano",
+        "status": "preview",
+        "format": "ONNX",
+        "device": "weak CPU / edge",
+        "bilingual": False,
+        "features": "24 kHz, 11 preset, cloning — lower quality (esp. English)",
+        "speed": "Fastest on CPU (RTF 0.11–0.22)",
+        "selectable": True,
+        "sampleRate": 24000,
+        "assets": "voices_v3_nano.json",
+    },
+]
+
+_MODE_LABEL = {row["id"]: str(row["name"]) for row in MODEL_CATALOG}
+
+
+def _mode_file() -> Path:
+    return voice_store.VIENEU_ROOT / "model.json"
+
+
+def current_mode() -> str:
+    """Active VieNeu factory mode: v3turbo (default) or v3nano."""
+    env = (os.environ.get("VIENEU_MODE") or "").strip().lower()
+    if env in SELECTABLE_MODES:
+        return env
+    try:
+        raw = json.loads(_mode_file().read_text(encoding="utf-8"))
+        mode = str(raw.get("mode") or "").strip().lower()
+        if mode in SELECTABLE_MODES:
+            return mode
+    except Exception:
+        pass
+    return DEFAULT_MODE
+
+
+def set_mode(mode: str) -> str:
+    """Persist selectable mode and unload any warm client."""
+    cleaned = str(mode or "").strip().lower()
+    if cleaned not in SELECTABLE_MODES:
+        raise ValueError(f"Mode không hỗ trợ: {mode} (chọn v3turbo hoặc v3nano)")
+    voice_store.ensure_vieneu_dirs()
+    _mode_file().write_text(
+        json.dumps({"mode": cleaned}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.environ["VIENEU_MODE"] = cleaned
+    reset_client()
+    return cleaned
+
+
+def model_catalog(*, selected: str | None = None) -> list[dict[str, Any]]:
+    active = selected or current_mode()
+    out: list[dict[str, Any]] = []
+    for row in MODEL_CATALOG:
+        item = dict(row)
+        item["selected"] = item["id"] == active
+        out.append(item)
+    return out
+
 
 def _preview_api_url(voice_id: str) -> str:
     return f"/api/tts/voices/{quote(str(voice_id), safe='')}/preview"
@@ -174,7 +267,10 @@ def _resolve_backend() -> tuple[str, str]:
     """(backend, device) — CUDA/MPS → pytorch; không GPU → ONNX/CPU.
 
     CapCut / ElevenLabs cloud — chỉ VieNeu local dùng GPU máy.
+    Nano luôn ONNX/CPU.
     """
+    if current_mode() == MODE_NANO:
+        return "onnx", "cpu"
     from pipeline.core.accel import preferred_vieneu_backend
 
     return preferred_vieneu_backend()
@@ -204,15 +300,17 @@ def package_version() -> str:
 
 
 def _assets_voices_path() -> Path | None:
+    mode = current_mode()
+    assets_name = "voices_v3_nano.json" if mode == MODE_NANO else "voices_v3_turbo.json"
     if getattr(sys, 'frozen', False):
         from pipeline.core.runtime_active import runtime_site
-        path = runtime_site() / 'vieneu' / 'assets' / 'voices_v3_turbo.json'
+        path = runtime_site() / 'vieneu' / 'assets' / assets_name
         return path if path.is_file() else None
     try:
         import vieneu
 
         root = Path(vieneu.__file__).resolve().parent
-        p = root / "assets" / "voices_v3_turbo.json"
+        p = root / "assets" / assets_name
         return p if p.is_file() else None
     except Exception:
         return None
@@ -391,14 +489,17 @@ def get_client() -> Any:
                 except Exception:
                     pass
             _prepare_cuda_weight_load(backend, device)
-            kwargs: dict[str, Any] = {
-                "mode": "v3turbo",
-                "backend": backend,
-                "device": device,
-            }
-            precision = (os.environ.get("VIENEU_PRECISION") or "int8").strip().lower()
-            if precision in ("int8", "fp32"):
-                kwargs["precision"] = precision
+            mode = current_mode()
+            kwargs: dict[str, Any] = {"mode": mode}
+            if mode == MODE_NANO:
+                # Nano is ONNX/CPU only — ignore pytorch backend kwargs
+                pass
+            else:
+                kwargs["backend"] = backend
+                kwargs["device"] = device
+                precision = (os.environ.get("VIENEU_PRECISION") or "int8").strip().lower()
+                if precision in ("int8", "fp32"):
+                    kwargs["precision"] = precision
             voice_store.ensure_vieneu_dirs()
             # Prefer our voices.json for cloned voices if SDK supports path
             voices_path = voice_store.VOICES_JSON
@@ -436,6 +537,7 @@ def get_client() -> Any:
 
 def status() -> dict[str, Any]:
     installed = available()
+    mode = current_mode()
     presets = list_preset_from_assets() if installed else []
     out: dict[str, Any] = {
         "id": "vieneu",
@@ -446,7 +548,9 @@ def status() -> dict[str, Any]:
         "loaded": _load_state == "ready",
         "loadState": _load_state,
         "device": "—",
-        "model": "VieNeu-TTS-v3-Turbo",
+        "mode": mode,
+        "model": _MODE_LABEL.get(mode, "VieNeu-TTS-v3-Turbo"),
+        "models": model_catalog(selected=mode),
         "version": package_version(),
         "message": "",
         "presetCount": len(presets),
@@ -455,7 +559,7 @@ def status() -> dict[str, Any]:
             "pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124 && "
             "pip install transformers"
         ),
-        "cloneRequiresPytorch": True,
+        "cloneRequiresPytorch": mode != MODE_NANO,
     }
     if not installed:
         out["ready"] = False
@@ -466,11 +570,16 @@ def status() -> dict[str, Any]:
 
         ok, detail = vieneu_frozen.probe()
         backend, device = vieneu_frozen.resolve_backend()
+        if mode == MODE_NANO:
+            backend, device = "onnx", "cpu"
         out["ready"] = ok
         out["loaded"] = ok
         out["loadState"] = "ready" if ok else "error"
         if ok:
-            if backend == "pytorch" and device == "cuda":
+            if mode == MODE_NANO:
+                out["device"] = "ONNX/CPU (Nano)"
+                out["message"] = "Sẵn sàng — VieNeu Nano ONNX/CPU"
+            elif backend == "pytorch" and device == "cuda":
                 out["device"] = "CUDA (runtime)"
                 out["message"] = "Sẵn sàng — TTS PyTorch/CUDA qua runtime venv"
             elif backend == "pytorch" and device == "mps":
@@ -488,9 +597,11 @@ def status() -> dict[str, Any]:
         return out
     if _load_state == "ready" and _client is not None:
         be = str(getattr(_client, "backend", "onnx") or "onnx").lower()
-        if be == "pytorch":
+        if mode == MODE_NANO or be != "pytorch":
+            out["device"] = "ONNX/CPU" + (" (Nano)" if mode == MODE_NANO else "")
+        else:
             try:
-                from pipeline.core.accel import preferred_torch_device, accel_label
+                from pipeline.core.accel import preferred_torch_device
 
                 d = preferred_torch_device()
                 if d == "cuda":
@@ -506,8 +617,6 @@ def status() -> dict[str, Any]:
                     out["device"] = "PyTorch/CPU"
             except Exception:
                 out["device"] = "PyTorch"
-        else:
-            out["device"] = "ONNX/CPU"
         out["message"] = "Sẵn sàng (model đã nạp)"
     elif _load_state == "loading":
         out["message"] = "Đang nạp model…"
@@ -515,23 +624,27 @@ def status() -> dict[str, Any]:
         try:
             from pipeline.core.accel import preferred_torch_device
 
-            d = preferred_torch_device()
-            if d == "cuda":
-                out["device"] = "CUDA (lazy)"
-                out["message"] = "Đã cài — lần tạo giọng đầu nạp PyTorch/CUDA"
-            elif d == "mps":
-                out["device"] = "Apple GPU (lazy)"
-                out["message"] = "Đã cài — lần tạo giọng đầu nạp PyTorch/MPS"
-            elif _nvidia_present():
-                out["device"] = "CPU (thiếu torch CUDA)"
-                out["message"] = (
-                    "Có NVIDIA nhưng torch chưa CUDA — vào Thiết lập → Cài gói AI. "
-                    "pip install torch torchaudio --index-url "
-                    "https://download.pytorch.org/whl/cu124"
-                )
+            if mode == MODE_NANO:
+                out["device"] = "ONNX/CPU (Nano, lazy)"
+                out["message"] = "Đã cài — nạp Nano khi mở /text-to-speech"
             else:
-                out["device"] = "ONNX/CPU (lazy)"
-                out["message"] = "Không GPU — model nạp CPU khi tạo giọng lần đầu"
+                d = preferred_torch_device()
+                if d == "cuda":
+                    out["device"] = "CUDA (lazy)"
+                    out["message"] = "Đã cài — nạp khi mở /text-to-speech (PyTorch/CUDA)"
+                elif d == "mps":
+                    out["device"] = "Apple GPU (lazy)"
+                    out["message"] = "Đã cài — nạp khi mở /text-to-speech (PyTorch/MPS)"
+                elif _nvidia_present():
+                    out["device"] = "CPU (thiếu torch CUDA)"
+                    out["message"] = (
+                        "Có NVIDIA nhưng torch chưa CUDA — vào Thiết lập → Cài gói AI. "
+                        "pip install torch torchaudio --index-url "
+                        "https://download.pytorch.org/whl/cu124"
+                    )
+                else:
+                    out["device"] = "ONNX/CPU (lazy)"
+                    out["message"] = "Không GPU — nạp CPU khi mở /text-to-speech"
         except Exception:
             out["device"] = "ONNX/CPU"
     return out
@@ -1024,12 +1137,16 @@ def clone_voice(
 
 
 def warm() -> str:
+    global _load_state
     try:
         if getattr(sys, "frozen", False):
             from . import vieneu_frozen
 
             ok, detail = vieneu_frozen.probe()
             return "ready" if ok else f"err:{detail}"
+        with _lock:
+            if _load_state == "cold":
+                _load_state = "loading"
         get_client()
         return str(status().get("device") or "ready")
     except Exception as e:
@@ -1037,7 +1154,7 @@ def warm() -> str:
 
 
 def reset_client() -> None:
-    """Bỏ model đã nạp — dùng sau khi cài PyTorch CUDA để load lại GPU."""
+    """Bỏ model đã nạp — dùng sau khi cài PyTorch CUDA / đổi mode."""
     global _client, _client_err, _load_state
     with _lock:
         _client = None
@@ -1047,6 +1164,13 @@ def reset_client() -> None:
         _reference_cache.clear()
     with _clone_lock:
         _clone_cache.clear()
+    if getattr(sys, "frozen", False):
+        try:
+            from . import vieneu_frozen
+
+            vieneu_frozen.shutdown_all_workers()
+        except Exception:
+            pass
     # Release cached model tensors after a cancelled GPU job instead of leaving
     # their RAM/VRAM reserved until the application exits.
     import gc

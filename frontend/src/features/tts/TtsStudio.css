@@ -313,6 +313,13 @@ html.dark .tts-studio {
   word-break: break-word;
 }
 
+.tts-engine-hint .tts-link {
+  font-size: inherit;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+}
+
 .tts-ram {
   height: 5px;
   border-radius: 99px;

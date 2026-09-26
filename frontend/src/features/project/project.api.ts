@@ -287,12 +287,49 @@ export const api = {
       loadState?: string
       device?: string
       model?: string
+      mode?: string
+      models?: Array<Record<string, unknown>>
       version?: string
       message?: string
       presetCount?: number
       installHint?: string
       cloneRequiresPytorch?: boolean
     }>>(`${base}/tts/status`, undefined, 15_000),
+
+  ttsWarm: () =>
+    fetchJson<{ ok: boolean; loadState?: string; installed?: boolean; mode?: string }>(
+      `${base}/tts/warm`,
+      { method: 'POST' },
+      8_000,
+    ),
+
+  ttsVieneuModel: (mode: string) =>
+    fetchJson<{
+      ok: boolean
+      mode: string
+      model?: string
+      loadState?: string
+      models?: Array<Record<string, unknown>>
+    }>(
+      `${base}/tts/vieneu/model`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      },
+      15_000,
+    ),
+
+  ttsStudioTranscribe: async (file: File, lang = 'auto', engine = 'whisper') => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const q = new URLSearchParams({ lang, engine })
+    return fetchJson<{ id: string; job_id: string; running: boolean; engine?: string }>(
+      `${base}/tts/studio/transcribe?${q.toString()}`,
+      { method: 'POST', body: fd },
+      30_000,
+    )
+  },
 
   ttsStudioSynth: (body: {
     jobId?: string
@@ -352,6 +389,7 @@ export const api = {
       done: boolean
       error?: string
       resultJobId?: string
+      text?: string
     }>(`${base}/tts/studio/jobs/${encodeURIComponent(jobId)}/progress`, undefined, 3000),
 
   ttsStudioDelete: (jobId: string) =>

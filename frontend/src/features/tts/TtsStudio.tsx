@@ -18,6 +18,8 @@ import DashPanel from './DashPanel'
 import TtsHistoryPanel from './TtsHistoryPanel'
 import VoiceClonePanel from './VoiceClonePanel'
 import TtsInputPanel from './TtsInputPanel'
+import TtsTranscribePanel from './TtsTranscribePanel'
+import type { TranscribeEngine } from './TtsTranscribePanel'
 import {
   DEFAULT_DASH_LAYOUT,
   loadDashLayout,
@@ -35,10 +37,10 @@ import {
   IconClone,
   IconDownload,
   IconFile,
-  IconGear,
   IconHelp,
   IconKb,
   IconList,
+  IconPaste,
   IconPause,
   IconPlay,
   IconUsers,
@@ -61,6 +63,8 @@ type Props = {
   /** Mobile drawer — controlled từ Header ☰ */
   sideOpen?: boolean
   onSideOpenChange?: (open: boolean) => void
+  /** Mở Cấu hình → Thiết lập (cài VieNeu / Whisper) */
+  onOpenSetup?: () => void
 }
 
 export default function TtsStudio({
@@ -70,6 +74,7 @@ export default function TtsStudio({
   isDesktopApp = false,
   sideOpen: sideOpenProp,
   onSideOpenChange,
+  onOpenSetup,
 }: Props) {
   const { locale } = useLocale()
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
@@ -124,7 +129,7 @@ export default function TtsStudio({
     .replace(/[<>:"/\\|?*]+/g, '-')
     .trim() || 'tts-output'
   const [busy, setBusy] = useState(false)
-  const [busyKind, setBusyKind] = useState<'synth' | 'clone' | null>(null)
+  const [busyKind, setBusyKind] = useState<'synth' | 'clone' | 'transcribe' | null>(null)
   const [busyProgress, setBusyProgress] = useState(0)
   const [busyCustomMessage, setBusyCustomMessage] = useState('')
   const [progressMinimized, setProgressMinimized] = useState(false)
@@ -170,6 +175,10 @@ export default function TtsStudio({
   const [status, setStatus] = useState<Record<string, EngineStatus>>({})
   const [cloneName, setCloneName] = useState('')
   const [cloneFile, setCloneFile] = useState<File | null>(null)
+  const [transcribeFile, setTranscribeFile] = useState<File | null>(null)
+  const [transcribeLang, setTranscribeLang] = useState('auto')
+  const [transcribeEngine, setTranscribeEngine] = useState<TranscribeEngine>('whisper')
+  const [transcribeResult, setTranscribeResult] = useState('')
   const [cloneTags, setCloneTags] = useState<VoiceTagLabel[]>([])
   const [previewSample, setPreviewSample] = useState('')
   const [srtRaw, setSrtRaw] = useState(() => {
@@ -471,7 +480,7 @@ export default function TtsStudio({
 
   const loadStatus = useCallback(async () => {
     try {
-      setStatus(await api.ttsStatus())
+      setStatus(await api.ttsStatus() as Record<string, EngineStatus>)
     } catch {
       /* ignore */
     }
@@ -538,7 +547,20 @@ export default function TtsStudio({
           ? t('Lỗi nạp model', 'Model load error')
           : vieneuLoadOk
             ? t('Sẵn sàng', 'Ready')
-            : t('Đã cài — chưa nạp', 'Installed — not loaded')
+            : t('Đã cài — nạp khi mở /text-to-speech', 'Installed — loads when opening /text-to-speech')
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        await api.ttsWarm()
+      } catch {
+        /* ignore — status poll still works */
+      }
+      if (!cancelled) void loadStatus()
+    })()
+    return () => { cancelled = true }
+  }, [loadStatus])
 
   useEffect(() => {
     if (vieneuLoadState !== 'loading' && !busy) return
@@ -839,6 +861,59 @@ export default function TtsStudio({
       return
     }
     audioRef.current?.pause()
+  }
+
+  async function onTranscribe() {
+    if (!transcribeFile) {
+      const msg = t('Chọn file audio hoặc video', 'Choose an audio or video file')
+      setError(msg)
+      toast.error(msg)
+      return
+    }
+    setBusyKind('transcribe')
+    setBusy(true)
+    setBusyProgress(2)
+    setBusyCustomMessage(t('Đang gửi file…', 'Uploading file…'))
+    setError('')
+    setProgressMinimized(false)
+    try {
+      const started = await api.ttsStudioTranscribe(transcribeFile, transcribeLang, transcribeEngine)
+      const jid = started.id || started.job_id
+      activeJobIdRef.current = jid
+      cancelledJobIdsRef.current.delete(jid)
+      for (;;) {
+        if (cancelledJobIdsRef.current.has(jid)) {
+          throw new Error('cancelled')
+        }
+        const p = await api.ttsStudioJobProgress(jid)
+        setBusyProgress(Math.max(2, Math.min(99, Number(p.pct) || 2)))
+        if (p.message) setBusyCustomMessage(p.message)
+        if (p.error) throw new Error(p.error)
+        if (p.done || (p.pct >= 99 && !p.running)) {
+          const text = String(p.text || '').trim()
+          if (!text) throw new Error(t('Không nhận dạng được lời thoại', 'Could not transcribe speech'))
+          setTranscribeResult(text)
+          setBusyProgress(100)
+          setBusyCustomMessage(t('Đã chép lời xong!', 'Transcription complete!'))
+          toast.success(t('Đã chép lời xong!', 'Transcription complete!'))
+          break
+        }
+        await new Promise((r) => window.setTimeout(r, 800))
+      }
+    } catch (e) {
+      if (e instanceof Error && (e.message === 'cancelled' || e.message === 'Đã hủy')) {
+        setError('Đã hủy')
+      } else {
+        const msg = e instanceof Error ? e.message : t('Chép lời thất bại', 'Transcription failed')
+        setError(msg)
+        toast.error(msg)
+      }
+    } finally {
+      activeJobIdRef.current = null
+      setBusy(false)
+      setBusyKind(null)
+      setBusyCustomMessage('')
+    }
   }
 
   async function onClone() {
@@ -1221,16 +1296,23 @@ export default function TtsStudio({
     )
   }
 
-  const busyTitle = busyKind === 'clone' ? 'Clone giọng nói' : 'Tạo giọng nói'
+  const busyTitle =
+    busyKind === 'clone'
+      ? t('Clone giọng nói', 'Clone voice')
+      : busyKind === 'transcribe'
+        ? t('Chép lời', 'Transcribe')
+        : t('Tạo giọng nói', 'Create voice')
   const busyMessage =
     busyCustomMessage ||
     (busyKind === 'clone'
-      ? 'Đang tạo giọng clone…'
-      : srtRaw.trim()
-        ? 'Đang tạo giọng từ SRT…'
-        : isVieneuVoice
-          ? 'Đang tạo giọng VieNeu (lần đầu có thể nạp model)…'
-          : 'Đang tạo giọng nói…')
+      ? t('Đang tạo giọng clone…', 'Creating cloned voice…')
+      : busyKind === 'transcribe'
+        ? t('Đang nhận dạng…', 'Transcribing…')
+        : srtRaw.trim()
+          ? t('Đang tạo giọng từ SRT…', 'Creating voice from SRT…')
+          : isVieneuVoice
+            ? t('Đang tạo giọng VieNeu (lần đầu có thể nạp model)…', 'Creating VieNeu voice (first run may load the model)…')
+            : t('Đang tạo giọng nói…', 'Creating voice…'))
 
   const historyPanel = (
     <TtsHistoryPanel
@@ -1373,43 +1455,37 @@ export default function TtsStudio({
         <div className="tts-side-body">
           <select
             className="tts-side-select"
-            value={section === 'overview' || section === 'make' || section === 'input' || section === 'srt' ? 'overview' : section}
+            value={
+              section === 'overview' || section === 'make' || section === 'input' || section === 'srt'
+                ? 'overview'
+                : section
+            }
             onChange={(e) => go(e.target.value)}
           >
-            <option value="overview">Tổng quan</option>
-            <option value="history">Lịch sử tạo</option>
-            <option value="clone">Clone giọng nói</option>
+            <option value="overview">{t('Tạo giọng nói', 'Create voice')}</option>
+            <option value="transcribe">{t('Chép lời', 'Transcribe')}</option>
+            <option value="history">{t('Lịch sử tạo', 'History')}</option>
+            <option value="clone">{t('Clone giọng nói', 'Clone voice')}</option>
           </select>
 
-          <div className="tts-sec">Tạo giọng nói</div>
+          <div className="tts-sec">{t('Công cụ', 'Tools')}</div>
           <button type="button" className={`tts-nav${section === 'make' || section === 'overview' || section === 'input' || section === 'srt' ? ' active' : ''}`} onClick={() => go('overview')}>
-            <IconMic size={14} /> Tạo giọng nói
+            <IconMic size={14} /> {t('Tạo giọng nói', 'Create voice')}
+          </button>
+          <button type="button" className={`tts-nav${section === 'transcribe' ? ' active' : ''}`} onClick={() => go('transcribe')}>
+            <IconPaste size={14} /> {t('Chép lời', 'Transcribe')}
           </button>
           <button type="button" className={`tts-nav${section === 'history' ? ' active' : ''}`} onClick={() => go('history')}>
-            <IconClock /> Lịch sử tạo
+            <IconClock /> {t('Lịch sử tạo', 'History')}
           </button>
 
-          <div className="tts-sec">Quản lý giọng</div>
+          <div className="tts-sec">{t('Quản lý giọng', 'Voice library')}</div>
           <button type="button" className={`tts-nav${section === 'voice' ? ' active' : ''}`} onClick={() => go('voice')}>
-            <IconUsers /> Danh sách giọng
+            <IconUsers /> {t('Danh sách giọng', 'Voice list')}
           </button>
           <button type="button" className={`tts-nav${section === 'clone' ? ' active' : ''}`} onClick={() => go('clone')}>
-            <IconClone /> Clone giọng nói
-            <span className="pill-new">Mới</span>
-          </button>
-
-          <div className="tts-sec">Cài đặt</div>
-          <button type="button" className={`tts-nav${section === 'engines' ? ' active' : ''}`} onClick={() => go('engines')}>
-            <IconGear /> TTS Engines
-          </button>
-          <button type="button" className={`tts-nav${section === 'audio' ? ' active' : ''}`} onClick={() => go('audio')}>
-            <IconSpeaker size={14} /> Cấu hình âm thanh
-          </button>
-          <button type="button" className={`tts-nav${section === 'match' ? ' active' : ''}`} onClick={() => go('match')}>
-            <IconClock /> Khớp thời lượng
-          </button>
-          <button type="button" className={`tts-nav${section === 'advanced' ? ' active' : ''}`} onClick={() => go('advanced')}>
-            <IconList /> Tùy chọn nâng cao
+            <IconClone /> {t('Clone giọng nói', 'Clone voice')}
+            <span className="pill-new">{t('Mới', 'New')}</span>
           </button>
         </div>
 
@@ -1445,10 +1521,20 @@ export default function TtsStudio({
           </div>
           {vieneu && !vieneu.installed && (
             <p className="tts-engine-hint">
-              {t('Mở Cấu hình → Thiết lập để cài gói AI.', 'Open Settings → Setup to install AI packages.')}
+              {onOpenSetup ? (
+                <button type="button" className="tts-link" onClick={() => onOpenSetup()}>
+                  {t('Mở Cấu hình → Thiết lập để cài VieNeu.', 'Open Settings → Setup to install VieNeu.')}
+                </button>
+              ) : (
+                t('Mở Cấu hình → Thiết lập để cài VieNeu.', 'Open Settings → Setup to install VieNeu.')
+              )}
             </p>
           )}
-          <button type="button" className="tts-link" onClick={() => void loadStatus()}>
+          <button
+            type="button"
+            className="tts-link"
+            onClick={() => void loadStatus()}
+          >
             {t('Làm mới trạng thái', 'Refresh status')}
           </button>
         </div>
@@ -1479,8 +1565,8 @@ export default function TtsStudio({
           </div>
         </div>
 
-        {(isFullDash || section === 'clone') && (
-          <div className="tts-mobile-mode-tabs" role="tablist" aria-label="Chế độ tạo giọng">
+        {(isFullDash || section === 'clone' || section === 'transcribe') && (
+          <div className="tts-mobile-mode-tabs" role="tablist" aria-label={t('Chế độ', 'Mode')}>
             <button
               type="button"
               role="tab"
@@ -1488,7 +1574,16 @@ export default function TtsStudio({
               className={isFullDash ? 'active' : undefined}
               onClick={() => go('overview')}
             >
-              <IconMic size={16} /> Tạo giọng nói
+              <IconMic size={16} /> {t('Tạo giọng nói', 'Create voice')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={section === 'transcribe'}
+              className={section === 'transcribe' ? 'active' : undefined}
+              onClick={() => go('transcribe')}
+            >
+              <IconPaste size={16} /> {t('Chép lời', 'Transcribe')}
             </button>
             <button
               type="button"
@@ -1497,7 +1592,7 @@ export default function TtsStudio({
               className={section === 'clone' ? 'active' : undefined}
               onClick={() => go('clone')}
             >
-              <IconClone /> Clone giọng nói
+              <IconClone /> {t('Clone giọng nói', 'Clone voice')}
             </button>
           </div>
         )}
@@ -1508,14 +1603,39 @@ export default function TtsStudio({
           <div className="tts-coming">
             <div className="tts-coming-card">
               <div className="tts-coming-ico">🚀</div>
-              <h2>{SECTION_LABELS[section] || 'Tính năng'}</h2>
-              <p>Trang này đang được phát triển.</p>
-              <p className="tts-coming-soon">Sắp ra mắt…</p>
+              <h2>{SECTION_LABELS[section] || t('Tính năng', 'Feature')}</h2>
+              <p>{t('Trang này đang được phát triển.', 'This page is under development.')}</p>
+              <p className="tts-coming-soon">{t('Sắp ra mắt…', 'Coming soon…')}</p>
               <button type="button" className="tts-btn tts-btn-blue" onClick={() => go('overview')}>
-                Về Tổng quan
+                {t('Về Tổng quan', 'Back to overview')}
               </button>
             </div>
           </div>
+        )}
+
+        {section === 'transcribe' && (
+          <TtsTranscribePanel
+            file={transcribeFile}
+            lang={transcribeLang}
+            engine={transcribeEngine}
+            busy={busy}
+            resultText={transcribeResult}
+            onFileChange={setTranscribeFile}
+            onLangChange={setTranscribeLang}
+            onEngineChange={setTranscribeEngine}
+            onSubmit={() => void onTranscribe()}
+            onResultChange={setTranscribeResult}
+            onApplyToTts={() => {
+              setText(transcribeResult)
+              try {
+                localStorage.setItem(TTS_TEXT_LS_KEY, transcribeResult)
+              } catch {
+                /* ignore */
+              }
+              go('overview')
+              toast.success(t('Đã đưa lời vào Tạo giọng nói', 'Sent transcript to Create voice'))
+            }}
+          />
         )}
 
         {section === 'voice' && (

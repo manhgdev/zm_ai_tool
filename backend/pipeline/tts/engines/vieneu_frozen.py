@@ -116,16 +116,22 @@ def main():
                 if backend == "pytorch":
                     _register()
                 from vieneu import Vieneu
-                client = Vieneu(mode="v3turbo", backend=backend, device=device)
-                actual_backend = str(client.backend)
-                actual_device = str(getattr(client.engine.device, "type", client.engine.device))
-                if actual_backend != backend or actual_device.split(':')[0] != device.split(':')[0]:
-                    raise RuntimeError(f"VIENEU_DEVICE_MISMATCH: requested {backend}/{device}, loaded {actual_backend}/{actual_device}")
-                if actual_backend == "pytorch":
-                    model_device = str(next(client.engine.model.parameters()).device)
-                    if model_device.split(':')[0] != device.split(':')[0]:
-                        raise RuntimeError(f"VIENEU_DEVICE_MISMATCH: model weights on {model_device}, requested {device}")
-                _out({"ok": True, "backend": actual_backend, "device": actual_device})
+                mode = msg.get("mode") or "v3turbo"
+                if mode == "v3nano":
+                    client = Vieneu(mode="v3nano")
+                    actual_backend = "onnx"
+                    actual_device = "cpu"
+                else:
+                    client = Vieneu(mode="v3turbo", backend=backend, device=device)
+                    actual_backend = str(client.backend)
+                    actual_device = str(getattr(client.engine.device, "type", client.engine.device))
+                    if actual_backend != backend or actual_device.split(':')[0] != device.split(':')[0]:
+                        raise RuntimeError(f"VIENEU_DEVICE_MISMATCH: requested {backend}/{device}, loaded {actual_backend}/{actual_device}")
+                    if actual_backend == "pytorch":
+                        model_device = str(next(client.engine.model.parameters()).device)
+                        if model_device.split(':')[0] != device.split(':')[0]:
+                            raise RuntimeError(f"VIENEU_DEVICE_MISMATCH: model weights on {model_device}, requested {device}")
+                _out({"ok": True, "backend": actual_backend, "device": actual_device, "mode": mode})
                 continue
             if op == "ping":
                 _out({"ok": True, "ready": client is not None})
@@ -174,10 +180,11 @@ def _sanitize_no_proxy(env: dict[str, str]) -> None:
 
 
 class _Worker:
-    def __init__(self, py: Path, backend: str, device: str) -> None:
+    def __init__(self, py: Path, backend: str, device: str, mode: str = "v3turbo") -> None:
         self.backend = backend
         self.device = device
-        self.key = f"{backend}|{device}"
+        self.mode = mode or "v3turbo"
+        self.key = f"{self.mode}|{backend}|{device}"
         self._lock = threading.Lock()
         self._responses: queue.Queue[bytes | None] = queue.Queue()
         self._stderr: deque[str] = deque(maxlen=30)
@@ -220,7 +227,10 @@ class _Worker:
         except Exception:
             pass
         try:
-            init = self._rpc({"op": "init", "backend": backend, "device": device}, timeout=300)
+            init = self._rpc(
+                {"op": "init", "backend": backend, "device": device, "mode": self.mode},
+                timeout=300,
+            )
         except BaseException:
             self.close()
             raise
@@ -326,8 +336,11 @@ class _Worker:
                 pass
 
 
-def _acquire(backend: str, device: str) -> _Worker:
-    key = f"{backend}|{device}"
+def _acquire(backend: str, device: str, mode: str = "v3turbo") -> _Worker:
+    mode = mode or "v3turbo"
+    if mode == "v3nano":
+        backend, device = "onnx", "cpu"
+    key = f"{mode}|{backend}|{device}"
     with _pool_lock:
         bucket = _idle.setdefault(key, [])
         while bucket:
@@ -340,7 +353,7 @@ def _acquire(backend: str, device: str) -> _Worker:
                 pass
             if w in _all_workers:
                 _all_workers.remove(w)
-        w = _Worker(runtime_python(), backend, device)
+        w = _Worker(runtime_python(), backend, device, mode=mode)
         _all_workers.append(w)
         return w
 
@@ -421,6 +434,13 @@ def runtime_torch_cuda_ready(*, refresh: bool = False) -> bool:
 
 
 def resolve_backend() -> tuple[str, str]:
+    try:
+        from pipeline.tts.engines.vieneu import MODE_NANO, current_mode
+
+        if current_mode() == MODE_NANO:
+            return "onnx", "cpu"
+    except Exception:
+        pass
     from pipeline.core.accel import preferred_vieneu_backend
 
     return preferred_vieneu_backend()
@@ -432,9 +452,12 @@ def probe() -> tuple[bool, str]:
         return False, "thiếu Python runtime (.venv-runtime)"
     backend, device = resolve_backend()
     try:
-        w = _acquire(backend, device)
+        from pipeline.tts.engines.vieneu import current_mode
+
+        mode = current_mode()
+        w = _acquire(backend, device, mode=mode)
         _release(w)
-        return True, f"{backend}/{device}"
+        return True, f"{mode}/{backend}/{device}"
     except Exception as e:
         return False, str(e)[-4000:]
 
@@ -453,14 +476,20 @@ def synthesize(
     if not py.is_file():
         raise RuntimeError("Thiếu .venv-runtime — vào Thiết lập → Cài gói AI")
     out_wav.parent.mkdir(parents=True, exist_ok=True)
+    from pipeline.tts.engines.vieneu import MODE_NANO, current_mode
+
+    mode = current_mode()
     # Prefer resolved GPU even if caller passed cpu defaults
     try:
         b2, d2 = resolve_backend()
-        if backend in ("", "onnx", "cpu") or device in ("", "cpu"):
+        if mode == MODE_NANO:
+            backend, device = "onnx", "cpu"
+        elif backend in ("", "onnx", "cpu") or device in ("", "cpu"):
             backend, device = b2, d2
     except Exception:
-        pass
-    w = _acquire(backend, device)
+        if mode == MODE_NANO:
+            backend, device = "onnx", "cpu"
+    w = _acquire(backend, device, mode=mode)
     try:
         from pipeline.core.jobs import is_cancelled, current_job_id, Cancelled
 

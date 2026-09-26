@@ -7,6 +7,7 @@ type Props = {
   isDesktopApp?: boolean
   sideOpen?: boolean
   onSideOpenChange?: (open: boolean) => void
+  onOpenSetup?: () => void
 }
 
 export default function TtsPage({
@@ -16,6 +17,7 @@ export default function TtsPage({
   isDesktopApp,
   sideOpen,
   onSideOpenChange,
+  onOpenSetup,
 }: Props) {
   return (
     <TtsStudio
@@ -25,6 +27,7 @@ export default function TtsPage({
       isDesktopApp={isDesktopApp}
       sideOpen={sideOpen}
       onSideOpenChange={onSideOpenChange}
+      onOpenSetup={onOpenSetup}
     />
   )
 }

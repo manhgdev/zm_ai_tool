@@ -161,6 +161,131 @@ def api_tts_studio_synth(body: StudioSynthIn):
     return {"id": job_id, "job_id": job_id, "running": True}
 
 
+@router.post("/api/tts/studio/transcribe")
+async def api_tts_studio_transcribe(
+    lang: str = "auto",
+    engine: str = "whisper",
+    file: UploadFile = File(...),
+):
+    """Chép lời → plain text for TTS Studio.
+
+    Engines (giống Clone Video): whisper | capcut | paddleocr | subtitle.
+    Returns job_id immediately; poll /jobs/{id}/progress for pct + final `text`.
+    """
+    import threading as _threading
+    import uuid as _uuid
+
+    from pipeline.core.media import extract_audio
+    from pipeline.tts.studio import (
+        set_job_complete,
+        set_job_error,
+        set_job_progress,
+        set_job_progress_pct,
+    )
+    from pipeline.tts.voice_store import TTS_TEMP
+
+    ensure_vieneu_dirs()
+    eng = (engine or "whisper").strip().lower()
+    if eng not in {"whisper", "capcut", "paddleocr", "subtitle"}:
+        raise HTTPException(400, "engine phải là whisper | capcut | paddleocr | subtitle")
+
+    job_id = _uuid.uuid4().hex[:12]
+    ext = Path(file.filename or "audio.wav").suffix.lower() or ".wav"
+    audio_ext = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
+    video_ext = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v"}
+    sub_ext = {".srt", ".vtt"}
+
+    if eng == "subtitle":
+        if ext not in sub_ext:
+            raise HTTPException(400, "Engine phụ đề cần file .srt hoặc .vtt")
+    elif eng == "paddleocr":
+        if ext not in video_ext:
+            raise HTTPException(400, "OCR cần file video (chữ trên màn hình)")
+    elif ext not in audio_ext | video_ext:
+        raise HTTPException(400, "Định dạng không hỗ trợ — dùng audio/video phổ biến")
+
+    raw_path = TTS_TEMP / f"asr_{job_id}{ext}"
+    wav_path = TTS_TEMP / f"asr_{job_id}.wav"
+    set_job_progress(job_id, 1, 100, "Đang nhận file…")
+    try:
+        with raw_path.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as e:
+        raise HTTPException(500, f"Không lưu được file: {e}") from e
+
+    source_lang = (lang or "auto").strip() or "auto"
+
+    def _join_text(rows: list) -> str:
+        parts: list[str] = []
+        for seg in rows or []:
+            piece = str(seg.get("source") or seg.get("text") or "").strip()
+            if piece:
+                parts.append(piece)
+        return " ".join(parts).strip()
+
+    def _run() -> None:
+        from pipeline.tts.studio import _jobs_lock, _running
+
+        with _jobs_lock:
+            _running[job_id] = True
+        try:
+            rows: list = []
+            if eng == "subtitle":
+                set_job_progress_pct(job_id, 20, "Đang đọc phụ đề…")
+                from pipeline.subtitles import subtitle_segments
+
+                rows = subtitle_segments(raw_path)
+            elif eng == "capcut":
+                set_job_progress_pct(job_id, 12, "CapCut: đang gửi file…")
+                from pipeline.capcut_stt import transcribe_and_translate
+
+                def _cap_progress(message: str) -> None:
+                    set_job_progress_pct(job_id, 35, message or "CapCut: đang nhận dạng…")
+
+                source_rows, _translated = transcribe_and_translate(
+                    raw_path,
+                    source_lang,
+                    "vi",
+                    require_translation=False,
+                    progress=_cap_progress,
+                )
+                rows = source_rows
+            elif eng == "paddleocr":
+                set_job_progress_pct(job_id, 15, "Đang OCR chữ trên màn…")
+                from pipeline.ocr.extract import asr_paddleocr
+
+                rows = asr_paddleocr(
+                    raw_path,
+                    None,
+                    reuse_frames=False,
+                    tag=f"tts_{job_id}",
+                    workers=0,
+                    source_lang=source_lang,
+                )
+            else:
+                set_job_progress_pct(job_id, 8, "Đang chuẩn bị âm thanh…")
+                extract_audio(raw_path, wav_path)
+                set_job_progress_pct(job_id, 20, "Đang nhận dạng (Whisper)…")
+                from pipeline.asr import asr_whisper
+
+                rows = asr_whisper(wav_path, source_lang, workers=0)
+
+            text = _join_text(rows)
+            if not text:
+                raise RuntimeError("Không nhận dạng được lời thoại trong file")
+            set_job_complete(job_id, "Đã chép lời xong.", text=text)
+        except Exception as e:
+            set_job_error(job_id, e, message="Chép lời thất bại.")
+            import logging
+            logging.getLogger(__name__).error("tts_studio_transcribe error: %s", e)
+        finally:
+            raw_path.unlink(missing_ok=True)
+            wav_path.unlink(missing_ok=True)
+
+    _threading.Thread(target=_run, name=f"studio-asr-{job_id[:8]}", daemon=True).start()
+    return {"id": job_id, "job_id": job_id, "running": True, "engine": eng}
+
+
 @router.get("/api/tts/studio/history")
 def api_tts_studio_history():
     from pipeline.tts.studio import list_history

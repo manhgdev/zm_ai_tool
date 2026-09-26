@@ -115,3 +115,53 @@ def api_tts_status():
     except Exception as e:
         raise HTTPException(500, str(e)) from e
 
+
+@router.post("/api/tts/warm")
+def api_tts_warm():
+    """Warm-load VieNeu when opening /text-to-speech — non-blocking."""
+    from pipeline.tts.engines import vieneu as vieneu_engine
+
+    def _run() -> None:
+        try:
+            vieneu_engine.warm()
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, name="tts-warm", daemon=True).start()
+    return {
+        "ok": True,
+        "loadState": getattr(vieneu_engine, "_load_state", "loading"),
+        "installed": bool(vieneu_engine.available()),
+        "mode": vieneu_engine.current_mode(),
+    }
+
+
+class VieNeuModelIn(BaseModel):
+    mode: str
+
+
+@router.post("/api/tts/vieneu/model")
+def api_tts_vieneu_model(body: VieNeuModelIn):
+    """Select VieNeu model mode (v3turbo | v3nano) and warm-load in background."""
+    from pipeline.tts.engines import vieneu as vieneu_engine
+
+    try:
+        mode = vieneu_engine.set_mode(body.mode)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    def _run() -> None:
+        try:
+            vieneu_engine.warm()
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, name="tts-mode-warm", daemon=True).start()
+    return {
+        "ok": True,
+        "mode": mode,
+        "model": vieneu_engine.status().get("model"),
+        "models": vieneu_engine.model_catalog(selected=mode),
+        "loadState": getattr(vieneu_engine, "_load_state", "loading"),
+    }
+

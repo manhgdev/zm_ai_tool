@@ -29,6 +29,19 @@ export type EngineStatus = {
   loadState?: string
   device?: string
   model?: string
+  mode?: string
+  models?: Array<{
+    id: string
+    name: string
+    status: string
+    format: string
+    device: string
+    bilingual: boolean
+    features: string
+    speed: string
+    selectable?: boolean
+    selected?: boolean
+  }>
   version?: string
   message?: string
   presetCount?: number

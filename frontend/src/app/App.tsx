@@ -910,6 +910,10 @@ export default function App() {
             void api.voices('all').then(setVoices).catch(() => {})
           }}
           isDesktopApp={isDesktopApp}
+          onOpenSetup={() => {
+            setConfigSection('setup')
+            setConfigOpen(true)
+          }}
         />
       ) : appMode === 'license' && !licenseBlocked ? (
         <LicensePage status={licenseStatus || EMPTY_LICENSE} onStatusChange={setLicenseStatus} />
