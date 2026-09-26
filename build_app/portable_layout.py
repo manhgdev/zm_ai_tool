@@ -323,7 +323,21 @@ def remove_stale_macos_app_duplicates(
             parent = other_res.parent
             if not (os.access(parent, os.W_OK) or os.access(other_res, os.W_OK)):
                 continue
-            shutil.rmtree(other_res)
+            try:
+                shutil.rmtree(other_res)
+            except OSError:
+                # Root-owned app under a writable Applications folder: rename aside.
+                aside = parent / f".{other_res.name}.removed-{os.getpid()}"
+                try:
+                    if aside.exists():
+                        shutil.rmtree(aside, ignore_errors=True)
+                    other_res.rename(aside)
+                except OSError:
+                    continue
+                try:
+                    shutil.rmtree(aside)
+                except OSError:
+                    pass
             removed.append(str(other_res))
         except OSError:
             continue

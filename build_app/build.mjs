@@ -155,8 +155,8 @@ function canWritePath(target) {
 
 /**
  * Overwrite a single ZM AI TOOL.app install.
- * Prefer /Applications when writable (or via .pkg); else ~/Applications.
- * Always remove the other location so Spotlight/Launchpad do not show dual apps.
+ * Prefer /Applications when its parent is writable (rename-aside root-owned apps);
+ * else ~/Applications. Always remove the other location.
  */
 function installMacOverwrite(appPath, pkgPath = '') {
   if (process.env.SKIP_INSTALL === '1' || process.env.SKIP_INSTALL === 'true') return
@@ -174,24 +174,70 @@ function installMacOverwrite(appPath, pkgPath = '') {
   })
 
   const removeQuiet = (target) => {
+    if (!existsSync(target)) return
     try {
-      if (existsSync(target)) rmSync(target, { recursive: true, force: true })
-    } catch {
-      /* root-owned sibling may remain; launch cleanup retries later */
-    }
-  }
-
-  if (canWritePath(systemApp) || (!existsSync(systemApp) && canWritePath('/Applications'))) {
-    const sys = spawnSync('/usr/bin/ditto', [appPath, systemApp], { encoding: 'utf8' })
-    if (sys.status === 0) {
-      spawnSync('/usr/bin/xattr', ['-cr', systemApp], { stdio: 'ignore' })
-      removeQuiet(homeApp)
-      console.log(`Đã cài đè: ${systemApp}`)
+      rmSync(target, { recursive: true, force: true })
       return
+    } catch {
+      /* root-owned: rename aside when parent is writable */
+    }
+    const parent = path.dirname(target)
+    const aside = path.join(parent, `.${path.basename(target)}.removed-${process.pid}`)
+    try {
+      renameSync(target, aside)
+      try {
+        rmSync(aside, { recursive: true, force: true })
+      } catch {
+        /* hidden leftover ok */
+      }
+    } catch {
+      /* leave sibling; updater/launch cleanup retries */
     }
   }
 
-  // Root-owned /Applications copy (from prior pkg install) — use installer, not ditto.
+  const installViaRename = (destination) => {
+    const parent = path.dirname(destination)
+    if (!canWritePath(parent) && !canWritePath(destination)) return false
+    const staged = path.join(parent, `.${path.basename(destination)}.updating-${process.pid}`)
+    try {
+      rmSync(staged, { recursive: true, force: true })
+    } catch {
+      /* ignore */
+    }
+    const stagedCopy = spawnSync('/usr/bin/ditto', [appPath, staged], { encoding: 'utf8' })
+    if (stagedCopy.status !== 0) return false
+    if (existsSync(destination)) {
+      removeQuiet(destination)
+      if (existsSync(destination)) {
+        try {
+          rmSync(staged, { recursive: true, force: true })
+        } catch {
+          /* ignore */
+        }
+        return false
+      }
+    }
+    try {
+      renameSync(staged, destination)
+    } catch {
+      try {
+        rmSync(staged, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+      return false
+    }
+    spawnSync('/usr/bin/xattr', ['-cr', destination], { stdio: 'ignore' })
+    return true
+  }
+
+  if (installViaRename(systemApp)) {
+    removeQuiet(homeApp)
+    console.log(`Đã cài đè: ${systemApp}`)
+    return
+  }
+
+  // Root-owned /Applications copy — try passwordless pkg installer.
   if (pkgPath && existsSync(pkgPath)) {
     const elevated = spawnSync('sudo', ['-n', 'installer', '-pkg', pkgPath, '-target', '/'], {
       encoding: 'utf8',
@@ -208,9 +254,14 @@ function installMacOverwrite(appPath, pkgPath = '') {
   }
 
   mkdirSync(path.dirname(homeApp), { recursive: true })
-  const home = spawnSync('/usr/bin/ditto', [appPath, homeApp], { encoding: 'utf8' })
-  if (home.status === 0) {
-    spawnSync('/usr/bin/xattr', ['-cr', homeApp], { stdio: 'ignore' })
+  if (installViaRename(homeApp) || (() => {
+    const home = spawnSync('/usr/bin/ditto', [appPath, homeApp], { encoding: 'utf8' })
+    if (home.status === 0) {
+      spawnSync('/usr/bin/xattr', ['-cr', homeApp], { stdio: 'ignore' })
+      return true
+    }
+    return false
+  })()) {
     removeQuiet(systemApp)
     console.log(`Đã cài đè: ${homeApp}`)
     return

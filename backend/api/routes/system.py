@@ -1369,10 +1369,9 @@ def _macos_app_bundle() -> Path:
     return Path.home() / "Applications" / "ZM AI TOOL.app"
 
 
-def _macos_update_script(updates: Path) -> Path:
-    script = updates / "apply-macos-update.sh"
-    script.write_text(
-        """#!/bin/bash
+def _macos_update_script_body() -> str:
+    """Shell body for the detached macOS updater (also written for support logs)."""
+    return """#!/bin/bash
 set -u
 
 APP_PID="$1"
@@ -1397,19 +1396,49 @@ same_app() {
   [ "$left" = "$right" ]
 }
 
+# Root-owned /Applications/*.app: rm -rf fails, but mv aside works when parent is writable.
 remove_app_if_possible() {
   app="$1"
-  [ -d "$app" ] || return 0
+  [ -e "$app" ] || return 0
   parent="$(/usr/bin/dirname "$app")"
-  if [ -w "$parent" ] || [ -w "$app" ]; then
-    /bin/rm -rf "$app" && { log "Da xoa ban trung: $app"; return 0; }
+  base="$(/usr/bin/basename "$app")"
+  aside="$parent/.$base.removed.$(/bin/date +%s).$$"
+
+  if [ -w "$parent" ]; then
+    if /bin/mv "$app" "$aside" 2>/dev/null; then
+      log "Da go ban trung (doi ten): $app"
+      /bin/rm -rf "$aside" 2>/dev/null || /usr/bin/sudo -n /bin/rm -rf "$aside" >/dev/null 2>&1 || true
+      return 0
+    fi
+    if /bin/rm -rf "$app" 2>/dev/null; then
+      log "Da xoa ban trung: $app"
+      return 0
+    fi
+  elif [ -w "$app" ]; then
+    if /bin/rm -rf "$app" 2>/dev/null; then
+      log "Da xoa ban trung: $app"
+      return 0
+    fi
   fi
   if /usr/bin/sudo -n /bin/rm -rf "$app" >/dev/null 2>&1; then
     log "Da xoa ban trung (sudo -n): $app"
     return 0
   fi
+  quoted="$(/usr/bin/printf '%q' "$app")"
+  if /usr/bin/osascript -e "do shell script \"/bin/rm -rf $quoted\" with administrator privileges" >/dev/null 2>&1; then
+    log "Da xoa ban trung (admin): $app"
+    return 0
+  fi
   log "Khong xoa duoc ban trung: $app"
   return 1
+}
+
+cleanup_stale_update_dirs() {
+  for root in "/Applications" "$HOME/Applications"; do
+    [ -d "$root" ] || continue
+    [ -w "$root" ] || continue
+    /usr/bin/find "$root" -maxdepth 1 \\( -name '.ZM AI TOOL.app.updating.*' -o -name '.ZM AI TOOL.app.removed.*' \\) -exec /bin/rm -rf {} + 2>/dev/null || true
+  done
 }
 
 # Keep a single install after update (Spotlight/Launchpad otherwise show both).
@@ -1420,11 +1449,18 @@ remove_duplicate_apps() {
     same_app "$other" "$keep" && continue
     remove_app_if_possible "$other" || true
   done
+  cleanup_stale_update_dirs
 }
 
 launch_and_wait() {
   app="$1"
+  case "$app" in
+    *.app) ;;
+    *) log "Bo qua mo duong dan khong phai .app: $app"; return 1 ;;
+  esac
+  [ -d "$app/Contents/MacOS" ] || return 1
   executable="$app/Contents/MacOS/ZM AI TOOL"
+  # -n + bundle path only — never open loose scripts (Script Editor / IDE).
   /usr/bin/open -n "$app" >/dev/null 2>&1 || return 1
   attempts=0
   while [ "$attempts" -lt 90 ]; do
@@ -1473,7 +1509,16 @@ install_app() {
     staged="$parent/.$name.updating.$$"
     /bin/rm -rf "$staged"
     /usr/bin/ditto "$SOURCE_APP" "$staged" || return 1
-    /bin/rm -rf "$destination"
+    # Never rm -rf root-owned destination (Permission denied); rename aside first.
+    if [ -d "$destination" ]; then
+      aside="$parent/.$name.removed.$(/bin/date +%s).$$"
+      if /bin/mv "$destination" "$aside" 2>/dev/null; then
+        /bin/rm -rf "$aside" 2>/dev/null || true
+      elif ! /bin/rm -rf "$destination" 2>/dev/null; then
+        /bin/rm -rf "$staged"
+        return 1
+      fi
+    fi
     /bin/mv "$staged" "$destination" || {
       restore_backup "$destination" "$backup" || true
       return 1
@@ -1556,7 +1601,13 @@ if install_app "$TARGET_APP"; then
   finish_success "$TARGET_APP"
 fi
 
-# Prefer silent pkg overwrite of /Applications over creating a second copy.
+# /Applications parent is often writable even when the app itself is root-owned.
+# Rename-aside install works without a password — prefer it over a second copy.
+if ! same_app "$TARGET_APP" "$SYSTEM_APP" && [ -w "/Applications" ] && install_app "$SYSTEM_APP"; then
+  log "Cap nhat thanh cong vao $SYSTEM_APP (doi ten ban root-owned)"
+  finish_success "$SYSTEM_APP"
+fi
+
 case "$PACKAGE" in
   *.pkg)
     if /usr/bin/sudo -n /usr/sbin/installer -pkg "$PACKAGE" -target / >/dev/null 2>&1; then
@@ -1570,34 +1621,51 @@ esac
 
 if ! same_app "$TARGET_APP" "$USER_APP" && install_app "$USER_APP"; then
   log "Da chuyen ban moi sang $USER_APP vi target cu khong cho ghi"
-  /usr/bin/osascript -e 'display notification "Đã mở bản mới từ thư mục Applications của tài khoản." with title "ZM AI TOOL"' >/dev/null 2>&1 || true
   finish_success "$USER_APP"
 fi
 
 show_error "Không thể ghi bản cập nhật hoặc bản mới không khởi động được."
 [ -d "$TARGET_APP" ] && /usr/bin/open -n "$TARGET_APP" >/dev/null 2>&1 || true
 exit 1
-""",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
+"""
+
+
+def _macos_update_script(updates: Path) -> Path:
+    """Persist updater body for support logs — no .sh suffix (editors open those)."""
+    script = updates / "apply-macos-update"
+    script.write_text(_macos_update_script_body(), encoding="utf-8")
+    script.chmod(0o700)
+    legacy = updates / "apply-macos-update.sh"
+    try:
+        legacy.unlink(missing_ok=True)
+    except OSError:
+        pass
     return script
 
 
 def _launch_macos_updater(package: Path) -> None:
-    script = _macos_update_script(package.parent)
-    subprocess.Popen(
+    updates = package.parent
+    body = _macos_update_script_body()
+    _macos_update_script(updates)  # support copy; execution is stdin below
+    # Avoid `open`/Launch Services on a .sh file (Script Editor / IDE).
+    proc = subprocess.Popen(
         [
             "/bin/bash",
-            str(script),
+            "-s",
+            "--",
             str(os.getpid()),
             str(package.resolve()),
             str(_macos_app_bundle()),
         ],
-        cwd=str(package.parent),
+        cwd=str(updates),
+        stdin=subprocess.PIPE,
         close_fds=True,
         start_new_session=True,
     )
+    if proc.stdin is None:
+        raise RuntimeError("Không mở được stdin cho trình cập nhật macOS")
+    proc.stdin.write(body.encode("utf-8"))
+    proc.stdin.close()
 
 
 def _spawn_windows_updater(command: list[str], *, started: Path, log_path: Path, **kwargs) -> None:

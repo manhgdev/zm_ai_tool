@@ -223,19 +223,27 @@ class PortableLayoutTest(unittest.TestCase):
         self.assertNotIn("-Verb RunAs", script)
 
     def test_macos_updater_uses_pkg_or_zip_relaunch_and_rollback(self) -> None:
-        from api.routes.system import _macos_update_script
+        from api.routes.system import _macos_update_script, _macos_update_script_body
 
+        body = _macos_update_script_body()
         with tempfile.TemporaryDirectory() as raw:
-            script = _macos_update_script(Path(raw)).read_text(encoding="utf-8")
+            script = _macos_update_script(Path(raw))
+            self.assertEqual(script.name, "apply-macos-update")
+            self.assertFalse((Path(raw) / "apply-macos-update.sh").exists())
+            self.assertEqual(script.read_text(encoding="utf-8"), body)
 
-        self.assertIn("pkgutil --expand-full", script)
-        self.assertIn("ditto -x -k", script)
-        self.assertIn("launch_and_wait", script)
-        self.assertIn("restore_backup", script)
-        self.assertIn("remove_duplicate_apps", script)
-        self.assertIn("sudo -n /usr/sbin/installer -pkg", script)
-        self.assertIn('$HOME/Applications/ZM AI TOOL.app', script)
-        self.assertNotIn("administrator privileges", script)
+        self.assertIn("pkgutil --expand-full", body)
+        self.assertIn("ditto -x -k", body)
+        self.assertIn("launch_and_wait", body)
+        self.assertIn("restore_backup", body)
+        self.assertIn("remove_duplicate_apps", body)
+        self.assertIn("sudo -n /usr/sbin/installer -pkg", body)
+        self.assertIn('$HOME/Applications/ZM AI TOOL.app', body)
+        self.assertIn("Da go ban trung (doi ten)", body)
+        self.assertIn(".$name.removed.", body)
+        self.assertIn("with administrator privileges", body)
+        self.assertNotIn("display notification", body)
+        self.assertIn("Bo qua mo duong dan khong phai .app", body)
 
     def test_macos_removes_older_duplicate_app_bundle(self) -> None:
         import plistlib
