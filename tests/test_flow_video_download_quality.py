@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from pipeline.flow.service import (
-    _video_download_menu_labels,
+    _pick_video_menu_item,
     _video_download_qualities_for_plan,
     _video_download_quality,
 )
@@ -36,17 +36,16 @@ class FlowVideoDownloadQualityTest(unittest.TestCase):
         self.assertEqual(_video_download_quality({"quality": "4K"}, "Pro"), "1080p")
         self.assertEqual(_video_download_quality({"quality": "1080p"}, "Free"), "720p")
 
-    def test_menu_labels_never_downgrade(self) -> None:
-        self.assertEqual(_video_download_menu_labels("360p"), ["360p"])
-        self.assertEqual(_video_download_menu_labels("720p"), ["720p"])
-        self.assertEqual(_video_download_menu_labels("1080p"), ["1080p Upscaled", "1080p"])
-        self.assertEqual(_video_download_menu_labels("4K"), ["4K Upscaled", "4K"])
-        for labels in (
-            _video_download_menu_labels("1080p"),
-            _video_download_menu_labels("4K"),
-        ):
-            self.assertNotIn("720p", labels)
-            self.assertNotIn("360p", labels)
+    def test_menu_pick_never_downgrades(self) -> None:
+        vi = ["270p Ảnh GIF động", "720p Kích thước gốc", "1080p Đã tăng độ phân giải", "4K Đã tăng độ phân giải"]
+        en = ["270p Animated GIF", "720p Original size", "1080p Upscaled"]
+        self.assertEqual(_pick_video_menu_item(vi, "720p"), 1)
+        self.assertEqual(_pick_video_menu_item(vi, "1080p"), 2)
+        self.assertEqual(_pick_video_menu_item(vi, "4K"), 3)
+        self.assertEqual(_pick_video_menu_item(vi, "360p"), 1)
+        self.assertEqual(_pick_video_menu_item(en, "360p"), 1)
+        self.assertIsNone(_pick_video_menu_item(en, "4K"))
+        self.assertIsNone(_pick_video_menu_item(["720p Original size"], "1080p"))
 
 
 if __name__ == "__main__":

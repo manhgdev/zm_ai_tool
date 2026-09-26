@@ -28,6 +28,7 @@ _PROJECT_RE = re.compile(r"^(?:https://(?:flow\.google\.com|labs\.google)(?::443
 _TERMINAL = {"done", "failed", "cancelled", "action_required"}
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 8
 _MAX_CONCURRENT_JOBS_PER_ACCOUNT = 18
+_VIDEO_GENERATION_TIMEOUT_S = 180
 _PROJECT_MIGRATION_RECOVERY_WINDOW_S = 600
 _PROFILE_COPY_IGNORES = {
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
@@ -194,15 +195,22 @@ def _video_download_quality(settings: dict[str, Any] | None, plan: str | None = 
     return preferred if preferred in allowed else allowed[-1]
 
 
-def _video_download_menu_labels(preferred: str) -> list[str]:
-    """Flow menu texts that deliver the requested tier — no silent downgrade."""
-    if preferred == "4K":
-        return ["4K Upscaled", "4K"]
-    if preferred == "1080p":
-        return ["1080p Upscaled", "1080p"]
-    if preferred == "360p":
-        return ["360p"]
-    return ["720p"]
+def _pick_video_menu_item(items: list[str], preferred: str) -> int | None:
+    """Index of the Flow download menu item for ``preferred`` — no silent downgrade.
+
+    Items read like "720p Kích thước gốc" / "1080p Upscaled"; the leading token is
+    the tier. 360p/720p may fall back to the original-size item, never 1080p/4K.
+    """
+    tier = str(preferred or "").strip().lower()
+    texts = [re.sub(r"\s+", " ", str(item or "")).strip().lower() for item in items]
+    for index, text in enumerate(texts):
+        if re.match(rf"{re.escape(tier)}(?![0-9a-z])", text):
+            return index
+    if tier in {"360p", "720p"}:
+        for index, text in enumerate(texts):
+            if "gốc" in text or "original" in text:
+                return index
+    return None
 
 
 def _video_media_ready(media: dict[str, Any] | None) -> bool:
@@ -1744,7 +1752,16 @@ class FlowService:
         """Open the account project; if deleted, create a replacement and continue."""
         try:
             await client._ensure_project_page(page)
-            return account
+            # A deleted project first loads its own URL, then Angular redirects to
+            # /404?reason=project a few seconds later — wait for either outcome.
+            for _ in range(16):
+                if "/404" in str(page.url or ""):
+                    break
+                if await page.locator("flow-grid-tile-container, [contenteditable='true'], textarea").count():
+                    break
+                await asyncio.sleep(0.5)
+            if "/404" not in str(page.url or ""):
+                return account
         except RuntimeError as exc:
             if "FLOW_PROJECT_NOT_FOUND" not in str(exc):
                 raise
@@ -2649,7 +2666,8 @@ class FlowService:
                 # no resolution tabs — ignore instead of FLOW_SETTING_MISMATCH.
                 _log.info("_prepare_ui_format: ignoring non-video resolution %r", resolution)
             else:
-                resolution_tab = await visible_tab(re.compile(rf"(?<!\d){re.escape(resolution_value)}(?!\w)", re.I))
+                # Tab text may be "360pinfo" (trailing info icon) — only forbid digits.
+                resolution_tab = await visible_tab(re.compile(rf"(?<!\d){re.escape(resolution_value)}(?!\d)", re.I))
                 if resolution_tab is None:
                     _log.info("_prepare_ui_format: resolution %s control is hidden; using Flow model default", resolution_value)
                     return
@@ -2849,6 +2867,37 @@ class FlowService:
                 found.append(item)
                 if len(found) >= max(1, int(count or 1)):
                     break
+            if kind == "video" and len(found) < max(1, int(count or 1)):
+                baseline_thumbs = {str(value) for value in job.get("baselineThumbs") or []}
+                try:
+                    tiles = await page.evaluate("""() =>
+                        [...document.querySelectorAll('flow-grid-tile-container')].slice(0, 24).map((tile, index) => {
+                            const thumb = tile.querySelector('.thumbnail');
+                            const text = (tile.innerText || '').trim().replace(/\\s+/g, ' ');
+                            const pct = text.match(/(\\d+)%/);
+                            return {
+                                index,
+                                thumb: thumb ? (thumb.currentSrc || thumb.src || '') : '',
+                                pct: pct ? Number(pct[1]) : -1,
+                                busy: !!tile.querySelector('[role="progressbar"], mat-progress-spinner, mat-spinner, .loading, .generating'),
+                            };
+                        })
+                    """) or []
+                except Exception:
+                    tiles = []
+                for tile in tiles:
+                    thumb = str(tile.get("thumb") or "")
+                    if (not thumb.startswith("http") or thumb in baseline_thumbs
+                            or tile.get("busy") or int(tile.get("pct") or -1) >= 0):
+                        continue
+                    media_id = f"flow-thumb:{thumb}"
+                    if media_id in used_ids or media_id in seen:
+                        continue
+                    seen.add(media_id)
+                    found.append({"id": media_id, "tag": "video", "src": thumb,
+                                  "tileIndex": int(tile.get("index") or 0)})
+                    if len(found) >= max(1, int(count or 1)):
+                        break
             return found
         by_id = {
             str(item.get("id")): item
@@ -2892,6 +2941,7 @@ class FlowService:
                     "submissionStartedAt": None,
                     "submissionProjectId": None,
                     "baselineMediaIds": [],
+                    "baselineThumbs": [],
                     "mediaIds": [],
                     "resumeOnly": False,
                     "progress": 0,
@@ -2916,6 +2966,7 @@ class FlowService:
                         "submissionStartedAt": None,
                         "submissionProjectId": None,
                         "baselineMediaIds": [],
+                        "baselineThumbs": [],
                         "mediaIds": [],
                         "resumeOnly": False,
                         "progress": 0,
@@ -3072,55 +3123,43 @@ class FlowService:
     ) -> None:
         """Open Flow's download menu and pick the exact requested tier (real file)."""
         preferred = _video_download_quality({"quality": quality})
-        labels = _video_download_menu_labels(preferred)
         output.parent.mkdir(parents=True, exist_ok=True)
+        grid_url = str(page.url or "")
         tile = page.locator("flow-grid-tile-container").nth(tile_index)
-        thumb = tile.locator(".thumbnail").first
-        await thumb.click()
-        await asyncio.sleep(1.2)
+        await tile.locator(".thumbnail").first.click()
         dl_btn = page.locator(
             'button[aria-label*="Tải"], button[aria-label*="Download"], '
             'button[aria-label*="download"], button:has-text("download"), button:has-text("Tải")'
         ).first
-        await dl_btn.click()
-        await asyncio.sleep(0.8)
-        last_error: Exception | None = None
-        for label in labels:
-            # exact=True so "1080p" does not match a different tier item by accident.
-            item = page.get_by_role("menuitem", name=label, exact=True)
-            try:
-                if await item.count() == 0:
-                    continue
-                async with page.expect_download(timeout=120_000) as dl_info:
-                    await item.first.click()
-                dl = await dl_info.value
-                await dl.save_as(str(output))
-                await page.keyboard.press("Escape")
-                await asyncio.sleep(0.4)
-                return
-            except Exception as exc:
-                last_error = exc
-                try:
-                    await page.keyboard.press("Escape")
-                except Exception:
-                    pass
-                await asyncio.sleep(0.3)
-                # Re-open menu for the next label attempt.
-                try:
-                    await dl_btn.click()
-                    await asyncio.sleep(0.6)
-                except Exception:
-                    pass
         try:
-            await page.keyboard.press("Escape")
-        except Exception:
-            pass
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError(
-            f"FLOW_DOWNLOAD_QUALITY_UNAVAILABLE: menu has no {preferred} "
-            f"(tried {', '.join(labels)})"
-        )
+            await dl_btn.wait_for(state="visible", timeout=10_000)
+            await dl_btn.click()
+            menu_items = page.get_by_role("menuitem")
+            await menu_items.first.wait_for(state="visible", timeout=5_000)
+            texts = [await menu_items.nth(i).inner_text() for i in range(await menu_items.count())]
+            index = _pick_video_menu_item(texts, preferred)
+            if index is None or await menu_items.nth(index).get_attribute("aria-disabled") == "true":
+                raise RuntimeError(
+                    f"FLOW_DOWNLOAD_QUALITY_UNAVAILABLE: menu has no {preferred} (menu: {texts})"
+                )
+            # Upscaled tiers render server-side first (~1–2 min).
+            async with page.expect_download(timeout=300_000) as dl_info:
+                await menu_items.nth(index).click()
+            dl = await dl_info.value
+            await dl.save_as(str(output))
+        finally:
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+            # Clicking a thumbnail opens /edit/<id>; return to the grid so the next
+            # tile index still points at the same list.
+            if "/edit/" in str(page.url or "") and grid_url and "/edit/" not in grid_url:
+                try:
+                    await page.goto(grid_url, wait_until="domcontentloaded", timeout=20_000)
+                    await page.locator("flow-grid-tile-container").first.wait_for(timeout=10_000)
+                except Exception:
+                    pass
 
     async def _download_upscaled_video_api(
         self,
@@ -3173,20 +3212,32 @@ class FlowService:
             raise RuntimeError(f"FLOW_DOWNLOAD_URL_MISSING: upsampled {_up_job.media_name}")
         await api.download(url, output)
 
+    async def _flow_tile_thumbs(self, page) -> list[str]:
+        """Thumbnail URLs already on the grid, so old clips are never re-claimed."""
+        try:
+            return list(await page.evaluate("""() =>
+                [...document.querySelectorAll('flow-grid-tile-container .thumbnail')]
+                    .map(img => img.currentSrc || img.src || '')
+                    .filter(Boolean)
+            """) or [])
+        except Exception:
+            return []
+
     async def _wait_and_download_flow_videos(
         self,
         page,
         job: dict[str, Any],
         count: int,
-        baseline_text: str,
+        baseline_thumbs: list[str],
         job_id: str,
-        timeout_s: int = 900,
+        timeout_s: int = _VIDEO_GENERATION_TIMEOUT_S,
     ) -> list[str]:
-        """Wait for newly generated Flow video tiles to complete and download MP4s directly."""
+        """Wait for this job's new Flow video tiles, then download via the quality menu."""
         deadline = time.monotonic() + timeout_s
         expected_count = max(1, min(4, int(count or 1)))
-        started = False
         started_at = time.monotonic()
+        known = set(baseline_thumbs or [])
+        tile_indexes: list[int] = []
         while time.monotonic() < deadline:
             self._check_cancel(job_id)
             flow_error = await self._claim_visible_flow_error(page, job, expected_count)
@@ -3201,65 +3252,47 @@ class FlowService:
                     "updatedAt": time.time(),
                 })
                 raise RuntimeError(_classify_visible_flow_error(flow_error))
-            info = await page.evaluate("""(expCount) => {
-                const tiles = Array.from(document.querySelectorAll('flow-grid-tile-container')).slice(0, expCount);
-                if (!tiles.length) return null;
-                return tiles.map(t => {
+            tiles = await page.evaluate("""() =>
+                [...document.querySelectorAll('flow-grid-tile-container')].slice(0, 24).map((t, index) => {
                     const text = (t.innerText || '').trim().replace(/\\s+/g, ' ');
-                    const hasThumb = !!t.querySelector('.thumbnail');
+                    const thumb = t.querySelector('.thumbnail');
                     const pctMatch = text.match(/(\\d+)%/);
-                    const pct = pctMatch ? parseInt(pctMatch[1], 10) : -1;
-                    const hasError = /lỗi|thất bại|failed|error|rejected|hoạt động bất thường|không thành công/i.test(text);
-                    const generating = !!(
-                        t.querySelector('[role="progressbar"], mat-progress-spinner, mat-spinner, .loading, .generating')
-                        || /(?:generating|đang tạo|processing|%)/i.test(text)
-                    );
-                    return { text, hasThumb, pct, hasError, generating };
-                });
-            }""", expected_count)
+                    return {
+                        index,
+                        label: t.getAttribute('aria-label') || '',
+                        thumb: thumb ? (thumb.currentSrc || thumb.src || '') : '',
+                        pct: pctMatch ? parseInt(pctMatch[1], 10) : -1,
+                        busy: !!t.querySelector('[role="progressbar"], mat-progress-spinner, mat-spinner, .loading, .generating'),
+                    };
+                })
+            """) or []
             elapsed = time.monotonic() - started_at
             current_progress = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
-            # Always tick past the old 30% RPC ceiling even when Flow tiles omit "%".
-            time_progress = max(30, min(88, 30 + int(elapsed / max(1, timeout_s) * 58)))
-            if not info:
-                store.patch_row("jobs", job_id, {
-                    "stage": "generating",
-                    "progress": max(current_progress, time_progress),
-                    "updatedAt": time.time(),
-                })
-                await asyncio.sleep(2)
-                continue
-            top_text = info[0].get("text", "")
-            if not started:
-                prompt_sub = str(job.get("prompt") or "")[:15].lower()
-                if (
-                    top_text != baseline_text
-                    or prompt_sub in top_text.lower()
-                    or any(item.get("generating") or item.get("hasThumb") or item.get("pct", -1) >= 0 for item in info)
-                ):
-                    started = True
-            if started:
-                pcts = [item["pct"] for item in info if item.get("pct", -1) != -1]
-                tile_progress = (sum(pcts) // len(pcts)) if pcts else time_progress
-                store.patch_row("jobs", job_id, {
-                    "stage": "generating",
-                    "progress": max(current_progress, min(90, max(tile_progress, time_progress))),
-                    "updatedAt": time.time(),
-                })
-                all_done = (
-                    len(info) >= expected_count
-                    and all(item.get("hasThumb") for item in info)
-                    and not any(item.get("generating") for item in info)
-                    and not any(item.get("pct", -1) >= 0 for item in info)
+            pcts = [tile["pct"] for tile in tiles if tile.get("pct", -1) >= 0]
+            time_progress = min(85, 20 + int(elapsed / 2))
+            store.patch_row("jobs", job_id, {
+                "stage": "generating",
+                "progress": max(current_progress, min(88, max(pcts) if pcts else time_progress)),
+                "updatedAt": time.time(),
+            })
+            # aria-label is a Flow-generated short title, not the prompt — ownership
+            # comes from "thumbnail absent before submit" + _claim_media_ids.
+            finished = [
+                tile for tile in tiles
+                if tile.get("thumb") and tile["thumb"] not in known
+                and tile.get("pct", -1) < 0 and not tile.get("busy")
+            ]
+            if len(finished) >= expected_count:
+                claimed = self._claim_media_ids(
+                    [f"flow-thumb:{tile['thumb']}" for tile in finished], expected_count,
                 )
-                if all_done:
+                if claimed:
+                    tile_indexes = [
+                        tile["index"] for tile in finished
+                        if f"flow-thumb:{tile['thumb']}" in claimed
+                    ]
+                    store.patch_row("jobs", job_id, {"mediaIds": claimed, "updatedAt": time.time()})
                     break
-            else:
-                store.patch_row("jobs", job_id, {
-                    "stage": "generating",
-                    "progress": max(current_progress, time_progress),
-                    "updatedAt": time.time(),
-                })
             await asyncio.sleep(1.5)
         else:
             raise RuntimeError(f"FLOW_GENERATION_TIMEOUT: videos did not complete within {timeout_s}s")
@@ -3271,10 +3304,10 @@ class FlowService:
             str(account.get("plan") or ""),
         )
         outputs: list[str] = []
-        for output_index in range(1, expected_count + 1):
+        for output_index, tile_index in enumerate(tile_indexes, 1):
             self._check_cancel(job_id)
             output = self._output_path(job, output_index, "mp4")
-            await self._download_video_via_flow_menu(page, output_index - 1, output, quality)
+            await self._download_video_via_flow_menu(page, tile_index, output, quality)
             outputs.append(str(output))
             self._log(
                 "success", "output_downloaded",
@@ -3282,87 +3315,6 @@ class FlowService:
                 details={"outputIndex": output_index, "path": str(output), "quality": quality},
             )
         return outputs
-
-    async def _wait_for_project_videos(
-        self,
-        api,
-        baseline_ids: set[str],
-        expected_count: int,
-        job_id: str,
-        timeout_s: int = 900,
-    ) -> list[str]:
-        """Resolve new Omni/Veo media IDs from project data.
-
-        Omni Flash can return an empty ``jobs`` array from the legacy video
-        endpoint interceptor. Project data remains authoritative and includes
-        the generated video's stable media ID and status.
-        """
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            self._check_cancel(job_id)
-            try:
-                data = await api.get_project_data()
-            except Exception as e:
-                _log.debug("_wait_for_project_videos: get_project_data error: %s", e)
-                data = {}
-            completed: list[tuple[str, str]] = []
-            for media in data.get("projectContents", {}).get("media", []):
-                if not isinstance(media, dict):
-                    continue
-                media_id = str(media.get("name") or "")
-                if not media_id or media_id in baseline_ids:
-                    continue
-                status = _video_media_status(media)
-                if status in _VIDEO_FAIL_STATUSES:
-                    raise RuntimeError(f"FLOW_GENERATION_FAILED: {media_id} ({status})")
-                # Do not require a ``video`` key — Veo Lite often sets SUCCESSFUL first.
-                if not _video_media_ready(media):
-                    continue
-                completed.append((str((media.get("mediaMetadata") or {}).get("createTime") or ""), media_id))
-            if not completed and hasattr(api, "_bm"):
-                try:
-                    page = await api._bm.page()
-                    items = await self._project_media_elements(page)
-                    for item in items:
-                        mid = str(item.get("id") or "")
-                        src = str(item.get("src") or "")
-                        tag = str(item.get("tag") or "")
-                        if not src.startswith("http"):
-                            continue
-                        if mid and mid not in baseline_ids:
-                            completed.append(("", mid))
-                            continue
-                        # Video without data-media-id: synthesize a stable id from the URL.
-                        if tag == "video" and not mid:
-                            synth = f"dom-video:{src.split('?', 1)[0][-80:]}"
-                            if synth not in baseline_ids:
-                                completed.append(("", synth))
-                except Exception:
-                    pass
-            if completed:
-                completed.sort()
-                claimed = self._claim_media_ids(
-                    [media_id for _, media_id in completed],
-                    expected_count,
-                )
-                if claimed:
-                    store.patch_row("jobs", job_id, {
-                        "stage": "generating",
-                        "progress": max(
-                            70,
-                            int((store.get_row("jobs", job_id) or {}).get("progress") or 0),
-                        ),
-                        "updatedAt": time.time(),
-                    })
-                    return claimed
-            store.patch_row("jobs", job_id, {
-                "stage": "generating",
-                # Smooth 20→88 over the full wait window (old elapsed/12 froze near 30%).
-                "progress": min(88, 20 + int((timeout_s - max(0.0, deadline - time.monotonic())) / max(1, timeout_s) * 68)),
-                "updatedAt": time.time(),
-            })
-            await asyncio.sleep(3)
-        raise RuntimeError("FLOW_GENERATION_TIMEOUT: no completed video appeared in project data")
 
     async def _resolve_video_fife_url(self, api, media_id: str) -> str:
         """Prefer project payload URL when status polling lags behind the UI."""
@@ -3475,13 +3427,33 @@ class FlowService:
                 )
                 media_ids = list(job.get("mediaIds") or [])
                 if not media_ids:
-                    media_ids = await self._recover_submitted_media(api, page, job)
+                    recovery_timeout = _VIDEO_GENERATION_TIMEOUT_S if job["kind"] == "video" else 900
+                    media_ids = await self._recover_submitted_media(api, page, job, timeout_s=recovery_timeout)
                     job = {**job, "mediaIds": media_ids}
                 outputs = []
                 if job["kind"] == "video":
                     from ._flow._api import VideoJob
                     for index, media_id in enumerate(media_ids, 1):
                         self._check_cancel(job_id)
+                        if str(media_id).startswith("flow-thumb:"):
+                            thumb = str(media_id)[len("flow-thumb:"):]
+                            tile_index = await page.evaluate("""(target) => {
+                                const tiles = [...document.querySelectorAll('flow-grid-tile-container')];
+                                return tiles.findIndex(tile => {
+                                    const image = tile.querySelector('.thumbnail');
+                                    return image && (image.currentSrc || image.src || '') === target;
+                                });
+                            }""", thumb)
+                            if int(tile_index) < 0:
+                                raise RuntimeError("FLOW_RESULT_NOT_FOUND: completed video tile disappeared")
+                            output = self._output_path(job, index, "mp4")
+                            account_plan = str(account.get("plan") or "")
+                            quality = _video_download_quality(settings, account_plan)
+                            await self._download_video_via_flow_menu(page, int(tile_index), output, quality)
+                            outputs.append(str(output))
+                            self._log("success", "output_downloaded", job_id=job_id,
+                                      account_id=account["id"], details={"outputIndex": index, "quality": quality})
+                            continue
                         remote_job = VideoJob.__new__(VideoJob)
                         remote_job.media_name = media_id
                         remote_job.project_id = account["projectId"]
@@ -3557,7 +3529,7 @@ class FlowService:
                     workflow_id = str(media.get("workflowId") or "")
                     if not workflow_id:
                         raise RuntimeError("FLOW_EXTEND_WORKFLOW_MISSING: prior video has no workflow")
-                    store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)})
+                    store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids), "baselineThumbs": baseline_thumbs})
                     remote = [await client.extend_video(media_id, workflow_id, job["prompt"])]
                     media_ids = [item.media_name for item in remote]
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model, "mediaIds": media_ids})
@@ -3572,10 +3544,7 @@ class FlowService:
                         outputs.append(str(output))
                         self._log("success", "output_downloaded", job_id=job_id, account_id=account["id"], details={"outputIndex": output_index, "path": str(output)})
                 else:
-                    baseline_text = await page.evaluate("""() => {
-                        const top = document.querySelector('flow-grid-tile-container');
-                        return top ? (top.innerText || '').trim().replace(/\\s+/g, ' ') : '';
-                    }""")
+                    baseline_thumbs = await self._flow_tile_thumbs(page)
                     await self._set_flow_count(page, count)
                     # Do not Escape here — it closes the prompt composer that
                     # _prepare_ui_* just focused, causing "prompt editor was not found".
@@ -3583,147 +3552,17 @@ class FlowService:
                     if not await client._ui.fill_prompt(page, job["prompt"]):
                         raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
                     await asyncio.sleep(1)
-                    from ._flow._ui_interceptor import UIInterceptor
-                    from ._flow._exceptions import GenerationTimeout
-                    interceptor = UIInterceptor()
-                    interceptor.attach(page)
                     store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)})
                     await self._click_flow_submit(page)
                     store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model})
-                    # Race interceptor RPC vs project-data poll — same pattern as images.
-                    # Omni/Veo often omit mediaIds from the RPC (or use a renamed
-                    # endpoint); waiting only on batchAsyncGenerateVideoText capped
-                    # progress at 30% then hung in the brittle UI-tile fallback.
-                    intercept_task = asyncio.create_task(
-                        interceptor.wait_for(
-                            "batchAsyncGenerateVideo",
-                            timeout=90,
-                            require_success=True,
-                        )
+                    # Flow's current UI submits via batchexecute (no aisandbox RPC to
+                    # intercept) and finished video tiles only carry a thumbnail — no
+                    # <video>/data-media-id — so tiles are the source of truth.
+                    outputs = await self._wait_and_download_flow_videos(
+                        page, job, count, baseline_thumbs, job_id,
                     )
-                    poll_task = asyncio.create_task(
-                        self._wait_for_project_videos(
-                            api, baseline_ids, count, job_id, timeout_s=900,
-                        )
-                    )
-                    media_ids: list[str] = []
-                    try:
-                        done, pending = await asyncio.wait(
-                            {intercept_task, poll_task},
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        for task in pending:
-                            task.cancel()
-                        await asyncio.gather(*pending, return_exceptions=True)
-                        finished = next(iter(done))
-                        result = finished.result()
-                        if finished is intercept_task:
-                            media_ids = _captured_video_ids((result.resp or {}) if result else {})
-                            if media_ids:
-                                self._log(
-                                    "success", "api_generation_submitted",
-                                    job_id=job_id, account_id=account["id"],
-                                    details={"mediaIds": media_ids},
-                                )
-                            else:
-                                self._log(
-                                    "warning", "ui_generation_fallback",
-                                    job_id=job_id, account_id=account["id"],
-                                    details={"kind": "video", "reason": "rpc_empty_jobs"},
-                                )
-                                media_ids = await self._wait_for_project_videos(
-                                    api, baseline_ids, count, job_id, timeout_s=900,
-                                )
-                        else:
-                            media_ids = list(result or [])
-                            self._log(
-                                "success", "poll_generation_complete",
-                                job_id=job_id, account_id=account["id"],
-                                details={"mediaIds": media_ids},
-                            )
-                    except GenerationTimeout:
-                        for task in (intercept_task, poll_task):
-                            if not task.done():
-                                task.cancel()
-                        await asyncio.gather(intercept_task, poll_task, return_exceptions=True)
-                        self._log(
-                            "warning", "ui_generation_fallback",
-                            job_id=job_id, account_id=account["id"],
-                            details={"kind": "video", "reason": "rpc_timeout"},
-                        )
-                        try:
-                            media_ids = await self._wait_for_project_videos(
-                                api, baseline_ids, count, job_id, timeout_s=900,
-                            )
-                        except Exception:
-                            media_ids = []
-                    except Exception:
-                        for task in (intercept_task, poll_task):
-                            if not task.done():
-                                task.cancel()
-                        await asyncio.gather(intercept_task, poll_task, return_exceptions=True)
-                        raise
-                    if media_ids:
-                        store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": max(30, int((store.get_row("jobs", job_id) or {}).get("progress") or 30)), "updatedAt": time.time()})
-                        from ._flow._api import VideoJob
-                        download_quality = _video_download_quality(settings, str(account.get("plan") or ""))
-                        async def _wait_and_dl_video(media_id: str, idx: int) -> str:
-                            self._check_cancel(job_id)
-                            out = self._output_path(job, idx, "mp4")
-                            store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
-                            # Prefer Flow download menu so 720p/1080p/4K is the real file
-                            # Flow serves for that tier (fifeUrl alone is often base 720p).
-                            try:
-                                await self._download_video_via_flow_menu(page, idx - 1, out, download_quality)
-                                return str(out)
-                            except Exception as menu_exc:
-                                _log.debug("flow menu download failed (%s); trying quality-safe fallback", menu_exc)
-                            if download_quality == "720p":
-                                direct = await self._resolve_video_fife_url(api, media_id)
-                                if direct:
-                                    await api.download(direct, out)
-                                    return str(out)
-                                if str(media_id).startswith("dom-video:"):
-                                    raise RuntimeError("FLOW_UI_CHANGED: video tile has no downloadable media id")
-                                remote_job = VideoJob.__new__(VideoJob)
-                                remote_job.media_name = media_id
-                                remote_job.project_id = account["projectId"]
-                                status = await api.wait_for_video(
-                                    remote_job, timeout_s=900,
-                                    on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 30 + int(elapsed / 12)), "updatedAt": time.time()}),
-                                )
-                                url = status.fife_url or await self._resolve_video_fife_url(api, media_id)
-                                if not url:
-                                    raise RuntimeError(f"FLOW_DOWNLOAD_URL_MISSING: {media_id}")
-                                await api.download(url, out)
-                                return str(out)
-                            if download_quality == "1080p":
-                                await self._download_upscaled_video_api(
-                                    api, media_id, out,
-                                    settings=settings if isinstance(settings, dict) else {},
-                                    preferred=download_quality,
-                                    job_id=job_id,
-                                )
-                                return str(out)
-                            raise RuntimeError(
-                                f"FLOW_DOWNLOAD_QUALITY_UNAVAILABLE: could not download real {download_quality} "
-                                f"(refusing base 720p fifeUrl). menu={menu_exc}"
-                            )
-                        outputs = []
-                        for i, mid in enumerate(media_ids[:count], 1):
-                            outputs.append(await _wait_and_dl_video(mid, i))
-                        asyncio.create_task(self._sync_credits(api, account["id"]))
-                    else:
-                        self._log(
-                            "warning", "ui_generation_fallback",
-                            job_id=job_id, account_id=account["id"],
-                            details={"kind": "video", "reason": "no_media_ids"},
-                        )
-                        outputs = await self._wait_and_download_flow_videos(
-                            page, job, count, baseline_text, job_id,
-                        )
-                        asyncio.create_task(self._sync_credits(api, account["id"]))
+                    asyncio.create_task(self._sync_credits(api, account["id"]))
             else:
                 model = str(settings.get("model") or "Nano Banana 2")
                 mode = str(job.get("mode") or "text")
@@ -4021,6 +3860,7 @@ class FlowService:
                 "submissionStartedAt": None,
                 "submissionProjectId": None,
                 "baselineMediaIds": [],
+                "baselineThumbs": [],
                 "mediaIds": [],
                 "status": "queued", "stage": "queued", "progress": 0,
                 "queueOrder": order, "error": None, "outputs": [], "updatedAt": time.time(),

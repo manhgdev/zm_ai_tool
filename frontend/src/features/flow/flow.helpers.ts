@@ -17,6 +17,7 @@ export const ACCOUNTS_KEY = "zm-flow-veo:accounts:v1";
 export const CREATE_KIND_KEY = "zm-flow-veo:create-kind:v1";
 export const ACTIVE_PANEL_KEY = "zm-flow-veo:active-panel:v1";
 export const IMAGE_MODE_KEY = "zm-flow-veo:image-mode:v1";
+export const VIDEO_MODE_KEY = "zm-flow-veo:video-mode:v1";
 export const COLLAPSED_FOLDERS_KEY = "zm-flow-veo:collapsed-folders:v1";
 
 // ── Model lists ───────────────────────────────────────────────────────────────
@@ -219,10 +220,43 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
         ratio: String(s.ratio || "16:9"),
         duration: String(s.duration || "8"),
         resolution: String(s.resolution || (raw.kind === "image" ? "1K" : "")),
+        quality: String(s.quality || ""),
         outputDir: String(s.outputDir || "flow"),
+        concurrency: s.concurrency != null ? String(s.concurrency) : undefined,
       },
     };
   });
+}
+
+/** Compact job meta line: model · ratio · duration · res · download quality. */
+export function formatFlowJobSettingsMeta(
+  kind: CreateKind,
+  settings: Pick<FlowJob["settings"], "model" | "ratio" | "duration" | "resolution" | "quality">,
+  opts?: { downloadLabel?: string },
+): string {
+  const parts: string[] = [];
+  const model = String(settings.model || "").trim();
+  const ratio = String(settings.ratio || "").trim();
+  if (model) parts.push(model);
+  if (ratio) parts.push(ratio);
+  if (kind === "video") {
+    const duration = String(settings.duration || "").trim();
+    if (duration) parts.push(/s$/i.test(duration) ? duration : `${duration}s`);
+    const resolution = String(settings.resolution || "").trim();
+    const quality = String(settings.quality || "").trim();
+    if (resolution) parts.push(resolution);
+    if (quality) {
+      const sameAsRes = resolution && quality.toLowerCase() === resolution.toLowerCase();
+      if (!sameAsRes) {
+        const label = String(opts?.downloadLabel || "").trim();
+        parts.push(label && resolution ? `${label} ${quality}` : quality);
+      }
+    }
+  } else {
+    const resolution = String(settings.resolution || "").trim();
+    if (resolution) parts.push(resolution);
+  }
+  return parts.join(" · ");
 }
 
 export function normalizeFlowAccounts(rows: FlowAccount[]): FlowAccount[] {

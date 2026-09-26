@@ -6,6 +6,7 @@ export type RailItem = "createImage" | "createVideo" | "queue" | "history" | "ac
 export type JobStatus = "processing" | "queued" | "done" | "failed" | "cancelled";
 export type CreateKind = "video" | "image";
 export type ImageMode = "text" | "edit" | "reference";
+export type VideoMode = "text" | "frame";
 export type PromptInputType = "prompt" | "txt" | "csv" | "json";
 
 export type FlowJob = {
@@ -31,6 +32,8 @@ export type FlowJob = {
     ratio: string;
     duration: string;
     resolution: string;
+    /** Video download menu quality (360p/720p/1080p/4K). */
+    quality?: string;
     outputDir: string;
     concurrency?: string;
   };

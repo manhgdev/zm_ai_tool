@@ -28,14 +28,14 @@ import {
 } from "@/features/flow/flow.explain";
 import {
   type FlowTab, type FlowRoutePanel, type RailItem, type JobStatus,
-  type CreateKind, type ImageMode, type PromptInputType,
+  type CreateKind, type ImageMode, type VideoMode, type PromptInputType,
   type FlowJob, type FlowAccount, type FlowLog, type FlowSettings, type FlowModelCapability,
   type BrowserDirectoryHandle, type BrowserDirectoryWindow,
 } from "@/features/flow/flow.types";
 import {
   DRAFT_VIDEO_KEY, DRAFT_IMAGE_KEY, DRAFT_LEGACY_KEY, SETTINGS_KEY,
   WEB_AUTO_DOWNLOAD_DEFAULT_KEY, WEB_OUTPUT_ROOT_KEY, TAB_KEY, RAIL_KEY,
-  ACCOUNTS_KEY, CREATE_KIND_KEY, ACTIVE_PANEL_KEY, IMAGE_MODE_KEY, COLLAPSED_FOLDERS_KEY,
+  ACCOUNTS_KEY, CREATE_KIND_KEY, ACTIVE_PANEL_KEY, IMAGE_MODE_KEY, VIDEO_MODE_KEY, COLLAPSED_FOLDERS_KEY,
   FLOW_VIDEO_MODELS, FLOW_IMAGE_MODELS, FLOW_OMNI_FLASH_DURATIONS,
   flowVideoDownloadQualities,
   settingsForCreateKind, settingsWithSelectedModel,
@@ -48,6 +48,7 @@ import {
   flowOutputFolderParts as splitFlowOutputFolderParts,
   flowGroupProgress, readText, readSettings, readAccounts,
   flowRoutePanel, writeFlowRoutePanel,
+  formatFlowJobSettingsMeta,
   normalizeFlowJobs as normalizeFlowJobRows,
   normalizeFlowAccounts,
   selectedFlowAccount as resolveSelectedFlowAccount,
@@ -245,6 +246,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const saved = readText(IMAGE_MODE_KEY, "text");
     return saved === "edit" || saved === "reference" ? saved : "text";
   });
+  const [videoMode, setVideoMode] = useState<VideoMode>(() => {
+    const saved = readText(VIDEO_MODE_KEY, "text");
+    return saved === "frame" ? "frame" : "text";
+  });
   const [sourceFiles, setSourceFiles] = useState<File[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(true);
   const [utilityView, setUtilityView] = useState<"accounts" | "help" | "series" | null>(() => {
@@ -313,6 +318,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const [queueKind, setQueueKind] = useState<CreateKind | "all">("all");
   const selectCreateKind = (kind: CreateKind) => {
     setCreateKind(kind);
+    setSourceFiles([]);
     setSettings((current) => settingsForCreateKind(current, kind));
   };
   useEffect(() => {
@@ -420,6 +426,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       localStorage.setItem(IMAGE_MODE_KEY, imageMode);
     } catch { }
   }, [imageMode]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIDEO_MODE_KEY, videoMode);
+    } catch { }
+  }, [videoMode]);
   useEffect(() => {
     if (!accounts.length || accounts.some((account) => account.label === settings.account)) return;
     const fallback = selectedFlowAccount(accounts, settings.account);
@@ -980,6 +991,24 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         writeFlowRoutePanel("queue");
         return;
       }
+      if (createKind === "image" && imageMode !== "text" && !sourceFiles.length) {
+        setApiError(
+          t(
+            "Chọn ít nhất một ảnh nguồn / tham chiếu trước khi tạo.",
+            "Choose at least one source/reference image before creating.",
+          ),
+        );
+        return;
+      }
+      if (createKind === "video" && videoMode === "frame" && !sourceFiles.length) {
+        setApiError(
+          t(
+            "Chọn một ảnh khung hình trước khi tạo video.",
+            "Choose a start frame image before creating video.",
+          ),
+        );
+        return;
+      }
       let uploaded: string[] = [];
       if (sourceFiles.length) {
         const form = new FormData();
@@ -1040,7 +1069,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           mode:
             createKind === "image"
               ? imageMode
-              : sourceFiles.length
+              : videoMode === "frame"
                 ? "frame"
                 : "text",
           accountId: account.id,
@@ -1955,7 +1984,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               setSeriesDraft(context);
               setUtilityView(null);
               selectCreateKind(context.artifact === "keyframe" ? "image" : "video");
-              setImageMode("reference");
+              if (context.artifact === "keyframe") {
+                setImageMode("reference");
+              } else {
+                setVideoMode("frame");
+              }
               setPrompt(context.scenePrompt);
               setPromptInputType("prompt");
               setSourceFiles([]);
@@ -2022,6 +2055,34 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               </div>
             )}
             <section className="flow-card flow-prompt-card">
+              {createKind === "video" && (
+                <div
+                  className="flow-image-modes is-two"
+                  role="tablist"
+                  aria-label={t("Chế độ tạo video", "Video generation mode")}
+                >
+                  {(
+                    [
+                      ["text", t("Text → Video", "Text → Video")],
+                      ["frame", t("Khung hình", "Frames")],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      role="tab"
+                      aria-selected={videoMode === id}
+                      className={videoMode === id ? "is-active" : ""}
+                      onClick={() => {
+                        setVideoMode(id);
+                        setSourceFiles([]);
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
               {createKind === "image" && (
                 <div
                   className="flow-image-modes"
@@ -2051,26 +2112,34 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   ))}
                 </div>
               )}
-              {createKind === "image" && imageMode !== "text" && (
+              {((createKind === "video" && videoMode === "frame")
+                || (createKind === "image" && imageMode !== "text")) && (
                 <div className="flow-source-row">
                   <div>
                     <IconImage size={20} />
                     <span>
                       <b>
-                        {imageMode === "edit"
-                          ? t("Ảnh nguồn", "Source image")
-                          : t("Ảnh tham chiếu", "Reference images")}
+                        {createKind === "video"
+                          ? t("Khung hình", "Frames")
+                          : imageMode === "edit"
+                            ? t("Ảnh nguồn", "Source image")
+                            : t("Ảnh tham chiếu", "Reference images")}
                       </b>
                       <small>
-                        {imageMode === "edit"
+                        {createKind === "video"
                           ? t(
-                            "Một ảnh để chỉnh sửa hoặc biến thể",
-                            "One image to edit or create variants",
+                            "Một ảnh bắt đầu để tạo video (Frames → Video)",
+                            "One start image to animate (Frames → Video)",
                           )
-                          : t(
-                            "Tối đa 3 ảnh giữ nhân vật/phong cách",
-                            "Up to 3 images for subject/style consistency",
-                          )}
+                          : imageMode === "edit"
+                            ? t(
+                              "Một ảnh để chỉnh sửa hoặc biến thể",
+                              "One image to edit or create variants",
+                            )
+                            : t(
+                              "Tối đa 3 ảnh giữ nhân vật/phong cách",
+                              "Up to 3 images for subject/style consistency",
+                            )}
                       </small>
                     </span>
                   </div>
@@ -2085,12 +2154,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     type="file"
                     hidden
                     accept="image/png,image/jpeg,image/webp"
-                    multiple={imageMode === "reference"}
+                    multiple={createKind === "image" && imageMode === "reference"}
                     onChange={(event) =>
                       setSourceFiles(
                         Array.from(event.target.files || []).slice(
                           0,
-                          imageMode === "reference" ? 3 : 1,
+                          createKind === "image" && imageMode === "reference" ? 3 : 1,
                         ),
                       )
                     }
@@ -2117,6 +2186,25 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </mark>
                       ))}
                     </p>
+                  )}
+                  {createKind === "image" && (
+                    <label className="flow-range flow-reference-strength">
+                      <span>
+                        {t("Mức bám ảnh", "Reference strength")} · {settings.referenceStrength}%
+                      </span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={settings.referenceStrength}
+                        onChange={(event) =>
+                          setSettings((current) => ({
+                            ...current,
+                            referenceStrength: Number(event.target.value),
+                          }))
+                        }
+                      />
+                    </label>
                   )}
                 </div>
               )}
@@ -2227,77 +2315,77 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 </div>
               )}
               <div className="flow-settings-grid">
-                <FlowSelect
-                  label={t("Model", "Model")}
-                  value={settings.model}
-                  onChange={(model) =>
-                    setSettings((current) => applyAccountCapabilities(displayedAccount, current, createKind, model))
-                  }
-                  options={modelOptions}
-                />
-                <FlowSelect
-                  label={t("Tỷ lệ", "Ratio")}
-                  value={createKind === "image" ? settings.imageRatio : settings.ratio}
-                  onChange={(value) =>
-                    setSettings((current) =>
-                      createKind === "image"
-                        ? { ...current, imageRatio: value }
-                        : { ...current, ratio: value }
-                    )
-                  }
-                  options={ratioOptions}
-                />
-                {createKind === "video" ? (
-                  <>
-                    {durationOptions.length > 0 ? (
+                <div className={`flow-settings-row flow-settings-row--primary${createKind === "image" ? " is-image" : ""}`}>
+                  <FlowSelect
+                    label={t("Model", "Model")}
+                    value={settings.model}
+                    onChange={(model) =>
+                      setSettings((current) => applyAccountCapabilities(displayedAccount, current, createKind, model))
+                    }
+                    options={modelOptions}
+                  />
+                  <FlowSelect
+                    label={t("Tỷ lệ", "Ratio")}
+                    value={createKind === "image" ? settings.imageRatio : settings.ratio}
+                    onChange={(value) =>
+                      setSettings((current) =>
+                        createKind === "image"
+                          ? { ...current, imageRatio: value }
+                          : { ...current, ratio: value }
+                      )
+                    }
+                    options={ratioOptions}
+                  />
+                  {createKind === "video" ? (
+                    <>
+                      {durationOptions.length > 0 ? (
+                        <FlowSelect
+                          label={t("Thời lượng", "Duration")}
+                          value={durationOptions.includes(settings.duration) ? settings.duration : durationOptions[0]}
+                          onChange={(duration) =>
+                            setSettings((current) => ({ ...current, duration }))
+                          }
+                          options={durationOptions}
+                          disabled={durationOptions.length < 2}
+                          suffix={t(" giây", " sec")}
+                        />
+                      ) : null}
+                      {resolutionOptions.length > 0 ? (
+                        <FlowSelect
+                          label={t("Độ phân giải", "Resolution")}
+                          value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
+                          onChange={(resolution) =>
+                            setSettings((current) => ({ ...current, resolution }))
+                          }
+                          options={resolutionOptions}
+                          optionLabels={{
+                            "360p": t("360p nhanh", "360p fast"),
+                            "480p": t("480p nhanh", "480p fast"),
+                            "720p": t("720p", "720p"),
+                            "1080p": t("1080p đẹp", "1080p HD"),
+                          }}
+                        />
+                      ) : null}
                       <FlowSelect
-                        label={t("Thời lượng", "Duration")}
-                        value={durationOptions.includes(settings.duration) ? settings.duration : durationOptions[0]}
-                        onChange={(duration) =>
-                          setSettings((current) => ({ ...current, duration }))
+                        label={t("Chất lượng tải", "Download quality")}
+                        value={
+                          videoDownloadQualityOptions.includes(settings.quality)
+                            ? settings.quality
+                            : videoDownloadQualityOptions[0]
                         }
-                        options={durationOptions}
-                        disabled={durationOptions.length < 2}
-                        suffix={t(" giây", " sec")}
-                      />
-                    ) : null}
-                    {resolutionOptions.length > 0 ? (
-                      <FlowSelect
-                        label={t("Độ phân giải", "Resolution")}
-                        value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
-                        onChange={(resolution) =>
-                          setSettings((current) => ({ ...current, resolution }))
+                        onChange={(quality) =>
+                          setSettings((current) => ({ ...current, quality }))
                         }
-                        options={resolutionOptions}
+                        options={videoDownloadQualityOptions}
                         optionLabels={{
-                          "360p": t("360p · nhanh nhất", "360p · fastest"),
-                          "480p": t("480p · nhanh", "480p · fast"),
-                          "720p": t("720p · cân bằng", "720p · balanced"),
-                          "1080p": t("1080p · đẹp hơn", "1080p · sharper"),
+                          "360p": t("360p nhanh", "360p fast"),
+                          "720p": t("720p", "720p"),
+                          "1080p": t("1080p đẹp", "1080p HD"),
+                          "4K": t("4K", "4K"),
                         }}
                       />
-                    ) : null}
-                    <FlowSelect
-                      label={t("Chất lượng tải", "Download quality")}
-                      value={
-                        videoDownloadQualityOptions.includes(settings.quality)
-                          ? settings.quality
-                          : videoDownloadQualityOptions[0]
-                      }
-                      onChange={(quality) =>
-                        setSettings((current) => ({ ...current, quality }))
-                      }
-                      options={videoDownloadQualityOptions}
-                      optionLabels={{
-                        "360p": t("360p · nhanh nhất", "360p · fastest"),
-                        "720p": t("720p · cân bằng", "720p · balanced"),
-                        "1080p": t("1080p · đẹp hơn", "1080p · sharper"),
-                        "4K": t("4K · Ultra", "4K · Ultra"),
-                      }}
-                    />
-                  </>
-                ) : (
-                  <>
+                    </>
+                  ) : (
                     <FlowSelect
                       label={t("Độ phân giải", "Resolution")}
                       value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
@@ -2306,65 +2394,67 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       }
                       options={resolutionOptions}
                     />
-                  </>
-                )}
-                <label>
-                  <span>
-                    {createKind === "video"
-                      ? t("Số video", "Videos")
-                      : t("Số ảnh", "Images")}
-                  </span>
-                  <div className="flow-counter">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSettings((current) => ({
-                          ...current,
-                          ...(createKind === "image"
-                            ? { imageCount: Math.max(1, (current.imageCount ?? 1) - 1) }
-                            : { count: Math.max(1, current.count - 1) }),
-                        }))
-                      }
-                      aria-label={t("Giảm số lượng", "Decrease quantity")}
-                    >
-                      −
-                    </button>
-                    <strong>{createKind === "image" ? (settings.imageCount ?? 1) : settings.count}</strong>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSettings((current) => ({
-                          ...current,
-                          ...(createKind === "image"
-                            ? { imageCount: Math.min(4, (current.imageCount ?? 1) + 1) }
-                            : { count: Math.min(4, current.count + 1) }),
-                        }))
-                      }
-                      aria-label={t("Tăng số lượng", "Increase quantity")}
-                    >
-                      +
-                    </button>
-                  </div>
-                </label>
-                <FlowSelect
-                  label={t("Tài khoản", "Account")}
-                  value={settings.account}
-                  onChange={(account) =>
-                    setSettings((current) => {
-                      const selected = accounts.find((item) => item.label === account);
-                      return applyAccountCapabilities(
-                        selected,
-                        { ...current, account },
-                        createKind,
-                        createKind === "image" ? current.imageModel : current.videoModel || current.model,
-                      );
-                    })
-                  }
-                  options={accounts.map((account) => account.label)}
-                  optionLabels={accountOptionLabels}
-                  online
-                  className="flow-select-account"
-                />
+                  )}
+                </div>
+                <div className="flow-settings-row flow-settings-row--meta">
+                  <label className="flow-settings-count">
+                    <span>
+                      {createKind === "video"
+                        ? t("Số video", "Videos")
+                        : t("Số ảnh", "Images")}
+                    </span>
+                    <div className="flow-counter">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSettings((current) => ({
+                            ...current,
+                            ...(createKind === "image"
+                              ? { imageCount: Math.max(1, (current.imageCount ?? 1) - 1) }
+                              : { count: Math.max(1, current.count - 1) }),
+                          }))
+                        }
+                        aria-label={t("Giảm số lượng", "Decrease quantity")}
+                      >
+                        −
+                      </button>
+                      <strong>{createKind === "image" ? (settings.imageCount ?? 1) : settings.count}</strong>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSettings((current) => ({
+                            ...current,
+                            ...(createKind === "image"
+                              ? { imageCount: Math.min(4, (current.imageCount ?? 1) + 1) }
+                              : { count: Math.min(4, current.count + 1) }),
+                          }))
+                        }
+                        aria-label={t("Tăng số lượng", "Increase quantity")}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </label>
+                  <FlowSelect
+                    label={t("Tài khoản", "Account")}
+                    value={settings.account}
+                    onChange={(account) =>
+                      setSettings((current) => {
+                        const selected = accounts.find((item) => item.label === account);
+                        return applyAccountCapabilities(
+                          selected,
+                          { ...current, account },
+                          createKind,
+                          createKind === "image" ? current.imageModel : current.videoModel || current.model,
+                        );
+                      })
+                    }
+                    options={accounts.map((account) => account.label)}
+                    optionLabels={accountOptionLabels}
+                    online
+                    className="flow-select-account"
+                  />
+                </div>
               </div>
               {advancedOpen && (
                 <div className="flow-advanced">
@@ -2398,26 +2488,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       }
                     />
                   </label>
-                  {createKind === "image" && imageMode !== "text" && (
-                    <label className="flow-range">
-                      <span>
-                        {t("Mức bám ảnh tham chiếu", "Reference strength")} ·{" "}
-                        {settings.referenceStrength}%
-                      </span>
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        value={settings.referenceStrength}
-                        onChange={(event) =>
-                          setSettings((current) => ({
-                            ...current,
-                            referenceStrength: Number(event.target.value),
-                          }))
-                        }
-                      />
-                    </label>
-                  )}
                 </div>
               )}
               <div className="flow-output-row">
@@ -2634,9 +2704,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             {String(job.index).padStart(3, "0")} · {job.prompt}
                           </strong>
                           <span>
-                            {job.kind === "video"
-                              ? `${job.settings.model} · ${job.settings.ratio}${job.settings.duration ? ` · ${job.settings.duration}s` : ""}`
-                              : `${job.settings.model} · ${job.settings.ratio} · ${job.settings.resolution}`}{" "}
+                            {formatFlowJobSettingsMeta(job.kind, job.settings, {
+                              downloadLabel: t("tải", "DL"),
+                            })}{" "}
                             · {job.account}
                           </span>
                           <div className="flow-job-progress">
