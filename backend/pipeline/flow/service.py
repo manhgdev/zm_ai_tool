@@ -164,12 +164,27 @@ def _video_media_status(media: dict[str, Any] | None) -> str:
     )
 
 
-def _video_download_quality(settings: dict[str, Any] | None) -> str:
-    """Map job settings to Flow download menu labels (720p faster, 1080p sharper)."""
+def _video_download_qualities_for_plan(plan: str | None) -> list[str]:
+    """Download menu tiers by Flow plan (mirrors image 1K/2K/4K gating)."""
+    normalized = str(plan or "Free").strip()
+    if normalized == "Ultra":
+        return ["720p", "1080p", "4K"]
+    if normalized in {"Pro", "Plus"} or normalized.lower() == "plus":
+        return ["720p", "1080p"]
+    return ["720p"]
+
+
+def _video_download_quality(settings: dict[str, Any] | None, plan: str | None = None) -> str:
+    """Map job settings to Flow download menu labels, clamped to account plan."""
+    allowed = _video_download_qualities_for_plan(plan)
     raw = str((settings or {}).get("quality") or "").strip().lower()
-    if raw in {"high", "1080", "1080p"} or "1080" in raw:
-        return "1080p"
-    return "720p"
+    if raw in {"4k", "2160", "2160p"} or "4k" in raw:
+        preferred = "4K"
+    elif raw in {"high", "1080", "1080p"} or "1080" in raw:
+        preferred = "1080p"
+    else:
+        preferred = "720p"
+    return preferred if preferred in allowed else allowed[0]
 
 
 def _video_media_ready(media: dict[str, Any] | None) -> bool:
@@ -2933,7 +2948,6 @@ class FlowService:
     ) -> None:
         """Open Flow's download menu and pick 720p / 1080p (upscaled when offered)."""
         preferred = _video_download_quality({"quality": quality})
-        fallback = "720p" if preferred == "1080p" else "1080p"
         output.parent.mkdir(parents=True, exist_ok=True)
         tile = page.locator("flow-grid-tile-container").nth(tile_index)
         thumb = tile.locator(".thumbnail").first
@@ -2945,11 +2959,12 @@ class FlowService:
         ).first
         await dl_btn.click()
         await asyncio.sleep(0.8)
-        labels = [preferred]
-        if preferred == "1080p":
-            labels += ["1080p Upscaled", "Upscaled", fallback]
+        if preferred == "4K":
+            labels = ["4K", "4K Upscaled", "1080p Upscaled", "1080p", "Upscaled", "720p"]
+        elif preferred == "1080p":
+            labels = ["1080p", "1080p Upscaled", "Upscaled", "720p"]
         else:
-            labels += [fallback]
+            labels = ["720p", "1080p", "1080p Upscaled"]
         last_error: Exception | None = None
         for label in labels:
             item = page.locator(f'[role="menuitem"]:has-text("{label}")').first
@@ -3070,7 +3085,11 @@ class FlowService:
             raise RuntimeError(f"FLOW_GENERATION_TIMEOUT: videos did not complete within {timeout_s}s")
 
         store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
-        quality = _video_download_quality(job.get("settings") if isinstance(job.get("settings"), dict) else {})
+        account = store.get_row("accounts", str(job.get("accountId") or "")) or {}
+        quality = _video_download_quality(
+            job.get("settings") if isinstance(job.get("settings"), dict) else {},
+            str(account.get("plan") or ""),
+        )
         outputs: list[str] = []
         for output_index in range(1, expected_count + 1):
             self._check_cancel(job_id)
@@ -3468,7 +3487,7 @@ class FlowService:
                     if media_ids:
                         store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": max(30, int((store.get_row("jobs", job_id) or {}).get("progress") or 30)), "updatedAt": time.time()})
                         from ._flow._api import VideoJob
-                        download_quality = _video_download_quality(settings)
+                        download_quality = _video_download_quality(settings, str(account.get("plan") or ""))
                         async def _wait_and_dl_video(media_id: str, idx: int) -> str:
                             self._check_cancel(job_id)
                             out = self._output_path(job, idx, "mp4")

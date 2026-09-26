@@ -1,4 +1,4 @@
-"""Download quality mapping for Flow video menu (720p / 1080p)."""
+"""Download quality mapping for Flow video menu by account plan."""
 from __future__ import annotations
 
 import sys
@@ -7,10 +7,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from pipeline.flow.service import _video_download_quality
+from pipeline.flow.service import (
+    _video_download_qualities_for_plan,
+    _video_download_quality,
+)
 
 
 class FlowVideoDownloadQualityTest(unittest.TestCase):
+    def test_plan_options(self) -> None:
+        self.assertEqual(_video_download_qualities_for_plan("Free"), ["720p"])
+        self.assertEqual(_video_download_qualities_for_plan("Pro"), ["720p", "1080p"])
+        self.assertEqual(_video_download_qualities_for_plan("Plus"), ["720p", "1080p"])
+        self.assertEqual(_video_download_qualities_for_plan("Ultra"), ["720p", "1080p", "4K"])
+
     def test_defaults_to_720p(self) -> None:
         self.assertEqual(_video_download_quality({}), "720p")
         self.assertEqual(_video_download_quality({"quality": "Standard"}), "720p")
@@ -18,7 +27,11 @@ class FlowVideoDownloadQualityTest(unittest.TestCase):
     def test_maps_high_to_1080p(self) -> None:
         self.assertEqual(_video_download_quality({"quality": "High"}), "1080p")
         self.assertEqual(_video_download_quality({"quality": "1080p"}), "1080p")
-        self.assertEqual(_video_download_quality({"quality": "1080p Upscaled"}), "1080p")
+        self.assertEqual(_video_download_quality({"quality": "4K"}, "Ultra"), "4K")
+
+    def test_clamps_4k_for_pro(self) -> None:
+        self.assertEqual(_video_download_quality({"quality": "4K"}, "Pro"), "1080p")
+        self.assertEqual(_video_download_quality({"quality": "1080p"}, "Free"), "720p")
 
 
 if __name__ == "__main__":

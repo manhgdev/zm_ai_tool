@@ -35,7 +35,7 @@ import {
   WEB_AUTO_DOWNLOAD_DEFAULT_KEY, WEB_OUTPUT_ROOT_KEY, TAB_KEY, RAIL_KEY,
   ACCOUNTS_KEY, CREATE_KIND_KEY, ACTIVE_PANEL_KEY, IMAGE_MODE_KEY, COLLAPSED_FOLDERS_KEY,
   FLOW_VIDEO_MODELS, FLOW_IMAGE_MODELS, FLOW_OMNI_FLASH_DURATIONS,
-  FLOW_VIDEO_DOWNLOAD_QUALITIES,
+  flowVideoDownloadQualities,
   settingsForCreateKind, settingsWithSelectedModel,
   defaultFlowOutputFolder as buildDefaultFlowOutputFolder,
   flowConfiguredOutputFolder as buildFlowConfiguredOutputFolder,
@@ -108,7 +108,14 @@ function applyAccountCapabilities(
 ): FlowSettings {
   const section = account?.capabilityStatus === "verified" ? account.capabilityCatalog?.[kind] : undefined;
   const models = section?.models || [];
-  if (!models.length) return settingsWithSelectedModel(current, kind, requestedModel);
+  const downloadQualities = flowVideoDownloadQualities(account?.plan);
+  const quality = downloadQualities.includes(current.quality)
+    ? current.quality
+    : downloadQualities[0] || "720p";
+  if (!models.length) {
+    const base = settingsWithSelectedModel(current, kind, requestedModel);
+    return base.quality === quality ? base : { ...base, quality };
+  }
   const selected = models.find((item) => item.name === requestedModel)
     || models.find((item) => item.name === section?.defaultModel)
     || models[0];
@@ -140,6 +147,7 @@ function applyAccountCapabilities(
     [ratioKey]: ratio,
     duration,
     resolution,
+    quality,
   };
   return next.model === current.model
     && next.videoModel === current.videoModel
@@ -147,7 +155,8 @@ function applyAccountCapabilities(
     && next.ratio === current.ratio
     && next.imageRatio === current.imageRatio
     && next.duration === current.duration
-    && next.resolution === current.resolution ? current : next;
+    && next.resolution === current.resolution
+    && next.quality === current.quality ? current : next;
 }
 
 function flowRouteQueryPanel() {
@@ -677,6 +686,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     accountPlan === "Ultra" ? ["1K", "2K", "4K"]
     : accountPlan === "Pro"  ? ["1K", "2K"]
     : ["1K"];
+  const videoDownloadQualityOptions = flowVideoDownloadQualities(accountPlan);
   const resolutionOptions = capabilityModel?.resolutions.length
     ? (createKind === "video"
       ? capabilityModel.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
@@ -915,6 +925,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             ? effectiveSettings.resolution
             : resolutionOptions[0])
           : createKind === "video" ? "" : effectiveSettings.resolution,
+        quality: createKind === "video"
+          ? (videoDownloadQualityOptions.includes(effectiveSettings.quality)
+            ? effectiveSettings.quality
+            : videoDownloadQualityOptions[0])
+          : effectiveSettings.quality,
       };
 
       if (createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
@@ -2234,17 +2249,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     <FlowSelect
                       label={t("Chất lượng tải", "Download quality")}
                       value={
-                        (FLOW_VIDEO_DOWNLOAD_QUALITIES as readonly string[]).includes(settings.quality)
+                        videoDownloadQualityOptions.includes(settings.quality)
                           ? settings.quality
-                          : "720p"
+                          : videoDownloadQualityOptions[0]
                       }
                       onChange={(quality) =>
                         setSettings((current) => ({ ...current, quality }))
                       }
-                      options={[...FLOW_VIDEO_DOWNLOAD_QUALITIES]}
+                      options={videoDownloadQualityOptions}
                       optionLabels={{
                         "720p": t("720p · nhanh hơn", "720p · faster"),
                         "1080p": t("1080p · đẹp hơn", "1080p · sharper"),
+                        "4K": t("4K · Ultra", "4K · Ultra"),
                       }}
                     />
                   </>
@@ -2302,7 +2318,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   label={t("Tài khoản", "Account")}
                   value={settings.account}
                   onChange={(account) =>
-                    setSettings((current) => ({ ...current, account }))
+                    setSettings((current) => {
+                      const selected = accounts.find((item) => item.label === account);
+                      return applyAccountCapabilities(
+                        selected,
+                        { ...current, account },
+                        createKind,
+                        createKind === "image" ? current.imageModel : current.videoModel || current.model,
+                      );
+                    })
                   }
                   options={accounts.map((account) => account.label)}
                   optionLabels={accountOptionLabels}

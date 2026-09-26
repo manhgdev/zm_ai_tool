@@ -30,7 +30,16 @@ export const FLOW_VIDEO_MODELS = [
 export const FLOW_OMNI_FLASH_DURATIONS = ["4", "6", "8", "10"] as const;
 
 export const FLOW_RESOLUTIONS = ["480p", "720p", "1080p"] as const;
-export const FLOW_VIDEO_DOWNLOAD_QUALITIES = ["720p", "1080p"] as const;
+export const FLOW_VIDEO_DOWNLOAD_QUALITIES = ["720p", "1080p", "4K"] as const;
+
+/** Download menu options available for a Flow account plan (video only). */
+export function flowVideoDownloadQualities(plan: string | undefined | null): string[] {
+  const normalized = String(plan || "Free").trim();
+  // Free cannot create video in-app; keep 720p only as a safe fallback.
+  if (normalized === "Ultra") return ["720p", "1080p", "4K"];
+  if (normalized === "Pro" || /^plus$/i.test(normalized)) return ["720p", "1080p"];
+  return ["720p"];
+}
 
 export const FLOW_IMAGE_MODELS = [
   "Nano Banana Pro",
