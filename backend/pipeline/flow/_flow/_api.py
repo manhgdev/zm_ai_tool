@@ -272,19 +272,25 @@ class VideoStatus:
         meta             = m.get("mediaMetadata", {})
         ms               = meta.get("mediaStatus", {})
         self.status: str = ms.get("mediaGenerationStatus", "UNKNOWN")
+        vid = m.get("video", {}).get("generatedVideo", {}) or {}
+        self.fife_url: str = (
+            vid.get("fifeUrl")
+            or vid.get("fife_url")
+            or (m.get("video") or {}).get("fifeUrl")
+            or m.get("fifeUrl")
+            or ""
+        )
         self.complete: bool = self.status in (
             "MEDIA_GENERATION_STATUS_COMPLETE",
             "MEDIA_GENERATION_STATUS_SUCCESS",
             "MEDIA_GENERATION_STATUS_SUCCESSFUL",  # observed in live traffic
-        )
+        ) or bool(self.fife_url)
         self.failed: bool = self.status in (
             "MEDIA_GENERATION_STATUS_FAILED",
             "MEDIA_GENERATION_STATUS_REJECTED",
-        )
-        vid = m.get("video", {}).get("generatedVideo", {})
-        self.fife_url: str = vid.get("fifeUrl", "")
-        self.seed: int     = vid.get("seed", 0)
-        self.model: str    = vid.get("model", "")
+        ) and not self.fife_url
+        self.seed: int     = vid.get("seed", 0) if isinstance(vid, dict) else 0
+        self.model: str    = vid.get("model", "") if isinstance(vid, dict) else ""
 
     def __repr__(self):
         return f"<VideoStatus {self.status} fife={'✓' if self.fife_url else '✗'}>"
@@ -896,9 +902,15 @@ class FlowAPI:
                     },
                 }
                 if is_video:
-                    rec["video"] = {}
+                    src = str(item.get("src") or "")
+                    rec["video"] = {
+                        "generatedVideo": {"fifeUrl": src} if src.startswith("http") else {},
+                    }
                 else:
-                    rec["image"] = {}
+                    src = str(item.get("src") or "")
+                    rec["image"] = {
+                        "generatedImage": {"fifeUrl": src} if src.startswith("http") else {},
+                    }
                 media_list.append(rec)
             return {"projectContents": {"media": media_list, "workflows": []}}
         except Exception as exc:
@@ -1433,6 +1445,26 @@ class FlowAPI:
 
             if on_poll:
                 on_poll(status, elapsed)
+
+            if status.complete and not status.fife_url:
+                # Status terminal but URL missing — pull from project payload.
+                try:
+                    data = await self.get_project_data()
+                    for media in data.get("projectContents", {}).get("media", []):
+                        if str((media or {}).get("name") or "") != str(job.media_name):
+                            continue
+                        video = (media.get("video") or {}).get("generatedVideo") or {}
+                        url = (
+                            video.get("fifeUrl")
+                            or video.get("fife_url")
+                            or (media.get("video") or {}).get("fifeUrl")
+                            or ""
+                        )
+                        if str(url).startswith("http"):
+                            status.fife_url = str(url)
+                        break
+                except Exception:
+                    pass
 
             if status.complete:
                 job.status    = "COMPLETE"

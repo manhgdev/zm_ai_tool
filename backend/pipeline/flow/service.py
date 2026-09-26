@@ -122,6 +122,66 @@ def _captured_video_ids(response: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
+_VIDEO_DONE_STATUSES = frozenset({
+    "MEDIA_GENERATION_STATUS_COMPLETE",
+    "MEDIA_GENERATION_STATUS_SUCCESS",
+    "MEDIA_GENERATION_STATUS_SUCCESSFUL",
+})
+_VIDEO_FAIL_STATUSES = frozenset({
+    "MEDIA_GENERATION_STATUS_FAILED",
+    "MEDIA_GENERATION_STATUS_REJECTED",
+})
+
+
+def _video_fife_url(media: dict[str, Any] | None) -> str:
+    """Extract a downloadable video URL from project-media / poll payloads."""
+    if not isinstance(media, dict):
+        return ""
+    video = media.get("video") if isinstance(media.get("video"), dict) else {}
+    candidates: list[Any] = [
+        video,
+        video.get("generatedVideo") if isinstance(video, dict) else None,
+        video.get("video") if isinstance(video, dict) else None,
+        media.get("generatedVideo"),
+        media,
+    ]
+    for block in candidates:
+        if not isinstance(block, dict):
+            continue
+        for key in ("fifeUrl", "fife_url", "url", "uri", "downloadUrl", "download_url"):
+            value = str(block.get(key) or "").strip()
+            if value.startswith("http"):
+                return value
+    return ""
+
+
+def _video_media_status(media: dict[str, Any] | None) -> str:
+    if not isinstance(media, dict):
+        return ""
+    return str(
+        (((media.get("mediaMetadata") or {}).get("mediaStatus") or {}).get("mediaGenerationStatus"))
+        or ""
+    )
+
+
+def _video_media_ready(media: dict[str, Any] | None) -> bool:
+    """True when Flow has finished the clip (status and/or download URL).
+
+    Veo Lite often marks SUCCESSFUL before ``video`` is attached, or leaves a
+    fifeUrl while status stays non-terminal — either means we can proceed.
+    """
+    if not isinstance(media, dict):
+        return False
+    status = _video_media_status(media)
+    if status in _VIDEO_FAIL_STATUSES:
+        return False
+    if status in _VIDEO_DONE_STATUSES:
+        return True
+    if status.endswith(("_SUCCESS", "_SUCCESSFUL", "_COMPLETE")):
+        return True
+    return bool(_video_fife_url(media))
+
+
 def _captured_image_items(response: dict[str, Any]) -> list[dict[str, str]]:
     """Normalize both current and legacy batchGenerateImages response shapes."""
     values: list[dict[str, str]] = []
@@ -2525,16 +2585,31 @@ class FlowService:
         """Read generated media tiles from Flow's current Angular DOM."""
         try:
             items = await page.evaluate(
-                """() => [...document.querySelectorAll(
-                    'img[data-media-id], video[data-media-id], [data-media-id] img, [data-media-id] video'
-                )].map(element => ({
-                    id: element.getAttribute('data-media-id') || element.closest('[data-media-id]')?.getAttribute('data-media-id') || '',
-                    tag: element.tagName.toLowerCase(),
-                    src: element.currentSrc || element.src || '',
-                    width: element.naturalWidth || 0,
-                    height: element.naturalHeight || 0,
-                    readyState: element.readyState || 0,
-                })).filter(item => item.id && item.src)"""
+                """() => {
+                    const nodes = [
+                        ...document.querySelectorAll(
+                            'img[data-media-id], video[data-media-id], [data-media-id] img, [data-media-id] video, video[src], video source'
+                        ),
+                    ];
+                    return nodes.map(element => {
+                        const host = element.closest('[data-media-id]');
+                        const id = element.getAttribute('data-media-id')
+                            || (host && host.getAttribute('data-media-id'))
+                            || '';
+                        const media = element.tagName.toLowerCase() === 'source'
+                            ? (element.parentElement || element)
+                            : element;
+                        const src = media.currentSrc || media.src || element.src || '';
+                        return {
+                            id,
+                            tag: media.tagName.toLowerCase(),
+                            src,
+                            width: media.naturalWidth || media.videoWidth || 0,
+                            height: media.naturalHeight || media.videoHeight || 0,
+                            readyState: media.readyState || 0,
+                        };
+                    }).filter(item => item.src && (item.id || item.tag === 'video'));
+                }"""
             )
             return [item for item in (items or []) if isinstance(item, dict)]
         except Exception:
@@ -2570,19 +2645,8 @@ class FlowService:
                 continue
             if kind == "image" and not media.get("image"):
                 continue
-            if kind == "video" and not media.get("video"):
+            if kind == "video" and not _video_media_ready(media):
                 continue
-            if kind == "video":
-                status = str(
-                    (((media.get("mediaMetadata") or {}).get("mediaStatus") or {}).get("mediaGenerationStatus"))
-                    or ""
-                )
-                if status and status not in {
-                    "MEDIA_GENERATION_STATUS_COMPLETE",
-                    "MEDIA_GENERATION_STATUS_SUCCESS",
-                    "MEDIA_GENERATION_STATUS_SUCCESSFUL",
-                }:
-                    continue
             media_ids = set(job.get("mediaIds") or [])
             if not media_ids and str(media['name']) in set(job.get("baselineMediaIds") or []):
                 continue
@@ -2990,27 +3054,36 @@ class FlowService:
                 data = {}
             completed: list[tuple[str, str]] = []
             for media in data.get("projectContents", {}).get("media", []):
-                media_id = str(media.get("name") or "")
-                if not media_id or media_id in baseline_ids or "video" not in media:
+                if not isinstance(media, dict):
                     continue
-                metadata = media.get("mediaMetadata") or {}
-                status = str((metadata.get("mediaStatus") or {}).get("mediaGenerationStatus") or "")
-                if status in {"MEDIA_GENERATION_STATUS_FAILED", "MEDIA_GENERATION_STATUS_REJECTED"}:
+                media_id = str(media.get("name") or "")
+                if not media_id or media_id in baseline_ids:
+                    continue
+                status = _video_media_status(media)
+                if status in _VIDEO_FAIL_STATUSES:
                     raise RuntimeError(f"FLOW_GENERATION_FAILED: {media_id} ({status})")
-                if status in {
-                    "MEDIA_GENERATION_STATUS_COMPLETE",
-                    "MEDIA_GENERATION_STATUS_SUCCESS",
-                    "MEDIA_GENERATION_STATUS_SUCCESSFUL",
-                }:
-                    completed.append((str(metadata.get("createTime") or ""), media_id))
+                # Do not require a ``video`` key — Veo Lite often sets SUCCESSFUL first.
+                if not _video_media_ready(media):
+                    continue
+                completed.append((str((media.get("mediaMetadata") or {}).get("createTime") or ""), media_id))
             if not completed and hasattr(api, "_bm"):
                 try:
                     page = await api._bm.page()
                     items = await self._project_media_elements(page)
                     for item in items:
                         mid = str(item.get("id") or "")
-                        if mid and mid not in baseline_ids and str(item.get("src") or "").startswith("http"):
+                        src = str(item.get("src") or "")
+                        tag = str(item.get("tag") or "")
+                        if not src.startswith("http"):
+                            continue
+                        if mid and mid not in baseline_ids:
                             completed.append(("", mid))
+                            continue
+                        # Video without data-media-id: synthesize a stable id from the URL.
+                        if tag == "video" and not mid:
+                            synth = f"dom-video:{src.split('?', 1)[0][-80:]}"
+                            if synth not in baseline_ids:
+                                completed.append(("", synth))
                 except Exception:
                     pass
             if completed:
@@ -3020,6 +3093,14 @@ class FlowService:
                     expected_count,
                 )
                 if claimed:
+                    store.patch_row("jobs", job_id, {
+                        "stage": "generating",
+                        "progress": max(
+                            70,
+                            int((store.get_row("jobs", job_id) or {}).get("progress") or 0),
+                        ),
+                        "updatedAt": time.time(),
+                    })
                     return claimed
             store.patch_row("jobs", job_id, {
                 "stage": "generating",
@@ -3029,6 +3110,20 @@ class FlowService:
             })
             await asyncio.sleep(3)
         raise RuntimeError("FLOW_GENERATION_TIMEOUT: no completed video appeared in project data")
+
+    async def _resolve_video_fife_url(self, api, media_id: str) -> str:
+        """Prefer project payload URL when status polling lags behind the UI."""
+        if not media_id or str(media_id).startswith("dom-video:"):
+            return ""
+        try:
+            data = await api.get_project_data()
+        except Exception:
+            return ""
+        for media in data.get("projectContents", {}).get("media", []):
+            if str((media or {}).get("name") or "") != str(media_id):
+                continue
+            return _video_fife_url(media)
+        return ""
 
     async def _sync_credits(self, api, account_id: str) -> None:
         """Refresh the persisted balance without turning a successful job into a failure."""
@@ -3321,6 +3416,15 @@ class FlowService:
                         from ._flow._api import VideoJob
                         async def _wait_and_dl_video(media_id: str, idx: int) -> str:
                             self._check_cancel(job_id)
+                            out = self._output_path(job, idx, "mp4")
+                            # Project data often has fifeUrl before status polling catches up.
+                            direct = await self._resolve_video_fife_url(api, media_id)
+                            if direct:
+                                store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
+                                await api.download(direct, out)
+                                return str(out)
+                            if str(media_id).startswith("dom-video:"):
+                                raise RuntimeError("FLOW_UI_CHANGED: video tile has no downloadable media id")
                             remote_job = VideoJob.__new__(VideoJob)
                             remote_job.media_name = media_id
                             remote_job.project_id = account["projectId"]
@@ -3328,8 +3432,11 @@ class FlowService:
                                 remote_job, timeout_s=900,
                                 on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 30 + int(elapsed / 12)), "updatedAt": time.time()}),
                             )
-                            out = self._output_path(job, idx, "mp4")
-                            await api.download(status.fife_url, out)
+                            url = status.fife_url or await self._resolve_video_fife_url(api, media_id)
+                            if not url:
+                                raise RuntimeError(f"FLOW_DOWNLOAD_URL_MISSING: {media_id}")
+                            store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
+                            await api.download(url, out)
                             return str(out)
                         outputs = list(await asyncio.gather(*[
                             _wait_and_dl_video(mid, i)
