@@ -260,6 +260,76 @@ def _captured_image_items(response: dict[str, Any]) -> list[dict[str, str]]:
     return list({item["id"]: item for item in values}.values())
 
 
+def _image_input_type_for_mode(mode: str) -> str:
+    """Flow batchGenerateImages: edit = base image; reference = reference inputs."""
+    return "IMAGE_INPUT_TYPE_BASE_IMAGE" if mode == "edit" else "IMAGE_INPUT_TYPE_REFERENCE"
+
+
+def _prompt_with_reference_strength(prompt: str, mode: str, strength: Any) -> str:
+    """Flow has no public strength field — steer adherence via prompt when refs are used."""
+    text = str(prompt or "").strip()
+    if mode not in {"edit", "reference"}:
+        return text
+    try:
+        value = max(0, min(100, int(strength)))
+    except (TypeError, ValueError):
+        value = 70
+    if mode == "edit":
+        if value >= 75:
+            hint = "Edit the source image while preserving identity, composition, and key details."
+        elif value >= 40:
+            hint = "Edit the source image; keep the main subject recognizable while allowing creative changes."
+        else:
+            hint = "Use the source image only as loose inspiration; prioritize the prompt."
+    else:
+        if value >= 75:
+            hint = "Strictly preserve character identity, wardrobe, and style from the reference image(s)."
+        elif value >= 40:
+            hint = "Keep the subject and style from the reference image(s) while following the prompt."
+        else:
+            hint = "Loosely inspired by the reference image(s); prioritize the prompt."
+    if hint.lower() in text.lower():
+        return text
+    return f"{hint} {text}".strip()
+
+
+def _patch_batch_generate_image_inputs(body: dict[str, Any], *, mode: str, media_names: list[str]) -> dict[str, Any]:
+    """Ensure imageInputs use the correct type for edit vs reference."""
+    if not isinstance(body, dict):
+        return body
+    input_type = _image_input_type_for_mode(mode)
+    names = [str(name).strip() for name in media_names if str(name).strip()]
+    requests = body.get("requests")
+    if not isinstance(requests, list):
+        return body
+    for request in requests:
+        if not isinstance(request, dict):
+            continue
+        inputs = request.get("imageInputs")
+        if not isinstance(inputs, list):
+            inputs = []
+        if not inputs and names:
+            capped = names[:1] if mode == "edit" else names[:3]
+            inputs = [
+                {
+                    "name": name,
+                    "mediaName": name,
+                    "imageInputType": input_type,
+                    "role": "REFERENCE_IMAGE",
+                }
+                for name in capped
+            ]
+        else:
+            for item in inputs:
+                if isinstance(item, dict):
+                    item["imageInputType"] = input_type
+                    item.setdefault("role", "REFERENCE_IMAGE")
+                    if item.get("mediaName") and not item.get("name"):
+                        item["name"] = item["mediaName"]
+        request["imageInputs"] = inputs
+    return body
+
+
 def _detect_plan(credit_info: Any) -> str | None:
     """Map Flow's Credits object to Free / Plus / Pro / Ultra.
 
@@ -1881,6 +1951,14 @@ class FlowService:
                 raise ValueError(f"Unsupported Flow image model: {settings.get('model')}")
             if mode != "text" and not source_files:
                 raise ValueError("Image edit/reference mode requires at least one source image")
+            if mode == "edit" and len(source_files) > 1:
+                source_files = source_files[:1]
+            elif mode == "reference" and len(source_files) > 3:
+                source_files = source_files[:3]
+            try:
+                settings["referenceStrength"] = max(0, min(100, int(settings.get("referenceStrength", 70))))
+            except (TypeError, ValueError):
+                settings["referenceStrength"] = 70
         else:
             if not _catalog_section(account, kind):
                 settings["model"] = _normalize_video_model(settings.get("model"))
@@ -3452,13 +3530,14 @@ class FlowService:
                         }
                     except Exception:
                         baseline_ids = set()
-                # If we have a start image, switch to FRAME_TO_VIDEO NOW while the
-                # settings panel is still open from _prepare_ui_model above.
-                # switch_mode.open_settings_panel will see the panel as already open
-                # and skip the unreliable JS click; it then Playwright-clicks the
-                # "Frames" tab which does trigger React events correctly.
-                # This must happen BEFORE the no-ops below so generate_video does not
-                # re-attempt the switch and inadvertently close the panel.
+                # Omni Flash is text-to-video in Flow UI — no Frames start-image control.
+                # Forcing Frames yields "start image upload control was not found".
+                if source and re.search(r"omni|flash", model, re.I):
+                    _log.info(
+                        "Omni Flash ignores start image for job %s; continuing as text-to-video",
+                        job_id,
+                    )
+                    source = None
                 if source:
                     from ._flow._models import GenerationMode
                     await client._ui.switch_mode(page, GenerationMode.FRAME_TO_VIDEO)
@@ -3498,10 +3577,9 @@ class FlowService:
                         return top ? (top.innerText || '').trim().replace(/\\s+/g, ' ') : '';
                     }""")
                     await self._set_flow_count(page, count)
-                    await page.keyboard.press("Escape")
-                    await asyncio.sleep(0.2)
-                    await page.keyboard.press("Escape")
-                    await asyncio.sleep(0.2)
+                    # Do not Escape here — it closes the prompt composer that
+                    # _prepare_ui_* just focused, causing "prompt editor was not found".
+                    await asyncio.sleep(0.3)
                     if not await client._ui.fill_prompt(page, job["prompt"]):
                         raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
                     await asyncio.sleep(1)
@@ -3648,7 +3726,12 @@ class FlowService:
                         asyncio.create_task(self._sync_credits(api, account["id"]))
             else:
                 model = str(settings.get("model") or "Nano Banana 2")
-                sources = job.get("sourceFiles") or []
+                mode = str(job.get("mode") or "text")
+                sources = list(job.get("sourceFiles") or [])
+                if mode == "edit":
+                    sources = sources[:1]
+                elif mode == "reference":
+                    sources = sources[:3]
                 page = await browser.page()
                 account = await self._ensure_account_project_page(
                     page, api=api, client=client, account=account, job_id=job_id,
@@ -3663,68 +3746,122 @@ class FlowService:
                     # Flow has no UI tab for it — do not pass to avoid FLOW_SETTING_MISMATCH.
                 )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
-                for source in sources:
-                    await client._ui.upload_image(page, source)
-                count = max(1, min(4, int(settings.get("count", 1))))
                 baseline_media = await self._project_media_elements(page)
                 baseline_ids = {str(item.get("id")) for item in baseline_media if item.get("id")}
+                uploaded_media_names: list[str] = []
+                for source in sources:
+                    if not await client._ui.upload_image(page, source):
+                        raise RuntimeError(f"FLOW_UI_CHANGED: could not upload source image ({Path(str(source)).name})")
+                    await asyncio.sleep(0.8)
+                    try:
+                        after = await self._project_media_elements(page)
+                        new_ids = [
+                            str(item.get("id"))
+                            for item in after
+                            if item.get("id") and str(item.get("id")) not in baseline_ids
+                        ]
+                        for mid in new_ids:
+                            if mid not in uploaded_media_names:
+                                uploaded_media_names.append(mid)
+                                baseline_ids.add(mid)
+                    except Exception:
+                        pass
+                if mode in {"edit", "reference"} and sources and not uploaded_media_names:
+                    _log.warning(
+                        "image_%s: upload reported ok but no new media ids yet; continuing with UI-attached refs",
+                        mode,
+                    )
+                count = max(1, min(4, int(settings.get("count", 1))))
                 media_items: list[dict[str, Any]] = []
                 if not media_items:
                     await self._set_flow_count(page, count)
-                    if not await client._ui.fill_prompt(page, job["prompt"]):
+                    prompt_text = _prompt_with_reference_strength(
+                        job["prompt"], mode, settings.get("referenceStrength", 70),
+                    )
+                    if not await client._ui.fill_prompt(page, prompt_text):
                         raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
                     from ._flow._ui_interceptor import UIInterceptor
                     from ._flow._exceptions import GenerationTimeout
+                    import json as _json
+
+                    async def _rewrite_image_request(route) -> None:
+                        try:
+                            if "batchGenerateImages" not in route.request.url:
+                                await route.continue_()
+                                return
+                            raw = route.request.post_data or "{}"
+                            body = _json.loads(raw)
+                            patched = _patch_batch_generate_image_inputs(
+                                body, mode=mode, media_names=uploaded_media_names,
+                            )
+                            await route.continue_(
+                                post_data=_json.dumps(patched, ensure_ascii=False),
+                                headers={
+                                    **route.request.headers,
+                                    "content-type": "application/json",
+                                },
+                            )
+                        except Exception as exc:
+                            _log.debug("batchGenerateImages patch skipped: %s", exc)
+                            await route.continue_()
+
+                    await page.route("**/*batchGenerateImages*", _rewrite_image_request)
                     interceptor = UIInterceptor()
                     interceptor.attach(page)
                     submission_patch = {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)}
                     store.patch_row("jobs", job_id, submission_patch)
                     job = {**job, **submission_patch}  # keep local var in sync
-                    await self._click_flow_submit(page)
-                    store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
-                    # Race: interceptor RPC capture vs project-API polling.
-                    # batchGenerateImages may be async (returns 200 without fifeUrl),
-                    # so don't wait 180s for it — poll project media in parallel.
-                    intercept_task = asyncio.create_task(
-                        interceptor.wait_for("batchGenerateImages", timeout=120, require_success=True)
-                    )
-                    poll_task = asyncio.create_task(
-                        self._wait_for_project_media(
-                            page, baseline_ids, "image", count, job_id,
-                            api=api, job=job, timeout_s=900,
-                        )
-                    )
                     try:
-                        done, pending = await asyncio.wait(
-                            {intercept_task, poll_task},
-                            return_when=asyncio.FIRST_COMPLETED,
+                        await self._click_flow_submit(page)
+                        store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
+                        # Race: interceptor RPC capture vs project-API polling.
+                        # batchGenerateImages may be async (returns 200 without fifeUrl),
+                        # so don't wait 180s for it — poll project media in parallel.
+                        intercept_task = asyncio.create_task(
+                            interceptor.wait_for("batchGenerateImages", timeout=120, require_success=True)
                         )
-                        # Cancel the loser
-                        for t in pending:
-                            t.cancel()
-                            await asyncio.gather(t, return_exceptions=True)
-                        finished = next(iter(done))
-                        result = finished.result()
-                        if finished is intercept_task:
-                            captured_resp = result.resp or {}
-                            media_items = _captured_image_items(captured_resp)
-                            if media_items:
-                                self._log("success", "api_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
-                            else:
-                                # RPC returned but no fifeUrl → use poll result
-                                media_items = await poll_task if not poll_task.cancelled() else await self._wait_for_project_media(
-                                    page, baseline_ids, "image", count, job_id, api=api, job=job, timeout_s=900,
-                                )
-                        else:
-                            # Poll task won
-                            media_items = result
-                            self._log("success", "poll_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
-                    except (GenerationTimeout, Exception):
-                        for t in [intercept_task, poll_task]:
-                            if not t.done():
+                        poll_task = asyncio.create_task(
+                            self._wait_for_project_media(
+                                page, baseline_ids, "image", count, job_id,
+                                api=api, job=job, timeout_s=900,
+                            )
+                        )
+                        try:
+                            done, pending = await asyncio.wait(
+                                {intercept_task, poll_task},
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            # Cancel the loser
+                            for t in pending:
                                 t.cancel()
                                 await asyncio.gather(t, return_exceptions=True)
-                        raise
+                            finished = next(iter(done))
+                            result = finished.result()
+                            if finished is intercept_task:
+                                captured_resp = result.resp or {}
+                                media_items = _captured_image_items(captured_resp)
+                                if media_items:
+                                    self._log("success", "api_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
+                                else:
+                                    # RPC returned but no fifeUrl → use poll result
+                                    media_items = await poll_task if not poll_task.cancelled() else await self._wait_for_project_media(
+                                        page, baseline_ids, "image", count, job_id, api=api, job=job, timeout_s=900,
+                                    )
+                            else:
+                                # Poll task won
+                                media_items = result
+                                self._log("success", "poll_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
+                        except (GenerationTimeout, Exception):
+                            for t in [intercept_task, poll_task]:
+                                if not t.done():
+                                    t.cancel()
+                                    await asyncio.gather(t, return_exceptions=True)
+                            raise
+                    finally:
+                        try:
+                            await page.unroute("**/*batchGenerateImages*", _rewrite_image_request)
+                        except Exception:
+                            pass
                 media_ids = [str(item["id"]) for item in media_items]
                 self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": settings.get("model"), "mediaIds": media_ids})
                 store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "downloading", "progress": 80})

@@ -212,40 +212,118 @@ class FlowUI:
     # ------------------------------------------------------------------
 
     async def fill_prompt(self, page, prompt: str) -> bool:
-        try:
-            await page.keyboard.press("Escape")
-            await asyncio.sleep(0.3)
-            await page.keyboard.press("Escape")
-            await asyncio.sleep(0.2)
-        except Exception:
-            pass
+        """Type into Flow's project-page prompt composer.
 
-        els = page.locator("div[contenteditable]")
-        count = await els.count()
-        for i in range(count):
-            el = els.nth(i)
-            visible = await el.evaluate(
-                "el => el.offsetWidth > 0 && el.offsetHeight > 0 && el.getBoundingClientRect().y > 100"
+        Flow flips between ``textarea``, ``role=textbox`` contenteditable, and
+        plain ``div[contenteditable]``. Escape can close the composer, so we
+        only press it once as a last-resort retry.
+        """
+        text = str(prompt or "")
+        if not text.strip():
+            return False
+        selectors = [
+            '[role="textbox"][contenteditable="true"]',
+            '[contenteditable="true"][role="textbox"]',
+            'div[contenteditable="true"]',
+            'div[contenteditable]',
+            'textarea[placeholder*="prompt" i]',
+            'textarea[placeholder*="Describe" i]',
+            'textarea[placeholder*="mô tả" i]',
+            'textarea[placeholder*="Ý tưởng" i]',
+            "textarea",
+        ]
+
+        async def _try_fill(el) -> bool:
+            try:
+                if not await el.is_visible():
+                    return False
+                box = await el.bounding_box()
+                if not box or box["height"] < 18 or box["width"] < 60:
+                    return False
+                await el.scroll_into_view_if_needed()
+                await el.click(timeout=4_000)
+                await asyncio.sleep(0.15)
+                # Clear then insert — keyboard.type is flaky when focus jumps.
+                try:
+                    await el.fill("")
+                except Exception:
+                    await page.keyboard.press("Meta+a")
+                    await page.keyboard.press("Control+a")
+                    await page.keyboard.press("Backspace")
+                try:
+                    await el.press_sequentially(text, delay=5)
+                except Exception:
+                    await page.keyboard.insert_text(text)
+                await asyncio.sleep(0.15)
+                content = (await el.inner_text()) or (await el.input_value() if hasattr(el, "input_value") else "") or ""
+                if text[:12] in content:
+                    return True
+                return bool(
+                    await el.evaluate(
+                        """(node, value) => {
+                            node.focus();
+                            if (node.tagName === 'TEXTAREA' || node.tagName === 'INPUT') {
+                                node.value = value;
+                            } else {
+                                node.textContent = value;
+                            }
+                            node.dispatchEvent(new InputEvent('input', { bubbles: true, data: value }));
+                            node.dispatchEvent(new Event('change', { bubbles: true }));
+                            const got = (node.value || node.textContent || '');
+                            return got.includes(value.slice(0, 12));
+                        }""",
+                        text,
+                    )
+                )
+            except Exception as exc:
+                log.debug("fill_prompt candidate failed: %s", exc)
+                return False
+
+        for attempt in range(2):
+            if attempt == 1:
+                try:
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.35)
+                except Exception:
+                    pass
+            for sel in selectors:
+                loc = page.locator(sel)
+                count = await loc.count()
+                for index in range(count):
+                    if await _try_fill(loc.nth(index)):
+                        return True
+            # Last resort: pick the largest visible contenteditable near the bottom.
+            handle = await page.evaluate(
+                """() => {
+                    const nodes = [...document.querySelectorAll(
+                        '[role="textbox"][contenteditable="true"], div[contenteditable="true"], div[contenteditable], textarea'
+                    )];
+                    let best = null;
+                    let bestScore = 0;
+                    for (const el of nodes) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 60 || r.height < 18) continue;
+                        if (r.bottom < 80 || r.top > window.innerHeight - 20) continue;
+                        const score = r.width * r.height + r.top; // prefer lower large boxes
+                        if (score > bestScore) {
+                            bestScore = score;
+                            best = el;
+                        }
+                    }
+                    if (!best) return false;
+                    best.focus();
+                    best.click();
+                    return true;
+                }"""
             )
-            if not visible:
-                continue
-            await el.scroll_into_view_if_needed()
-            await asyncio.sleep(0.2)
-            await el.click()
-            await asyncio.sleep(0.3)
-            focused_tag = await page.evaluate(
-                "() => document.activeElement.tagName + '|' + document.activeElement.contentEditable"
-            )
-            if "true" not in focused_tag.lower():
-                continue
-            await page.keyboard.press("Meta+a")
-            await page.keyboard.press("Control+a")
-            await asyncio.sleep(0.1)
-            await page.keyboard.type(prompt, delay=15)
-            await asyncio.sleep(0.2)
-            content = await el.text_content()
-            if prompt[:10] in (content or ""):
-                return True
+            if handle:
+                await asyncio.sleep(0.2)
+                for sel in selectors:
+                    loc = page.locator(sel)
+                    count = await loc.count()
+                    for index in range(count):
+                        if await _try_fill(loc.nth(index)):
+                            return True
         log.warning("Could not fill prompt input")
         return False
 
@@ -281,27 +359,48 @@ class FlowUI:
     # ------------------------------------------------------------------
 
     async def upload_image(self, page, image_path: str) -> bool:
-        add_btn = page.locator("button").filter(has_text="Add Media").first
-        if await add_btn.count() == 0:
-            add_btn = page.get_by_text("Add Media").first
-        if await add_btn.count() > 0:
-            await add_btn.click()
-            await asyncio.sleep(1)
-        file_input = page.locator("input[type='file']").first
-        if await file_input.count() > 0:
-            await file_input.set_input_files(image_path)
-            await asyncio.sleep(2)
-            return True
+        """Upload a start/reference still for Frames / Ingredients."""
+        labels = [
+            "Add Media", "Add media", "add media",
+            "Thêm phương tiện", "Thêm media", "Tải lên", "Upload",
+        ]
+        for label in labels:
+            add_btn = page.locator("button").filter(has_text=label).first
+            if await add_btn.count() == 0:
+                add_btn = page.get_by_text(label, exact=False).first
+            if await add_btn.count() > 0 and await add_btn.is_visible():
+                try:
+                    await add_btn.click(timeout=3_000)
+                    await asyncio.sleep(0.8)
+                    break
+                except Exception:
+                    continue
+        file_input = page.locator("input[type='file']")
+        for index in range(await file_input.count()):
+            candidate = file_input.nth(index)
+            try:
+                await candidate.set_input_files(image_path)
+                await asyncio.sleep(1.5)
+                return True
+            except Exception:
+                continue
         try:
-            async with page.expect_file_chooser(timeout=3000) as fc_info:
-                for sel in ["[aria-label*='upload' i]", ".upload-zone", "[class*='upload']"]:
+            async with page.expect_file_chooser(timeout=4_000) as fc_info:
+                for sel in [
+                    "[aria-label*='upload' i]",
+                    "[aria-label*='tải' i]",
+                    ".upload-zone",
+                    "[class*='upload']",
+                    "button:has-text('Upload')",
+                    "button:has-text('Tải')",
+                ]:
                     el = page.locator(sel).first
-                    if await el.count() > 0:
+                    if await el.count() > 0 and await el.is_visible():
                         await el.click()
                         break
             fc = await fc_info.value
             await fc.set_files(image_path)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
             return True
         except Exception as e:
             log.warning("File chooser upload failed: %s", e)
