@@ -533,8 +533,10 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
         str(prompt_override or scene.get("promptOverride") or "").strip(),
     ]
     if continuation:
-        # Visual start frame carries look/world; keep lock names + action only so
-        # Veo does not redraw characters from a long bible.
+        # Visual start frame carries look/world for Veo Frames. Omni Flash is T2V —
+        # keep a short prior-end reminder so text continuity still chains.
+        prior_prompt = str((previous or {}).get("prompt") or "").strip()
+        prior_tail = prior_prompt[-280:] if prior_prompt else ""
         prompt_parts = [
             (
                 "Continue the exact preceding video from the provided start frame. "
@@ -542,6 +544,7 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
                 "Do not restart the story, do not reintroduce characters, do not reset the set."
             ),
             lock_line,
+            (f"PREVIOUS END STATE (match this opening): {prior_tail}" if prior_tail else ""),
             str(scene.get("prompt") or "").strip(),
             str(prompt_override or scene.get("promptOverride") or "").strip(),
         ]

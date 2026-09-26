@@ -6,6 +6,7 @@ episode order, maintaining character and continuity across scenes.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -269,7 +270,9 @@ class SeriesRunner:
                                         if str(sc.get("id")) == scene_id:
                                             scene_cur = dict(sc)
                     if not (scene_cur and scene_cur.get("approvedKeyframe")):
-                        raise RuntimeError("No approved keyframe - add an anchor asset or generate a keyframe first")
+                        # Omni Flash is text-to-video — keyframe/start frame optional.
+                        if not re.search(r"omni|flash", str(settings.get("model") or ""), re.I):
+                            raise RuntimeError("No approved keyframe - add an anchor asset or generate a keyframe first")
 
                 # If video already completed, finish
                 if scene_cur and scene_cur.get("videoOutput") and Path(str(scene_cur.get("videoOutput"))).is_file() and scene_cur.get("status") == "complete":
@@ -279,10 +282,17 @@ class SeriesRunner:
                 run.set_current(scene_id, "generating_video")
                 ctx = series_mod.generation_context(series_id, episode_id, scene_id, "video")
                 vid_settings = {**settings, "count": 1, "outputDir": ctx["outputDir"]}
-                # generation_context sets sourceFiles=[prior end frame] for continuity.
-                # Do NOT set extendFromJobId — editor extend API is unreliable.
                 source_files = list(ctx.get("sourceFiles") or [])
-                video_mode = "frame" if source_files else "text"
+                model_name = str(vid_settings.get("model") or "")
+                # Omni Flash is text-to-video in Flow UI (360p/720p + duration). It does
+                # not expose the Veo Frames start-image upload — forcing frame mode fails
+                # with "start image upload control was not found". Continuity stays in prompt.
+                is_omni = bool(re.search(r"omni|flash", model_name, re.I))
+                if is_omni:
+                    source_files = []
+                    video_mode = "text"
+                else:
+                    video_mode = "frame" if source_files else "text"
                 time.sleep(15)
                 for _vid_attempt in range(3):
                     jobs = service.enqueue({

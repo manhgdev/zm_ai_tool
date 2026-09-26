@@ -57,11 +57,12 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
     const saved = readSeriesSettings()
     return {
       accountId: saved.accountId || accounts[0]?.id || '',
-      model: saved.model || 'Veo 3.1 - Fast',
+      model: saved.model || 'Omni 1.1 Flash',
       ratio: saved.ratio || '16:9',
-      duration: saved.duration || '8',
-      resolution: /^\d{3,4}p$/i.test(String(saved.resolution || '')) ? saved.resolution : '',
-      concurrency: saved.concurrency || '3',
+      duration: saved.duration || '4',
+      resolution: /^\d{3,4}p$/i.test(String(saved.resolution || '')) ? saved.resolution : '360p',
+      quality: saved.quality || '360p',
+      concurrency: saved.concurrency || '1',
     }
   })
 
@@ -111,11 +112,28 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
         ? (selectedModel.durations.includes(current.duration) ? current.duration : selectedModel.defaultDuration || selectedModel.durations[0] || current.duration)
         : ''
       const resolution = selectedModel.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
+      // Prefer 360p for Omni Flash when offered (fast continuous Series drafts).
+      const preferFast = /omni.*flash/i.test(selectedModel.name) && resolution.includes('360p')
       const nextResolution = resolution.length
-        ? (resolution.includes(current.resolution) ? current.resolution : selectedModel.defaultResolution && resolution.includes(selectedModel.defaultResolution) ? selectedModel.defaultResolution : resolution[0])
+        ? (resolution.includes(current.resolution)
+          ? current.resolution
+          : preferFast
+            ? '360p'
+            : selectedModel.defaultResolution && resolution.includes(selectedModel.defaultResolution)
+              ? selectedModel.defaultResolution
+              : resolution[0])
         : (/^[1-9]\d{0,1}k$/i.test(current.resolution) ? '' : current.resolution)
-      if (selectedModel.name === current.model && ratio === current.ratio && duration === current.duration && nextResolution === current.resolution) return current
-      return { ...current, model: selectedModel.name, ratio, duration, resolution: nextResolution }
+      const nextQuality = preferFast && (!current.quality || current.quality === '720p')
+        ? '360p'
+        : (current.quality || '720p')
+      if (
+        selectedModel.name === current.model
+        && ratio === current.ratio
+        && duration === current.duration
+        && nextResolution === current.resolution
+        && nextQuality === current.quality
+      ) return current
+      return { ...current, model: selectedModel.name, ratio, duration, resolution: nextResolution, quality: nextQuality }
     })
     if (imageSection?.models.length && !imageSection.models.some((item) => item.name === imageModel)) {
       setImageModel(imageSection.defaultModel || imageSection.models[0].name)
@@ -190,8 +208,9 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
             model: videoModelOptions.includes(seriesSettings.model) ? seriesSettings.model : videoModelOptions[0],
             ratio: seriesSettings.ratio,
             duration: seriesSettings.duration,
-            resolution: seriesSettings.resolution,
-            concurrency: seriesSettings.concurrency || '3',
+            resolution: seriesSettings.resolution || '360p',
+            quality: seriesSettings.quality || (/360p/i.test(seriesSettings.resolution) ? '360p' : '720p'),
+            concurrency: seriesSettings.concurrency || '1',
           },
           imageModel,
           autoApprove,
@@ -237,7 +256,8 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
             model: isKeyframe ? (imageModelOptions.includes(imageModel) ? imageModel : imageModelOptions[0]) : (videoModelOptions.includes(seriesSettings.model) ? seriesSettings.model : videoModelOptions[0]),
             ratio: seriesSettings.ratio,
             duration: seriesSettings.duration,
-            resolution: seriesSettings.resolution,
+            resolution: seriesSettings.resolution || '360p',
+            quality: seriesSettings.quality || (/360p/i.test(seriesSettings.resolution) ? '360p' : '720p'),
             count: 1,
           },
         }),
@@ -597,6 +617,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                 <div className="fsp-assets-head">
                   <p className="fsp-assets-hint">{t('Tối đa 3 ảnh theo thứ tự: nhân vật → đạo cụ/bối cảnh → bổ sung. Ảnh khóa luôn được dùng.', 'Up to 3 images in order: character → prop/background → extra. Locked images are always used.')}</p>
                   <p className="fsp-assets-hint">{t('Phim xuyên suốt: khóa Tom/Jerry (nhân vật), bật nối cảnh — mỗi video bắt đầu từ khung cuối cảnh trước (Veo Frames), không tạo lại từ đầu.', 'Film continuity: lock Tom/Jerry characters, keep scene linking on — each video starts from the previous end frame (Veo Frames), not from scratch.')}</p>
+                  <p className="fsp-assets-hint">{t('Omni Flash: tạo nhanh 360p (text). Nối cảnh bằng prompt + bible/ảnh neo — không có nút Frames như Veo. Muốn khóa khung cuối → dùng Veo 3.1.', 'Omni Flash: fast 360p text video. Continuity via prompt + bible/anchors — no Frames upload like Veo. For true end-frame lock use Veo 3.1.')}</p>
                   <button type="button" className="fsp-btn fsp-btn-secondary" onClick={() => assetInput.current?.click()}>
                     + {t('Thêm ảnh', 'Add image')}
                   </button>
@@ -796,14 +817,35 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                         <label>{t('Độ phân giải', 'Resolution')}</label>
                         <select
                           value={seriesResolutionOptions.includes(seriesSettings.resolution) ? seriesSettings.resolution : seriesResolutionOptions[0]}
-                          onChange={(e) => saveSeriesSettings({ resolution: e.target.value })}
+                          onChange={(e) => saveSeriesSettings({
+                            resolution: e.target.value,
+                            quality: /360p/i.test(e.target.value) ? '360p' : (seriesSettings.quality || '720p'),
+                          })}
                           aria-label={t('Độ phân giải', 'Resolution')}
                           disabled={seriesResolutionOptions.length < 2}
                         >
-                          {seriesResolutionOptions.map((resolution) => <option key={resolution} value={resolution}>{resolution}</option>)}
+                          {seriesResolutionOptions.map((resolution) => (
+                            <option key={resolution} value={resolution}>
+                              {resolution === '360p'
+                                ? t('360p · nhanh', '360p · fast')
+                                : resolution}
+                            </option>
+                          ))}
                         </select>
                       </div>
                       ) : null}
+                      <div className="fsp-auto-field fsp-field-xs">
+                        <label>{t('Tải về', 'Download')}</label>
+                        <select
+                          value={seriesSettings.quality || '360p'}
+                          onChange={(e) => saveSeriesSettings({ quality: e.target.value })}
+                          aria-label={t('Chất lượng tải', 'Download quality')}
+                        >
+                          <option value="360p">{t('360p · nhanh', '360p · fast')}</option>
+                          <option value="720p">720p</option>
+                          <option value="1080p">1080p</option>
+                        </select>
+                      </div>
                       <div className="fsp-auto-field fsp-field-xs">
                         <label>{t('Luồng', 'Threads')}</label>
                         <select

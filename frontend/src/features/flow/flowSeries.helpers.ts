@@ -18,6 +18,7 @@ export type SeriesGenSettings = {
   ratio: string
   duration: string
   resolution: string
+  quality?: string
   concurrency?: string
 }
 export type FlowSeriesAccount = {
