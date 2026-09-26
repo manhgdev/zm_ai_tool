@@ -4043,8 +4043,15 @@ class FlowService:
                                     timeout_s=900,
                                     on_poll=lambda _s, elapsed: store.patch_row(
                                         "jobs", job_id,
-                                        {"progress": min(90, 20 + int(elapsed / 12)), "updatedAt": time.time()},
+                                        # 90% is reserved for downloading; a
+                                        # still-rendering API poll must never
+                                        # appear complete in the queue.
+                                        {"stage": "generating", "progress": min(89, 20 + int(elapsed / 12)), "updatedAt": time.time()},
                                     ),
+                                )
+                                store.patch_row(
+                                    "jobs", job_id,
+                                    {"stage": "downloading", "progress": 90, "updatedAt": time.time()},
                                 )
                                 output = self._output_path(job, output_index, "mp4")
                                 await api.download(status.fife_url, output)
