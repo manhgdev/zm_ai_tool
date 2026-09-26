@@ -164,6 +164,14 @@ def _video_media_status(media: dict[str, Any] | None) -> str:
     )
 
 
+def _video_download_quality(settings: dict[str, Any] | None) -> str:
+    """Map job settings to Flow download menu labels (720p faster, 1080p sharper)."""
+    raw = str((settings or {}).get("quality") or "").strip().lower()
+    if raw in {"high", "1080", "1080p"} or "1080" in raw:
+        return "1080p"
+    return "720p"
+
+
 def _video_media_ready(media: dict[str, Any] | None) -> bool:
     """True when Flow has finished the clip (status and/or download URL).
 
@@ -2915,6 +2923,61 @@ class FlowService:
             f"FLOW_GENERATION_TIMEOUT: no completed {kind} media appeared after submit"
         )
 
+
+    async def _download_video_via_flow_menu(
+        self,
+        page,
+        tile_index: int,
+        output: Path,
+        quality: str,
+    ) -> None:
+        """Open Flow's download menu and pick 720p / 1080p (upscaled when offered)."""
+        preferred = _video_download_quality({"quality": quality})
+        fallback = "720p" if preferred == "1080p" else "1080p"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        tile = page.locator("flow-grid-tile-container").nth(tile_index)
+        thumb = tile.locator(".thumbnail").first
+        await thumb.click()
+        await asyncio.sleep(1.2)
+        dl_btn = page.locator(
+            'button[aria-label*="Tải"], button[aria-label*="Download"], '
+            'button[aria-label*="download"], button:has-text("download"), button:has-text("Tải")'
+        ).first
+        await dl_btn.click()
+        await asyncio.sleep(0.8)
+        labels = [preferred]
+        if preferred == "1080p":
+            labels += ["1080p Upscaled", "Upscaled", fallback]
+        else:
+            labels += [fallback]
+        last_error: Exception | None = None
+        for label in labels:
+            item = page.locator(f'[role="menuitem"]:has-text("{label}")').first
+            try:
+                if await item.count() == 0:
+                    continue
+                async with page.expect_download(timeout=45_000) as dl_info:
+                    await item.click()
+                dl = await dl_info.value
+                await dl.save_as(str(output))
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.4)
+                return
+            except Exception as exc:
+                last_error = exc
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
+            pass
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"FLOW_UI_CHANGED: download menu missing {preferred}")
+
     async def _wait_and_download_flow_videos(
         self,
         page,
@@ -3007,27 +3070,18 @@ class FlowService:
             raise RuntimeError(f"FLOW_GENERATION_TIMEOUT: videos did not complete within {timeout_s}s")
 
         store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
+        quality = _video_download_quality(job.get("settings") if isinstance(job.get("settings"), dict) else {})
         outputs: list[str] = []
         for output_index in range(1, expected_count + 1):
             self._check_cancel(job_id)
             output = self._output_path(job, output_index, "mp4")
-            output.parent.mkdir(parents=True, exist_ok=True)
-            tile = page.locator("flow-grid-tile-container").nth(output_index - 1)
-            thumb = tile.locator(".thumbnail").first
-            await thumb.click()
-            await asyncio.sleep(1.5)
-            dl_btn = page.locator('button[aria-label*="Tải"], button:has-text("download"), button[aria-label*="download"]').first
-            await dl_btn.click()
-            await asyncio.sleep(1)
-            item_res = page.locator('[role="menuitem"]:has-text("720p"), [role="menuitem"]:has-text("1080p")').first
-            async with page.expect_download(timeout=30_000) as dl_info:
-                await item_res.click()
-            dl = await dl_info.value
-            await dl.save_as(str(output))
-            await page.keyboard.press("Escape")
-            await asyncio.sleep(0.8)
+            await self._download_video_via_flow_menu(page, output_index - 1, output, quality)
             outputs.append(str(output))
-            self._log("success", "output_downloaded", job_id=job_id, account_id=str(job.get("accountId") or ""), details={"outputIndex": output_index, "path": str(output)})
+            self._log(
+                "success", "output_downloaded",
+                job_id=job_id, account_id=str(job.get("accountId") or ""),
+                details={"outputIndex": output_index, "path": str(output), "quality": quality},
+            )
         return outputs
 
     async def _wait_for_project_videos(
@@ -3414,13 +3468,20 @@ class FlowService:
                     if media_ids:
                         store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": max(30, int((store.get_row("jobs", job_id) or {}).get("progress") or 30)), "updatedAt": time.time()})
                         from ._flow._api import VideoJob
+                        download_quality = _video_download_quality(settings)
                         async def _wait_and_dl_video(media_id: str, idx: int) -> str:
                             self._check_cancel(job_id)
                             out = self._output_path(job, idx, "mp4")
-                            # Project data often has fifeUrl before status polling catches up.
+                            store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
+                            # Prefer Flow download menu so 720p/1080p matches user setting
+                            # (fifeUrl alone is often a single preset and skips Upscaled 1080p).
+                            try:
+                                await self._download_video_via_flow_menu(page, idx - 1, out, download_quality)
+                                return str(out)
+                            except Exception as menu_exc:
+                                _log.debug("flow menu download failed (%s); trying direct URL", menu_exc)
                             direct = await self._resolve_video_fife_url(api, media_id)
-                            if direct:
-                                store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
+                            if direct and download_quality == "720p":
                                 await api.download(direct, out)
                                 return str(out)
                             if str(media_id).startswith("dom-video:"):
@@ -3435,13 +3496,11 @@ class FlowService:
                             url = status.fife_url or await self._resolve_video_fife_url(api, media_id)
                             if not url:
                                 raise RuntimeError(f"FLOW_DOWNLOAD_URL_MISSING: {media_id}")
-                            store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
                             await api.download(url, out)
                             return str(out)
-                        outputs = list(await asyncio.gather(*[
-                            _wait_and_dl_video(mid, i)
-                            for i, mid in enumerate(media_ids[:count], 1)
-                        ]))
+                        outputs = []
+                        for i, mid in enumerate(media_ids[:count], 1):
+                            outputs.append(await _wait_and_dl_video(mid, i))
                         asyncio.create_task(self._sync_credits(api, account["id"]))
                     else:
                         self._log(

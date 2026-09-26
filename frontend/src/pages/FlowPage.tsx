@@ -35,6 +35,7 @@ import {
   WEB_AUTO_DOWNLOAD_DEFAULT_KEY, WEB_OUTPUT_ROOT_KEY, TAB_KEY, RAIL_KEY,
   ACCOUNTS_KEY, CREATE_KIND_KEY, ACTIVE_PANEL_KEY, IMAGE_MODE_KEY, COLLAPSED_FOLDERS_KEY,
   FLOW_VIDEO_MODELS, FLOW_IMAGE_MODELS, FLOW_OMNI_FLASH_DURATIONS,
+  FLOW_VIDEO_DOWNLOAD_QUALITIES,
   settingsForCreateKind, settingsWithSelectedModel,
   defaultFlowOutputFolder as buildDefaultFlowOutputFolder,
   flowConfiguredOutputFolder as buildFlowConfiguredOutputFolder,
@@ -2230,6 +2231,22 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         options={resolutionOptions}
                       />
                     ) : null}
+                    <FlowSelect
+                      label={t("Chất lượng tải", "Download quality")}
+                      value={
+                        (FLOW_VIDEO_DOWNLOAD_QUALITIES as readonly string[]).includes(settings.quality)
+                          ? settings.quality
+                          : "720p"
+                      }
+                      onChange={(quality) =>
+                        setSettings((current) => ({ ...current, quality }))
+                      }
+                      options={[...FLOW_VIDEO_DOWNLOAD_QUALITIES]}
+                      optionLabels={{
+                        "720p": t("720p · nhanh hơn", "720p · faster"),
+                        "1080p": t("1080p · đẹp hơn", "1080p · sharper"),
+                      }}
+                    />
                   </>
                 ) : (
                   <>
@@ -2295,14 +2312,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               </div>
               {advancedOpen && (
                 <div className="flow-advanced">
-                  <FlowSelect
-                    label={t("Chất lượng", "Quality")}
-                    value={settings.quality}
-                    onChange={(quality) =>
-                      setSettings((current) => ({ ...current, quality }))
-                    }
-                    options={["Standard", "High"]}
-                  />
                   <FlowSelect
                     label={t("Luồng chạy", "Concurrent jobs")}
                     value={settings.concurrency}

@@ -30,6 +30,7 @@ export const FLOW_VIDEO_MODELS = [
 export const FLOW_OMNI_FLASH_DURATIONS = ["4", "6", "8", "10"] as const;
 
 export const FLOW_RESOLUTIONS = ["480p", "720p", "1080p"] as const;
+export const FLOW_VIDEO_DOWNLOAD_QUALITIES = ["720p", "1080p"] as const;
 
 export const FLOW_IMAGE_MODELS = [
   "Nano Banana Pro",
@@ -120,7 +121,7 @@ export function readSettings(): FlowSettings {
     model: "Veo 3.1 - Fast", videoModel: "Veo 3.1 - Fast", imageModel: "Nano Banana 2",
     ratio: "16:9", imageRatio: "16:9", duration: "8", count: 1, imageCount: 1,
     account: "Ultra 01",
-    outputDir: defaultFlowOutputFolder(), quality: "Standard", resolution: "1K",
+    outputDir: defaultFlowOutputFolder(), quality: "720p", resolution: "1K",
     concurrency: "8", format: "PNG", filePrefix: "flow", referenceStrength: 70, autoDownload: true,
   };
   try {
@@ -137,6 +138,12 @@ export function readSettings(): FlowSettings {
     if (!String(merged.videoModel || "").trim()) merged.videoModel = fallback.videoModel;
     if (!String(merged.imageModel || "").trim()) merged.imageModel = fallback.imageModel;
     if (!["16:9", "9:16", "1:1", "4:3", "3:4"].includes(merged.imageRatio)) merged.imageRatio = fallback.imageRatio;
+    // Legacy Quality labels → download resolution (720p faster, 1080p heavier).
+    if (/^standard$/i.test(String(merged.quality || ""))) merged.quality = "720p";
+    if (/^high$/i.test(String(merged.quality || ""))) merged.quality = "1080p";
+    if (!FLOW_VIDEO_DOWNLOAD_QUALITIES.includes(merged.quality as (typeof FLOW_VIDEO_DOWNLOAD_QUALITIES)[number])) {
+      merged.quality = fallback.quality;
+    }
     if (![1, 2, 3, 4].includes(Number(merged.imageCount))) merged.imageCount = fallback.imageCount;
     if (!["16:9", "9:16", "1:1", "4:3", "3:4"].includes(merged.ratio)) merged.ratio = fallback.ratio;
     const concurrency = Number(merged.concurrency);
