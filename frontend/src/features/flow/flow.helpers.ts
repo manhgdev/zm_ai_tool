@@ -32,6 +32,7 @@ export const FLOW_OMNI_FLASH_DURATIONS = ["4", "6", "8", "10"] as const;
 
 export const FLOW_RESOLUTIONS = ["360p", "480p", "720p", "1080p"] as const;
 export const FLOW_VIDEO_DOWNLOAD_QUALITIES = ["360p", "720p", "1080p", "4K"] as const;
+export const FLOW_IMAGE_RESOLUTIONS = ["1K", "2K", "4K"] as const;
 
 /** Download menu options available for a Flow account plan (video only). */
 export function flowVideoDownloadQualities(plan: string | undefined | null): string[] {
@@ -40,6 +41,33 @@ export function flowVideoDownloadQualities(plan: string | undefined | null): str
   if (normalized === "Pro" || /^plus$/i.test(normalized)) return ["360p", "720p", "1080p"];
   // Free: 360p is the fastest/lowest Flow download tier; 720p still available.
   return ["360p", "720p"];
+}
+
+/** Image plan tiers (1K/2K/4K) — never video Np labels. */
+export function flowImageResolutions(plan: string | undefined | null): string[] {
+  const normalized = String(plan || "Free").trim();
+  if (normalized === "Ultra") return ["1K", "2K", "4K"];
+  if (normalized === "Pro" || /^plus$/i.test(normalized)) return ["1K", "2K"];
+  return ["1K"];
+}
+
+export function isFlowVideoUiResolution(value: string | undefined | null): boolean {
+  return /^\d{3,4}p$/i.test(String(value || "").trim());
+}
+
+export function isFlowImageUiResolution(value: string | undefined | null): boolean {
+  return /^[1-9]\d{0,1}k$/i.test(String(value || "").trim());
+}
+
+/** Keep image jobs on 1K/2K/4K; strip leftover Omni/Veo Np from shared settings. */
+export function clampFlowImageResolution(
+  value: string | undefined | null,
+  plan: string | undefined | null = "Free",
+): string {
+  const options = flowImageResolutions(plan);
+  const raw = String(value || "").trim();
+  const match = options.find((item) => item.toLowerCase() === raw.toLowerCase());
+  return match || options[0] || "1K";
 }
 
 export const FLOW_IMAGE_MODELS = [
@@ -132,7 +160,7 @@ export function readSettings(): FlowSettings {
     ratio: "16:9", imageRatio: "16:9", duration: "8", count: 1, imageCount: 1,
     account: "Ultra 01",
     outputDir: defaultFlowOutputFolder(), quality: "720p", resolution: "1K",
-    concurrency: "8", format: "PNG", filePrefix: "flow", referenceStrength: 70, autoDownload: true,
+    concurrency: "3", format: "PNG", filePrefix: "flow", referenceStrength: 70, autoDownload: true,
   };
   try {
     const { enhancePrompt: _ep, seed: _s, ...saved } = JSON.parse(
@@ -219,7 +247,9 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
         model: savedModel === "Veo 3.1 - Lite [Lower Priority]" ? "Veo 3.1 - Fast" : savedModel,
         ratio: String(s.ratio || "16:9"),
         duration: String(s.duration || "8"),
-        resolution: String(s.resolution || (raw.kind === "image" ? "1K" : "")),
+        resolution: raw.kind === "image"
+          ? clampFlowImageResolution(String(s.resolution || "1K"))
+          : (isFlowVideoUiResolution(String(s.resolution || "")) ? String(s.resolution) : ""),
         quality: String(s.quality || ""),
         outputDir: String(s.outputDir || "flow"),
         concurrency: s.concurrency != null ? String(s.concurrency) : undefined,
@@ -242,7 +272,7 @@ export function formatFlowJobSettingsMeta(
   if (kind === "video") {
     const duration = String(settings.duration || "").trim();
     if (duration) parts.push(/s$/i.test(duration) ? duration : `${duration}s`);
-    const resolution = String(settings.resolution || "").trim();
+    const resolution = isFlowVideoUiResolution(settings.resolution) ? String(settings.resolution).trim() : "";
     const quality = String(settings.quality || "").trim();
     if (resolution) parts.push(resolution);
     if (quality) {
@@ -253,7 +283,10 @@ export function formatFlowJobSettingsMeta(
       }
     }
   } else {
-    const resolution = String(settings.resolution || "").trim();
+    // Image tiers only — never show leftover video Np (360p) from shared settings.
+    const resolution = isFlowImageUiResolution(settings.resolution)
+      ? String(settings.resolution).trim().toUpperCase().replace(/K$/i, "K")
+      : "";
     if (resolution) parts.push(resolution);
   }
   return parts.join(" · ");

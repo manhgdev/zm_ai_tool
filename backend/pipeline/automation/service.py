@@ -898,6 +898,7 @@ class AutomationService:
             provider_id=selected_provider,
         )
         content = ""
+        failure = ""
         try:
             with self._chat_gate:
                 for raw in chat_service.stream_message(
@@ -919,11 +920,15 @@ class AutomationService:
                             content += str(payload.get("delta") or "")
                         elif payload.get("content") is not None:
                             content = str(payload.get("content") or content)
+                        elif payload.get("errorCode") or payload.get("error"):
+                            failure = ": ".join(str(v) for v in (payload.get("errorCode"), payload.get("error")) if v)[:400]
         finally:
             try:
                 chat_service.store.delete_conversation(conversation["id"])
             except Exception:
                 pass
+        if failure and not content.strip():
+            raise RuntimeError(failure)
         return content
 
     def suggest_topics(self, hint: str = "", settings: dict[str, Any] | None = None) -> list[str]:

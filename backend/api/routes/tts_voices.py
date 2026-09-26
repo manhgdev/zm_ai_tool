@@ -121,17 +121,25 @@ def api_tts_warm():
     """Warm-load VieNeu when opening /text-to-speech — non-blocking."""
     from pipeline.tts.engines import vieneu as vieneu_engine
 
+    installed = bool(vieneu_engine.available())
+    # Flip to loading before the background thread so /tts/status polls leave "Checking…".
+    if installed:
+        with vieneu_engine._lock:
+            if vieneu_engine._load_state == "cold":
+                vieneu_engine._load_state = "loading"
+
     def _run() -> None:
         try:
             vieneu_engine.warm()
         except Exception:
             pass
 
-    threading.Thread(target=_run, name="tts-warm", daemon=True).start()
+    if installed:
+        threading.Thread(target=_run, name="tts-warm", daemon=True).start()
     return {
         "ok": True,
-        "loadState": getattr(vieneu_engine, "_load_state", "loading"),
-        "installed": bool(vieneu_engine.available()),
+        "loadState": getattr(vieneu_engine, "_load_state", "cold"),
+        "installed": installed,
         "mode": vieneu_engine.current_mode(),
     }
 

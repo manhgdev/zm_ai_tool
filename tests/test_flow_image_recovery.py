@@ -37,6 +37,52 @@ class _DurationPage:
         return _FlowControlLocator()
 
 
+class _UnconfirmableDurationPage:
+    """Duration radio is visible but never reports selected — Flow markup quirk."""
+
+    def locator(self, selector):
+        if selector == ".settings-trigger-button, .settings-summary":
+            return _FlowControlLocator(0)
+        return _UnconfirmableDurationLocator()
+
+
+class _UnconfirmableDurationLocator:
+    def __init__(self, count=0, *, match_duration=False):
+        self._count = count
+        self._match_duration = match_duration
+
+    def filter(self, **kwargs):
+        pattern = kwargs.get("has_text")
+        if pattern and pattern.search("16:9"):
+            return _UnconfirmableDurationLocator(1)
+        if pattern and pattern.search("10"):
+            return _UnconfirmableDurationLocator(1, match_duration=True)
+        return _UnconfirmableDurationLocator(0)
+
+    async def count(self):
+        return self._count
+
+    def nth(self, _index):
+        return self
+
+    async def is_visible(self):
+        return True
+
+    async def get_attribute(self, name):
+        if self._match_duration:
+            return "false"
+        return "true" if name == "aria-selected" else None
+
+    async def scroll_into_view_if_needed(self):
+        return None
+
+    async def click(self, **_kwargs):
+        return None
+
+    async def inner_text(self):
+        return "16:9" if not self._match_duration else "10s"
+
+
 class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_progress_await_returns_interceptor_result(self):
         async def completed():
@@ -60,6 +106,10 @@ class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_hidden_duration_is_skipped_for_any_value(self):
         # Veo has no duration radios — do not fail when 6s/8s is absent.
         await FlowService()._prepare_ui_format(_DurationPage(), "16:9", "6")
+
+    async def test_unconfirmed_duration_does_not_abort(self):
+        # Omni 10s can appear selected visually without aria-selected=true.
+        await FlowService()._prepare_ui_format(_UnconfirmableDurationPage(), "16:9", "10")
 
     async def test_image_plan_resolution_is_ignored_for_video_format(self):
         # Shared settings often keep 1K/2K/4K; Veo has no such tabs.

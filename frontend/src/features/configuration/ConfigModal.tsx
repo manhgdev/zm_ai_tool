@@ -144,16 +144,32 @@ export default function ConfigModal({
   const updateApplyStarted = useRef(false)
   const updateCancelRequested = useRef(false)
   const updateDownloadStarted = useRef(false)
+  const updateRetryAfterCancel = useRef(false)
+
   const downloadUpdate = async () => {
     if (updateDownloadStarted.current) return
     updateDownloadStarted.current = true
     updateCancelRequested.current = false
     updateApplyStarted.current = false
     try {
-      await api.installAppUpdate()
+      const started = await api.installAppUpdate()
+      if (started.busy || started.ok === false) {
+        updateDownloadStarted.current = false
+        // Previous cancel/download still winding down — wait, then auto-retry once.
+        updateRetryAfterCancel.current = true
+        setUpdateDialog({
+          kind: 'cancelling',
+          title: t('Đang chờ hủy cập nhật trước', 'Waiting for previous cancel'),
+          detail: started.message || t('Đợi tải cũ dừng xong rồi tự thử lại.', 'Waiting for the previous download to stop, then retrying automatically.'),
+          progress: 0,
+        })
+        return
+      }
+      updateRetryAfterCancel.current = false
       setUpdateDialog({ kind: 'downloading', title: t('Đang tải cập nhật', 'Downloading update'), detail: t('Đang tải gói cài đặt…', 'Downloading the installation package…'), progress: 0 })
     } catch (error) {
       updateDownloadStarted.current = false
+      updateRetryAfterCancel.current = false
       setUpdateDialog({ kind: 'error', title: t('Không thể tải cập nhật', 'Could not download update'), detail: error instanceof Error ? error.message : t('Vui lòng thử lại sau.', 'Please try again later.') })
     }
   }
@@ -176,6 +192,14 @@ export default function ConfigModal({
   const cancelUpdate = useCallback(async () => {
     if (updateCancelRequested.current) return
     updateCancelRequested.current = true
+    updateRetryAfterCancel.current = false
+    const text = (vi: string, en: string) => localize(localeRef.current, vi, en)
+    setUpdateDialog((current) => ({
+      kind: 'cancelling',
+      title: text('Đang hủy cập nhật', 'Cancelling update'),
+      detail: text('Đang dừng tải, ứng dụng vẫn hoạt động.', 'Stopping the download; the app will remain open.'),
+      progress: current?.progress ?? 0,
+    }))
     try {
       await api.cancelAppUpdate()
     } catch (error) {
@@ -185,32 +209,72 @@ export default function ConfigModal({
     }
     updateDownloadStarted.current = false
     updateApplyStarted.current = false
-    setUpdateDialog(null)
   }, [])
 
   useEffect(() => {
-    if (updateDialog?.kind !== 'downloading') return
+    if (updateDialog?.kind !== 'downloading' && updateDialog?.kind !== 'cancelling') return
     let cancelled = false
     let timer: number | undefined
     const text = (vi: string, en: string) => localize(localeRef.current, vi, en)
     const poll = async () => {
       try {
         const state = await api.getAppUpdateStatus()
-        if (cancelled || updateCancelRequested.current) return
+        if (cancelled) return
         if (state.phase === 'error') {
           updateDownloadStarted.current = false
+          updateRetryAfterCancel.current = false
+          updateCancelRequested.current = false
           setUpdateDialog({ kind: 'error', title: text('Không thể tải cập nhật', 'Could not download update'), detail: state.error || state.message })
           return
         }
         if (state.phase === 'cancelling') {
-          setUpdateDialog({ kind: 'cancelling', title: text('Đang hủy cập nhật', 'Cancelling update'), detail: text('Đang dừng tải, ứng dụng vẫn hoạt động.', 'Stopping the download; the app will remain open.'), progress: state.progress })
+          setUpdateDialog({
+            kind: 'cancelling',
+            title: text('Đang hủy cập nhật', 'Cancelling update'),
+            detail: text('Đang dừng tải, ứng dụng vẫn hoạt động.', 'Stopping the download; the app will remain open.'),
+            progress: state.progress,
+          })
           if (!cancelled) timer = window.setTimeout(() => void poll(), 300)
           return
         }
-        if (state.phase === 'cancelled') {
+        if (state.phase === 'cancelled' || (!state.running && updateDialog.kind === 'cancelling' && state.phase !== 'downloading' && state.phase !== 'checking' && state.phase !== 'ready')) {
+          const shouldRetry = updateRetryAfterCancel.current
+          updateRetryAfterCancel.current = false
+          updateCancelRequested.current = false
           updateDownloadStarted.current = false
           updateApplyStarted.current = false
+          if (shouldRetry) {
+            setUpdateDialog({ kind: 'downloading', title: text('Đang tải cập nhật', 'Downloading update'), detail: text('Đang tải gói cài đặt…', 'Downloading the installation package…'), progress: 0 })
+            // Allow downloadUpdate() to run again after cancel finished.
+            void (async () => {
+              try {
+                updateDownloadStarted.current = true
+                const started = await api.installAppUpdate()
+                if (started.busy || started.ok === false) {
+                  updateDownloadStarted.current = false
+                  updateRetryAfterCancel.current = true
+                  setUpdateDialog({
+                    kind: 'cancelling',
+                    title: text('Đang chờ hủy cập nhật trước', 'Waiting for previous cancel'),
+                    detail: started.message || text('Đợi tải cũ dừng xong rồi tự thử lại.', 'Waiting for the previous download to stop, then retrying automatically.'),
+                    progress: 0,
+                  })
+                  return
+                }
+                setUpdateDialog({ kind: 'downloading', title: text('Đang tải cập nhật', 'Downloading update'), detail: text('Tải xong sẽ tự cài và mở lại ứng dụng.', 'The update will install automatically and reopen the app.'), progress: 0 })
+              } catch (error) {
+                updateDownloadStarted.current = false
+                setUpdateDialog({ kind: 'error', title: text('Không thể tải cập nhật', 'Could not download update'), detail: error instanceof Error ? error.message : text('Vui lòng thử lại sau.', 'Please try again later.') })
+              }
+            })()
+            return
+          }
           setUpdateDialog(null)
+          return
+        }
+        if (updateCancelRequested.current && state.phase !== 'ready' && state.phase !== 'applying') {
+          // User asked to cancel; ignore download progress until cancelled/idle.
+          if (!cancelled) timer = window.setTimeout(() => void poll(), 300)
           return
         }
         if (state.phase === 'ready') {
@@ -221,10 +285,16 @@ export default function ConfigModal({
           setUpdateDialog({ kind: 'applying', title: text('Đang cài cập nhật', 'Installing update'), detail: text('Ứng dụng sẽ tự mở lại sau khi cài xong.', 'The app will reopen automatically after installation.'), progress: 0 })
           return
         }
+        if (state.phase === 'complete') {
+          updateDownloadStarted.current = false
+          setUpdateDialog({ kind: 'info', title: text('Đã là phiên bản mới nhất', 'You are up to date'), detail: state.message })
+          return
+        }
         setUpdateDialog({ kind: 'downloading', title: text('Đang tải cập nhật', 'Downloading update'), detail: text('Tải xong sẽ tự cài và mở lại ứng dụng.', 'The update will install automatically and reopen the app.'), progress: state.progress })
       } catch (error) {
         if (!cancelled) {
           updateDownloadStarted.current = false
+          updateRetryAfterCancel.current = false
           setUpdateDialog({ kind: 'error', title: text('Mất kết nối cập nhật', 'Update connection failed'), detail: error instanceof Error ? error.message : text('Vui lòng thử lại sau.', 'Please try again later.') })
         }
         return
@@ -239,7 +309,7 @@ export default function ConfigModal({
     setLogLoading(true)
     setLogErr('')
     void api
-      .getAppLogs(1200)
+      .getAppLogs(50)
       .then((r) => {
         setLogText(r.text || '(trống)')
         setLogPath(r.path || '')

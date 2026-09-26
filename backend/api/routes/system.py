@@ -115,6 +115,7 @@ _UPDATE_REPOSITORY = "manhgdev/zm_ai_tool"
 _UPDATE_LOCK = threading.Lock()
 _UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30 * 60
 _UPDATE_CANCEL = threading.Event()
+_UPDATE_RUN_ID = 0
 _UPDATE_STATE: dict[str, Any] = {
     "running": False,
     "phase": "idle",
@@ -127,6 +128,7 @@ _UPDATE_STATE: dict[str, Any] = {
     "packageSha256": "",
     "cancelRequested": False,
     "cancelledAt": None,
+    "runId": 0,
 }
 
 
@@ -259,7 +261,12 @@ def _download_update_parallel(url: str, partial: Path, expected_size: int) -> bo
     workers = 4
     chunk_size = (expected_size + workers - 1) // workers
     parts = [partial.with_name(f"{partial.name}.{i}") for i in range(workers)]
+    received = 0
+    received_lock = threading.Lock()
+    next_progress_at = 0.0
+
     def fetch(index: int) -> Path:
+        nonlocal received, next_progress_at
         start = index * chunk_size
         end = min(expected_size - 1, start + chunk_size - 1)
         req = urllib.request.Request(url, headers={"User-Agent": "ZM-AI-TOOL", "Range": f"bytes={start}-{end}"})
@@ -268,21 +275,26 @@ def _download_update_parallel(url: str, partial: Path, expected_size: int) -> bo
                 raise RuntimeError("UPDATE_RANGE_UNSUPPORTED")
             target = parts[index]
             with target.open("wb") as stream:
-                while block := response.read(8 * 1024 * 1024):
+                # 1 MiB reads: cancel + progress react sooner than 8 MiB blocks.
+                while block := response.read(1024 * 1024):
                     if _UPDATE_CANCEL.is_set():
                         raise _UpdateCancelled
                     stream.write(block)
+                    with received_lock:
+                        received += len(block)
+                        now = time.monotonic()
+                        if now >= next_progress_at:
+                            progress = min(99, int(received * 100 / expected_size)) if expected_size else 0
+                            _set_update_state(progress=progress)
+                            next_progress_at = now + 0.25
         if target.stat().st_size != end - start + 1:
             raise OSError("UPDATE_RANGE_INCOMPLETE")
         return target
     try:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="update-range") as pool:
             futures = [pool.submit(fetch, i) for i in range(workers)]
-            completed = 0
             for future in as_completed(futures):
                 future.result()
-                completed += 1
-                _set_update_state(progress=min(99, completed * 25))
         with partial.open("wb") as output:
             for part in parts:
                 with part.open("rb") as source:
@@ -356,7 +368,7 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
                         total = 0
                     received = offset
                     next_progress_at = 0.0
-                    while chunk := response.read(8 * 1024 * 1024):
+                    while chunk := response.read(1024 * 1024):
                         if _UPDATE_CANCEL.is_set():
                             raise _UpdateCancelled
                         output.write(chunk)
@@ -1285,11 +1297,42 @@ def api_update_check():
 def api_update_install():
     if not _update_supported():
         raise HTTPException(400, "Chỉ bản desktop hỗ trợ cập nhật")
+    global _UPDATE_RUN_ID
     with _UPDATE_LOCK:
-        if _UPDATE_STATE["running"] or _UPDATE_STATE['phase'] == 'applying':
-            return {"ok": True, "running": True, "message": _UPDATE_STATE["message"]}
+        phase = str(_UPDATE_STATE.get("phase") or "")
+        if phase == "applying":
+            return {
+                "ok": True,
+                "running": True,
+                "busy": False,
+                "phase": phase,
+                "message": _UPDATE_STATE.get("message") or "Đang cài cập nhật…",
+            }
+        if _UPDATE_STATE["running"]:
+            # Do not pretend a new download started while the previous one
+            # (often still cancelling) is alive — FE must wait / retry.
+            return {
+                "ok": False,
+                "running": True,
+                "busy": True,
+                "phase": phase,
+                "cancelRequested": bool(_UPDATE_STATE.get("cancelRequested")),
+                "message": _UPDATE_STATE.get("message") or "Đang có cập nhật khác đang chạy…",
+            }
         _UPDATE_CANCEL.clear()
-        _UPDATE_STATE.update(running=True, phase="checking", progress=0, message="Đang chuẩn bị cập nhật…", error="", packagePath="", cancelRequested=False, cancelledAt=None)
+        _UPDATE_RUN_ID += 1
+        run_id = _UPDATE_RUN_ID
+        _UPDATE_STATE.update(
+            running=True,
+            phase="checking",
+            progress=0,
+            message="Đang chuẩn bị cập nhật…",
+            error="",
+            packagePath="",
+            cancelRequested=False,
+            cancelledAt=None,
+            runId=run_id,
+        )
 
     def work() -> None:
         try:
@@ -1326,14 +1369,33 @@ def api_update_install():
                 raise _UpdateCancelled
             _set_update_state(phase="ready", progress=100, message="Đã tải gói cập nhật", packagePath=str(package))
         except _UpdateCancelled:
-            _set_update_state(running=False, phase="cancelled", message="Đã hủy cập nhật", cancelRequested=True, cancelledAt=time.time())
+            with _UPDATE_LOCK:
+                if run_id != _UPDATE_RUN_ID:
+                    return
+                _UPDATE_STATE.update(
+                    running=False,
+                    phase="cancelled",
+                    message="Đã hủy cập nhật",
+                    cancelRequested=True,
+                    cancelledAt=time.time(),
+                )
         except Exception as exc:
-            _set_update_state(phase="error", error=str(exc), message="Không thể tải bản cập nhật")
+            with _UPDATE_LOCK:
+                if run_id != _UPDATE_RUN_ID:
+                    return
+                _UPDATE_STATE.update(
+                    phase="error",
+                    error=str(exc),
+                    message="Không thể tải bản cập nhật",
+                    running=False,
+                )
         finally:
-            _set_update_state(running=False)
+            with _UPDATE_LOCK:
+                if run_id == _UPDATE_RUN_ID:
+                    _UPDATE_STATE["running"] = False
 
     threading.Thread(target=work, name="desktop-update-download", daemon=True).start()
-    return {"ok": True, "running": True, "message": "Đang tải bản cập nhật…"}
+    return {"ok": True, "running": True, "busy": False, "phase": "checking", "message": "Đang tải bản cập nhật…"}
 
 
 @router.post("/api/system/update/cancel")
@@ -1849,7 +1911,7 @@ def api_update_apply():
 
 
 @router.get("/api/system/logs")
-def api_system_logs(tail: int = 800):
+def api_system_logs(tail: int = 50):
     """Log app (job lỗi, crash hook) — tab Cấu hình → Log."""
     from pipeline.core.app_log import read_log
 

@@ -44,3 +44,16 @@ test("image meta includes resolution", () => {
     "Nano Banana 2 · 16:9 · 2K",
   );
 });
+
+test("image meta hides leftover video resolution", () => {
+  assert.equal(
+    formatFlowJobSettingsMeta("image", {
+      model: "Nano Banana 2",
+      ratio: "16:9",
+      duration: "",
+      resolution: "360p",
+      quality: "720p",
+    }),
+    "Nano Banana 2 · 16:9",
+  );
+});

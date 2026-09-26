@@ -13,6 +13,14 @@ test('local cleaner explains conservative matching and localizes its stable erro
   assert.doesNotMatch(source, /Using local sparkle mask|fallback still creates a result file/)
 })
 
+test('Series AI create view is bilingual and uses backend provider labels only as brand names', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowSeriesPanel.tsx', import.meta.url), 'utf8')
+  for (const [vi, en] of [['Tạo Series bằng AI', 'Create a Series with AI'], ['Chủ đề', 'Topic'], ['Lưu thành Series', 'Save as Series'], ['Cài đặt tạo', 'Generation settings'], ['Nhân vật & ảnh neo', 'Characters & anchors']]) {
+    assert.ok(source.includes(`t('${vi}', '${en}')`), `${vi} / ${en}`)
+  }
+  assert.match(source, /chưa sẵn sàng', 'not ready'/)
+})
+
 test('technical status is localized without translating provider names', () => {
   const labels = readFileSync(new URL('../frontend/src/features/configuration/setupLabels.ts', import.meta.url), 'utf8')
   const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
@@ -36,7 +44,7 @@ test('download completion automatically applies update once without a second but
   assert.match(source, /state.phase === 'ready'\) \{\s*await applyUpdate\(\)/)
   assert.match(source, /if \(updateApplyStarted.current \|\| updateCancelRequested.current\) return/)
   assert.doesNotMatch(source, /updateDialog.kind === 'ready'.*<button/)
-  assert.match(source, /if \(updateDialog\?\.kind !== 'downloading'\) return/)
+  assert.match(source, /if \(updateDialog\?\.kind !== 'downloading' && updateDialog\?\.kind !== 'cancelling'\) return/)
 })
 
 test('installation progress has a single detailed surface, without dependency dumps', () => {

@@ -75,10 +75,9 @@ class ScriptIn(BaseModel):
 
 
 class SeriesDraftIn(BaseModel):
-    idea: str = Field(min_length=1, max_length=12000)
-    provider: str = Field(default="openrouter", pattern="^(openai|gemini|openrouter|grok)$")
-    episodes: int = Field(default=1, ge=1, le=10)
-    scenesPerEpisode: int = Field(default=3, ge=1, le=10)
+    topic: str = Field(min_length=1, max_length=12000)
+    provider: str = Field(pattern="^[a-z0-9_]{1,40}$")
+    model: str = Field(default="", max_length=200)
 
 
 class SeriesGenerationIn(BaseModel):
@@ -240,14 +239,11 @@ def series_import(body: ScriptIn):
 
 @router.post("/series/draft")
 def series_draft(body: SeriesDraftIn):
-    """Ask an already configured cloud provider for reviewable Series TXT."""
-    from pipeline.flow.series_ai import draft_script
+    """Ask any Chat provider/model for a reviewable Series draft from a topic."""
+    from pipeline.flow.series_ai import draft_series
 
     try:
-        return {"text": draft_script(
-            provider=body.provider, idea=body.idea,
-            episodes=body.episodes, scenes_per_episode=body.scenesPerEpisode,
-        )}
+        return draft_series(provider=body.provider, model=body.model, topic=body.topic)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except RuntimeError as exc:
@@ -462,7 +458,8 @@ def series_run_start(series_id: str, body: SeriesRunIn):
             account_id=body.accountId,
             settings=body.settings,
             image_model=body.imageModel,
-            auto_approve=body.autoApprove,
+            # Always auto-approve — Series automation must not wait for manual review.
+            auto_approve=True,
             mode=body.mode,
         )
         return {"runId": run_id, "status": "running"}

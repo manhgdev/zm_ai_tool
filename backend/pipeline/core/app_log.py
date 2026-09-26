@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 _lock = threading.Lock()
-_ring: deque[str] = deque(maxlen=4000)
+APP_LOG_LIMIT = 50
+_ring: deque[str] = deque(maxlen=APP_LOG_LIMIT)
 _hooks_installed = False
 
 
@@ -24,6 +25,15 @@ def log_path() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "app.log"
 
 
+def _persist_ring() -> None:
+    path = log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(("\n".join(_ring) + "\n") if _ring else "", encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+
+
 def append_log(message: str, *, also_print: bool = True) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     line = message.rstrip("\n")
@@ -32,13 +42,7 @@ def append_log(message: str, *, also_print: bool = True) -> None:
     stamped = "\n".join(f"[{ts}] {ln}" if i == 0 else ln for i, ln in enumerate(line.splitlines()))
     with _lock:
         _ring.append(stamped)
-        path = log_path()
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8", errors="replace") as f:
-                f.write(stamped + "\n")
-        except OSError:
-            pass
+        _persist_ring()
     if also_print:
         try:
             print(stamped, flush=True)
@@ -54,27 +58,24 @@ def append_exception(prefix: str, exc: BaseException | None = None) -> None:
     append_log(f"{prefix}\n{tb}".rstrip())
 
 
-def read_log(*, tail: int = 800, max_chars: int = 400_000) -> dict[str, Any]:
-    """Gộp file disk + ring memory (mới nhất)."""
-    tail = max(50, min(5000, int(tail)))
-    chunks: list[str] = []
+def read_log(*, tail: int = APP_LOG_LIMIT, max_chars: int = 400_000) -> dict[str, Any]:
+    """Ưu tiên ring memory (đã xoay vòng); file disk là bản ghi lại của ring."""
+    tail = max(1, min(APP_LOG_LIMIT, int(tail)))
     path = log_path()
-    try:
-        if path.is_file():
-            text = path.read_text(encoding="utf-8", errors="replace")
-            lines = text.splitlines()
-            chunks.extend(lines[-tail:])
-    except OSError as e:
-        chunks.append(f"[log-read] {e}")
     with _lock:
-        mem = list(_ring)[-min(200, tail) :]
-    # Merge: file đã có phần lớn; ring có dòng mới chưa flush hiếm — append unique tail
+        mem = list(_ring)[-tail:]
     if mem:
-        for m in mem:
-            if not chunks or chunks[-1] != m:
-                if m not in chunks[-30:]:
-                    chunks.append(m)
-    body = "\n".join(chunks[-tail:])
+        body = "\n".join(mem)
+    else:
+        chunks: list[str] = []
+        try:
+            if path.is_file():
+                text = path.read_text(encoding="utf-8", errors="replace")
+                # Cold start: file có thể còn log cũ dài — chỉ lấy đuôi theo số dòng.
+                chunks = text.splitlines()[-tail:]
+        except OSError as e:
+            chunks = [f"[log-read] {e}"]
+        body = "\n".join(chunks)
     if len(body) > max_chars:
         body = body[-max_chars:]
         body = "…\n" + body
@@ -91,8 +92,8 @@ def clear_log() -> dict[str, Any]:
     with _lock:
         _ring.clear()
         try:
-            if path.is_file():
-                path.write_text("", encoding="utf-8")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
         except OSError as e:
             return {"ok": False, "error": str(e), "path": str(path)}
     append_log("[log] cleared by user", also_print=False)
@@ -105,6 +106,18 @@ def install_process_hooks() -> None:
     if _hooks_installed:
         return
     _hooks_installed = True
+    # Seed ring from disk so the first append does not erase prior rotated tail.
+    with _lock:
+        if not _ring:
+            path = log_path()
+            try:
+                if path.is_file():
+                    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-APP_LOG_LIMIT:]:
+                        if line:
+                            _ring.append(line)
+                    _persist_ring()
+            except OSError:
+                pass
 
     def _thread_hook(args: Any) -> None:
         try:

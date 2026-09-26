@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from pipeline.flow.service import (  # noqa: E402
     _image_input_type_for_mode,
+    _match_model_choice,
     _patch_batch_generate_image_inputs,
     _prompt_with_reference_strength,
 )
@@ -50,6 +51,13 @@ class ImageModeHelpersTests(unittest.TestCase):
         for item in patched2["requests"][0]["imageInputs"]:
             self.assertEqual(item["imageInputType"], "IMAGE_INPUT_TYPE_REFERENCE")
             self.assertEqual(item["name"], item["mediaName"])
+
+
+    def test_model_choice_does_not_pick_lite_for_full_model(self):
+        self.assertFalse(_match_model_choice("Nano Banana 2", "🍌 Nano Banana 2 Lite"))
+        self.assertTrue(_match_model_choice("Nano Banana 2", "🍌 Nano Banana 2"))
+        self.assertTrue(_match_model_choice("Nano Banana 2 Lite", "Nano Banana 2 Lite"))
+        self.assertFalse(_match_model_choice("Veo 3.1 - Fast", "Veo 3.1 - Lite"))
 
 
 if __name__ == "__main__":

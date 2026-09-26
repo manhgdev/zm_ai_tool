@@ -462,6 +462,16 @@ def probe() -> tuple[bool, str]:
         return False, str(e)[-4000:]
 
 
+def has_ready_worker(*, mode: str = "v3turbo") -> bool:
+    """True if a warm idle (or live) worker already holds the model for this mode."""
+    mode = mode or "v3turbo"
+    with _pool_lock:
+        for w in _all_workers:
+            if w.mode == mode and w.alive():
+                return True
+    return False
+
+
 def synthesize(
     *,
     text: str,

@@ -482,6 +482,20 @@ def _locked_anchor_paths(series: dict[str, Any]) -> list[str]:
     return _asset_paths(series, ordered)[:3]
 
 
+def scene_seconds(timecode: str, choices: tuple[int, ...] = (4, 6, 8, 10)) -> int | None:
+    """Scene length from `HH.MM_SS.cc-HH.MM_SS.cc`, snapped to a Flow duration."""
+    def seconds(value: str) -> float:
+        hours_minutes, _, secs = value.strip().partition("_")
+        hours, _, minutes = hours_minutes.partition(".")
+        return int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(secs or 0)
+    try:
+        start, end = str(timecode or "").split("-", 1)
+        length = seconds(end) - seconds(start)
+    except ValueError:
+        return None
+    return min(choices, key=lambda c: abs(c - length)) if length > 0 else None
+
+
 def generation_context(series_id: str, episode_id: str, scene_id: str, artifact: str, prompt_override: str = "") -> dict[str, Any]:
     series = get_series(series_id)
     if not series:
@@ -533,8 +547,8 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
         str(prompt_override or scene.get("promptOverride") or "").strip(),
     ]
     if continuation:
-        # Visual start frame carries look/world for Veo Frames. Omni Flash is T2V —
-        # keep a short prior-end reminder so text continuity still chains.
+        # The previous clip's end frame is the Frames start image (Veo and Omni);
+        # the bible and prior END STATE keep identity and action chained.
         prior_prompt = str((previous or {}).get("prompt") or "").strip()
         prior_tail = prior_prompt[-280:] if prior_prompt else ""
         prompt_parts = [
@@ -543,6 +557,7 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
                 "Identical character appearance, wardrobe, proportions, world, lighting, and camera language. "
                 "Do not restart the story, do not reintroduce characters, do not reset the set."
             ),
+            str(series.get("bible") or "").strip(),
             lock_line,
             (f"PREVIOUS END STATE (match this opening): {prior_tail}" if prior_tail else ""),
             str(scene.get("prompt") or "").strip(),
@@ -632,7 +647,15 @@ def mark_job_complete(job: dict[str, Any], outputs: list[str]) -> None:
     episode_id = str(context.get("episodeId") or "")
     scene_id = str(context.get("sceneId") or "")
     if artifact == "keyframe":
-        update_scene(series_id, episode_id, scene_id, {"status": "awaiting_keyframe", "keyframeOutput": str(outputs[0]), "error": ""})
+        # Series automation must not wait for a human Approve click.
+        # Persist the still, then auto-approve so the scene is ready for video.
+        update_scene(
+            series_id,
+            episode_id,
+            scene_id,
+            {"status": "awaiting_keyframe", "keyframeOutput": str(outputs[0]), "error": ""},
+        )
+        approve_keyframe(series_id, episode_id, scene_id, str(outputs[0]))
         return
     if artifact == "video":
         video = Path(str(outputs[0]))

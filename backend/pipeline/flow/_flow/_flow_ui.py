@@ -16,6 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import shutil
+import tempfile
+import time
+import uuid
+from pathlib import Path
 from typing import Optional
 
 from ._models import AspectRatio, GenerationMode
@@ -145,7 +151,8 @@ class FlowUI:
         label_map = {
             GenerationMode.IMAGE:          ["Image", "image Image"],
             GenerationMode.VIDEO:          ["Video", "videocam Video"],
-            GenerationMode.FRAME_TO_VIDEO: ["Frames", "crop_free Frames", "Video"],
+            # "crop_free" is the tab's icon ligature — matches any UI language.
+            GenerationMode.FRAME_TO_VIDEO: ["Frames", "crop_free"],
         }
         for label in label_map.get(mode, []):
             tab = page.get_by_role("tab", name=label, exact=True).first
@@ -357,6 +364,79 @@ class FlowUI:
     # ------------------------------------------------------------------
     # Image upload (for Frame-to-Video)
     # ------------------------------------------------------------------
+
+    async def set_start_frame(self, page, image_path: str) -> bool:
+        """Frames mode: put a still into the "Start" slot."""
+        slot_re = re.compile(r"^\s*(Bắt đầu|Start)\s*$", re.I)
+        if not await self._attach_via_picker(page, image_path, page.locator("button").filter(has_text=slot_re).first):
+            return False
+        # A filled slot shows the thumbnail instead of its "Start" label.
+        return await page.locator("button").filter(has_text=slot_re).count() == 0
+
+    async def add_prompt_image(self, page, image_path: str) -> bool:
+        """Image/Ingredients mode: attach a reference image to the prompt."""
+        trigger = page.locator(
+            "button[aria-label='Thêm thành phần vào ô nhập câu lệnh'], button[aria-label*='ingredient' i]"
+        ).first
+        return await self._attach_via_picker(page, image_path, trigger)
+
+    async def _attach_via_picker(self, page, image_path: str, trigger) -> bool:
+        """Upload through Flow's asset picker and add the upload to the prompt.
+
+        Flow has no persistent file input: the trigger opens a picker, its upload
+        button spawns a file chooser, a one-time rights dialog may follow, and
+        the uploaded asset must be selected then confirmed with "Add to prompt".
+        """
+        source = Path(image_path)
+        # Unique name so the picker item can't be confused with an older upload.
+        upload = Path(tempfile.gettempdir()) / f"zm-ref-{uuid.uuid4().hex[:10]}{source.suffix or '.png'}"
+        shutil.copyfile(source, upload)
+        try:
+            if not await trigger.is_visible():
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.5)
+            await trigger.click(timeout=8_000)
+            await asyncio.sleep(1)
+            async with page.expect_file_chooser(timeout=10_000) as chooser:
+                await page.locator("button").filter(
+                    has_text=re.compile(r"Tải nội dung nghe nhìn lên|Upload media", re.I)
+                ).first.click(timeout=8_000)
+            await (await chooser.value).set_files(str(upload))
+            option = page.get_by_role("option").filter(has_text=upload.name).first
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                consent = page.locator(".cdk-overlay-pane").locator("button").filter(
+                    has_text=re.compile(r"^\s*(Tôi đồng ý|I agree)\s*$", re.I)
+                )
+                if await consent.count():
+                    await consent.first.click()
+                if await option.count() and not re.search(r"Đang tải lên|Uploading", await option.inner_text(), re.I):
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                log.warning("Picker upload did not finish: %s", upload.name)
+                return False
+            await option.click()
+            # Some pickers need "Add to prompt"; others attach on selection and close.
+            confirm = page.locator("button").filter(has_text=re.compile(r"Thêm vào câu lệnh|Add to prompt", re.I)).first
+            for _ in range(20):
+                await asyncio.sleep(0.4)
+                if await confirm.count() and await confirm.is_visible():
+                    await confirm.click(timeout=5_000)
+                    await asyncio.sleep(1)
+                    return True
+                if not await option.count() or not await option.is_visible():
+                    await asyncio.sleep(0.6)
+                    return True
+            shot = Path(tempfile.gettempdir()) / "zm-flow-picker-fail.png"
+            await page.screenshot(path=str(shot))
+            log.warning("Picker did not attach %s; screenshot: %s", upload.name, shot)
+            return False
+        except Exception as exc:
+            log.warning("Picker upload failed: %s", exc)
+            return False
+        finally:
+            upload.unlink(missing_ok=True)
 
     async def upload_image(self, page, image_path: str) -> bool:
         """Upload a start/reference still for Frames / Ingredients."""

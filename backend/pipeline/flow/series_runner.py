@@ -110,6 +110,9 @@ class SeriesRunner:
         from . import series as series_mod
         from .service import service
 
+        # Series runs always auto-approve keyframes — never block on manual review.
+        auto_approve = True
+
         s = series_mod.get_series(series_id)
         if not s:
             raise KeyError("Series not found")
@@ -194,6 +197,13 @@ class SeriesRunner:
             if run.should_stop():
                 return
 
+            # A continued shot starts from the previous clip's real end frame,
+            # so a separately drawn keyframe would never be used.
+            continues = (
+                bool(scene.get("continuityEnabled", True))
+                and series_mod._previous_scene(series_mod.get_series(series_id) or {}, episode_id, scene_id) is not None
+            )
+
             if mode != "videos_only":
                 # Check fresh keyframe status
                 fresh_series = series_mod.get_series(series_id)
@@ -205,7 +215,7 @@ class SeriesRunner:
                                 fresh_scene = sc
                                 break
                 has_keyframe = bool((fresh_scene or scene).get("approvedKeyframe"))
-                if not has_keyframe:
+                if not has_keyframe and not continues:
                     run.set_current(scene_id, "generating_keyframe")
                     ctx = series_mod.generation_context(series_id, episode_id, scene_id, "keyframe")
                     img_settings = {**settings, "model": image_model, "count": 1, "outputDir": ctx["outputDir"]}
@@ -251,7 +261,7 @@ class SeriesRunner:
                                 if str(sc.get("id")) == scene_id:
                                     scene_cur = dict(sc)
 
-                if not (scene_cur and scene_cur.get("approvedKeyframe")):
+                if not continues and not (scene_cur and scene_cur.get("approvedKeyframe")):
                     # Try to use first series anchor asset as start frame
                     anchor_ids = (fresh_series or {}).get("anchorAssets") or []
                     anchor_path: str | None = None
@@ -270,7 +280,7 @@ class SeriesRunner:
                                         if str(sc.get("id")) == scene_id:
                                             scene_cur = dict(sc)
                     if not (scene_cur and scene_cur.get("approvedKeyframe")):
-                        # Omni Flash is text-to-video — keyframe/start frame optional.
+                        # Omni Flash may still run text-to-video when nothing is locked.
                         if not re.search(r"omni|flash", str(settings.get("model") or ""), re.I):
                             raise RuntimeError("No approved keyframe - add an anchor asset or generate a keyframe first")
 
@@ -282,17 +292,12 @@ class SeriesRunner:
                 run.set_current(scene_id, "generating_video")
                 ctx = series_mod.generation_context(series_id, episode_id, scene_id, "video")
                 vid_settings = {**settings, "count": 1, "outputDir": ctx["outputDir"]}
+                # Per-scene length; models without duration radios (Veo) ignore it.
+                seconds = series_mod.scene_seconds(str((scene_cur or {}).get("timecode") or ""))
+                if seconds:
+                    vid_settings["duration"] = str(seconds)
                 source_files = list(ctx.get("sourceFiles") or [])
-                model_name = str(vid_settings.get("model") or "")
-                # Omni Flash is text-to-video in Flow UI (360p/720p + duration). It does
-                # not expose the Veo Frames start-image upload — forcing frame mode fails
-                # with "start image upload control was not found". Continuity stays in prompt.
-                is_omni = bool(re.search(r"omni|flash", model_name, re.I))
-                if is_omni:
-                    source_files = []
-                    video_mode = "text"
-                else:
-                    video_mode = "frame" if source_files else "text"
+                video_mode = "frame" if source_files else "text"
                 time.sleep(15)
                 for _vid_attempt in range(3):
                     jobs = service.enqueue({

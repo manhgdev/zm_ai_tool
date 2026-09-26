@@ -8,10 +8,11 @@ import {
   type Scene, type Episode, type Asset, type Series,
   VIDEO_MODELS, IMAGE_MODELS,
   SERIES_SETTINGS_KEY, SERIES_SELECTED_ID_KEY, SERIES_TAB_KEY,
-  SERIES_AUTO_MODE_KEY, SERIES_AUTO_APPROVE_KEY, SERIES_COLLAPSED_EPISODES_KEY,
+  SERIES_AUTO_MODE_KEY, SERIES_AUTO_APPROVE_KEY, SERIES_COLLAPSED_EPISODES_KEY, SERIES_AI_KEY,
   normalizeSeries, seriesRequest as request, sceneStatusMeta,
-  readSeriesSettings, toUrl,
+  readSeriesSettings, toUrl, countSeriesScript,
 } from '@/features/flow/flowSeries.helpers'
+import { chatProviderUsable, normalizeChatProviders, type ChatProviderOption } from '@/features/chat/chatProviders'
 
 export type { SeriesArtifact, FlowSeriesSceneContext }
 
@@ -29,9 +30,15 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   })
   const [selected, setSelected] = useState<Series | null>(null)
   const [title, setTitle] = useState('')
-  const [bible, setBible] = useState('')
-  const [description, setDescription] = useState('')
-  const [script, setScript] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [topic, setTopic] = useState('')
+  const [draft, setDraft] = useState<{ text: string; bible: string } | null>(null)
+  const [drafting, setDrafting] = useState(false)
+  const [aiProviders, setAiProviders] = useState<ChatProviderOption[]>([])
+  const [aiLoading, setAiLoading] = useState(true)
+  const [aiConfig, setAiConfig] = useState<{ provider: string; model: string }>(() => {
+    try { return { provider: '', model: '', ...JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}') } } catch { return { provider: '', model: '' } }
+  })
   const [sceneDraft, setSceneDraft] = useState({ episodeId: '', title: '', prompt: '', timecode: '' })
   const [episodeTitle, setEpisodeTitle] = useState('')
   const [loading, setLoading] = useState(true)
@@ -44,10 +51,10 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const [anchorPrompt, setAnchorPrompt] = useState('')
   const [anchorJobId, setAnchorJobId] = useState('')
   const assetInput = useRef<HTMLInputElement>(null)
-  const [activeTab, setActiveTab] = useState<'episodes' | 'assets' | 'bible' | 'import'>(() => {
+  const [activeTab, setActiveTab] = useState<'episodes' | 'assets' | 'settings'>(() => {
     try {
       const saved = localStorage.getItem(SERIES_TAB_KEY)
-      return saved === 'episodes' || saved === 'assets' || saved === 'bible' || saved === 'import' ? saved : 'episodes'
+      return saved === 'assets' || saved === 'bible' ? 'assets' : saved === 'settings' ? 'settings' : 'episodes'
     } catch {
       return 'episodes'
     }
@@ -62,7 +69,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
       duration: saved.duration || '4',
       resolution: /^\d{3,4}p$/i.test(String(saved.resolution || '')) ? saved.resolution : '360p',
       quality: saved.quality || '360p',
-      concurrency: saved.concurrency || '1',
+      concurrency: saved.concurrency || '3',
     }
   })
 
@@ -151,6 +158,27 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   }, [activeTab])
 
   useEffect(() => {
+    try { localStorage.setItem(SERIES_AI_KEY, JSON.stringify(aiConfig)) } catch {}
+  }, [aiConfig])
+
+  useEffect(() => {
+    let active = true
+    void fetch('/api/chat/providers').then((response) => response.ok ? response.json() : null).then((raw) => {
+      if (!active) return
+      const available = normalizeChatProviders(raw)
+      setAiProviders(available)
+      setAiConfig((current) => {
+        const provider = available.find((item) => item.id === current.provider && chatProviderUsable(item)) || available.find(chatProviderUsable)
+        if (!provider) return current
+        const model = provider.models.some((item) => item.id === current.model) ? current.model : provider.models[0]?.id || ''
+        return { provider: provider.id, model }
+      })
+    }).catch(() => undefined).finally(() => { if (active) setAiLoading(false) })
+    return () => { active = false }
+  }, [])
+  const aiProvider = aiProviders.find((item) => item.id === aiConfig.provider)
+
+  useEffect(() => {
     try { localStorage.setItem(SERIES_AUTO_MODE_KEY, autoMode) } catch {}
   }, [autoMode])
 
@@ -213,7 +241,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
             concurrency: seriesSettings.concurrency || '1',
           },
           imageModel,
-          autoApprove,
+          autoApprove: true,
           mode: autoMode,
         }),
       })
@@ -235,15 +263,24 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
     }
   }
 
-  const generateScene = async (episode: { id: string }, scene: { id: string; prompt: string; approvedKeyframe: string }, artifact: SeriesArtifact) => {
+  const generateScene = async (episode: { id: string }, scene: Scene, artifact: SeriesArtifact) => {
     if (!selected) return
     const accountId = seriesSettings.accountId || accounts[0]?.id || ''
     if (!accountId) { toast.error(t('Cần chọn tài khoản Flow để tạo.', 'A Flow account is required.')); return }
     setGeneratingScene(scene.id)
     try {
+      // Auto-approve leftover stills so video never waits on a manual click.
       if (artifact === 'video' && !scene.approvedKeyframe) {
-        toast.error(t('Cần duyệt keyframe trước khi tạo video.', 'Approve a keyframe before generating video.'))
-        return
+        if (scene.keyframeOutput || scene.keyframeJobId) {
+          await request(
+            `/series/${selected.id}/episodes/${episode.id}/scenes/${scene.id}/approve-keyframe?job_id=${encodeURIComponent(scene.keyframeJobId || '')}&output_index=0`,
+            { method: 'POST' },
+          )
+          await refresh(selected.id)
+        } else {
+          toast.error(t('Cần tạo keyframe trước khi tạo video.', 'Create a keyframe before generating video.'))
+          return
+        }
       }
       const isKeyframe = artifact === 'keyframe'
       await request(`/series/${selected.id}/episodes/${episode.id}/scenes/${scene.id}/generate`, {
@@ -263,6 +300,57 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
         }),
       })
       toast.success(isKeyframe ? t('Đã gửi job tạo keyframe.', 'Keyframe job queued.') : t('Đã gửi job tạo video.', 'Video job queued.'))
+      await refresh(selected.id)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      setGeneratingScene('')
+    }
+  }
+
+  const sceneFailedArtifact = (scene: Scene): SeriesArtifact => {
+    if (scene.videoJobId && (scene.approvedKeyframe || scene.keyframeOutput)) return 'video'
+    return 'keyframe'
+  }
+
+  const sceneFailedJobId = (scene: Scene): string => {
+    const artifact = sceneFailedArtifact(scene)
+    return artifact === 'video' ? String(scene.videoJobId || '') : String(scene.keyframeJobId || '')
+  }
+
+  /** Mirror Flow queue: Retry reuses the failed job; Create new enqueues a fresh one. */
+  const retryScene = async (episode: Episode, scene: Scene, mode: 'retry' | 'create') => {
+    if (!selected) return
+    const accountId = seriesSettings.accountId || accounts[0]?.id || ''
+    if (!accountId) { toast.error(t('Cần chọn tài khoản Flow.', 'A Flow account is required.')); return }
+    const artifact = sceneFailedArtifact(scene)
+    const jobId = sceneFailedJobId(scene)
+    setGeneratingScene(scene.id)
+    try {
+      if (mode === 'retry' && jobId) {
+        const isKeyframe = artifact === 'keyframe'
+        await request(`/jobs/${jobId}/retry`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId,
+            settings: {
+              model: isKeyframe
+                ? (imageModelOptions.includes(imageModel) ? imageModel : imageModelOptions[0])
+                : (videoModelOptions.includes(seriesSettings.model) ? seriesSettings.model : videoModelOptions[0]),
+              ratio: seriesSettings.ratio,
+              duration: seriesSettings.duration,
+              resolution: seriesSettings.resolution || '360p',
+              quality: seriesSettings.quality || (/360p/i.test(seriesSettings.resolution) ? '360p' : '720p'),
+              count: 1,
+            },
+          }),
+        })
+        toast.success(t('Đã đưa cảnh vào hàng đợi chạy lại.', 'Scene queued for retry.'))
+      } else {
+        await generateScene(episode, scene, artifact)
+        return
+      }
       await refresh(selected.id)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error))
@@ -336,19 +424,39 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const create = async () => {
     if (!title.trim()) return
     try {
-      const created = await request<Series>('/series', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, bible, description }) })
-      setTitle(''); setBible(''); setDescription('')
+      const created = await request<Series>('/series', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) })
+      setTitle(''); setCreating(false)
       await refresh(created.id)
       toast.success(t('Đã tạo Series.', 'Series created.'))
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
   }
-  const importScript = async () => {
-    if (!script.trim()) return
+  const draftWithAi = async () => {
+    if (!topic.trim() || !aiConfig.provider) return
+    setDrafting(true)
     try {
-      const result = await request<{ series: Series }>('/series/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: script, bible }) })
-      setScript(''); await refresh(result.series.id)
-      toast.success(t('Đã nhập kịch bản Series.', 'Series script imported.'))
-    } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
+      const result = await request<{ text: string; bible: string }>('/series/draft', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic, provider: aiConfig.provider, model: aiConfig.model }),
+      })
+      setDraft(result)
+    } catch (error) {
+      toast.error(t(`AI không viết được series: ${error instanceof Error ? error.message : String(error)}`, `AI could not write the series: ${error instanceof Error ? error.message : String(error)}`))
+    } finally { setDrafting(false) }
+  }
+  const importDraft = async () => {
+    if (!draft?.text.trim()) return
+    try {
+      const result = await request<{ series: Series }>('/series/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) })
+      setDraft(null); setTopic(''); setCreating(false)
+      setActiveTab('episodes')
+      await refresh(result.series.id)
+      toast.success(t('Đã tạo Series.', 'Series created.'))
+    } catch (error) {
+      const detail = (error as Error & { status?: number }).status === 422
+        ? t('Kịch bản chưa đúng định dạng — kiểm tra dòng # SERIES, # TẬP và các cảnh 001_[…].', 'The script format is invalid — check the # SERIES, # TẬP and 001_[…] scene lines.')
+        : error instanceof Error ? error.message : String(error)
+      toast.error(detail)
+    }
   }
   const saveSeries = async () => {
     if (!selected) return
@@ -434,14 +542,6 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
       toast.success(t('Đã lưu cảnh.', 'Scene saved.'))
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
   }
-  const approveKeyframe = async (episode: Episode, scene: Scene) => {
-    if (!selected) return
-    try {
-      await request(`/series/${selected.id}/episodes/${episode.id}/scenes/${scene.id}/approve-keyframe?job_id=${encodeURIComponent(scene.keyframeJobId)}&output_index=0`, { method: 'POST' })
-      await refresh(selected.id)
-      toast.success(t('Đã duyệt keyframe.', 'Keyframe approved.'))
-    } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
-  }
   const deleteScene = async (episode: Episode, scene: Scene) => {
     if (!selected || !window.confirm(t('Xóa cảnh này?', 'Delete this scene?'))) return
     try {
@@ -479,23 +579,20 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
           <h2>{t('Series', 'Series')}</h2>
           <span className="fsp-count">{items.length}</span>
         </header>
+        <button type="button" className={`fsp-btn fsp-btn-primary fsp-new-btn${creating || !selected ? ' is-active' : ''}`} onClick={() => setCreating(true)}>
+          ✨ {t('Series mới', 'New Series')}
+        </button>
         <nav className="fsp-series-list">
           {items.map((item) => {
             const scenes = item.episodes.reduce((n, e) => n + e.scenes.length, 0)
             return (
-              <button key={item.id} type="button" className={`fsp-series-item${item.id === selectedId ? ' is-active' : ''}`} onClick={() => void refresh(item.id)}>
+              <button key={item.id} type="button" className={`fsp-series-item${!creating && item.id === selectedId ? ' is-active' : ''}`} onClick={() => { setCreating(false); void refresh(item.id) }}>
                 <span className="fsp-series-item-title">{item.title}</span>
-                <span className="fsp-series-item-meta">{scenes} {t('cảnh', 'scenes')}</span>
+                <span className="fsp-series-item-meta">{item.episodes.length} {t('tập', 'episodes')} · {scenes} {t('cảnh', 'scenes')}</span>
               </button>
             )
           })}
         </nav>
-        <div className="fsp-new-series">
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('Tên Series mới', 'New Series title')} aria-label={t('Tên Series', 'Series title')} onKeyDown={(e) => e.key === 'Enter' && void create()} />
-          <button type="button" className="fsp-btn fsp-btn-primary" onClick={() => void create()} disabled={!title.trim()}>
-            + {t('Tạo', 'Create')}
-          </button>
-        </div>
       </aside>
 
       {/* ── Workspace ── */}
@@ -507,24 +604,116 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
             <div className="fsp-skeleton fsp-skeleton-meta" />
             <div className="fsp-skeleton fsp-skeleton-body" />
           </div>
-        ) : !selected ? (
-          /* ── Empty state ── */
-          <div className="fsp-empty">
-            <div className="fsp-empty-icon">🎬</div>
-            <h2>{t('Tạo hoặc nhập một Series', 'Create or import a Series')}</h2>
-            <p>{t('Bắt đầu bằng tên Series ở cột trái, hoặc dán kịch bản TXT bên dưới.', 'Start with a Series title in the sidebar, or paste a TXT script below.')}</p>
-            <textarea
-              className="fsp-empty-textarea"
-              value={script}
-              onChange={(e) => setScript(e.target.value)}
-              placeholder={t(
-                '# SERIES: Tên series\n# TẬP 01 — Tên tập\n001_[00.00_00.00-00.00_08.00] Nội dung cảnh',
-                '# SERIES: Series title\n# TẬP 01 — Episode title\n001_[00.00_00.00-00.00_08.00] Scene prompt',
+        ) : creating || !selected ? (
+          /* ── Create: topic → AI draft → review → save ── */
+          <div className="fsp-create">
+            <header className="fsp-create-head">
+              <div>
+                <h2>✨ {t('Tạo Series bằng AI', 'Create a Series with AI')}</h2>
+                <p>{t('Nhập chủ đề — AI tự chia tập, viết cảnh và Bible nhân vật. Bạn xem lại trước khi lưu.', 'Enter a topic — AI splits episodes, writes scenes and a character Bible. You review it before saving.')}</p>
+              </div>
+              {selected && (
+                <button type="button" className="fsp-btn" onClick={() => { setCreating(false); setDraft(null) }}>
+                  {t('Huỷ', 'Cancel')}
+                </button>
               )}
-            />
-            <button type="button" className="fsp-btn fsp-btn-primary" onClick={() => void importScript()} disabled={!script.trim()}>
-              {t('Nhập TXT thành Series', 'Import TXT as Series')}
-            </button>
+            </header>
+
+            <div className="fsp-create-card">
+              <label className="fsp-field">
+                <span className="fsp-label">{t('Chủ đề', 'Topic')}</span>
+                <textarea
+                  value={topic}
+                  onChange={(e) => setTopic(e.target.value)}
+                  rows={3}
+                  placeholder={t('Ví dụ: Tom và Jerry đi cắm trại, lạc trong rừng và kết bạn với một chú gấu nhỏ', 'Example: Tom and Jerry go camping, get lost in the forest and befriend a little bear')}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void draftWithAi() }}
+                />
+              </label>
+              <div className="fsp-create-row">
+                <label className="fsp-field">
+                  <span className="fsp-label">{t('Provider AI text', 'Text AI provider')}</span>
+                  <select
+                    value={aiConfig.provider}
+                    onChange={(e) => {
+                      const next = aiProviders.find((item) => item.id === e.target.value)
+                      setAiConfig({ provider: e.target.value, model: next?.models[0]?.id || '' })
+                    }}
+                    disabled={aiLoading && !aiProviders.length}
+                    aria-busy={aiLoading}
+                  >
+                    {!aiProviders.some(chatProviderUsable) && <option value="">{aiLoading ? t('Đang tải provider…', 'Loading providers…') : t('Chưa có provider khả dụng', 'No available provider')}</option>}
+                    {aiProviders.map((item) => (
+                      <option key={item.id} value={item.id} disabled={!chatProviderUsable(item)}>
+                        {item.label}{chatProviderUsable(item) ? '' : ` · ${t('chưa sẵn sàng', 'not ready')}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="fsp-field">
+                  <span className="fsp-label">{t('Model', 'Model')}</span>
+                  <select value={aiConfig.model} onChange={(e) => setAiConfig({ ...aiConfig, model: e.target.value })} disabled={!aiProvider?.models.length}>
+                    {!aiProvider?.models.length && <option value="">{aiLoading ? t('Đang tải model…', 'Loading models…') : t('Chưa có model khả dụng', 'No available model')}</option>}
+                    {(aiProvider?.models || []).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                  </select>
+                </label>
+                <button type="button" className="fsp-btn fsp-btn-primary fsp-create-go" onClick={() => void draftWithAi()} disabled={!topic.trim() || !aiConfig.provider || drafting}>
+                  {drafting ? t('AI đang viết…', 'AI is writing…') : draft ? t('↻ Viết lại', '↻ Rewrite') : t('✨ Tạo series', '✨ Create series')}
+                </button>
+              </div>
+              {!aiLoading && !aiProviders.some(chatProviderUsable) && (
+                <p className="fsp-create-hint">{t('Thêm API key trong Cài đặt → AI Provider, hoặc đăng nhập ChatGPT ở tab Chat.', 'Add an API key in Settings → AI Provider, or sign in to ChatGPT in the Chat tab.')}</p>
+              )}
+            </div>
+
+            {draft ? (
+              <div className="fsp-create-card fsp-draft">
+                {(() => {
+                  const stats = countSeriesScript(draft.text)
+                  return (
+                    <header className="fsp-draft-head">
+                      <div>
+                        <strong>{stats.title || t('(chưa có tên)', '(untitled)')}</strong>
+                        <span>{t(`${stats.episodes} tập · ${stats.scenes} cảnh`, `${stats.episodes} episodes · ${stats.scenes} scenes`)}</span>
+                      </div>
+                      <div className="fsp-draft-actions">
+                        <button type="button" className="fsp-btn" onClick={() => setDraft(null)}>{t('Bỏ bản nháp', 'Discard draft')}</button>
+                        <button type="button" className="fsp-btn fsp-btn-primary" onClick={() => void importDraft()} disabled={!stats.scenes}>
+                          {t('Lưu thành Series', 'Save as Series')}
+                        </button>
+                      </div>
+                    </header>
+                  )
+                })()}
+                <label className="fsp-field">
+                  <span className="fsp-label">{t('Bible — nhân vật, bối cảnh, phong cách giữ cố định', 'Bible — characters, setting and style kept fixed')}</span>
+                  <textarea value={draft.bible} onChange={(e) => setDraft({ ...draft, bible: e.target.value })} rows={5} />
+                </label>
+                <label className="fsp-field">
+                  <span className="fsp-label">{t('Kịch bản (sửa trực tiếp)', 'Script (edit directly)')}</span>
+                  <textarea className="fsp-draft-script" value={draft.text} onChange={(e) => setDraft({ ...draft, text: e.target.value })} rows={16} spellCheck={false} />
+                </label>
+              </div>
+            ) : (
+              <div className="fsp-create-alt">
+                <span>{t('Hoặc', 'Or')}</span>
+                <button type="button" className="fsp-btn" onClick={() => setDraft({ text: '', bible: '' })}>
+                  {t('Dán kịch bản TXT', 'Paste a TXT script')}
+                </button>
+                <div className="fsp-new-series">
+                  <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('Tên series trống', 'Blank series title')} aria-label={t('Tên Series', 'Series title')} onKeyDown={(e) => e.key === 'Enter' && void create()} />
+                  <button type="button" className="fsp-btn" onClick={() => void create()} disabled={!title.trim()}>
+                    + {t('Tạo trống', 'Create blank')}
+                  </button>
+                </div>
+              </div>
+            )}
+            {draft && !draft.text && (
+              <details className="fsp-import-guide-toggle">
+                <summary>{t('Định dạng TXT', 'TXT format')}</summary>
+                <pre className="fsp-import-guide">{`# SERIES: Tên series\n# BIBLE\nCharacter: …\n# TẬP 01 — Tên tập\n001_[00.00_00.00-00.00_08.00] Nội dung cảnh 1\n002_[00.00_00.08-00.00_16.00] Nội dung cảnh 2`}</pre>
+              </details>
+            )}
           </div>
         ) : (
           <>
@@ -545,6 +734,17 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                 )}
               </div>
               <div className="fsp-ws-actions">
+                {totalScenes > 0 && (
+                  <button
+                    type="button"
+                    className="fsp-btn fsp-btn-primary fsp-btn-run-all"
+                    disabled={activeRun?.status === 'running'}
+                    onClick={() => void startRun()}
+                    title={t('Tạo toàn bộ series theo Cài đặt tạo', 'Run the whole series with the generation settings')}
+                  >
+                    ▶ {t('Tạo toàn bộ', 'Run entire series')}
+                  </button>
+                )}
                 {videoScenes > 0 && (
                   <button
                     type="button"
@@ -565,7 +765,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                     🎬 {t('Xem toàn bộ', 'Preview all')} ({videoScenes})
                   </button>
                 )}
-                <button type="button" className="fsp-btn fsp-btn-primary" onClick={() => void saveSeries()} disabled={saving}>
+                <button type="button" className="fsp-btn" onClick={() => void saveSeries()} disabled={saving}>
                   {saving ? t('Đang lưu…', 'Saving…') : t('Lưu', 'Save')}
                 </button>
                 <button type="button" className="fsp-btn fsp-btn-danger" onClick={() => void removeSeries()}>
@@ -574,13 +774,38 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
               </div>
             </header>
 
+            {activeRun && (
+              <div className={`fsp-run-status fsp-run-${activeRun.status}`}>
+                <div className="fsp-run-bar" style={{ width: activeRun.total > 0 ? `${Math.round((activeRun.done / activeRun.total) * 100)}%` : '0%' }} />
+                <span className="fsp-run-text">
+                  {activeRun.status === 'running'
+                    ? t(`Đang chạy… ${activeRun.done}/${activeRun.total} cảnh • ${activeRun.currentStep}`, `Running… ${activeRun.done}/${activeRun.total} scenes • ${activeRun.currentStep}`)
+                    : activeRun.status === 'done'
+                      ? t(`✅ Hoàn thành — ${activeRun.done}/${activeRun.total} cảnh`, `✅ Done — ${activeRun.done}/${activeRun.total} scenes`)
+                      : activeRun.status === 'done_with_errors'
+                        ? t(`⚠ Hoàn thành có ${activeRun.errors.length} lỗi`, `⚠ Done with ${activeRun.errors.length} error(s)`)
+                        : activeRun.status === 'cancelled'
+                          ? t('⏹ Đã dừng', '⏹ Stopped')
+                          : t('❌ Lỗi', '❌ Failed')}
+                </span>
+                {activeRun.status === 'running' ? (
+                  <button type="button" className="fsp-btn fsp-btn-danger fsp-btn-sm" onClick={() => void stopRun()}>
+                    {t('Dừng', 'Stop')}
+                  </button>
+                ) : (
+                  <button type="button" className="fsp-btn fsp-btn-sm" onClick={() => setActiveRun(null)} aria-label={t('Đóng', 'Close')}>
+                    ×
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* ── Tab bar ── */}
             <nav className="fsp-tabs">
               {([
-                ['episodes', t('Tập & Cảnh', 'Episodes & Scenes')],
-                ['assets', t('Ảnh neo', 'Anchor images')],
-                ['bible', t('Bible & Mô tả', 'Bible & Description')],
-                ['import', t('Nhập TXT', 'Import TXT')],
+                ['episodes', t('Cảnh', 'Scenes')],
+                ['assets', t('Nhân vật & ảnh neo', 'Characters & anchors')],
+                ['settings', t('Cài đặt tạo', 'Generation settings')],
               ] as [typeof activeTab, string][]).map(([tab, label]) => (
                 <button key={tab} type="button" className={`fsp-tab${activeTab === tab ? ' is-active' : ''}`} onClick={() => setActiveTab(tab)}>
                   {label}
@@ -588,36 +813,177 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
               ))}
             </nav>
 
-            {/* ── Tab: Bible & Description ── */}
-            {activeTab === 'bible' && (
-              <div className="fsp-tab-content fsp-bible">
-                <label className="fsp-field">
-                  <span className="fsp-label">{t('Series Bible', 'Series Bible')}</span>
-                  <textarea
-                    value={selected.bible}
-                    onChange={(e) => setSelected({ ...selected, bible: e.target.value })}
-                    placeholder={t('Nhân vật, skin, đạo cụ, phong cách không được thay đổi…', 'Character, skin, props, and style that must not change…')}
-                    rows={6}
-                  />
-                </label>
-                <label className="fsp-field">
-                  <span className="fsp-label">{t('Mô tả', 'Description')}</span>
-                  <textarea
-                    value={selected.description}
-                    onChange={(e) => setSelected({ ...selected, description: e.target.value })}
-                    rows={4}
-                  />
-                </label>
+            {/* ── Tab: Generation settings ── */}
+            {activeTab === 'settings' && (
+              <div className="fsp-tab-content">
+                <div className="fsp-auto-card">
+                  <div className="fsp-auto-top">
+                    <div className="fsp-auto-title-group">
+                      <span className="fsp-auto-icon">⚡</span>
+                      <span className="fsp-auto-heading">{t('Tự động hoá Series', 'Series Automation')}</span>
+                    </div>
+                    <div className="fsp-auto-actions-group">
+                      <span
+                        className="fsp-auto-check fsp-toggle is-on"
+                        title={t('Ảnh keyframe được duyệt tự động khi tạo xong', 'Keyframes are auto-approved when generation finishes')}
+                      >
+                        <span className="fsp-toggle-dot" />
+                        {t('Tự duyệt ảnh', 'Auto-approve images')}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="fsp-auto-grid">
+                    {accounts.length > 0 && (
+                      <div className="fsp-auto-field fsp-field-wide">
+                        <label>{t('Tài khoản', 'Account')}</label>
+                        <select
+                          value={seriesSettings.accountId}
+                          onChange={(e) => saveSeriesSettings({ accountId: e.target.value })}
+                          aria-label={t('Tài khoản', 'Account')}
+                        >
+                          {accounts.map((acc) => (
+                            <option key={acc.id} value={acc.id}>
+                              {acc.label} · {t(`Gói ${acc.plan}`, `${acc.plan} plan`)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    <div className="fsp-auto-field fsp-field-wide">
+                      <label>{t('Model video', 'Video model')}</label>
+                      <select
+                        value={seriesSettings.model}
+                        onChange={(e) => saveSeriesSettings({ model: e.target.value })}
+                        aria-label={t('Model video', 'Video model')}
+                      >
+                        {videoModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div className="fsp-auto-field">
+                      <label>{t('Model ảnh', 'Image model')}</label>
+                      <select
+                        value={imageModel}
+                        onChange={(e) => {
+                          setImageModel(e.target.value)
+                          localStorage.setItem(SERIES_SETTINGS_KEY, JSON.stringify({ ...seriesSettings, imageModel: e.target.value }))
+                        }}
+                        aria-label={t('Model ảnh', 'Image model')}
+                      >
+                        {imageModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div className="fsp-auto-field fsp-field-xs">
+                      <label>{t('Tỷ lệ', 'Ratio')}</label>
+                      <select
+                        value={seriesSettings.ratio}
+                        onChange={(e) => saveSeriesSettings({ ratio: e.target.value })}
+                        aria-label={t('Tỷ lệ', 'Ratio')}
+                      >
+                        {seriesRatioOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </div>
+                    {seriesDurationOptions.length > 0 ? (
+                    <div className="fsp-auto-field fsp-field-xs">
+                      <label>{t('Thời lượng', 'Duration')}</label>
+                      <select
+                        value={seriesDurationOptions.includes(seriesSettings.duration) ? seriesSettings.duration : seriesDurationOptions[0]}
+                        onChange={(e) => saveSeriesSettings({ duration: e.target.value })}
+                        aria-label={t('Thời lượng', 'Duration')}
+                        disabled={seriesDurationOptions.length < 2}
+                      >
+                        {seriesDurationOptions.map((duration) => <option key={duration} value={duration}>{duration}s</option>)}
+                      </select>
+                    </div>
+                    ) : null}
+                    {seriesResolutionOptions.length > 0 ? (
+                    <div className="fsp-auto-field fsp-field-xs">
+                      <label>{t('Độ phân giải', 'Resolution')}</label>
+                      <select
+                        value={seriesResolutionOptions.includes(seriesSettings.resolution) ? seriesSettings.resolution : seriesResolutionOptions[0]}
+                        onChange={(e) => saveSeriesSettings({
+                          resolution: e.target.value,
+                          quality: /360p/i.test(e.target.value) ? '360p' : (seriesSettings.quality || '720p'),
+                        })}
+                        aria-label={t('Độ phân giải', 'Resolution')}
+                        disabled={seriesResolutionOptions.length < 2}
+                      >
+                        {seriesResolutionOptions.map((resolution) => (
+                          <option key={resolution} value={resolution}>
+                            {resolution === '360p'
+                              ? t('360p · nhanh', '360p · fast')
+                              : resolution}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    ) : null}
+                    <div className="fsp-auto-field fsp-field-xs">
+                      <label>{t('Tải về', 'Download')}</label>
+                      <select
+                        value={seriesSettings.quality || '360p'}
+                        onChange={(e) => saveSeriesSettings({ quality: e.target.value })}
+                        aria-label={t('Chất lượng tải', 'Download quality')}
+                      >
+                        <option value="360p">{t('360p · nhanh', '360p · fast')}</option>
+                        <option value="720p">720p</option>
+                        <option value="1080p">1080p</option>
+                      </select>
+                    </div>
+                    <div className="fsp-auto-field fsp-field-xs">
+                      <label>{t('Luồng', 'Threads')}</label>
+                      <select
+                        value={seriesSettings.concurrency || '3'}
+                        onChange={(e) => saveSeriesSettings({ concurrency: e.target.value })}
+                        aria-label={t('Luồng chạy song song', 'Parallel threads')}
+                      >
+                        {Array.from({ length: 16 }, (_, index) => String(index + 1)).map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="fsp-auto-field">
+                      <label>{t('Quy trình', 'Pipeline')}</label>
+                      <select
+                        value={autoMode}
+                        onChange={(e) => setAutoMode(e.target.value as AutoMode)}
+                        aria-label={t('Quy trình', 'Pipeline')}
+                      >
+                        <option value="full">{t('Keyframe + Video', 'Keyframe + Video')}</option>
+                        <option value="keyframes_only">{t('Chỉ tạo Keyframe', 'Keyframes only')}</option>
+                        <option value="videos_only">{t('Chỉ tạo Video', 'Videos only')}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                </div>
               </div>
             )}
 
             {/* ── Tab: Anchor images ── */}
             {activeTab === 'assets' && (
               <div className="fsp-tab-content fsp-assets">
+                <div className="fsp-bible">
+                  <label className="fsp-field">
+                    <span className="fsp-label">{t('Series Bible', 'Series Bible')}</span>
+                    <textarea
+                      value={selected.bible}
+                      onChange={(e) => setSelected({ ...selected, bible: e.target.value })}
+                      placeholder={t('Nhân vật, skin, đạo cụ, phong cách không được thay đổi…', 'Character, skin, props, and style that must not change…')}
+                      rows={6}
+                    />
+                  </label>
+                  <label className="fsp-field">
+                    <span className="fsp-label">{t('Mô tả', 'Description')}</span>
+                    <textarea
+                      value={selected.description}
+                      onChange={(e) => setSelected({ ...selected, description: e.target.value })}
+                      rows={3}
+                    />
+                  </label>
+                </div>
                 <div className="fsp-assets-head">
                   <p className="fsp-assets-hint">{t('Tối đa 3 ảnh theo thứ tự: nhân vật → đạo cụ/bối cảnh → bổ sung. Ảnh khóa luôn được dùng.', 'Up to 3 images in order: character → prop/background → extra. Locked images are always used.')}</p>
-                  <p className="fsp-assets-hint">{t('Phim xuyên suốt: khóa Tom/Jerry (nhân vật), bật nối cảnh — mỗi video bắt đầu từ khung cuối cảnh trước (Veo Frames), không tạo lại từ đầu.', 'Film continuity: lock Tom/Jerry characters, keep scene linking on — each video starts from the previous end frame (Veo Frames), not from scratch.')}</p>
-                  <p className="fsp-assets-hint">{t('Omni Flash: tạo nhanh 360p (text). Nối cảnh bằng prompt + bible/ảnh neo — không có nút Frames như Veo. Muốn khóa khung cuối → dùng Veo 3.1.', 'Omni Flash: fast 360p text video. Continuity via prompt + bible/anchors — no Frames upload like Veo. For true end-frame lock use Veo 3.1.')}</p>
+                  <p className="fsp-assets-hint">{t('Phim xuyên suốt: khóa ảnh nhân vật (vd. Tom, Jerry) và bật Nối cảnh. Cảnh đầu tạo keyframe từ ảnh khóa; mỗi video sau bắt đầu từ khung cuối của video trước (Khung hình — Veo và Omni Flash).', 'Film continuity: lock character images (e.g. Tom, Jerry) and keep Continue on. The first scene gets a keyframe from the locked images; every later video starts from the previous video\'s last frame (Frames — Veo and Omni Flash).')}</p>
                   <button type="button" className="fsp-btn fsp-btn-secondary" onClick={() => assetInput.current?.click()}>
                     + {t('Thêm ảnh', 'Add image')}
                   </button>
@@ -680,226 +1046,9 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
               </div>
             )}
 
-            {/* ── Tab: Import TXT ── */}
-            {activeTab === 'import' && (
-              <div className="fsp-tab-content fsp-import">
-                <div className="fsp-import-head">
-                  <p className="fsp-import-hint">{t('Dán TXT để tạo Series mới hoặc thêm tập/cảnh vào Series hiện tại.', 'Paste TXT to create a new Series or add episodes/scenes to the current one.')}</p>
-                  <details className="fsp-import-guide-toggle">
-                    <summary>{t('Hướng dẫn nhập Series', 'Series input guide')}</summary>
-                    <pre className="fsp-import-guide">{`# SERIES: Tên series\n# TẬP 01 — Tên tập\n001_[00.00_00.00-00.00_08.00] Nội dung cảnh 1\n002_[00.00_00.08-00.00_16.00] Nội dung cảnh 2`}</pre>
-                  </details>
-                </div>
-                <textarea
-                  value={script}
-                  onChange={(e) => setScript(e.target.value)}
-                  placeholder={t(
-                    '# SERIES: Tên series\n# TẬP 01 — Tên tập\n001_[00.00_00.00-00.00_08.00] Nội dung cảnh',
-                    '# SERIES: Series title\n# TẬP 01 — Episode title\n001_[00.00_00.00-00.00_08.00] Scene prompt',
-                  )}
-                  rows={8}
-                />
-                <div className="fsp-import-actions">
-                  <button
-                    type="button"
-                    className="fsp-btn fsp-btn-secondary"
-                    disabled={!script.trim()}
-                    onClick={() => void request<{ text: string }>('/series/draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: script, bible: selected.bible }) }).then((r) => setScript(r.text)).catch((err: Error) => toast.error(err.message))}
-                  >
-                    {t('Soạn TXT bằng Cloud', 'Draft TXT with Cloud')}
-                  </button>
-                  <button type="button" className="fsp-btn fsp-btn-primary" onClick={() => void importScript()} disabled={!script.trim()}>
-                    {t('Nhập TXT thành Series', 'Import TXT as Series')}
-                  </button>
-                </div>
-              </div>
-            )}
-
             {/* ── Tab: Episodes & Scenes ── */}
             {activeTab === 'episodes' && (
               <div className="fsp-tab-content fsp-episodes">
-                {/* ── Automation Panel ── */}
-                {selected.episodes.length > 0 && (
-                  <div className="fsp-auto-card">
-                    <div className="fsp-auto-top">
-                      <div className="fsp-auto-title-group">
-                        <span className="fsp-auto-icon">⚡</span>
-                        <span className="fsp-auto-heading">{t('Tự động hoá Series', 'Series Automation')}</span>
-                      </div>
-                      <div className="fsp-auto-actions-group">
-                        <button
-                          type="button"
-                          className={`fsp-auto-check fsp-toggle${autoApprove ? ' is-on' : ''}`}
-                          onClick={() => setAutoApprove((v) => !v)}
-                          aria-pressed={autoApprove}
-                          title={t('Tự động duyệt ảnh khi tạo xong', 'Auto-approve keyframes once generated')}
-                        >
-                          <span className="fsp-toggle-dot" />
-                          {t('Tự duyệt', 'Auto-approve')}
-                        </button>
-                        <button
-                          type="button"
-                          className="fsp-btn fsp-btn-primary fsp-btn-run-all"
-                          disabled={activeRun?.status === 'running'}
-                          onClick={() => void startRun()}
-                          title={t('Tạo toàn bộ series', 'Run entire series')}
-                        >
-                          ▶ {t('Tạo toàn bộ', 'Run entire series')}
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="fsp-auto-grid">
-                      {accounts.length > 0 && (
-                        <div className="fsp-auto-field fsp-field-wide">
-                          <label>{t('Tài khoản', 'Account')}</label>
-                          <select
-                            value={seriesSettings.accountId}
-                            onChange={(e) => saveSeriesSettings({ accountId: e.target.value })}
-                            aria-label={t('Tài khoản', 'Account')}
-                          >
-                            {accounts.map((acc) => (
-                              <option key={acc.id} value={acc.id}>
-                                {acc.label} · {t(`Gói ${acc.plan}`, `${acc.plan} plan`)}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                      <div className="fsp-auto-field fsp-field-wide">
-                        <label>{t('Model video', 'Video model')}</label>
-                        <select
-                          value={seriesSettings.model}
-                          onChange={(e) => saveSeriesSettings({ model: e.target.value })}
-                          aria-label={t('Model video', 'Video model')}
-                        >
-                          {videoModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
-                        </select>
-                      </div>
-                      <div className="fsp-auto-field">
-                        <label>{t('Model ảnh', 'Image model')}</label>
-                        <select
-                          value={imageModel}
-                          onChange={(e) => {
-                            setImageModel(e.target.value)
-                            localStorage.setItem(SERIES_SETTINGS_KEY, JSON.stringify({ ...seriesSettings, imageModel: e.target.value }))
-                          }}
-                          aria-label={t('Model ảnh', 'Image model')}
-                        >
-                          {imageModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
-                        </select>
-                      </div>
-                      <div className="fsp-auto-field fsp-field-xs">
-                        <label>{t('Tỷ lệ', 'Ratio')}</label>
-                        <select
-                          value={seriesSettings.ratio}
-                          onChange={(e) => saveSeriesSettings({ ratio: e.target.value })}
-                          aria-label={t('Tỷ lệ', 'Ratio')}
-                        >
-                          {seriesRatioOptions.map((r) => <option key={r} value={r}>{r}</option>)}
-                        </select>
-                      </div>
-                      {seriesDurationOptions.length > 0 ? (
-                      <div className="fsp-auto-field fsp-field-xs">
-                        <label>{t('Thời lượng', 'Duration')}</label>
-                        <select
-                          value={seriesDurationOptions.includes(seriesSettings.duration) ? seriesSettings.duration : seriesDurationOptions[0]}
-                          onChange={(e) => saveSeriesSettings({ duration: e.target.value })}
-                          aria-label={t('Thời lượng', 'Duration')}
-                          disabled={seriesDurationOptions.length < 2}
-                        >
-                          {seriesDurationOptions.map((duration) => <option key={duration} value={duration}>{duration}s</option>)}
-                        </select>
-                      </div>
-                      ) : null}
-                      {seriesResolutionOptions.length > 0 ? (
-                      <div className="fsp-auto-field fsp-field-xs">
-                        <label>{t('Độ phân giải', 'Resolution')}</label>
-                        <select
-                          value={seriesResolutionOptions.includes(seriesSettings.resolution) ? seriesSettings.resolution : seriesResolutionOptions[0]}
-                          onChange={(e) => saveSeriesSettings({
-                            resolution: e.target.value,
-                            quality: /360p/i.test(e.target.value) ? '360p' : (seriesSettings.quality || '720p'),
-                          })}
-                          aria-label={t('Độ phân giải', 'Resolution')}
-                          disabled={seriesResolutionOptions.length < 2}
-                        >
-                          {seriesResolutionOptions.map((resolution) => (
-                            <option key={resolution} value={resolution}>
-                              {resolution === '360p'
-                                ? t('360p · nhanh', '360p · fast')
-                                : resolution}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      ) : null}
-                      <div className="fsp-auto-field fsp-field-xs">
-                        <label>{t('Tải về', 'Download')}</label>
-                        <select
-                          value={seriesSettings.quality || '360p'}
-                          onChange={(e) => saveSeriesSettings({ quality: e.target.value })}
-                          aria-label={t('Chất lượng tải', 'Download quality')}
-                        >
-                          <option value="360p">{t('360p · nhanh', '360p · fast')}</option>
-                          <option value="720p">720p</option>
-                          <option value="1080p">1080p</option>
-                        </select>
-                      </div>
-                      <div className="fsp-auto-field fsp-field-xs">
-                        <label>{t('Luồng', 'Threads')}</label>
-                        <select
-                          value={seriesSettings.concurrency || '3'}
-                          onChange={(e) => saveSeriesSettings({ concurrency: e.target.value })}
-                          aria-label={t('Luồng chạy song song', 'Parallel threads')}
-                        >
-                          {Array.from({ length: 16 }, (_, index) => String(index + 1)).map((c) => (
-                            <option key={c} value={c}>{c}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="fsp-auto-field">
-                        <label>{t('Quy trình', 'Pipeline')}</label>
-                        <select
-                          value={autoMode}
-                          onChange={(e) => setAutoMode(e.target.value as AutoMode)}
-                          aria-label={t('Quy trình', 'Pipeline')}
-                        >
-                          <option value="full">{t('Keyframe + Video', 'Keyframe + Video')}</option>
-                          <option value="keyframes_only">{t('Chỉ tạo Keyframe', 'Keyframes only')}</option>
-                          <option value="videos_only">{t('Chỉ tạo Video', 'Videos only')}</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    {activeRun && (
-                      <div className={`fsp-run-status fsp-run-${activeRun.status}`}>
-                        <div className="fsp-run-bar" style={{ width: activeRun.total > 0 ? `${Math.round((activeRun.done / activeRun.total) * 100)}%` : '0%' }} />
-                        <span className="fsp-run-text">
-                          {activeRun.status === 'running'
-                            ? t(`Đang chạy… ${activeRun.done}/${activeRun.total} cảnh • ${activeRun.currentStep}`, `Running… ${activeRun.done}/${activeRun.total} scenes • ${activeRun.currentStep}`)
-                            : activeRun.status === 'done'
-                              ? t(`✅ Hoàn thành — ${activeRun.done}/${activeRun.total} cảnh`, `✅ Done — ${activeRun.done}/${activeRun.total} scenes`)
-                              : activeRun.status === 'done_with_errors'
-                                ? t(`⚠ Hoàn thành có ${activeRun.errors.length} lỗi`, `⚠ Done with ${activeRun.errors.length} error(s)`)
-                                : activeRun.status === 'cancelled'
-                                  ? t('⏹ Đã dừng', '⏹ Stopped')
-                                  : t('❌ Lỗi', '❌ Failed')}
-                        </span>
-                        {activeRun.status === 'running' ? (
-                          <button type="button" className="fsp-btn fsp-btn-danger fsp-btn-sm" onClick={() => void stopRun()}>
-                            {t('Dừng', 'Stop')}
-                          </button>
-                        ) : (
-                          <button type="button" className="fsp-btn fsp-btn-sm" onClick={() => setActiveRun(null)}>
-                            ×
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 <div className="fsp-episodes-add">
                   <input
                     value={episodeTitle}
@@ -1018,7 +1167,29 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                                       </div>
                                       {scene.timecode && <code className="fsp-scene-timecode">{scene.timecode}</code>}
                                       <p className="fsp-scene-prompt">{scene.prompt}</p>
-                                      {scene.error && <p className="fsp-scene-error">⚠ {scene.error}</p>}
+                                      {scene.error && (
+                                        <div className="fsp-scene-error-row">
+                                          <p className="fsp-scene-error">⚠ {scene.error}</p>
+                                          <div className="fsp-scene-error-actions">
+                                            <button
+                                              type="button"
+                                              className="fsp-btn fsp-btn-sm fsp-btn-retry"
+                                              disabled={generatingScene === scene.id}
+                                              onClick={() => void retryScene(episode, scene, 'retry')}
+                                            >
+                                              {t('Chạy lại', 'Retry')}
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="fsp-btn fsp-btn-sm fsp-btn-create"
+                                              disabled={generatingScene === scene.id}
+                                              onClick={() => void retryScene(episode, scene, 'create')}
+                                            >
+                                              {t('Tạo mới', 'Create new')}
+                                            </button>
+                                          </div>
+                                        </div>
+                                      )}
 
                                       <details className="fsp-scene-overrides">
                                         <summary>{t('Tuỳ chỉnh cảnh', 'Scene overrides')}</summary>
@@ -1065,19 +1236,13 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                                         >
                                           {generatingScene === scene.id ? t('Đang gửi…', 'Queuing…') : t('Tạo keyframe', 'Create keyframe')}
                                         </button>
-                                        {scene.keyframeOutput && !scene.approvedKeyframe && (
-                                          <button
-                                            type="button"
-                                            className="fsp-btn fsp-btn-sm fsp-btn-approve"
-                                            onClick={() => void approveKeyframe(episode, scene)}
-                                          >
-                                            ✓ {t('Duyệt ảnh', 'Approve')}
-                                          </button>
-                                        )}
                                         <button
                                           type="button"
                                           className="fsp-btn fsp-btn-sm fsp-btn-video"
-                                          disabled={!scene.approvedKeyframe || generatingScene === scene.id}
+                                          disabled={
+                                            generatingScene === scene.id
+                                            || !(scene.approvedKeyframe || scene.keyframeOutput)
+                                          }
                                           onClick={() => void generateScene(episode, scene, 'video')}
                                         >
                                           {t('Tạo video', 'Create video')}
@@ -1086,7 +1251,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                                           type="button"
                                           className="fsp-btn fsp-btn-sm"
                                           title={t('Mở trong FlowPage để chỉnh thêm', 'Open in FlowPage for fine-tuning')}
-                                          onClick={() => onOpenScene({ seriesId: selected.id, episodeId: episode.id, sceneId: scene.id, artifact: scene.approvedKeyframe ? 'video' : 'keyframe', seriesTitle: selected.title, episodeTitle: episode.title, sceneTitle: scene.title, scenePrompt: scene.prompt })}
+                                          onClick={() => onOpenScene({ seriesId: selected.id, episodeId: episode.id, sceneId: scene.id, artifact: scene.approvedKeyframe || scene.keyframeOutput ? 'video' : 'keyframe', seriesTitle: selected.title, episodeTitle: episode.title, sceneTitle: scene.title, scenePrompt: scene.prompt })}
                                         >
                                           ↗ {t('Flow', 'Flow')}
                                         </button>

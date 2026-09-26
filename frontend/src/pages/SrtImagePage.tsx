@@ -731,7 +731,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
                       className="siv-timeline-input"
                       aria-label={t('Dán nội dung timeline', 'Paste timeline content')}
                       value={timelineText}
-                      placeholder={t('Dán nội dung timeline (ví dụ: 001_[00:00:00.00-00:00:08.50] hoặc [00:00 - 00:05] hoặc nội dung file SRT, VTT, CSV, JSON…)', 'Paste timeline content (e.g. 001_[00:00:00.00-00:00:08.50] or [00:00 - 00:05] or SRT, VTT, CSV, JSON text…)')}
+                      placeholder={t('Dán nội dung timeline (ví dụ: 001_[00:00:00.00-00:00:08.50], 001_[00.00-00.05], 001_[00:00-00:05] hoặc SRT/VTT/CSV/JSON…)', 'Paste timeline content (e.g. 001_[00:00:00.00-00:00:08.50], 001_[00.00-00.05], 001_[00:00-00:05], or SRT/VTT/CSV/JSON…)')}
                       onChange={(event) => setTimelineText(event.target.value)}
                     />
                   : <div {...dropProps('timeline')} data-siv-drop="timeline" className={`siv-input siv-drop-input${dragTarget === 'timeline' ? ' is-dragging' : ''}`}><input data-siv-drop="timeline" type="text" value={timelinePath} onChange={(e) => { setDroppedTimeline(null); setTimelinePath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn timeline hoặc thả file vào đây...', 'Paste or type a timeline path or drop the file here...')} spellCheck={false} /></div>}
@@ -1038,6 +1038,8 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
                     <p className="siv-help-format-desc">{t('Dạng ngoặc vuông hoặc khoảng cách gạch ngang, hỗ trợ cả dấu hai chấm (:) và dấu chấm (.):', 'Square bracket or hyphen range, supports both colons (:) and dots (.):')}</p>
                     <pre className="siv-help-code-block">{`001_[00:00:00.00-00:00:08.50] Mô tả cảnh mở đầu
 002_[00:00:08.50-00:00:15.00] Mô tả diễn biến tiếp
+001_[00.00-00.05] Cảnh ngắn (MM.SS)
+001_[00:00-00:05] Cảnh ngắn (MM:SS)
 003_[00.00.15.00-00.00.22.00] Cảnh quay trên cao
 [00:00 - 00:05] Cảnh 1
 [00:05 - 00:12] Cảnh 2

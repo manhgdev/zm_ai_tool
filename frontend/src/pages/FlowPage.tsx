@@ -38,6 +38,10 @@ import {
   ACCOUNTS_KEY, CREATE_KIND_KEY, ACTIVE_PANEL_KEY, IMAGE_MODE_KEY, VIDEO_MODE_KEY, COLLAPSED_FOLDERS_KEY,
   FLOW_VIDEO_MODELS, FLOW_IMAGE_MODELS, FLOW_OMNI_FLASH_DURATIONS,
   flowVideoDownloadQualities,
+  flowImageResolutions,
+  isFlowVideoUiResolution,
+  isFlowImageUiResolution,
+  clampFlowImageResolution,
   settingsForCreateKind, settingsWithSelectedModel,
   defaultFlowOutputFolder as buildDefaultFlowOutputFolder,
   flowConfiguredOutputFolder as buildFlowConfiguredOutputFolder,
@@ -117,7 +121,18 @@ function applyAccountCapabilities(
     : downloadQualities[0] || "720p";
   if (!models.length) {
     const base = settingsWithSelectedModel(current, kind, requestedModel);
-    return base.quality === quality ? base : { ...base, quality };
+    const next = {
+      ...base,
+      quality: kind === "video" ? quality : "",
+      resolution: kind === "image"
+        ? clampFlowImageResolution(base.resolution, account?.plan)
+        : (isFlowVideoUiResolution(base.resolution) ? base.resolution : ""),
+    };
+    return next.quality === current.quality
+      && next.resolution === current.resolution
+      && next.model === current.model
+      ? current
+      : next;
   }
   const selected = models.find((item) => item.name === requestedModel)
     || models.find((item) => item.name === section?.defaultModel)
@@ -134,17 +149,17 @@ function applyAccountCapabilities(
       : "")
     : current.duration;
   const modelResolutions = kind === "video"
-    ? selected.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
-    : selected.resolutions;
+    ? selected.resolutions.filter((value) => isFlowVideoUiResolution(value))
+    : selected.resolutions.filter((value) => isFlowImageUiResolution(value));
   const resolution = modelResolutions.length
     ? (modelResolutions.includes(current.resolution) || modelResolutions.includes(current.resolution.toLowerCase())
       ? current.resolution
       : selected.defaultResolution && modelResolutions.includes(selected.defaultResolution)
         ? selected.defaultResolution
         : modelResolutions[0])
-    : kind === "video" && /^[1-9]\d{0,1}k$/i.test(current.resolution)
-      ? ""
-      : current.resolution;
+    : kind === "video"
+      ? (isFlowVideoUiResolution(current.resolution) ? current.resolution : "")
+      : clampFlowImageResolution(current.resolution, account?.plan);
   const next = {
     ...settingsWithSelectedModel(current, kind, selected.name),
     [ratioKey]: ratio,
@@ -225,7 +240,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       ),
     ),
   );
-  // readSettings keeps the stable default ``concurrency: "8"`` for Flow.
+  // readSettings keeps the stable default ``concurrency: "3"`` for Flow.
   const [settings, setSettings] = useState<FlowSettings>(readSettings);
   const [importName, setImportName] = useState("");
   const [promptInputType, setPromptInputType] = useState<PromptInputType>("prompt");
@@ -708,18 +723,19 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       : [];
   // Resolution: chỉ Omni Flash video mới có catalog resolutions.
   // Veo 3.1 không có resolution control trên Flow UI → ẩn.
-  // Image: theo plan tier.
+  // Image: theo plan tier (1K/2K/4K) — never keep leftover video Np.
   const accountPlan = displayedAccount?.plan ?? "Free";
-  const imageResolutionOptions =
-    accountPlan === "Ultra" ? ["1K", "2K", "4K"]
-    : accountPlan === "Pro" || accountPlan === "Plus" ? ["1K", "2K"]
-    : ["1K"];
+  const imageResolutionOptions = flowImageResolutions(accountPlan);
   const videoDownloadQualityOptions = flowVideoDownloadQualities(accountPlan);
   const resolutionOptions = capabilityModel?.resolutions.length
     ? (createKind === "video"
-      ? capabilityModel.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
-      : capabilityModel.resolutions)
+      ? capabilityModel.resolutions.filter((value) => isFlowVideoUiResolution(value))
+      : capabilityModel.resolutions.filter((value) => isFlowImageUiResolution(value)))
     : createKind === "image" ? imageResolutionOptions : [];
+  // Catalog may omit image tiers — still expose plan options so leftover Omni 360p cannot stick.
+  const effectiveImageResolutionOptions = createKind === "image"
+    ? (resolutionOptions.length ? resolutionOptions : imageResolutionOptions)
+    : [];
   const retryAccount = accounts.find((account) => account.id === retryTarget?.accountId);
   const retryCapabilities = retryTarget ? accountCapabilityModels(retryAccount, retryTarget.job.kind) : [];
   const retryModelCapability = retryCapabilities.find((item) => item.name === retryTarget?.model);
@@ -948,16 +964,24 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           : effectiveSettings.duration,
         // Veo has no resolution tabs — never send leftover image tiers (1K/2K/4K).
         // Omni/catalog video uses 720p-style options only.
-        resolution: resolutionOptions.length
-          ? (resolutionOptions.includes(effectiveSettings.resolution)
-            ? effectiveSettings.resolution
-            : resolutionOptions[0])
-          : createKind === "video" ? "" : effectiveSettings.resolution,
+        // Image always clamps to 1K/2K/4K — never keep leftover Omni 360p from shared settings.
+        resolution: createKind === "image"
+          ? clampFlowImageResolution(
+            effectiveImageResolutionOptions.includes(effectiveSettings.resolution)
+              ? effectiveSettings.resolution
+              : effectiveImageResolutionOptions[0] || effectiveSettings.resolution,
+            accountPlan,
+          )
+          : (resolutionOptions.length
+            ? (resolutionOptions.includes(effectiveSettings.resolution)
+              ? effectiveSettings.resolution
+              : resolutionOptions[0])
+            : ""),
         quality: createKind === "video"
           ? (videoDownloadQualityOptions.includes(effectiveSettings.quality)
             ? effectiveSettings.quality
             : videoDownloadQualityOptions[0])
-          : effectiveSettings.quality,
+          : "",
       };
 
       if (createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
@@ -1611,34 +1635,58 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         .catch((error) => setApiError(error instanceof Error ? error.message : String(error))),
     });
   };
+  const formatLogEntry = (entry: FlowLog) => {
+    const eventLabel = explainFlowEvent(entry.event);
+    const title = t(eventLabel.titleVi, eventLabel.titleEn);
+    const account = accounts.find((item) => item.id === entry.accountId);
+    const explainedRaw = entry.message ? explainFlowError(entry.message) : null;
+    const explained = explainedRaw ? formatFlowExplain(explainedRaw, t) : null;
+    const stage = entry.details?.stage != null ? flowStageLabel(String(entry.details.stage), t) : "";
+    const model = entry.details?.model != null ? String(entry.details.model) : "";
+    const kind = entry.details?.kind != null ? String(entry.details.kind) : "";
+    const detailKeys = Object.keys(entry.details || {}).filter(
+      (key) => !["stage", "model", "kind"].includes(key),
+    );
+    const extraDetails = detailKeys.length
+      ? Object.fromEntries(detailKeys.map((key) => [key, (entry.details || {})[key]]))
+      : null;
+    const context = [
+      entry.jobId ? `job=${entry.jobId}` : "",
+      entry.accountId ? `account=${account?.label || entry.accountId}` : "",
+      stage ? `stage=${stage}` : "",
+      kind ? `kind=${kind}` : "",
+      model ? `model=${model}` : "",
+      explainedRaw?.code ? `code=${explainedRaw.code}` : "",
+    ].filter(Boolean).join(" ");
+    const lines = [
+      `[${new Date(entry.createdAt * 1000).toISOString()}] [${entry.level.toUpperCase()}] ${title}${context ? ` ${context}` : ""}`,
+    ];
+    if (explained) {
+      lines.push(`  ${explained.title}`);
+      lines.push(`  ${explained.summary}`);
+      lines.push(`  → ${explained.action}`);
+    }
+    if (entry.message) {
+      lines.push(`  raw: ${entry.message}`);
+    }
+    if (extraDetails) {
+      lines.push(`  details=${JSON.stringify(extraDetails)}`);
+    }
+    return lines.join("\n");
+  };
   const copyLogs = async () => {
-    const text = logs
-      .map((entry) => {
-        const eventLabel = explainFlowEvent(entry.event);
-        const title = t(eventLabel.titleVi, eventLabel.titleEn);
-        const account = accounts.find((item) => item.id === entry.accountId);
-        const explainedRaw = entry.message ? explainFlowError(entry.message) : null;
-        const explained = explainedRaw ? formatFlowExplain(explainedRaw, t) : null;
-        const stage = entry.details?.stage != null ? flowStageLabel(String(entry.details.stage), t) : "";
-        const context = [
-          entry.jobId ? `job=${entry.jobId}` : "",
-          entry.accountId ? `account=${account?.label || entry.accountId}` : "",
-          stage ? `stage=${stage}` : "",
-          explainedRaw?.code ? `code=${explainedRaw.code}` : "",
-        ].filter(Boolean).join(" ");
-        const body = explained
-          ? `${explained.title}\n  ${explained.summary}\n  → ${explained.action}\n  raw: ${entry.message}`
-          : (entry.message || "");
-        const details = Object.keys(entry.details || {}).length
-          ? `\n  details=${JSON.stringify(entry.details)}`
-          : "";
-        return `[${new Date(entry.createdAt * 1000).toISOString()}] [${entry.level.toUpperCase()}] ${title}${context ? ` ${context}` : ""}${body ? `\n  ${body}` : ""}${details}`;
-      })
-      .join("\n\n");
+    const text = logs.map((entry) => formatLogEntry(entry)).join("\n\n---\n\n");
     try {
       await copyText(text, t('Đã sao chép log.', 'Logs copied.'));
       setLogsCopied(true);
       window.setTimeout(() => setLogsCopied(false), 1800);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const copyOneLog = async (entry: FlowLog) => {
+    try {
+      await copyText(formatLogEntry(entry), t('Đã sao chép log.', 'Log copied.'));
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     }
@@ -2388,11 +2436,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   ) : (
                     <FlowSelect
                       label={t("Độ phân giải", "Resolution")}
-                      value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
+                      value={
+                        effectiveImageResolutionOptions.includes(settings.resolution)
+                          ? settings.resolution
+                          : effectiveImageResolutionOptions[0]
+                      }
                       onChange={(resolution) =>
                         setSettings((current) => ({ ...current, resolution }))
                       }
-                      options={resolutionOptions}
+                      options={effectiveImageResolutionOptions}
                     />
                   )}
                 </div>
@@ -3059,6 +3111,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </time>
                         <mark>{entry.level.toUpperCase()}</mark>
                         {explainMeta?.code ? <code className="flow-log-code">{explainMeta.code}</code> : null}
+                        <button
+                          type="button"
+                          className="flow-log-copy-one"
+                          onClick={() => void copyOneLog(entry)}
+                        >
+                          {t("Sao chép", "Copy")}
+                        </button>
                       </header>
                       <div className="flow-log-message">
                         <strong>

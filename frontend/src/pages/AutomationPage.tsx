@@ -5,6 +5,7 @@ import type { FlowCapabilityCatalog } from '@/features/flow/flow.types'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { MediaPreviewModal, type MediaPreviewAction, type MediaPreviewItem } from '@/shared/components/MediaPreviewModal'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
+import { normalizeChatProviders, type ChatProviderOption } from '@/features/chat/chatProviders'
 import './AutomationPage.css'
 
 type InputMode = 'topic' | 'youtube' | 'ai_topic' | 'script' | 'bundle'
@@ -67,8 +68,6 @@ type TtsVoiceOption = {
   language?: string
   available?: boolean
 }
-type ChatModelOption = { id: string; label: string; provider: string; free: boolean; capabilities?: string[]; available?: boolean }
-type ChatProviderOption = { id: string; label: string; kind: 'api' | 'browser'; configured: boolean; status: string; models: ChatModelOption[] }
 
 const API = '/api/automation'
 const fetchWithTimeout = (input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 8000) =>
@@ -169,26 +168,6 @@ function normalizeTtsVoices(raw: unknown): TtsVoiceOption[] {
   }, [])
 }
 
-function normalizeChatProviders(raw: unknown): ChatProviderOption[] {
-  const values = raw && typeof raw === 'object' && Array.isArray((raw as { providers?: unknown }).providers)
-    ? (raw as { providers: unknown[] }).providers : []
-  return values.reduce<ChatProviderOption[]>((result, item) => {
-    if (!item || typeof item !== 'object') return result
-    const row = item as Record<string, unknown>
-    const id = String(row.id || '').trim()
-    if (!id || result.some(current => current.id === id)) return result
-    const models = Array.isArray(row.models) ? row.models.reduce<ChatModelOption[]>((items, value) => {
-      if (!value || typeof value !== 'object') return items
-      const model = value as Record<string, unknown>
-      const modelId = String(model.id || '').trim()
-      if (!modelId || items.some(current => current.id === modelId)) return items
-      items.push({ id: modelId, label: String(model.label || modelId), provider: String(model.provider || id), free: model.free !== false, capabilities: Array.isArray(model.capabilities) ? model.capabilities.map(String) : ['text'], available: model.available !== false })
-      return items
-    }, []) : []
-    result.push({ id, label: String(row.label || id), kind: row.kind === 'browser' ? 'browser' : 'api', configured: row.configured !== false, status: String(row.status || ''), models })
-    return result
-  }, [])
-}
 
 export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (jobId: string) => void }) {
   const { locale } = useLocale()

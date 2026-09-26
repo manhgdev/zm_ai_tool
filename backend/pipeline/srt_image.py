@@ -208,20 +208,42 @@ def shift_srt(path: Path, output: Path, offset: float) -> Path:
 
 
 def _timeline_seconds(value: str) -> float:
+    """Parse one timecode token into seconds.
+
+    Supported:
+      - plain seconds: ``5``, ``1.5``
+      - ``MM:SS`` / ``HH:MM:SS`` / ``HH:MM:SS.ms``
+      - ``MM.SS`` (e.g. ``00.05`` → 5s) and ``HH.MM.SS`` / ``HH.MM.SS.CS``
+    """
     normalized = value.strip().replace(",", ".")
-    if re.fullmatch(r"\d+(?:\.\d+)?", normalized):
-        return float(normalized)
+    if ":" in normalized:
+        parts = normalized.split(":")
+        if len(parts) == 2:
+            parts.insert(0, "0")
+        if len(parts) != 3:
+            raise ValueError(f"Mốc timeline không hợp lệ: {value}")
+        hours, minutes, seconds = parts
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
     dot_parts = normalized.split(".")
-    if ":" not in normalized and len(dot_parts) == 4:
+    if len(dot_parts) == 4 and all(part.isdigit() for part in dot_parts):
         hours, minutes, seconds, centiseconds = dot_parts
         return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + int(centiseconds) / 100
-    parts = normalized.split(":")
-    if len(parts) == 2:
-        parts.insert(0, "0")
-    if len(parts) != 3:
-        raise ValueError(f"Mốc timeline không hợp lệ: {value}")
-    hours, minutes, seconds = parts
-    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    if len(dot_parts) == 3 and all(part.isdigit() for part in dot_parts):
+        hours, minutes, seconds = dot_parts
+        return int(hours) * 3600 + int(minutes) * 60 + int(seconds)
+    # MM.SS — second field exactly 2 digits so ``1.5`` stays plain seconds.
+    if (
+        len(dot_parts) == 2
+        and re.fullmatch(r"\d+", dot_parts[0])
+        and re.fullmatch(r"\d{2}", dot_parts[1])
+    ):
+        minutes, seconds = int(dot_parts[0]), int(dot_parts[1])
+        if seconds < 60:
+            return minutes * 60 + seconds
+    if re.fullmatch(r"\d+(?:\.\d+)?", normalized):
+        return float(normalized)
+    raise ValueError(f"Mốc timeline không hợp lệ: {value}")
 
 
 def parse_timeline_times(path: Path) -> list[tuple[float, float]]:

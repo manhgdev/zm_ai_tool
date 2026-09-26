@@ -29,6 +29,7 @@ _lock = threading.Lock()
 _client: Any = None
 _client_err: str | None = None
 _load_state = "cold"  # cold | loading | ready | error
+_warm_gate = threading.Lock()
 _reference_lock = threading.Lock()
 _reference_cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
 _clone_lock = threading.Lock()
@@ -279,9 +280,20 @@ def _resolve_backend() -> tuple[str, str]:
 def available() -> bool:
     if os.environ.get("VIENEU_DISABLED", "").strip().lower() in ("1", "true", "yes"):
         return False
-    if getattr(sys, 'frozen', False):
-        from pipeline.core.system_check.probe import _runtime_mod_ok
-        return _runtime_mod_ok('vieneu')[0]
+    if getattr(sys, "frozen", False):
+        # Fast path: never import Vieneu in a subprocess on every /tts/status.
+        # Full import probe belongs to Setup checks / warm(), not the status poll.
+        try:
+            from pipeline.core.runtime_active import runtime_python, runtime_site
+
+            if not runtime_python().is_file():
+                return False
+            site = runtime_site()
+            if (site / "vieneu").is_dir():
+                return True
+            return any(site.glob("vieneu-*.dist-info"))
+        except Exception:
+            return False
     try:
         import importlib.util
 
@@ -429,18 +441,26 @@ def get_client() -> Any:
         # runtime worker performs the real import and reports a short error;
         # loading native extensions here can abort the whole desktop process.
         with _lock:
-            if _load_state != "ready":
-                _load_state = "loading"
-                try:
-                    ok, detail = vieneu_frozen.probe()
-                    if not ok:
-                        raise RuntimeError(detail)
-                    _load_state = "ready"
-                    _client_err = None
-                except Exception as exc:
+            if _load_state == "ready" and vieneu_frozen.has_ready_worker(mode=current_mode()):
+                return None
+            # Allow retry after a previous error (cancel / failed warm).
+            _load_state = "loading"
+            _client_err = None
+        # Probe outside _lock so /tts/status and warm() stay responsive.
+        try:
+            ok, detail = vieneu_frozen.probe()
+            with _lock:
+                if not ok:
                     _load_state = "error"
-                    _client_err = str(exc)
-                    raise RuntimeError(f"Không khởi tạo được VieNeu: {exc}") from exc
+                    _client_err = detail
+                    raise RuntimeError(detail)
+                _load_state = "ready"
+                _client_err = None
+        except Exception as exc:
+            with _lock:
+                _load_state = "error"
+                _client_err = str(exc)
+            raise RuntimeError(f"Không khởi tạo được VieNeu: {exc}") from exc
         return None  # synthesize() uses subprocess on frozen builds
     if not available():
         raise RuntimeError(
@@ -568,14 +588,29 @@ def status() -> dict[str, Any]:
     if getattr(sys, "frozen", False):
         from . import vieneu_frozen
 
-        ok, detail = vieneu_frozen.probe()
-        backend, device = vieneu_frozen.resolve_backend()
-        if mode == MODE_NANO:
-            backend, device = "onnx", "cpu"
-        out["ready"] = ok
-        out["loaded"] = ok
-        out["loadState"] = "ready" if ok else "error"
-        if ok:
+        # Do NOT call probe() here — acquiring a worker loads the full model and
+        # blocks /api/tts/status past the UI timeout (stuck "Đang kiểm tra…").
+        # Also avoid resolve_backend() while cold: it may subprocess-import torch.
+        worker_ready = vieneu_frozen.has_ready_worker(mode=mode)
+        if worker_ready and _load_state != "error":
+            out["ready"] = True
+            out["loaded"] = True
+            out["loadState"] = "ready"
+        else:
+            out["ready"] = installed and _load_state == "ready"
+            out["loaded"] = out["ready"]
+            out["loadState"] = _load_state
+
+        backend, device = "onnx", "cpu"
+        if out["loadState"] == "ready":
+            try:
+                backend, device = vieneu_frozen.resolve_backend()
+                if mode == MODE_NANO:
+                    backend, device = "onnx", "cpu"
+            except Exception:
+                pass
+
+        if out["loadState"] == "ready":
             if mode == MODE_NANO:
                 out["device"] = "ONNX/CPU (Nano)"
                 out["message"] = "Sẵn sàng — VieNeu Nano ONNX/CPU"
@@ -588,8 +623,19 @@ def status() -> dict[str, Any]:
             else:
                 out["device"] = "ONNX/CPU (runtime)"
                 out["message"] = "Sẵn sàng — TTS ONNX/CPU qua runtime venv"
+        elif out["loadState"] == "loading":
+            out["device"] = "runtime"
+            out["message"] = "Đang nạp model…"
+        elif out["loadState"] == "error":
+            out["ready"] = False
+            out["message"] = f"Lỗi runtime: {(_client_err or 'unknown')[:180]}"
         else:
-            out["message"] = f"Lỗi runtime: {detail[:180]}"
+            if mode == MODE_NANO:
+                out["device"] = "ONNX/CPU (Nano, lazy)"
+                out["message"] = "Đã cài — nạp Nano khi mở /text-to-speech"
+            else:
+                out["device"] = "runtime (lazy)"
+                out["message"] = "Đã cài — nạp khi mở /text-to-speech"
         return out
     if _load_state == "error" and _client_err:
         out["ready"] = False
@@ -1105,26 +1151,27 @@ def clone_voice(
     # Frozen desktop uses a short-lived runtime subprocess for each synthesis.
     # It deliberately returns no in-process VieNeu client; the subprocess
     # receives this reference at synthesis time and calls add_voice itself.
-    # Calling add_voice here used to dereference None and made cloning fail
-    # even when the configured PyTorch GPU runtime was healthy.
-    client = get_client()
-    if client is not None:
-        try:
-            client.add_voice(safe, str(dest), denoise=bool(denoise), save=False)
-        except Exception as e1:
+    # Do NOT call get_client()/probe() here — that would warm CUDA just to
+    # register a WAV path, and any parent-process torch leak can kill the app.
+    if not getattr(sys, "frozen", False):
+        client = get_client()
+        if client is not None:
             try:
-                client.add_voice(safe, str(dest), denoise=False, save=False)
-            except Exception as e2:
-                backend, device = _resolve_backend()
-                raise RuntimeError(
-                    "Không thể đăng ký giọng clone với VieNeu "
-                    f"({backend}/{device}). Chi tiết: {e2 or e1}"
-                ) from e2
-        # Không ghi SDK presets vào voices.json — sẽ xóa hết danh sách clone.
-        try:
-            client.save_voices(str(voice_store.SDK_VOICES_JSON))
-        except Exception:
-            pass
+                client.add_voice(safe, str(dest), denoise=bool(denoise), save=False)
+            except Exception as e1:
+                try:
+                    client.add_voice(safe, str(dest), denoise=False, save=False)
+                except Exception as e2:
+                    backend, device = _resolve_backend()
+                    raise RuntimeError(
+                        "Không thể đăng ký giọng clone với VieNeu "
+                        f"({backend}/{device}). Chi tiết: {e2 or e1}"
+                    ) from e2
+            # Không ghi SDK presets vào voices.json — sẽ xóa hết danh sách clone.
+            try:
+                client.save_voices(str(voice_store.SDK_VOICES_JSON))
+            except Exception:
+                pass
     clean_tags = voice_store.normalize_voice_tags(tags, strict=True)
     stat = dest.stat()
     _clone_cache[safe] = (stat.st_mtime_ns, stat.st_size)
@@ -1137,24 +1184,52 @@ def clone_voice(
 
 
 def warm() -> str:
-    global _load_state
+    global _load_state, _client_err
     try:
+        if not available():
+            with _lock:
+                _load_state = "cold"
+            return "not-installed"
         if getattr(sys, "frozen", False):
             from . import vieneu_frozen
 
-            ok, detail = vieneu_frozen.probe()
-            return "ready" if ok else f"err:{detail}"
+            with _lock:
+                if _load_state == "ready" and vieneu_frozen.has_ready_worker(mode=current_mode()):
+                    return "ready"
+            # Single-flight: concurrent warm() callers wait behind the first probe.
+            if not _warm_gate.acquire(blocking=False):
+                return "loading"
+            try:
+                with _lock:
+                    if _load_state == "ready" and vieneu_frozen.has_ready_worker(mode=current_mode()):
+                        return "ready"
+                    _load_state = "loading"
+                    _client_err = None
+                ok, detail = vieneu_frozen.probe()
+                with _lock:
+                    if ok:
+                        _load_state = "ready"
+                        _client_err = None
+                    else:
+                        _load_state = "error"
+                        _client_err = detail
+                return "ready" if ok else f"err:{detail}"
+            finally:
+                _warm_gate.release()
         with _lock:
             if _load_state == "cold":
                 _load_state = "loading"
         get_client()
         return str(status().get("device") or "ready")
     except Exception as e:
+        with _lock:
+            _load_state = "error"
+            _client_err = str(e)
         return f"err:{e}"
 
 
 def reset_client() -> None:
-    """Bỏ model đã nạp — dùng sau khi cài PyTorch CUDA / đổi mode."""
+    """Bỏ model đã nạp — dùng sau khi cài PyTorch CUDA / đổi mode / huỷ job."""
     global _client, _client_err, _load_state
     with _lock:
         _client = None
@@ -1165,14 +1240,17 @@ def reset_client() -> None:
     with _clone_lock:
         _clone_cache.clear()
     if getattr(sys, "frozen", False):
+        # NEVER import torch into the frozen UI/API process — runtime is on
+        # sys.path, so `import torch` loads CUDA into ZM AI TOOL.exe and can
+        # hard-crash the whole app (backend disappears). Workers own GPU.
         try:
             from . import vieneu_frozen
 
             vieneu_frozen.shutdown_all_workers()
         except Exception:
             pass
-    # Release cached model tensors after a cancelled GPU job instead of leaving
-    # their RAM/VRAM reserved until the application exits.
+        return
+    # Dev / non-frozen: release in-process tensors.
     import gc
 
     gc.collect()

@@ -52,6 +52,17 @@ export const SERIES_TAB_KEY = 'zm-flow-series:active-tab:v1'
 export const SERIES_AUTO_MODE_KEY = 'zm-flow-series:auto-mode:v1'
 export const SERIES_AUTO_APPROVE_KEY = 'zm-flow-series:auto-approve:v1'
 export const SERIES_COLLAPSED_EPISODES_KEY = 'zm-flow-series:collapsed-episodes:v1'
+export const SERIES_AI_KEY = 'zm-flow-series:ai-text:v1'
+
+/** Episode/scene counts of a Series TXT, using the same line rules as the backend importer. */
+export function countSeriesScript(text: string) {
+  const lines = text.split('\n').map((line) => line.trim())
+  return {
+    title: lines.map((line) => line.match(/^#\s*SERIES\s*:\s*(.+)$/i)?.[1]).find(Boolean) || '',
+    episodes: lines.filter((line) => /^#\s*TẬP\s*\d+/i.test(line)).length,
+    scenes: lines.filter((line) => /^\d{1,3}_\[[^\]]+\]\s*\S/.test(line)).length,
+  }
+}
 
 export function normalizeSeries(raw: Partial<Series>): Series {
   return {
@@ -104,7 +115,7 @@ export function readSeriesSettings(): SeriesGenSettings {
       return {
         accountId: '', model: flow.model === 'Veo 3.1 - Lite [Lower Priority]' ? 'Veo 3.1 - Fast' : flow.model || 'Veo 3.1 - Fast',
         ratio: flow.ratio || '16:9', duration: flow.duration || '8',
-        resolution: /^\d{3,4}p$/i.test(String(flow.resolution || '')) ? String(flow.resolution) : '', concurrency: flow.concurrency || '8',
+        resolution: /^\d{3,4}p$/i.test(String(flow.resolution || '')) ? String(flow.resolution) : '', concurrency: flow.concurrency || '3',
       }
     }
   } catch {}

@@ -644,6 +644,43 @@ class FlowAPI:
         log.warning("Could not obtain Bearer token — requests may fail with 401")
         return self._bearer_token or ""
 
+    def _invalidate_bearer_token(self) -> None:
+        """Drop cached OAuth token so the next lookup hits the live page/session."""
+        self._bearer_token = ""
+        self._bearer_token_ts = 0.0
+
+    async def _force_refresh_session(self) -> str:
+        """Reload Flow so next-auth / SPA can mint a fresh ya29 Bearer token."""
+        self._invalidate_bearer_token()
+        page = await self._bm.page()
+        proj_url = (
+            f"{FLOW_BASE}/project/{self.project_id}"
+            if self.project_id
+            else FLOW_BASE
+        )
+        try:
+            # Soft reload first — keeps cookies, refreshes SPA session object.
+            await page.reload(wait_until="domcontentloaded", timeout=20_000)
+        except Exception:
+            try:
+                await page.goto(proj_url, wait_until="domcontentloaded", timeout=20_000)
+            except Exception as exc:
+                log.warning("Session refresh navigation failed: %s", exc)
+        await asyncio.sleep(1.5)
+        page = await self._bm.page()
+        if "accounts.google.com" in page.url or "/about" in (page.url or ""):
+            raise AuthError(
+                "HTTP 401: Google session cookies expired — redirected to login"
+            )
+        token = await self._get_bearer_token()
+        if not token:
+            # Cap cache-bypass path: Method 3 in _get_bearer_token already
+            # navigates; one more invalidate + extract after sleep.
+            self._invalidate_bearer_token()
+            await asyncio.sleep(1.0)
+            token = await self._get_bearer_token()
+        return token
+
     # ── HTTP ──────────────────────────────────────────────────────────────────
 
     async def _fetch(self, method: str, url: str, body: Optional[dict] = None) -> dict:
@@ -661,23 +698,47 @@ class FlowAPI:
         if not url.startswith("http"):
             url = f"{API_BASE}/{url}"
 
-        # Always inject Bearer token + API key headers
-        hdrs = await self._get_auth_headers()
-
         data = json.dumps(body) if body is not None else None
-        ctx  = self._bm.context.request
+        ctx = self._bm.context.request
+        last_status = 0
+        last_text = ""
+        endpoint = url.split("/")[-1].split(":")[-1]
 
-        if method.upper() == "GET":
-            resp = await ctx.get(url, headers=hdrs)
-        elif method.upper() == "PATCH":
-            resp = await ctx.patch(url, headers=hdrs, data=data)
-        else:
-            resp = await ctx.post(url, headers=hdrs, data=data)
+        for attempt in range(2):
+            hdrs = await self._get_auth_headers()
+            if method.upper() == "GET":
+                resp = await ctx.get(url, headers=hdrs)
+            elif method.upper() == "PATCH":
+                resp = await ctx.patch(url, headers=hdrs, data=data)
+            else:
+                resp = await ctx.post(url, headers=hdrs, data=data)
 
-        if resp.status >= 400:
+            if resp.status < 400:
+                try:
+                    return await resp.json()
+                except Exception:
+                    return {}
+
             text = await resp.text()
+            last_status = resp.status
+            last_text = text
             log.error("API %d %s: %s", resp.status, url, text[:300])
-            endpoint = url.split("/")[-1].split(":")[-1]
+
+            if resp.status in (401, 403) and attempt == 0:
+                # Stale Bearer mid-poll is common; refresh session once then retry.
+                log.warning(
+                    "HTTP %s on %s — refreshing Flow session and retrying once",
+                    resp.status,
+                    endpoint,
+                )
+                try:
+                    await self._force_refresh_session()
+                except AuthError:
+                    raise
+                except Exception as exc:
+                    log.warning("Flow session refresh failed: %s", exc)
+                continue
+
             if resp.status == 404:
                 raise NotFoundError(
                     f"Endpoint not found (HTTP 404): {endpoint}\n"
@@ -685,7 +746,6 @@ class FlowAPI:
                     f"Response: {text[:200]}"
                 )
             if resp.status == 400:
-                # Try to extract the Google error message
                 try:
                     err_body = json.loads(text)
                     msg = err_body.get("error", {}).get("message", text[:200])
@@ -701,10 +761,12 @@ class FlowAPI:
                 )
             raise GenerationError(f"HTTP {resp.status} on {endpoint}: {text[:200]}")
 
-        try:
-            return await resp.json()
-        except Exception:
-            return {}
+        if last_status in (401, 403):
+            raise AuthError(
+                f"HTTP {last_status} on {endpoint}: authentication failed. "
+                "Session cookies may be expired — re-open the browser."
+            )
+        raise GenerationError(f"HTTP {last_status} on {endpoint}: {last_text[:200]}")
 
     async def _trpc_get(self, proc: str, inp: dict) -> dict:
         from urllib.parse import quote

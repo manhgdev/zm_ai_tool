@@ -482,9 +482,23 @@ export default function TtsStudio({
     try {
       setStatus(await api.ttsStatus() as Record<string, EngineStatus>)
     } catch {
-      /* ignore */
+      // Keep prior status if any; otherwise leave a stub so UI is not stuck on "Checking…".
+      setStatus((prev) => (
+        prev.vieneu
+          ? prev
+          : {
+              vieneu: {
+                id: 'vieneu',
+                name: 'VieNeu Local',
+                installed: false,
+                ready: false,
+                loadState: 'error',
+                message: t('Không đọc được trạng thái TTS', 'Could not read TTS status'),
+              },
+            }
+      ))
     }
-  }, [])
+  }, [t])
 
   const loadHistory = useCallback(async () => {
     try {

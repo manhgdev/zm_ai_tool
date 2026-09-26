@@ -227,6 +227,21 @@ html.dark .panel {
     user-select: text;
     -webkit-user-select: text;
   }
+  /* Text everywhere is selectable/copyable. Opt out only while dragging/resizing. */
+  body,
+  body * {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+  }
+  body.resizing-sidebar,
+  body.resizing-sidebar *,
+  body.automation-resizing,
+  body.automation-resizing *,
+  [data-no-text-select="true"],
+  [data-no-text-select="true"] * {
+    -webkit-user-select: none !important;
+    user-select: none !important;
+  }
   button, select, input, textarea { font: inherit; color: inherit; }
   button { cursor: pointer; }
   button:disabled { opacity: 0.55; cursor: not-allowed; }

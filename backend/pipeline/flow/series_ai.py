@@ -1,17 +1,15 @@
-"""Cloud-assisted Series TXT drafting.
+"""AI-assisted Series drafting from a single topic.
 
-This module deliberately creates only a reviewable TXT draft.  Importing it
-into a Series remains a separate user action, so an AI response can never
-silently create or overwrite a project.
+This module deliberately creates only a reviewable draft.  Importing it into a
+Series remains a separate user action, so an AI response can never silently
+create or overwrite a project.
 """
 from __future__ import annotations
 
 import re
 
-from pipeline.core.app_config import provider_api_keys, provider_credentials
-from pipeline.mt.cloud import _gemini_generate, _openai_compatible_chat
-
-_PROVIDERS = {"openai", "gemini", "openrouter", "grok"}
+_BIBLE_RE = re.compile(r"^\s*#\s*BIBLE\s*:?\s*(.*)$", re.I)
+_EPISODE_RE = re.compile(r"^\s*#\s*TẬP\s*\d+", re.I)
 
 
 def _clean_text(text: str) -> str:
@@ -20,47 +18,56 @@ def _clean_text(text: str) -> str:
     return (fenced.group(1) if fenced else text).strip()
 
 
-def _prompt(idea: str, episodes: int, scenes_per_episode: int) -> str:
-    return f"""You are a professional visual-series planner. Write a Vietnamese Series plan as plain TXT, with no markdown explanation or code fences.
+def split_bible(text: str) -> tuple[str, str]:
+    """Split the `# BIBLE` block (up to the first `# TẬP`) out of the Series TXT."""
+    script: list[str] = []
+    bible: list[str] = []
+    in_bible = False
+    for line in text.splitlines():
+        match = _BIBLE_RE.match(line)
+        if match:
+            in_bible = True
+            if match.group(1).strip():
+                bible.append(match.group(1).strip())
+            continue
+        if in_bible and _EPISODE_RE.match(line):
+            in_bible = False
+        (bible if in_bible else script).append(line)
+    return "\n".join(script).strip(), "\n".join(bible).strip()
 
-Creative brief:
-{idea.strip()}
 
-Return exactly this syntax:
+def _prompt(topic: str) -> str:
+    return f"""You are a professional visual-series planner for AI video generation. Plan a complete Series from this topic:
+
+{topic.strip()}
+
+Write every title, bible line and scene prompt in the same language as the topic. Return plain TXT only, with no markdown, code fences or commentary, in exactly this syntax:
 # SERIES: concise series title
+# BIBLE
+Character: name — fixed face, body, clothes and colours
+Setting: fixed locations and props
+Style: art style, lighting, camera language
 # TẬP 01 — episode title
 001_[00.00_00.00-00.00_08.00] visual scene prompt
+002_[00.00_08.00-00.00_14.00] visual scene prompt
 
-Create exactly {episodes} episode(s), each with exactly {scenes_per_episode} scene(s). Scene numbering restarts at 001 in every episode. Timecodes must be continuous 8-second blocks inside each episode. Every scene prompt must include:
-- START STATE: where characters/camera begin (matches previous END when continuing)
-- ACTION: what happens in this 8-second shot only
+Choose 1 to 5 episodes with 3 to 8 scenes each, sized to the topic; if the topic asks for a total length, the scene lengths must add up to it. Scene numbering restarts at 001 in every episode. Each scene lasts 4, 6, 8 or 10 seconds, chosen to fit its action; timecodes (HH.MM_SS.cc) are continuous inside each episode. Every scene prompt must include:
+- START STATE: where characters/camera begin (matches the previous END when continuing)
+- ACTION: what happens in this shot only
 - END STATE: freeze-frame pose/set for the next shot to continue from
-Preserve locked character appearance, clothes, props, setting and cartoon art style. Do not restart the plot each scene. Do not add any text outside the requested TXT."""
+Keep the bible's character appearance, clothes, props, setting and art style identical in every scene. Do not restart the plot each scene."""
 
-def draft_script(*, provider: str, idea: str, episodes: int, scenes_per_episode: int) -> str:
-    provider = (provider or "").strip().lower()
-    if provider not in _PROVIDERS:
-        raise ValueError("SERIES_CLOUD_PROVIDER_UNSUPPORTED")
-    if not idea.strip():
-        raise ValueError("SERIES_CLOUD_IDEA_REQUIRED")
-    if not 1 <= episodes <= 10 or not 1 <= scenes_per_episode <= 10:
-        raise ValueError("SERIES_CLOUD_SIZE_INVALID")
 
-    credentials = provider_credentials(provider)
-    keys = provider_api_keys(provider)
-    prompt = _prompt(idea, episodes, scenes_per_episode)
-    if provider == "gemini":
-        result = _gemini_generate(
-            base_url=credentials["baseUrl"], api_keys=keys, model=credentials["model"],
-            prompt=prompt, timeout=180.0, max_output_tokens=12_000,
-        )
-    else:
-        result = _openai_compatible_chat(
-            base_url=credentials["baseUrl"], api_keys=keys, model=credentials["model"],
-            prompt=prompt, timeout=180.0, max_output_tokens=12_000,
-            system_msg="Return only valid Series TXT. Do not use markdown fences.",
-        )
-    result = _clean_text(result)
-    if not result:
-        raise RuntimeError("SERIES_CLOUD_EMPTY_RESPONSE")
-    return result
+def draft_series(*, provider: str, model: str, topic: str) -> dict[str, str]:
+    """Return `{"text", "bible"}` drafted by any Chat provider/model."""
+    from pipeline.automation.service import service as automation
+
+    if not topic.strip():
+        raise ValueError("SERIES_AI_TOPIC_REQUIRED")
+    raw = automation._request_ephemeral_chat(
+        _prompt(topic), {"textProvider": provider, "textModel": model}, "Series Draft",
+    )
+    text, bible = split_bible(_clean_text(raw))
+    if not text:
+        raise RuntimeError("SERIES_AI_EMPTY_RESPONSE")
+    return {"text": text, "bible": bible}
