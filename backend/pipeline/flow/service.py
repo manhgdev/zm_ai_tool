@@ -175,8 +175,10 @@ def _video_download_qualities_for_plan(plan: str | None) -> list[str]:
 
 
 def _video_download_quality(settings: dict[str, Any] | None, plan: str | None = None) -> str:
-    """Map job settings to Flow download menu labels, clamped to account plan."""
-    allowed = _video_download_qualities_for_plan(plan)
+    """Map job settings to Flow download menu labels, clamped to account plan.
+
+    When ``plan`` is omitted, only map the label (callers that already clamped).
+    """
     raw = str((settings or {}).get("quality") or "").strip().lower()
     if raw in {"4k", "2160", "2160p"} or "4k" in raw:
         preferred = "4K"
@@ -184,7 +186,10 @@ def _video_download_quality(settings: dict[str, Any] | None, plan: str | None = 
         preferred = "1080p"
     else:
         preferred = "720p"
-    return preferred if preferred in allowed else allowed[0]
+    if plan is None:
+        return preferred
+    allowed = _video_download_qualities_for_plan(plan)
+    return preferred if preferred in allowed else allowed[-1]
 
 
 def _video_media_ready(media: dict[str, Any] | None) -> bool:
