@@ -219,6 +219,26 @@ def _video_media_ready(media: dict[str, Any] | None) -> bool:
     return bool(_video_fife_url(media))
 
 
+def _classify_visible_flow_error(text: str) -> str:
+    """Map Flow tile error copy to a stable code (credits vs quota vs generic)."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    low = raw.lower()
+    if re.search(
+        r"credit|t[ií]n d[uụ]ng|insufficient|not enough|out of\s+credits|h[eế]t t[ií]n",
+        low,
+    ):
+        return f"FLOW_CREDITS_EMPTY: {raw}"
+    if re.search(
+        r"quota|h[eế]t l[uư][oợ]t|h[eế]t h[aạ]n m[uứ]c|usage limit|generation limit|"
+        r"daily limit|monthly limit|rate.?limit|too many|limit reached|h[aạ]n m[uứ]c",
+        low,
+    ):
+        return f"FLOW_QUOTA_EXHAUSTED: {raw}"
+    return f"FLOW_GENERATION_REJECTED: {raw}"
+
+
 def _captured_image_items(response: dict[str, Any]) -> list[dict[str, str]]:
     """Normalize both current and legacy batchGenerateImages response shapes."""
     values: list[dict[str, str]] = []
@@ -1971,7 +1991,7 @@ class FlowService:
         # Once Flow accepts a job, retrying can create a duplicate and charge
         # credits twice; media recovery owns all post-submit timeouts.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_RESULT_NOT_FOUND",
+            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_RESULT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
             re.I,
         )
         profile_ready = False
@@ -2795,7 +2815,7 @@ class FlowService:
                     "progress": 0,
                     "updatedAt": time.time(),
                 })
-                raise RuntimeError(f"FLOW_GENERATION_REJECTED: {flow_error}")
+                raise RuntimeError(_classify_visible_flow_error(flow_error))
             empty_checks += 1
             if empty_checks >= 6 and page is not None:
                 try:
@@ -2944,7 +2964,7 @@ class FlowService:
                     "progress": 0,
                     "updatedAt": time.time(),
                 })
-                raise RuntimeError(f"FLOW_GENERATION_REJECTED: {flow_error}")
+                raise RuntimeError(_classify_visible_flow_error(flow_error))
             elapsed = timeout_s - max(0.0, deadline - time.monotonic())
             current_progress = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
             store.patch_row("jobs", job_id, {
@@ -3098,7 +3118,7 @@ class FlowService:
                     "progress": 0,
                     "updatedAt": time.time(),
                 })
-                raise RuntimeError(f"FLOW_GENERATION_REJECTED: {flow_error}")
+                raise RuntimeError(_classify_visible_flow_error(flow_error))
             info = await page.evaluate("""(expCount) => {
                 const tiles = Array.from(document.querySelectorAll('flow-grid-tile-container')).slice(0, expCount);
                 if (!tiles.length) return null;

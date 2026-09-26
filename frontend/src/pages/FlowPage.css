@@ -1132,6 +1132,11 @@
   background: #c93646;
   color: #fff;
 }
+.flow-confirm-dialog > footer button.is-primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
 .flow-retry-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

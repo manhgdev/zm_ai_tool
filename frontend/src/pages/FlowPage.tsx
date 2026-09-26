@@ -21,8 +21,10 @@ import { FlowTemplatesPanel } from "@/features/flow/FlowTemplatesPanel";
 import {
   explainFlowError,
   explainFlowEvent,
+  flowLimitPopupCopy,
   flowStageLabel,
   formatFlowExplain,
+  isFlowLimitError,
 } from "@/features/flow/flow.explain";
 import {
   type FlowTab, type FlowRoutePanel, type RailItem, type JobStatus,
@@ -303,6 +305,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     confirmLabel: string;
     run: () => void | Promise<unknown>;
   } | null>(null);
+  const [limitNotice, setLimitNotice] = useState<{ title: string; message: string } | null>(null);
+  const notifiedLimitJobsRef = useRef<Set<string>>(new Set());
+  const showLimitNotice = useCallback((raw: string | null | undefined) => {
+    setLimitNotice(flowLimitPopupCopy(raw, t));
+  }, [t]);
   const [queueKind, setQueueKind] = useState<CreateKind | "all">("all");
   const selectCreateKind = (kind: CreateKind) => {
     setCreateKind(kind);
@@ -470,6 +477,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       prevAccountStatusRef.current[account.id] = account.status;
     });
   }, [accounts]);
+  useEffect(() => {
+    for (const job of jobs) {
+      if (job.status !== "failed" || !job.error) continue;
+      if (notifiedLimitJobsRef.current.has(job.id)) continue;
+      if (!isFlowLimitError(job.error)) continue;
+      notifiedLimitJobsRef.current.add(job.id);
+      showLimitNotice(job.error);
+      break;
+    }
+  }, [jobs, showLimitNotice]);
   useEffect(() => {
     if (!backendReady || !hasActiveFlowJobs) return;
     let active = true;
@@ -880,7 +897,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         "Out of credits — cannot create images/videos. Sync again or wait for credits to reset.",
       );
       setApiError(message);
-      toast.warning(message);
+      showLimitNotice("FLOW_CREDITS_EMPTY");
       return;
     }
     try {
@@ -1052,7 +1069,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       postInFlightRef.current = false;
       submitAbortRef.current = null;
       if ((error as Error).name === "AbortError") return; // delete-all aborted — no-op
-      setApiError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setApiError(message);
+      // Clear optimistic stubs so the queue does not keep fake jobs after a hard block.
+      setJobs((current) => current.filter((j) => !j.id.startsWith("_opt_")));
+      if (isFlowLimitError(message)) showLimitNotice(message);
     }
   };
   const addAccount = () => {
@@ -3146,6 +3167,43 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   }}
                 >
                   {confirmAction.confirmLabel}
+                </button>
+              </footer>
+            </section>
+          </div>
+        )}
+        {limitNotice && (
+          <div
+            className="flow-preview-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setLimitNotice(null);
+            }}
+          >
+            <section
+              className="flow-confirm-dialog"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="flow-limit-title"
+              aria-describedby="flow-limit-body"
+            >
+              <header>
+                <strong id="flow-limit-title">{limitNotice.title}</strong>
+                <button type="button" onClick={() => setLimitNotice(null)} aria-label={t("Đóng", "Close")}>×</button>
+              </header>
+              <p id="flow-limit-body" style={{ whiteSpace: "pre-line" }}>{limitNotice.message}</p>
+              <footer>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLimitNotice(null);
+                    setUtilityView("accounts");
+                  }}
+                >
+                  {t("Xem tài khoản", "View accounts")}
+                </button>
+                <button type="button" className="is-primary" onClick={() => setLimitNotice(null)}>
+                  {t("Đã hiểu", "Got it")}
                 </button>
               </footer>
             </section>

@@ -165,6 +165,20 @@ export function explainFlowError(message: string): FlowExplain {
       actionEn: "Sync credits, wait for the daily/monthly reset, or use an account that still has credits.",
     };
   }
+  if (
+    code === "FLOW_QUOTA_EXHAUSTED"
+    || /FLOW_QUOTA_EXHAUSTED|hết lượt|hết hạn mức|usage limit|generation limit|daily limit|monthly limit|rate.?limit|too many requests/i.test(raw)
+  ) {
+    return {
+      code: code === "FLOW_ERROR" ? "FLOW_QUOTA_EXHAUSTED" : code,
+      titleVi: "Hết lượt tạo Flow",
+      titleEn: "Flow creation limit reached",
+      summaryVi: "Tài khoản đã hết lượt/hạn mức tạo trên Flow (không phải lỗi model).",
+      summaryEn: "This account hit Flow’s creation quota or rate limit (not a model error).",
+      actionVi: "Đợi reset lượt, đổi tài khoản còn dư, hoặc giảm số lượng tạo đồng thời.",
+      actionEn: "Wait for the quota reset, switch to an account with remaining allowance, or lower concurrency.",
+    };
+  }
   if (code === "FLOW_SESSION_EXPIRED" || code === "FLOW_LOGIN_REQUIRED") {
     return {
       code,
@@ -257,5 +271,34 @@ export function formatFlowExplain(
     title: t(explain.titleVi, explain.titleEn),
     summary: t(explain.summaryVi, explain.summaryEn),
     action: t(explain.actionVi, explain.actionEn),
+  };
+}
+
+/** True when Flow blocked create due to credits or creation quota/rate limit. */
+export function isFlowLimitError(raw: string | null | undefined): boolean {
+  const text = String(raw || "");
+  if (!text.trim()) return false;
+  const explained = explainFlowError(text);
+  if (explained.code === "FLOW_CREDITS_EMPTY" || explained.code === "FLOW_QUOTA_EXHAUSTED") {
+    return true;
+  }
+  return /insufficient credits|not enough credits|out of credits|hết tín dụng|hết lượt|hết hạn mức|usage limit|generation limit|daily limit|monthly limit|quota|rate.?limit|too many requests/i.test(text);
+}
+
+/** Title + body for the Flow limit alert popup (VI/EN via ``t``). */
+export function flowLimitPopupCopy(
+  raw: string | null | undefined,
+  t: LocaleFn,
+): { title: string; message: string } {
+  const explained = explainFlowError(String(raw || "FLOW_CREDITS_EMPTY"));
+  const formatted = formatFlowExplain(
+    explained.code === "FLOW_QUOTA_EXHAUSTED" || explained.code === "FLOW_CREDITS_EMPTY"
+      ? explained
+      : explainFlowError("FLOW_CREDITS_EMPTY"),
+    t,
+  );
+  return {
+    title: formatted.title,
+    message: `${formatted.summary}\n\n${formatted.action}`,
   };
 }
