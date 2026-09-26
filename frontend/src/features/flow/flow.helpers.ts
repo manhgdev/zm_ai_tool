@@ -35,9 +35,9 @@ export const FLOW_VIDEO_DOWNLOAD_QUALITIES = ["720p", "1080p", "4K"] as const;
 /** Download menu options available for a Flow account plan (video only). */
 export function flowVideoDownloadQualities(plan: string | undefined | null): string[] {
   const normalized = String(plan || "Free").trim();
-  // Free cannot create video in-app; keep 720p only as a safe fallback.
   if (normalized === "Ultra") return ["720p", "1080p", "4K"];
   if (normalized === "Pro" || /^plus$/i.test(normalized)) return ["720p", "1080p"];
+  // Free still generates video with credits; base download menu is 720p.
   return ["720p"];
 }
 

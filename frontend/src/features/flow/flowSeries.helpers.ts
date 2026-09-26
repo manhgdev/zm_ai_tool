@@ -21,7 +21,7 @@ export type SeriesGenSettings = {
   concurrency?: string
 }
 export type FlowSeriesAccount = {
-  id: string; label: string; status: string; plan?: 'Ultra' | 'Pro' | 'Free'
+  id: string; label: string; status: string; plan?: 'Ultra' | 'Pro' | 'Plus' | 'Free'
   capabilityCatalog?: FlowCapabilityCatalog | null
   capabilityStatus?: 'verified' | 'stale' | 'unknown'
 }

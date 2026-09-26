@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/flow", tags=["flow"])
 class AccountIn(BaseModel):
     label: str = Field(min_length=1, max_length=80)
     email: str = Field(default="", max_length=160)
-    plan: str = Field(default="Free", pattern="^(Pro|Ultra|Free)$")
+    plan: str = Field(default="Free", pattern="^(Pro|Plus|Ultra|Free)$")
     projectId: str = Field(default="", max_length=160)
     isDefault: bool = False
 

@@ -50,6 +50,7 @@ class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def test_plan_detection_uses_flow_tier_sku_and_service_tier(self):
         self.assertEqual(_detect_plan(SimpleNamespace(tier='PAYGATE_TIER_TWO', sku='labs_ultra_monthly')), 'Ultra')
         self.assertEqual(_detect_plan(SimpleNamespace(tier='PAYGATE_TIER_ONE', sku='labs_pro_monthly')), 'Pro')
+        self.assertEqual(_detect_plan(SimpleNamespace(tier='', sku='labs_plus_monthly')), 'Plus')
         self.assertEqual(_detect_plan(SimpleNamespace(tier='tier_0', sku='standard')), 'Free')
         self.assertIsNone(_detect_plan(SimpleNamespace(tier='', sku='', service_tier='mystery')))
 

@@ -259,7 +259,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const [accountDraft, setAccountDraft] = useState<{
     label: string;
     email: string;
-    plan: "Ultra" | "Pro" | "Free";
+    plan: "Ultra" | "Pro" | "Plus" | "Free";
   }>({
     label: "",
     email: "",
@@ -684,7 +684,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const accountPlan = displayedAccount?.plan ?? "Free";
   const imageResolutionOptions =
     accountPlan === "Ultra" ? ["1K", "2K", "4K"]
-    : accountPlan === "Pro"  ? ["1K", "2K"]
+    : accountPlan === "Pro" || accountPlan === "Plus" ? ["1K", "2K"]
     : ["1K"];
   const videoDownloadQualityOptions = flowVideoDownloadQualities(accountPlan);
   const resolutionOptions = capabilityModel?.resolutions.length
@@ -874,10 +874,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         return;
       }
     }
-    if (createKind === "video" && account.planStatus === "verified" && account.plan === "Free") {
+    if (account.credits != null && account.credits <= 0) {
       const message = t(
-        "Tài khoản gói thường chỉ hỗ trợ tạo ảnh. Vui lòng chuyển sang loại 'Ảnh' hoặc chọn tài khoản Pro/Ultra.",
-        "Free accounts only support image generation. Please switch to 'Image' or select a Pro/Ultra account.",
+        "Hết tín dụng — không tạo được ảnh/video. Đồng bộ lại hoặc đợi tín dụng reset.",
+        "Out of credits — cannot create images/videos. Sync again or wait for credits to reset.",
       );
       setApiError(message);
       toast.warning(message);
@@ -1676,8 +1676,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               Flow (Veo 3)
               <small>
                 {t(
-                  "Tạo ảnh và video bằng tài khoản Google Pro/Ultra.",
-                  "Create images and videos with Google Pro/Ultra accounts.",
+                  "Tạo ảnh và video bằng tài khoản Google Flow (Free/Plus/Pro/Ultra) còn tín dụng.",
+                  "Create images and videos with Google Flow accounts (Free/Plus/Pro/Ultra) that still have credits.",
                 )}
               </small>
             </span>
@@ -1700,8 +1700,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 <h2>{t("Tài khoản Google Flow", "Google Flow accounts")}</h2>
                 <p>
                   {t(
-                    "Quản lý Chrome profile và phiên đăng nhập riêng cho từng tài khoản Pro/Ultra.",
-                    "Manage a separate Chrome profile and login session for each Pro/Ultra account.",
+                    "Quản lý Chrome profile và phiên đăng nhập riêng cho từng tài khoản Flow.",
+                    "Manage a separate Chrome profile and login session for each Flow account.",
                   )}
                 </p>
               </div>
@@ -1805,7 +1805,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   className={account.isDefault ? "is-default" : ""}
                 >
                   <div className="flow-account-head">
-                    <span>{account.plan === "Free" || account.plan === "Pro" || account.plan === "Ultra"
+                    <span>{account.plan === "Free" || account.plan === "Plus" || account.plan === "Pro" || account.plan === "Ultra"
                       ? account.plan
                       : t("Chưa xác minh", "Unverified")}</span>
                     <mark className={account.status}>
@@ -2196,9 +2196,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     : t("Nâng cao", "Advanced")}
                 </button>
               </div>
-              {createKind === "video" && selectedFlowAccount(accounts, settings.account)?.plan === "Free" && (
+              {selectedFlowAccount(accounts, settings.account)?.credits != null
+                && (selectedFlowAccount(accounts, settings.account)?.credits ?? 0) <= 0 && (
                 <div style={{ padding: "8px 12px", background: "rgba(234, 179, 8, 0.12)", borderRadius: "6px", color: "var(--color-warning, #eab308)", fontSize: "12px", marginBottom: "8px" }}>
-                  ⚠️ {t("Tài khoản gói thường chỉ hỗ trợ tạo ảnh (Nano Banana 2). Để tạo video cần gói Pro hoặc Ultra.", "Free accounts only support image generation (Nano Banana 2). Video requires a Pro or Ultra plan.")}
+                  ⚠️ {t(
+                    "Hết tín dụng — không tạo được ảnh/video cho đến khi có tín dụng lại.",
+                    "Out of credits — cannot create images/videos until credits return.",
+                  )}
                 </div>
               )}
               <div className="flow-settings-grid">

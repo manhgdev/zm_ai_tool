@@ -154,6 +154,17 @@ export function explainFlowError(message: string): FlowExplain {
       actionEn: "Retry (recovery may pick up media if Flow finished later).",
     };
   }
+  if (code === "FLOW_CREDITS_EMPTY" || /FLOW_CREDITS_EMPTY|hết tín dụng|out of flow credits/i.test(raw)) {
+    return {
+      code: code === "FLOW_ERROR" ? "FLOW_CREDITS_EMPTY" : code,
+      titleVi: "Hết tín dụng Flow",
+      titleEn: "Out of Flow credits",
+      summaryVi: "Tài khoản không còn tín dụng — Free/Plus/Pro/Ultra đều cần credits để tạo ảnh hoặc video.",
+      summaryEn: "This account has no credits left — Free/Plus/Pro/Ultra all need credits to create images or videos.",
+      actionVi: "Đồng bộ credits, đợi reset hàng ngày/tháng, hoặc dùng tài khoản còn dư tín dụng.",
+      actionEn: "Sync credits, wait for the daily/monthly reset, or use an account that still has credits.",
+    };
+  }
   if (code === "FLOW_SESSION_EXPIRED" || code === "FLOW_LOGIN_REQUIRED") {
     return {
       code,
@@ -172,8 +183,8 @@ export function explainFlowError(message: string): FlowExplain {
       titleEn: "Model unavailable on this account",
       summaryVi: raw.replace(/^FLOW_MODEL_UNAVAILABLE:\s*/i, "") || "Model không nằm trong danh sách UI Flow của gói này.",
       summaryEn: raw.replace(/^FLOW_MODEL_UNAVAILABLE:\s*/i, "") || "The model is not in this plan’s Flow UI list.",
-      actionVi: "Đồng bộ tài khoản và chọn model còn hiện trên gói Free/Pro/Ultra.",
-      actionEn: "Sync the account and pick a model still shown for Free/Pro/Ultra.",
+      actionVi: "Đồng bộ tài khoản và chọn model còn hiện trên gói Free/Plus/Pro/Ultra.",
+      actionEn: "Sync the account and pick a model still shown for Free/Plus/Pro/Ultra.",
     };
   }
   if (code === "FLOW_UI_TIMEOUT") {

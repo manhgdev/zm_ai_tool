@@ -57,7 +57,7 @@ export type FlowCapabilityCatalog = {
 export type FlowAccount = {
   id: string;
   label: string;
-  plan: "Ultra" | "Pro" | "Free";
+  plan: "Ultra" | "Pro" | "Plus" | "Free";
   email: string;
   status: "online" | "reconnect" | "connecting";
   credits: number | null;

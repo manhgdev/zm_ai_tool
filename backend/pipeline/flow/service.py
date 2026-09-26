@@ -237,7 +237,7 @@ def _captured_image_items(response: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _detect_plan(credit_info: Any) -> str | None:
-    """Map Flow's Credits object to 'Pro' or 'Ultra'.
+    """Map Flow's Credits object to Free / Plus / Pro / Ultra.
 
     Google Flow exposes ``userPaygateTier`` (e.g. PAYGATE_TIER_ONE/TWO)
     and ``sku`` (e.g. labs_pro_monthly, labs_ultra_monthly).  We try both
@@ -250,11 +250,16 @@ def _detect_plan(credit_info: Any) -> str | None:
     combined = re.sub(r"[^a-z0-9]+", "_", f"{tier} {sku} {service_tier}")
     if "ultra" in combined or "tier_two" in combined or "tier_2" in combined:
         return "Ultra"
+    if "plus" in combined:
+        return "Plus"
     if "pro" in combined or "tier_one" in combined or "tier_1" in combined:
         return "Pro"
     if "tier_0" in combined or "tier_3" in combined or "free" in combined or "standard" in combined:
         return "Free"
     return None
+
+
+_FLOW_PLANS = frozenset({"Free", "Plus", "Pro", "Ultra"})
 
 
 
@@ -1312,7 +1317,7 @@ class FlowService:
             if "FLOW_SESSION_EXPIRED" in message or _session_needs_login(exc):
                 raise ValueError(f"FLOW_SESSION_EXPIRED: {message}") from exc
             raise ValueError(f"FLOW_PLAN_SYNC_FAILED: {message}") from exc
-        if refreshed.get("planStatus") != "verified" or refreshed.get("plan") not in {"Free", "Pro", "Ultra"}:
+        if refreshed.get("planStatus") != "verified" or refreshed.get("plan") not in _FLOW_PLANS:
             raise ValueError("FLOW_PLAN_UNKNOWN: Không xác định được gói Flow; hãy đồng bộ lại")
         return refreshed
 
@@ -1837,11 +1842,13 @@ class FlowService:
         # user from seeing/cancelling the complete batch. The worker verifies
         # the account immediately before submitting each job.
         account = store.get_row("accounts", account_id) or {}
-        if account.get("plan") == "Free":
-            if kind == "video":
-                raise ValueError("Tài khoản gói thường chỉ hỗ trợ tạo ảnh (Free accounts only support image generation)")
-            if settings.get("model") == "Nano Banana Pro":
-                settings["model"] = "Nano Banana 2"
+        # Free/Plus/Pro/Ultra all spend credits for video+image; only block when
+        # the synced balance is known and empty. Plan no longer gates create kind.
+        credits = account.get("credits")
+        if isinstance(credits, (int, float)) and int(credits) <= 0:
+            raise ValueError("FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)")
+        if account.get("plan") == "Free" and kind == "image" and settings.get("model") == "Nano Banana Pro":
+            settings["model"] = "Nano Banana 2"
 
         settings, _ = _normalize_catalog_settings(account, kind, settings)
 
@@ -1972,8 +1979,9 @@ class FlowService:
             if job_id in self._cancelled:
                 return
             verified_account = self._verify_account_plan_before_enqueue(account_id)
-            if verified_account.get("plan") == "Free" and job.get("kind") == "video":
-                raise ValueError("Tài khoản gói thường chỉ hỗ trợ tạo ảnh (Free accounts only support image generation)")
+            credits = verified_account.get("credits")
+            if isinstance(credits, (int, float)) and int(credits) <= 0:
+                raise ValueError("FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)")
             for auth_attempt in range(2):
                 runtime_profile: Path | None = None
                 try:
