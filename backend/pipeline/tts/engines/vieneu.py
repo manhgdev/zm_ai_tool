@@ -875,8 +875,14 @@ def synthesize(
         style = "tu_nhien"
 
     infer_kwargs: dict[str, Any] = {"style": style}
+    # zmAI / clone: speaker emb only + non-stream infer (VieNeu babble retry is on
+    # infer(), not infer_stream — studio always passes on_progress+cancel_check).
     if kind == "reference":
-        infer_kwargs["voice"] = _encoded_reference(client, name)
+        encoded = dict(_encoded_reference(client, name))
+        encoded["codes"] = None
+        infer_kwargs["voice"] = encoded
+        infer_kwargs["use_ref_codes"] = False
+        use_stream = False
     elif kind == "clone":
         entry = next((x for x in voice_store.load_cloned() if x.get("id") == name), None)
         ref = entry.get("ref") if entry else None
@@ -884,11 +890,15 @@ def synthesize(
         if ref_path and ref_path.is_file():
             _register_clone(client, name, ref_path)
         infer_kwargs["voice"] = name
+        infer_kwargs["use_ref_codes"] = False
+        use_stream = False
     else:
         infer_kwargs["voice"] = name
+        use_stream = bool(cancel_check or on_progress)
 
-    # Stream path when we need cancel checks and/or real progress ticks.
-    use_stream = bool(cancel_check or on_progress)
+    if cancel_check and cancel_check():
+        raise RuntimeError("Job đã hủy")
+
     if use_stream:
         import numpy as np
 
@@ -913,12 +923,22 @@ def synthesize(
             raise RuntimeError("Job đã hủy")
         audio = np.concatenate(chunks) if chunks else np.array([], dtype=np.float32)
     else:
+        if on_progress:
+            on_progress(0.2)
         try:
             audio = client.infer(text, **infer_kwargs)
         except Exception:
             if kind != "clone" or not ref_path:
                 raise
-            audio = client.infer(text, ref_audio=str(ref_path), denoise=False, style=style)
+            audio = client.infer(
+                text,
+                ref_audio=str(ref_path),
+                denoise=False,
+                style=style,
+                use_ref_codes=False,
+            )
+        if on_progress:
+            on_progress(0.95)
 
     try:
         client.save(audio, str(out_wav))

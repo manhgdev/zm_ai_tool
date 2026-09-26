@@ -202,7 +202,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
         model: savedModel === "Veo 3.1 - Lite [Lower Priority]" ? "Veo 3.1 - Fast" : savedModel,
         ratio: String(s.ratio || "16:9"),
         duration: String(s.duration || "8"),
-        resolution: String(s.resolution || "1K"),
+        resolution: String(s.resolution || (raw.kind === "image" ? "1K" : "")),
         outputDir: String(s.outputDir || "flow"),
       },
     };

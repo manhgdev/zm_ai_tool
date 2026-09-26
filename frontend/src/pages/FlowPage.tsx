@@ -112,9 +112,18 @@ function applyAccountCapabilities(
   const duration = kind === "video" && selected.durations.length && !selected.durations.includes(current.duration)
     ? selected.defaultDuration || selected.durations[0]
     : current.duration;
-  const resolution = selected.resolutions.length && !selected.resolutions.includes(current.resolution.toLowerCase())
-    ? selected.defaultResolution || selected.resolutions[0]
-    : current.resolution;
+  const modelResolutions = kind === "video"
+    ? selected.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
+    : selected.resolutions;
+  const resolution = modelResolutions.length
+    ? (modelResolutions.includes(current.resolution) || modelResolutions.includes(current.resolution.toLowerCase())
+      ? current.resolution
+      : selected.defaultResolution && modelResolutions.includes(selected.defaultResolution)
+        ? selected.defaultResolution
+        : modelResolutions[0])
+    : kind === "video" && /^[1-9]\d{0,1}k$/i.test(current.resolution)
+      ? ""
+      : current.resolution;
   const next = {
     ...settingsWithSelectedModel(current, kind, selected.name),
     [ratioKey]: ratio,
@@ -656,7 +665,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     : accountPlan === "Pro"  ? ["1K", "2K"]
     : ["1K"];
   const resolutionOptions = capabilityModel?.resolutions.length
-    ? capabilityModel.resolutions
+    ? (createKind === "video"
+      ? capabilityModel.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
+      : capabilityModel.resolutions)
     : createKind === "image" ? imageResolutionOptions : [];
   const retryAccount = accounts.find((account) => account.id === retryTarget?.accountId);
   const retryCapabilities = retryTarget ? accountCapabilityModels(retryAccount, retryTarget.job.kind) : [];
@@ -889,10 +900,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       effectiveSettings = {
         ...effectiveSettings,
         ratio: createKind === "image" ? effectiveSettings.imageRatio : effectiveSettings.ratio,
-        // Normalize resolution: if current value not valid for this kind/plan, use first valid option
-        resolution: resolutionOptions.length && !resolutionOptions.includes(effectiveSettings.resolution)
-          ? resolutionOptions[0]
-          : effectiveSettings.resolution,
+        // Veo has no resolution tabs — never send leftover image tiers (1K/2K/4K).
+        // Omni/catalog video uses 720p-style options only.
+        resolution: resolutionOptions.length
+          ? (resolutionOptions.includes(effectiveSettings.resolution)
+            ? effectiveSettings.resolution
+            : resolutionOptions[0])
+          : createKind === "video" ? "" : effectiveSettings.resolution,
       };
 
       if (createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
@@ -959,7 +973,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           model: effectiveSettings.model || (createKind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"),
           ratio: effectiveSettings.ratio || "16:9",
           duration: String(effectiveSettings.duration || "8"),
-          resolution: effectiveSettings.resolution || "1K",
+          resolution: effectiveSettings.resolution || (createKind === "image" ? "1K" : ""),
           outputDir: effectiveSettings.outputDir || "flow",
         },
       }));
@@ -1087,6 +1101,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     // Batch "Chạy lại tất cả": mặc định chỉ lỗi/hủy; bật checkbox mới kèm job hoàn thành.
     // Nếu pool toàn done (Tạo mới) hoặc single job → giữ nguyên danh sách.
     const initialJobs = showIncludeDone ? retryOnlyJobs : retryJobs;
+    const onlineAccounts = accounts.filter((account) => account.status === "online");
+    const resolvedAccountId = onlineAccounts.some((account) => account.id === job.accountId)
+      ? job.accountId
+      : accounts.find((account) => account.id === job.accountId)?.id
+        || accounts.find((account) => account.label === job.account)?.id
+        || onlineAccounts[0]?.id
+        || accounts[0]?.id
+        || "";
     setRetryTarget({
       job: initialJobs[0] || job,
       jobs: initialJobs,
@@ -1096,7 +1118,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       model: job.settings.model,
       ratio: job.settings.ratio,
       concurrency: String(job.settings.concurrency || settings.concurrency),
-      accountId: job.accountId || accounts.find((account) => account.label === job.account)?.id || "",
+      accountId: resolvedAccountId,
     });
   };
   const retryJob = (id: string) => {
@@ -1106,6 +1128,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const confirmRetryJob = () => {
     if (!retryTarget) return;
     const { jobs: retryJobs, model, ratio, concurrency, accountId } = retryTarget;
+    if (!accountId || !accounts.some((account) => account.id === accountId)) {
+      toast.error(t("Chọn tài khoản Flow còn online để chạy lại.", "Pick an online Flow account to retry."));
+      return;
+    }
     setRetryTarget(null);
     void Promise.all(retryJobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
@@ -2193,14 +2219,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       disabled={durationOptions.length < 2}
                       suffix={t(" giây", " sec")}
                     />
-                    <FlowSelect
-                      label={t("Độ phân giải", "Resolution")}
-                      value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
-                      onChange={(resolution) =>
-                        setSettings((current) => ({ ...current, resolution }))
-                      }
-                      options={resolutionOptions}
-                    />
+                    {resolutionOptions.length > 0 ? (
+                      <FlowSelect
+                        label={t("Độ phân giải", "Resolution")}
+                        value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
+                        onChange={(resolution) =>
+                          setSettings((current) => ({ ...current, resolution }))
+                        }
+                        options={resolutionOptions}
+                      />
+                    ) : null}
                   </>
                 ) : (
                   <>
@@ -2989,7 +3017,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               </div>
               <footer>
                 <button type="button" onClick={() => setRetryTarget(null)}>{t("Quay lại", "Go back")}</button>
-                <button type="button" className="is-primary" onClick={confirmRetryJob} disabled={!retryTarget.jobs.length}>{retryActionLabel(retryTarget.jobs)}</button>
+                <button type="button" className="is-primary" onClick={confirmRetryJob} disabled={!retryTarget.jobs.length || !retryTarget.accountId}>{retryActionLabel(retryTarget.jobs)}</button>
               </footer>
             </section>
           </div>

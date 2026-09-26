@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 
@@ -73,8 +74,8 @@ def app_output_root() -> Path:
 
     1. outputRoot saved in ui_preferences.json (user picked once via Settings)
     2. ZM_AI_TOOL_OUTPUT_ROOT env var (set by launcher per platform:
-       Windows = portable state root/output, macOS = ~/Downloads/ZM_AI_TOOL)
-    3. Hard fallback: ~/Downloads/ZM_AI_TOOL
+       Windows = ~/Documents/ZM_AI_TOOL, macOS/Linux = ~/Downloads/ZM_AI_TOOL)
+    3. Hard fallback: same platform defaults as (2)
     """
     from .ui_preferences import load_output_root  # ponytail: lazy to avoid circular at import
     saved = load_output_root()
@@ -89,7 +90,10 @@ def app_output_root() -> Path:
             return ensure_writable_output_root(Path(env))
         except OSError:
             pass
-    folder = Path.home() / "Downloads" / APP_OUTPUT_ROOT_NAME
+    if sys.platform == "win32":
+        folder = Path.home() / "Documents" / APP_OUTPUT_ROOT_NAME
+    else:
+        folder = Path.home() / "Downloads" / APP_OUTPUT_ROOT_NAME
     return ensure_writable_output_root(folder)
 
 
@@ -103,7 +107,7 @@ def downloads_folder(tab: str) -> Path:
 
 
 def selected_or_default(tab: str, selected: str = "") -> Path:
-    """Honor an explicit desktop choice; otherwise use the shared Downloads tree."""
+    """Honor an explicit desktop choice; otherwise use the shared app output tree."""
     raw = selected.strip()
     folder = Path(raw).expanduser() if raw else downloads_folder(tab)
     if raw and not folder.is_absolute():

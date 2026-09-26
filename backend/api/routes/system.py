@@ -1787,6 +1787,131 @@ def _apple_script_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _macos_finder_selection_paths() -> list[str]:
+    """POSIX paths for the current Finder selection (used to recover drop paths)."""
+    script = (
+        'tell application "Finder"\n'
+        '  if (count of selection) is 0 then return ""\n'
+        '  set out to ""\n'
+        '  repeat with f in (selection as list)\n'
+        '    try\n'
+        '      set out to out & (POSIX path of (f as alias)) & linefeed\n'
+        '    end try\n'
+        '  end repeat\n'
+        '  return out\n'
+        'end tell'
+    )
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=8,
+    )
+    if result.returncode:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _macos_drag_pasteboard_paths() -> list[str]:
+    """File paths on the active drag pasteboard (available while dragging from Finder)."""
+    # AppleScriptObjC must run as a program (stdin); -e rejects `use framework`.
+    script = """
+use framework "AppKit"
+use scripting additions
+set pb to current application's NSPasteboard's pasteboardWithName:(current application's NSPasteboardNameDrag)
+set opts to current application's NSDictionary's dictionaryWithObject:(current application's NSNumber's numberWithBool:true) forKey:(current application's NSPasteboardURLReadingFileURLsOnlyKey)
+set theURLs to pb's readObjectsForClasses:{(current application's NSURL)} options:opts
+if theURLs is missing value then return ""
+if (count of theURLs) is 0 then return ""
+set out to ""
+repeat with u in theURLs
+  try
+    set out to out & ((u's |path|() as text) & linefeed)
+  end try
+end repeat
+return out
+"""
+    result = subprocess.run(
+        ["osascript"],
+        input=script,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=8,
+    )
+    if result.returncode:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _macos_active_drop_paths() -> list[str]:
+    """Prefer live drag pasteboard, then Finder selection."""
+    return _macos_drag_pasteboard_paths() or _macos_finder_selection_paths()
+
+
+def match_drop_paths(
+    selected: list[str],
+    names: list[str],
+    *,
+    prefer_dir: bool = False,
+) -> str:
+    """Pick one absolute path from Finder/Explorer selection for a browser drop."""
+    paths = [str(Path(p)).strip() for p in selected if str(p).strip()]
+    if not paths:
+        return ""
+    want = {Path(str(n)).name.lower() for n in names if str(n).strip()}
+    matched = [p for p in paths if Path(p).name.lower() in want] if want else list(paths)
+    if not matched:
+        matched = list(paths)
+    if prefer_dir:
+        for path in matched:
+            candidate = Path(path)
+            if candidate.is_dir():
+                return str(candidate)
+            if candidate.is_file() and candidate.parent.is_dir():
+                return str(candidate.parent)
+        return ""
+    for path in matched:
+        if Path(path).is_file() or Path(path).is_dir():
+            return str(Path(path))
+    return matched[0] if matched else ""
+
+
+class ResolveDropPathsIn(BaseModel):
+    names: list[str] = []
+    preferDir: bool = False
+    hints: list[str] = []
+
+
+@router.post("/api/system/peek-drop-paths")
+def api_peek_drop_paths():
+    """Snapshot paths while a Finder drag is active (call from dragover in the browser)."""
+    paths: list[str] = []
+    if sys.platform == "darwin":
+        paths = _macos_active_drop_paths()
+    return {"ok": bool(paths), "paths": paths}
+
+
+@router.post("/api/system/resolve-drop-paths")
+def api_resolve_drop_paths(body: ResolveDropPathsIn):
+    """Recover absolute paths after a Chrome/Safari Finder drop (JS cannot read file://)."""
+    selected: list[str] = []
+    if sys.platform == "darwin":
+        selected = _macos_active_drop_paths()
+    if not selected and body.hints:
+        selected = [str(p).strip() for p in body.hints if str(p).strip()]
+    path = match_drop_paths(selected, body.names, prefer_dir=body.preferDir)
+    return {
+        "ok": bool(path),
+        "path": path,
+        "isDir": bool(path) and Path(path).is_dir(),
+        "paths": selected,
+    }
+
+
 def _pick_folder(title: str) -> str:
     if os.name == "nt":
         return _windows_native_dialog(

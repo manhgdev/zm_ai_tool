@@ -60,7 +60,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
       model: saved.model || 'Veo 3.1 - Fast',
       ratio: saved.ratio || '16:9',
       duration: saved.duration || '8',
-      resolution: saved.resolution || '1K',
+      resolution: /^\d{3,4}p$/i.test(String(saved.resolution || '')) ? saved.resolution : '',
       concurrency: saved.concurrency || '3',
     }
   })
@@ -94,9 +94,8 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const selectedVideoCapability = videoSection?.models.find((item) => item.name === seriesSettings.model)
   const seriesRatioOptions = selectedVideoCapability?.ratios.length ? selectedVideoCapability.ratios : ['16:9', '9:16']
   const seriesDurationOptions = selectedVideoCapability?.durations.length ? selectedVideoCapability.durations : [seriesSettings.duration || '8']
-  const seriesResolutionOptions = selectedVideoCapability?.resolutions.length
-    ? selectedVideoCapability.resolutions
-    : [seriesSettings.resolution || '1K']
+  const seriesResolutionOptions = (selectedVideoCapability?.resolutions || [])
+    .filter((value) => /^\d{3,4}p$/i.test(value))
 
   useEffect(() => {
     if (!videoSection?.models.length) return
@@ -106,11 +105,12 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
         || videoSection.models[0]
       const ratio = selectedModel.ratios.includes(current.ratio) ? current.ratio : selectedModel.defaultRatio || selectedModel.ratios[0] || current.ratio
       const duration = selectedModel.durations.includes(current.duration) ? current.duration : selectedModel.defaultDuration || selectedModel.durations[0] || current.duration
-      const resolution = selectedModel.resolutions.length
-        ? (selectedModel.resolutions.includes(current.resolution) ? current.resolution : selectedModel.defaultResolution || selectedModel.resolutions[0] || current.resolution)
-        : current.resolution
-      if (selectedModel.name === current.model && ratio === current.ratio && duration === current.duration && resolution === current.resolution) return current
-      return { ...current, model: selectedModel.name, ratio, duration, resolution }
+      const resolution = selectedModel.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
+      const nextResolution = resolution.length
+        ? (resolution.includes(current.resolution) ? current.resolution : selectedModel.defaultResolution && resolution.includes(selectedModel.defaultResolution) ? selectedModel.defaultResolution : resolution[0])
+        : (/^[1-9]\d{0,1}k$/i.test(current.resolution) ? '' : current.resolution)
+      if (selectedModel.name === current.model && ratio === current.ratio && duration === current.duration && nextResolution === current.resolution) return current
+      return { ...current, model: selectedModel.name, ratio, duration, resolution: nextResolution }
     })
     if (imageSection?.models.length && !imageSection.models.some((item) => item.name === imageModel)) {
       setImageModel(imageSection.defaultModel || imageSection.models[0].name)
@@ -783,6 +783,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           {seriesDurationOptions.map((duration) => <option key={duration} value={duration}>{duration}s</option>)}
                         </select>
                       </div>
+                      {seriesResolutionOptions.length > 0 ? (
                       <div className="fsp-auto-field fsp-field-xs">
                         <label>{t('Độ phân giải', 'Resolution')}</label>
                         <select
@@ -794,6 +795,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           {seriesResolutionOptions.map((resolution) => <option key={resolution} value={resolution}>{resolution}</option>)}
                         </select>
                       </div>
+                      ) : null}
                       <div className="fsp-auto-field fsp-field-xs">
                         <label>{t('Luồng', 'Threads')}</label>
                         <select

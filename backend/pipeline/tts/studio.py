@@ -56,7 +56,7 @@ def _job_fingerprint(
 
     raw = "|".join(
         [
-            "v7",  # blank-line always splits parts; stronger trimSilence
+            "v9",  # zmAI/clone: infer()+no ref_codes (babble guard; read only typed text)
             (text or "").strip(),
             (srt_text or "").strip(),
             (voice or "").strip(),

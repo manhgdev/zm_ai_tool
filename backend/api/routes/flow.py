@@ -526,7 +526,10 @@ def jobs_cancel(job_id: str):
 @router.post("/jobs/{job_id}/retry")
 def jobs_retry(job_id: str, body: RetryIn | None = None):
     payload = body.model_dump() if body else {}
-    job = service.retry(job_id, payload)
+    try:
+        job = service.retry(job_id, payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not job:
         raise HTTPException(404, "Flow job not found")
     return job

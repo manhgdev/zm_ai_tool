@@ -124,6 +124,42 @@ class PortableLayoutTest(unittest.TestCase):
             ):
                 self.assertEqual(output_paths.app_output_root(), fallback)
 
+    def test_output_root_hard_fallback_is_documents_on_windows(self) -> None:
+        from pipeline.core import output_paths
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            docs = root / "Documents" / "ZM_AI_TOOL"
+            with patch(
+                "pipeline.core.ui_preferences.load_output_root", return_value=None
+            ), patch.dict(os.environ, {}, clear=False), patch.object(
+                output_paths.sys, "platform", "win32"
+            ), patch.object(output_paths.Path, "home", return_value=root), patch.object(
+                output_paths,
+                "ensure_writable_output_root",
+                side_effect=lambda folder: folder,
+            ):
+                os.environ.pop("ZM_AI_TOOL_OUTPUT_ROOT", None)
+                self.assertEqual(output_paths.app_output_root(), docs)
+
+    def test_output_root_hard_fallback_is_downloads_off_windows(self) -> None:
+        from pipeline.core import output_paths
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            downloads = root / "Downloads" / "ZM_AI_TOOL"
+            with patch(
+                "pipeline.core.ui_preferences.load_output_root", return_value=None
+            ), patch.object(output_paths.sys, "platform", "darwin"), patch.object(
+                output_paths.Path, "home", return_value=root
+            ), patch.object(
+                output_paths,
+                "ensure_writable_output_root",
+                side_effect=lambda folder: folder,
+            ):
+                os.environ.pop("ZM_AI_TOOL_OUTPUT_ROOT", None)
+                self.assertEqual(output_paths.app_output_root(), downloads)
+
     def test_broken_runtime_is_rebuilt_as_relocatable(self) -> None:
         from pipeline.core.system_check import install
 

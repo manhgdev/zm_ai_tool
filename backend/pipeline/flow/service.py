@@ -244,6 +244,12 @@ def _catalog_section(account: dict[str, Any], kind: str) -> dict[str, Any]:
     return section if isinstance(section, dict) else {}
 
 
+def _video_ui_resolution(value: Any) -> str:
+    """Flow video tabs use 720p/1080p; image plan tiers (1K/2K/4K) are not selectable."""
+    text = str(value or "").strip()
+    return text if re.fullmatch(r"\d{3,4}p", text, re.I) else ""
+
+
 def _normalize_catalog_settings(
     account: dict[str, Any], kind: str, settings: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
@@ -251,7 +257,14 @@ def _normalize_catalog_settings(
     section = _catalog_section(account, kind)
     models = [item for item in section.get("models", []) if isinstance(item, dict) and item.get("name")]
     if not models:
-        return dict(settings), False
+        normalized = dict(settings)
+        # Shared UI settings default to image tiers; strip them from video jobs
+        # even when the account catalog has not been verified yet.
+        if kind == "video" and not _video_ui_resolution(normalized.get("resolution")):
+            if str(normalized.get("resolution") or "").strip():
+                normalized["resolution"] = ""
+            return normalized, normalized != settings
+        return normalized, False
     requested = str(settings.get("model") or "")
     selected = next((item for item in models if item["name"] == requested), None)
     if selected is None:
@@ -268,9 +281,16 @@ def _normalize_catalog_settings(
     if kind == "video" and durations and str(normalized.get("duration") or "") not in durations:
         normalized["duration"] = str(selected.get("defaultDuration") or durations[0])
     resolutions = [str(value).lower() for value in selected.get("resolutions", []) if str(value)]
+    if kind == "video":
+        resolutions = [value for value in resolutions if _video_ui_resolution(value)]
     requested_resolution = str(normalized.get("resolution") or "").lower()
     if resolutions and requested_resolution not in resolutions:
-        normalized["resolution"] = str(selected.get("defaultResolution") or resolutions[0])
+        fallback = str(selected.get("defaultResolution") or resolutions[0])
+        normalized["resolution"] = (
+            _video_ui_resolution(fallback) if kind == "video" else fallback
+        ) or resolutions[0]
+    elif kind == "video" and requested_resolution and not _video_ui_resolution(requested_resolution):
+        normalized["resolution"] = ""
     return normalized, normalized != settings
 
 
@@ -2363,18 +2383,21 @@ class FlowService:
                 _log.info("_prepare_ui_format: duration %s control is hidden; using Flow model default", duration_label)
 
         if resolution:
-            resolution_value = str(resolution).strip().lower()
-            if not re.fullmatch(r"\d{3,4}p", resolution_value):
-                raise RuntimeError(f"FLOW_SETTING_MISMATCH: invalid resolution {resolution!r}")
-            resolution_tab = await visible_tab(re.compile(rf"(?<!\d){re.escape(resolution_value)}(?!\w)", re.I))
-            if resolution_tab is None:
-                _log.info("_prepare_ui_format: resolution %s control is hidden; using Flow model default", resolution_value)
-                return
-            if not await _flow_control_is_selected(resolution_tab):
-                await resolution_tab.click(force=True)
-                await asyncio.sleep(0.3)
-            if not await _flow_control_is_selected(resolution_tab):
-                raise RuntimeError(f"FLOW_SETTING_MISMATCH: resolution {resolution_value} was not selected")
+            resolution_value = _video_ui_resolution(resolution).lower()
+            if not resolution_value:
+                # Shared settings often keep image plan labels (1K/2K/4K). Veo has
+                # no resolution tabs — ignore instead of FLOW_SETTING_MISMATCH.
+                _log.info("_prepare_ui_format: ignoring non-video resolution %r", resolution)
+            else:
+                resolution_tab = await visible_tab(re.compile(rf"(?<!\d){re.escape(resolution_value)}(?!\w)", re.I))
+                if resolution_tab is None:
+                    _log.info("_prepare_ui_format: resolution %s control is hidden; using Flow model default", resolution_value)
+                    return
+                if not await _flow_control_is_selected(resolution_tab):
+                    await resolution_tab.click(force=True)
+                    await asyncio.sleep(0.3)
+                if not await _flow_control_is_selected(resolution_tab):
+                    raise RuntimeError(f"FLOW_SETTING_MISMATCH: resolution {resolution_value} was not selected")
 
     async def _click_flow_submit(self, page) -> None:
         """Click the submit control used by the current Flow project page.
@@ -3062,7 +3085,7 @@ class FlowService:
                     page,
                     ratio,
                     str(settings.get("duration") or "8"),
-                    str(settings.get("resolution") or ""),
+                    _video_ui_resolution(settings.get("resolution")) or None,
                 )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
                 baseline_media = await self._project_media_elements(page)
@@ -3377,11 +3400,17 @@ class FlowService:
         settings = dict(existing.get("settings") or {})
         settings.update({key: value for key, value in dict(overrides.get("settings") or {}).items() if value not in (None, "")})
         account = store.get_row("accounts", account_id) or {}
+        if not account:
+            # Stale/placeholder ids (e.g. leaked test "account") — fall back to an online account.
+            online = [row for row in store.list_rows("accounts") if row.get("status") == "online" and row.get("id")]
+            fallback = next((row for row in online if row.get("isDefault")), None) or (online[0] if online else None)
+            if not fallback:
+                raise ValueError("Flow account not found")
+            account = fallback
+            account_id = str(fallback["id"])
         settings, _ = _normalize_catalog_settings(account, str(existing.get("kind") or "video"), settings)
         if existing.get("kind") == "video" and not _catalog_section(account, "video"):
             settings["model"] = _normalize_video_model(settings.get("model"))
-        if account_id and not account:
-            raise ValueError("Flow account not found")
         with self._account_condition:
             last_error_signature = str(existing.get("lastFlowErrorSignature") or "")
             if last_error_signature:

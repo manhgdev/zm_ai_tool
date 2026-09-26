@@ -234,7 +234,7 @@ if _previous_homes:
 else:
     os.environ.pop("ZM_AI_TOOL_PREVIOUS_HOME", None)
 set_desktop_path("ZM_AI_TOOL_DATA", home / "data")
-# PUBLIC_DATA (project temp files) sits inside data/ — one tree, easy backup.
+# PUBLIC_DATA (project temp files) sits inside data/ � one tree, easy backup.
 set_desktop_path("ZM_AI_TOOL_PUBLIC_DATA", home / "data" / "public")
 set_desktop_path("CAPCUT_DEVICE_JSON", home / "data" / "capcut_device.json")
 set_desktop_path("UV_PYTHON_INSTALL_DIR", home / "data" / ".python-runtime")
@@ -243,14 +243,15 @@ if sys.platform == "win32":
     os.environ["UV_CACHE_DIR"] = str(home / "data" / "cache" / "uv")
     os.environ["HF_HOME"] = str(home / "data" / "cache" / "hf")
     os.environ["TORCH_HOME"] = str(home / "data" / "cache" / "torch")
-# OUTPUT_ROOT: Windows portable defaults to PORTABLE_ROOT/output; macOS to ~/Downloads/ZM_AI_TOOL.
-# ui_preferences.json can override this once via /api/config/output-root.
+# OUTPUT_ROOT: Windows ? ~/Documents/ZM_AI_TOOL; macOS/Linux ? ~/Downloads/ZM_AI_TOOL.
+# ui_preferences.json can override this once via Settings.
 _default_output = (
-    str(home / "output") if sys.platform == "win32"
+    str(Path.home() / "Documents" / "ZM_AI_TOOL")
+    if sys.platform == "win32"
     else str(Path.home() / "Downloads" / "ZM_AI_TOOL")
 )
 set_desktop_path("ZM_AI_TOOL_OUTPUT_ROOT", _default_output)
-# httpx parse NO_PROXY IPv6 trần ``::1`` thành port ``:1`` → Whisper/HF crash.
+# httpx parse NO_PROXY IPv6 tr?n ``::1`` th�nh port ``:1`` ? Whisper/HF crash.
 _broken_np = {"::1", "::1/128", "[::1]", "[::1]/128"}
 for _np in ("NO_PROXY", "no_proxy"):
     _raw = os.environ.get(_np)
@@ -258,19 +259,19 @@ for _np in ("NO_PROXY", "no_proxy"):
         os.environ[_np] = ",".join(
             p.strip() for p in _raw.split(",") if p.strip() not in _broken_np
         )
-# Ưu tiên GPU (CUDA/MPS); giới hạn thread CPU phụ — tránh đơ máy
+# ?u ti�n GPU (CUDA/MPS); gi?i h?n thread CPU ph? � tr�nh ?? m�y
 os.environ.setdefault("VIENEU_BACKEND", "auto")
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("MKL_NUM_THREADS", "2")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "2")
-# Tắt async FFmpeg frame decoding — tránh "Assertion fctx->async_lock failed"
-# (libavcodec/pthread_frame.c:173) khi VideoCapture mở video với multi-thread decoder.
-# Không có env var này: cv2 dùng thread_type=FRAME theo mặc định → assertion abort().
+# T?t async FFmpeg frame decoding � tr�nh "Assertion fctx->async_lock failed"
+# (libavcodec/pthread_frame.c:173) khi VideoCapture m? video v?i multi-thread decoder.
+# Kh�ng c� env var n�y: cv2 d�ng thread_type=FRAME theo m?c ??nh ? assertion abort().
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "threads;1")
-# Windows: KHÔNG dùng MSMF vì MSMF tự động chèn viền đen (letterboxing) hoặc bóp méo 
-# khung hình video dọc làm lệch tọa độ Bbox của OCR.
-# Sử dụng FFmpeg với threads=1 đã khắc phục được lỗi pthread_frame.c.
+# Windows: KH�NG d�ng MSMF v� MSMF t? ??ng ch�n vi?n ?en (letterboxing) ho?c b�p m�o 
+# khung h�nh video d?c l�m l?ch t?a ?? Bbox c?a OCR.
+# S? d?ng FFmpeg v?i threads=1 ?� kh?c ph?c ???c l?i pthread_frame.c.
 if sys.platform == "win32":
     os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_MSMF", "0")
     os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_FFMPEG", "100")
@@ -282,8 +283,8 @@ def _unsigned_exit(code: int) -> int:
 def _crash_report(exit_code: int) -> str:
     u = _unsigned_exit(exit_code)
     lines: list[str] = [
-        f"{APP_DISPLAY_NAME} đã thoát bất thường.",
-        f"Mã: {exit_code} (0x{u:08X})",
+        f"{APP_DISPLAY_NAME} ?� tho�t b?t th??ng.",
+        f"M�: {exit_code} (0x{u:08X})",
         f"Log: {home / 'app.log'}",
         "",
     ]
@@ -291,16 +292,16 @@ def _crash_report(exit_code: int) -> str:
     try:
         if log.is_file():
             tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
-            lines.extend(tail if tail else ["(app.log trống)"])
+            lines.extend(tail if tail else ["(app.log tr?ng)"])
         else:
-            lines.append("(chưa có app.log)")
+            lines.append("(ch?a c� app.log)")
     except OSError as e:
-        lines.append(f"(không đọc được app.log: {e})")
+        lines.append(f"(kh�ng ??c ???c app.log: {e})")
     return "\n".join(lines)
 
 
 def show_copyable_crash(exit_code: int) -> None:
-    """Popup lỗi copy được — không để APP tắt im lặng sau native crash."""
+    """Popup l?i copy ???c � kh�ng ?? APP t?t im l?ng sau native crash."""
     body = _crash_report(exit_code)
     crash_file = home / "last_crash.txt"
     try:
@@ -312,12 +313,12 @@ def show_copyable_crash(exit_code: int) -> None:
         from tkinter.scrolledtext import ScrolledText
 
         root = tk.Tk()
-        root.title(f"{APP_DISPLAY_NAME} — lỗi (copy gửi để sửa)")
+        root.title(f"{APP_DISPLAY_NAME} � l?i (copy g?i ?? s?a)")
         root.geometry("720x480")
         root.attributes("-topmost", True)
         hint = tk.Label(
             root,
-            text="APP đã thoát bất thường. Copy toàn bộ nội dung dưới gửi để sửa.",
+            text="APP ?� tho�t b?t th??ng. Copy to�n b? n?i dung d??i g?i ?? s?a.",
             wraplength=680,
             justify="left",
         )
@@ -332,13 +333,13 @@ def show_copyable_crash(exit_code: int) -> None:
             text = box.get("1.0", "end-1c")
             root.clipboard_clear()
             root.clipboard_append(text)
-            btn.configure(text="Đã chép")
+            btn.configure(text="?� ch�p")
 
         bar = tk.Frame(root)
         bar.pack(fill="x", padx=10, pady=(0, 10))
-        btn = tk.Button(bar, text="Chép lỗi", command=copy_all)
+        btn = tk.Button(bar, text="Ch�p l?i", command=copy_all)
         btn.pack(side="left")
-        tk.Button(bar, text="Đóng", command=root.destroy).pack(side="right")
+        tk.Button(bar, text="?�ng", command=root.destroy).pack(side="right")
         root.mainloop()
         return
     except Exception:
@@ -352,9 +353,9 @@ def show_copyable_crash(exit_code: int) -> None:
 
             ctypes.windll.user32.MessageBoxW(
                 0,
-                f"APP đã thoát bất thường (0x{_unsigned_exit(exit_code):08X}).\n"
-                f"Notepad đang mở log để copy:\n{crash_file}",
-                f"{APP_DISPLAY_NAME} — lỗi",
+                f"APP ?� tho�t b?t th??ng (0x{_unsigned_exit(exit_code):08X}).\n"
+                f"Notepad ?ang m? log ?? copy:\n{crash_file}",
+                f"{APP_DISPLAY_NAME} � l?i",
                 0x10 | 0x40000,
             )
             return
@@ -395,8 +396,8 @@ try:
 except Exception:
     pass
 
-# Runtime pack được kích hoạt qua runtime/current.json; .venv-runtime chỉ là
-# fallback tương thích cho bản cũ trong lúc migration.
+# Runtime pack ???c k�ch ho?t qua runtime/current.json; .venv-runtime ch? l�
+# fallback t??ng th�ch cho b?n c? trong l�c migration.
 try:
     from pipeline.core.runtime_active import active_runtime_dir, runtime_site as _active_runtime_site
 
@@ -410,7 +411,7 @@ except Exception:
         else runtime_venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
     )
 
-# Mở log ngay — trước mọi import nặng để crash lúc khởi động luôn được ghi.
+# M? log ngay � tr??c m?i import n?ng ?? crash l�c kh?i ??ng lu�n ???c ghi.
 if getattr(sys, "frozen", False):
     _log_path = home / "app.log"
     _runtime_log = _log_path.open("a", encoding="utf-8", buffering=1)
@@ -421,14 +422,14 @@ if getattr(sys, "frozen", False):
             else "read-only portable folder"
         )
         _runtime_log.write(
-            f"[windows] Dùng dữ liệu người dùng ({_layout_reason}) / "
+            f"[windows] D�ng d? li?u ng??i d�ng ({_layout_reason}) / "
             f"Using per-user data ({_layout_reason}): {home}\n"
         )
     if sys.stdout is None:
         sys.stdout = _runtime_log
     if sys.stderr is None:
         sys.stderr = _runtime_log
-    # Luôn tee stderr vào log kể cả khi stdout/stderr đã có (child process)
+    # Lu�n tee stderr v�o log k? c? khi stdout/stderr ?� c� (child process)
     import io as _io
 
     class _Tee(_io.TextIOBase):
@@ -454,8 +455,8 @@ if getattr(sys, "frozen", False):
 
 if runtime_site.is_dir():
     sys.path.insert(0, str(runtime_site))
-    # Không nhét nvidia/torch CUDA vào PATH của ZM AI TOOL.exe (WebView2).
-    # GPU chạy trong worker .venv-runtime — python.exe đó tự load CUDA DLL.
+    # Kh�ng nh�t nvidia/torch CUDA v�o PATH c?a ZM AI TOOL.exe (WebView2).
+    # GPU ch?y trong worker .venv-runtime � python.exe ?� t? load CUDA DLL.
     if getattr(sys, "frozen", False):
         try:
             from pipeline.core.runtime_site import (
@@ -475,7 +476,7 @@ ocr_site = (
     else ocr_venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
 )
 if ocr_site.is_dir():
-    # Không nạp CUDA/ORT vào process cửa sổ. GPU OCR/TTS/Whisper = worker .venv-runtime.
+    # Kh�ng n?p CUDA/ORT v�o process c?a s?. GPU OCR/TTS/Whisper = worker .venv-runtime.
     def _path_ok(p: str) -> bool:
         n = p.replace("\\", "/").rstrip("/").lower()
         if n.endswith("/cv2"):
@@ -510,8 +511,8 @@ try:
 except Exception:
     os.environ["PATH"] = os.pathsep.join((str(bundle), os.environ.get("PATH", "")))
 
-# Chocolatey ShimGen copy vào _internal trỏ `..\lib\ffmpeg\...` → exit 4294967295.
-# Đưa thư mục ffmpeg thật (ngoài bundle) lên trước để bare `ffmpeg` không dính shim.
+# Chocolatey ShimGen copy v�o _internal tr? `..\lib\ffmpeg\...` ? exit 4294967295.
+# ??a th? m?c ffmpeg th?t (ngo�i bundle) l�n tr??c ?? bare `ffmpeg` kh�ng d�nh shim.
 if sys.platform == "win32":
     _ff_bundled = bundle / "ffmpeg.exe"
     _ff_ok = False
@@ -541,8 +542,8 @@ if sys.platform == "win32":
                     os.environ["PATH"] = os.pathsep.join((str(_cand.parent), os.environ["PATH"]))
                 break
 
-# Seed giọng zmAI đi kèm; không ghi đè giọng hoặc metadata người dùng đã sửa.
-# ponytail: kiểm tra mtime — không copy nếu target mới hơn source (tránh chậm startup mỗi lần).
+# Seed gi?ng zmAI ?i k�m; kh�ng ghi ?� gi?ng ho?c metadata ng??i d�ng ?� s?a.
+# ponytail: ki?m tra mtime � kh�ng copy n?u target m?i h?n source (tr�nh ch?m startup m?i l?n).
 bundled_voice_refs = bundle / "resources" / "voice-ref"
 user_voice_refs = home / "resources" / "voice-ref"
 if bundled_voice_refs.is_dir():
@@ -551,17 +552,17 @@ if bundled_voice_refs.is_dir():
         if not source.is_file():
             continue
         target = user_voice_refs / source.name
-        # ONEFILE giải nén lại mỗi lần chạy → mtime nguồn LUÔN mới hơn, so mtime
-        # sẽ ghi đè file người dùng đã sửa. Chỉ seed khi target chưa có, hoặc
-        # nội dung khác và target chưa từng bị sửa (cùng size = bản seed cũ).
+        # ONEFILE gi?i n�n l?i m?i l?n ch?y ? mtime ngu?n LU�N m?i h?n, so mtime
+        # s? ghi ?� file ng??i d�ng ?� s?a. Ch? seed khi target ch?a c�, ho?c
+        # n?i dung kh�c v� target ch?a t?ng b? s?a (c�ng size = b?n seed c?).
         if not target.exists():
             shutil.copy2(source, target)
             (user_voice_refs / f".{source.name}.seeded").touch()
             continue
         try:
             if source.stat().st_size != target.stat().st_size:
-                # Bản bundle đổi nội dung: chỉ ghi đè khi user chưa sửa gì
-                # (đánh dấu bằng file .seeded cạnh bên).
+                # B?n bundle ??i n?i dung: ch? ghi ?� khi user ch?a s?a g�
+                # (?�nh d?u b?ng file .seeded c?nh b�n).
                 marker = user_voice_refs / f".{source.name}.seeded"
                 if marker.is_file():
                     shutil.copy2(source, target)
@@ -569,7 +570,7 @@ if bundled_voice_refs.is_dir():
         except OSError:
             pass
 
-# Ẩn cửa sổ console đen khi app GUI spawn ffmpeg / demucs / nvidia-smi
+# ?n c?a s? console ?en khi app GUI spawn ffmpeg / demucs / nvidia-smi
 if sys.platform == "win32":
     try:
         import subprocess as _sp
@@ -577,8 +578,8 @@ if sys.platform == "win32":
         _no_win = int(getattr(_sp, "CREATE_NO_WINDOW", 0x08000000))
         _OrigPopen = _sp.Popen
 
-        # Resolve ffmpeg/ffprobe → absolute path trong bundle để tránh
-        # trailing-space PATH trên Windows ('ffprobe ' → exit 4294967295).
+        # Resolve ffmpeg/ffprobe ? absolute path trong bundle ?? tr�nh
+        # trailing-space PATH tr�n Windows ('ffprobe ' ? exit 4294967295).
         _BUNDLED_BINS: dict[str, str] = {}
         _meipass = getattr(sys, "_MEIPASS", None)
         if _meipass:
@@ -586,7 +587,7 @@ if sys.platform == "win32":
                 _cand = os.path.join(_meipass, f"{_name}.exe")
                 if not os.path.isfile(_cand):
                     continue
-                # Bỏ Chocolatey shim (~400KB) — copy vào _internal thì gãy.
+                # B? Chocolatey shim (~400KB) � copy v�o _internal th� g�y.
                 if _name in ("ffmpeg", "ffprobe"):
                     try:
                         if os.path.getsize(_cand) < 2_000_000:
@@ -604,7 +605,7 @@ if sys.platform == "win32":
                 args = a[0] if a else kw.get("args")
                 if args is not None and isinstance(args, (list, tuple)) and args:
                     exe = str(args[0]).strip()
-                    # Nếu chỉ là bare name (không có path separator), resolve từ bundle
+                    # N?u ch? l� bare name (kh�ng c� path separator), resolve t? bundle
                     if os.sep not in exe and "/" not in exe:
                         resolved = _BUNDLED_BINS.get(exe) or _BUNDLED_BINS.get(exe.lower())
                         if resolved:
@@ -700,7 +701,7 @@ def wait_for_parent_exit(pid: int) -> None:
 
 
 def centered_xy(width: int, height: int) -> tuple[int, int]:
-    """Góc trên-trái để cửa sổ nằm giữa màn hình chính."""
+    """G�c tr�n-tr�i ?? c?a s? n?m gi?a m�n h�nh ch�nh."""
     sw, sh = 1920, 1080
     try:
         if sys.platform == "win32":
@@ -748,10 +749,45 @@ def mark_update_ready(*_args: object) -> None:
     raw = os.environ.get("ZM_AI_TOOL_UPDATE_READY_FILE", "").strip()
     if not raw:
         return
-    # ponytail: env var is set by launcher/CI only — no untrusted input, no path guard needed.
+    # ponytail: env var is set by launcher/CI only � no untrusted input, no path guard needed.
     try:
         Path(raw).write_text(APP_VERSION, encoding="utf-8")
     except OSError:
+        traceback.print_exc()
+
+
+def bind_desktop_events(window: object) -> None:
+    """Forward native file drops with full paths to the React form."""
+    mark_update_ready()
+    try:
+        from webview.dom import DOMEventHandler, _dnd_state
+
+        from siv_drop import resolve_siv_drop_path, siv_drop_kind, take_dnd_path
+
+        def on_drop(event: dict) -> None:
+            kind = siv_drop_kind(event.get("target") or {})
+            if kind not in {"media", "audio", "timeline", "srt"}:
+                # Event target attrs may be missing; React sets __zmSivDropKind on dragenter.
+                try:
+                    kind = str(window.evaluate_js("window.__zmSivDropKind||''") or "").strip()
+                except Exception:
+                    kind = ""
+            if kind not in {"media", "audio", "timeline", "srt"}:
+                return
+            files = (event.get("dataTransfer") or {}).get("files") or []
+            raw = take_dnd_path(files, _dnd_state.setdefault("paths", []))
+            path = resolve_siv_drop_path(kind, raw)
+            if not path:
+                return
+            payload = json.dumps({"kind": kind, "path": path}, ensure_ascii=False)
+            window.run_js(
+                "window.__zmSivDropKind=undefined;"
+                f"window.dispatchEvent(new CustomEvent('zm-native-drop', {{detail: {payload}}}))"
+            )
+
+        window.dom.document.events.drop += DOMEventHandler(on_drop, True, True)
+    except Exception:
+        # Older pywebview builds still keep manual entry and native pickers working.
         traceback.print_exc()
 
 
@@ -784,17 +820,17 @@ def run_desktop() -> int:
     )
     thread.start()
     _t0 = time.monotonic()
-    print(f"{APP_DISPLAY_NAME} v{APP_VERSION} — chờ API...", flush=True)
+    print(f"{APP_DISPLAY_NAME} v{APP_VERSION} � ch? API...", flush=True)
     try:
         if not wait_for_server(port):
-            print(f"[desktop] API không khởi được sau {time.monotonic()-_t0:.1f}s", flush=True)
-            # Giữ cửa sổ thông báo thay vì im lặng exit
+            print(f"[desktop] API kh�ng kh?i ???c sau {time.monotonic()-_t0:.1f}s", flush=True)
+            # Gi? c?a s? th�ng b�o thay v� im l?ng exit
             try:
                 webview.create_window(
                     f"{APP_DISPLAY_NAME} v{APP_VERSION}",
                     html=(
                         "<html><body style='font-family:sans-serif;padding:2rem'>"
-                        f"<h2>Không mở được API / API failed to start</h2><p>{base}</p>"
+                        f"<h2>Kh�ng m? ???c API / API failed to start</h2><p>{base}</p>"
                         f"<p>Log: {html.escape(str(home / 'app.log'))}</p>"
                         "</body></html>"
                     ),
@@ -806,7 +842,7 @@ def run_desktop() -> int:
             except Exception:
                 traceback.print_exc()
             return 1
-        print(f"[desktop] API sẵn sàng sau {time.monotonic()-_t0:.1f}s tại {base}", flush=True)
+        print(f"[desktop] API s?n s�ng sau {time.monotonic()-_t0:.1f}s t?i {base}", flush=True)
         win_w, win_h = 1440, 900
         x, y = centered_xy(win_w, win_h)
         icon = None
@@ -832,7 +868,7 @@ def run_desktop() -> int:
                 **win_kw,
             )
         except TypeError:
-            # pywebview cũ có thể không hỗ trợ icon= hoặc text_select=.
+            # pywebview c? c� th? kh�ng h? tr? icon= ho?c text_select=.
             win_kw.pop("icon", None)
             win_kw.pop("text_select", None)
             window = webview.create_window(
@@ -856,20 +892,20 @@ def run_desktop() -> int:
             register_restore_callback(_restore_desktop_window)
         except Exception:
             traceback.print_exc()
-        # webview.start() chặn đến khi user đóng cửa sổ — không thoát vì lỗi job nền
+        # webview.start() ch?n ??n khi user ?�ng c?a s? � kh�ng tho�t v� l?i job n?n
         try:
-            webview.start(mark_update_ready, gui="edgechromium", debug=False)
+            webview.start(bind_desktop_events, window, gui="edgechromium", debug=False)
         except Exception:
             try:
-                webview.start(mark_update_ready, debug=False)
+                webview.start(bind_desktop_events, window, debug=False)
             except Exception:
                 traceback.print_exc()
                 msg = (
-                    "Không mở được cửa sổ: Windows đang chặn file tải xuống (MOTW) "
-                    "hoặc thiếu .NET/WebView2. Hãy giải nén toàn bộ ZIP vào thư mục có quyền ghi "
-                    "và chọn Properties → Unblock cho file ZIP. / Window startup failed: Windows "
+                    "Kh�ng m? ???c c?a s?: Windows ?ang ch?n file t?i xu?ng (MOTW) "
+                    "ho?c thi?u .NET/WebView2. H�y gi?i n�n to�n b? ZIP v�o th? m?c c� quy?n ghi "
+                    "v� ch?n Properties ? Unblock cho file ZIP. / Window startup failed: Windows "
                     "blocked downloaded files (MOTW), or .NET/WebView2 is missing. Extract the full "
-                    "ZIP to a writable folder and select Properties → Unblock on the ZIP file."
+                    "ZIP to a writable folder and select Properties ? Unblock on the ZIP file."
                 )
                 print(f"[desktop] {msg}", flush=True)
                 try:
@@ -901,7 +937,7 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except BaseException:
-        # Mọi lỗi khởi động: ghi log, không silent die
+        # M?i l?i kh?i ??ng: ghi log, kh�ng silent die
         traceback.print_exc()
         try:
             (home / "app.log").open("a", encoding="utf-8").write(

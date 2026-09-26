@@ -60,6 +60,10 @@ class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "duration 6s was not found"):
             await FlowService()._prepare_ui_format(_DurationPage(), "16:9", "6")
 
+    async def test_image_plan_resolution_is_ignored_for_video_format(self):
+        # Shared settings often keep 1K/2K/4K; Veo has no such tabs.
+        await FlowService()._prepare_ui_format(_DurationPage(), "16:9", "8", "1K")
+
     def test_done_requires_non_empty_files(self):
         with self.subTest("missing"):
             self.assertFalse(FlowService._outputs_exist(['/tmp/flow-missing-output.png']))

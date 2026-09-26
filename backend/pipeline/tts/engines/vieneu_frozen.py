@@ -145,7 +145,11 @@ def main():
                 client.add_voice(voice, clone_ref, denoise=False, save=False)
                 clone_loaded.add(voice)
             out_wav.parent.mkdir(parents=True, exist_ok=True)
-            audio = client.infer(text, voice=voice, style=style)
+            # zmAI/clone: drop in-context ref codes so short text does not continue the sample.
+            infer_kw = {"voice": voice, "style": style}
+            if clone_ref:
+                infer_kw["use_ref_codes"] = False
+            audio = client.infer(text, **infer_kw)
             client.save(audio, str(out_wav))
             _out({"ok": True, "backend": str(getattr(client, "backend", backend))})
         except Exception:

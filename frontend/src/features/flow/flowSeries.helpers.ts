@@ -103,7 +103,7 @@ export function readSeriesSettings(): SeriesGenSettings {
       return {
         accountId: '', model: flow.model === 'Veo 3.1 - Lite [Lower Priority]' ? 'Veo 3.1 - Fast' : flow.model || 'Veo 3.1 - Fast',
         ratio: flow.ratio || '16:9', duration: flow.duration || '8',
-        resolution: flow.resolution || '1K', concurrency: flow.concurrency || '8',
+        resolution: /^\d{3,4}p$/i.test(String(flow.resolution || '')) ? String(flow.resolution) : '', concurrency: flow.concurrency || '8',
       }
     }
   } catch {}
