@@ -192,6 +192,15 @@ def _video_download_quality(settings: dict[str, Any] | None, plan: str | None = 
     return preferred if preferred in allowed else allowed[-1]
 
 
+def _video_download_menu_labels(preferred: str) -> list[str]:
+    """Flow menu texts that deliver the requested tier — no silent downgrade."""
+    if preferred == "4K":
+        return ["4K Upscaled", "4K"]
+    if preferred == "1080p":
+        return ["1080p Upscaled", "1080p"]
+    return ["720p"]
+
+
 def _video_media_ready(media: dict[str, Any] | None) -> bool:
     """True when Flow has finished the clip (status and/or download URL).
 
@@ -2951,8 +2960,9 @@ class FlowService:
         output: Path,
         quality: str,
     ) -> None:
-        """Open Flow's download menu and pick 720p / 1080p (upscaled when offered)."""
+        """Open Flow's download menu and pick the exact requested tier (real file)."""
         preferred = _video_download_quality({"quality": quality})
+        labels = _video_download_menu_labels(preferred)
         output.parent.mkdir(parents=True, exist_ok=True)
         tile = page.locator("flow-grid-tile-container").nth(tile_index)
         thumb = tile.locator(".thumbnail").first
@@ -2964,20 +2974,15 @@ class FlowService:
         ).first
         await dl_btn.click()
         await asyncio.sleep(0.8)
-        if preferred == "4K":
-            labels = ["4K", "4K Upscaled", "1080p Upscaled", "1080p", "Upscaled", "720p"]
-        elif preferred == "1080p":
-            labels = ["1080p", "1080p Upscaled", "Upscaled", "720p"]
-        else:
-            labels = ["720p", "1080p", "1080p Upscaled"]
         last_error: Exception | None = None
         for label in labels:
-            item = page.locator(f'[role="menuitem"]:has-text("{label}")').first
+            # exact=True so "1080p" does not match a different tier item by accident.
+            item = page.get_by_role("menuitem", name=label, exact=True)
             try:
                 if await item.count() == 0:
                     continue
-                async with page.expect_download(timeout=45_000) as dl_info:
-                    await item.click()
+                async with page.expect_download(timeout=120_000) as dl_info:
+                    await item.first.click()
                 dl = await dl_info.value
                 await dl.save_as(str(output))
                 await page.keyboard.press("Escape")
@@ -2990,13 +2995,73 @@ class FlowService:
                 except Exception:
                     pass
                 await asyncio.sleep(0.3)
+                # Re-open menu for the next label attempt.
+                try:
+                    await dl_btn.click()
+                    await asyncio.sleep(0.6)
+                except Exception:
+                    pass
         try:
             await page.keyboard.press("Escape")
         except Exception:
             pass
         if last_error is not None:
             raise last_error
-        raise RuntimeError(f"FLOW_UI_CHANGED: download menu missing {preferred}")
+        raise RuntimeError(
+            f"FLOW_DOWNLOAD_QUALITY_UNAVAILABLE: menu has no {preferred} "
+            f"(tried {', '.join(labels)})"
+        )
+
+    async def _download_upscaled_video_api(
+        self,
+        api,
+        media_id: str,
+        output: Path,
+        *,
+        settings: dict[str, Any] | None,
+        preferred: str,
+        job_id: str,
+    ) -> None:
+        """Real Flow upsample API (1080p free). Used when the download menu fails."""
+        from ._flow._api import (
+            VIDEO_AR_LANDSCAPE,
+            VIDEO_AR_PORTRAIT,
+            VIDEO_RES_1080P,
+        )
+
+        if preferred != "1080p":
+            raise RuntimeError(
+                f"FLOW_DOWNLOAD_QUALITY_UNAVAILABLE: API upsample only covers 1080p, not {preferred}"
+            )
+        if not media_id or str(media_id).startswith("dom-video:"):
+            raise RuntimeError("FLOW_DOWNLOAD_QUALITY_UNAVAILABLE: no media id for upsample")
+        try:
+            data = await api.get_project_data()
+        except Exception as exc:
+            raise RuntimeError(f"FLOW_UPSCALE_PROJECT_MISSING: {exc}") from exc
+        workflow_id = ""
+        for media in data.get("projectContents", {}).get("media", []):
+            if str((media or {}).get("name") or "") == str(media_id):
+                workflow_id = str(media.get("workflowId") or "")
+                break
+        if not workflow_id:
+            raise RuntimeError("FLOW_UPSCALE_WORKFLOW_MISSING: video has no workflowId")
+        ratio = str((settings or {}).get("ratio") or "16:9")
+        aspect = VIDEO_AR_PORTRAIT if ratio in {"9:16", "3:4", "2:3"} else VIDEO_AR_LANDSCAPE
+        _up_job, status = await api.upscale_and_wait(
+            media_id,
+            workflow_id,
+            timeout_s=300,
+            resolution=VIDEO_RES_1080P,
+            aspect_ratio=aspect,
+            on_poll=lambda _s, elapsed: store.patch_row(
+                "jobs", job_id, {"progress": min(95, 90 + int(elapsed / 60)), "updatedAt": time.time()}
+            ),
+        )
+        url = status.fife_url or await self._resolve_video_fife_url(api, _up_job.media_name)
+        if not url:
+            raise RuntimeError(f"FLOW_DOWNLOAD_URL_MISSING: upsampled {_up_job.media_name}")
+        await api.download(url, output)
 
     async def _wait_and_download_flow_videos(
         self,
@@ -3497,31 +3562,44 @@ class FlowService:
                             self._check_cancel(job_id)
                             out = self._output_path(job, idx, "mp4")
                             store.patch_row("jobs", job_id, {"stage": "downloading", "progress": 90, "updatedAt": time.time()})
-                            # Prefer Flow download menu so 720p/1080p matches user setting
-                            # (fifeUrl alone is often a single preset and skips Upscaled 1080p).
+                            # Prefer Flow download menu so 720p/1080p/4K is the real file
+                            # Flow serves for that tier (fifeUrl alone is often base 720p).
                             try:
                                 await self._download_video_via_flow_menu(page, idx - 1, out, download_quality)
                                 return str(out)
                             except Exception as menu_exc:
-                                _log.debug("flow menu download failed (%s); trying direct URL", menu_exc)
-                            direct = await self._resolve_video_fife_url(api, media_id)
-                            if direct and download_quality == "720p":
-                                await api.download(direct, out)
+                                _log.debug("flow menu download failed (%s); trying quality-safe fallback", menu_exc)
+                            if download_quality == "720p":
+                                direct = await self._resolve_video_fife_url(api, media_id)
+                                if direct:
+                                    await api.download(direct, out)
+                                    return str(out)
+                                if str(media_id).startswith("dom-video:"):
+                                    raise RuntimeError("FLOW_UI_CHANGED: video tile has no downloadable media id")
+                                remote_job = VideoJob.__new__(VideoJob)
+                                remote_job.media_name = media_id
+                                remote_job.project_id = account["projectId"]
+                                status = await api.wait_for_video(
+                                    remote_job, timeout_s=900,
+                                    on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 30 + int(elapsed / 12)), "updatedAt": time.time()}),
+                                )
+                                url = status.fife_url or await self._resolve_video_fife_url(api, media_id)
+                                if not url:
+                                    raise RuntimeError(f"FLOW_DOWNLOAD_URL_MISSING: {media_id}")
+                                await api.download(url, out)
                                 return str(out)
-                            if str(media_id).startswith("dom-video:"):
-                                raise RuntimeError("FLOW_UI_CHANGED: video tile has no downloadable media id")
-                            remote_job = VideoJob.__new__(VideoJob)
-                            remote_job.media_name = media_id
-                            remote_job.project_id = account["projectId"]
-                            status = await api.wait_for_video(
-                                remote_job, timeout_s=900,
-                                on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 30 + int(elapsed / 12)), "updatedAt": time.time()}),
+                            if download_quality == "1080p":
+                                await self._download_upscaled_video_api(
+                                    api, media_id, out,
+                                    settings=settings if isinstance(settings, dict) else {},
+                                    preferred=download_quality,
+                                    job_id=job_id,
+                                )
+                                return str(out)
+                            raise RuntimeError(
+                                f"FLOW_DOWNLOAD_QUALITY_UNAVAILABLE: could not download real {download_quality} "
+                                f"(refusing base 720p fifeUrl). menu={menu_exc}"
                             )
-                            url = status.fife_url or await self._resolve_video_fife_url(api, media_id)
-                            if not url:
-                                raise RuntimeError(f"FLOW_DOWNLOAD_URL_MISSING: {media_id}")
-                            await api.download(url, out)
-                            return str(out)
                         outputs = []
                         for i, mid in enumerate(media_ids[:count], 1):
                             outputs.append(await _wait_and_dl_video(mid, i))
