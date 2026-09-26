@@ -1,5 +1,6 @@
 /** Panel «Nhập nội dung» của dashboard TTS: tab văn bản / SRT / TXT / clipboard. */
 import { useRef, type Dispatch, type SetStateAction } from 'react'
+import { localize, useLocale } from '@/app/i18n'
 import { IconFile, IconList, IconPaste } from './TtsIcons'
 
 type Props = {
@@ -36,6 +37,8 @@ export default function TtsInputPanel({
   onClearSrt,
   onPasteClipboard,
 }: Props) {
+  const { locale } = useLocale()
+  const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
   const fileRef = useRef<HTMLInputElement>(null)
   const srtRef = useRef<HTMLInputElement>(null)
   return (
@@ -152,7 +155,10 @@ export default function TtsInputPanel({
             </button>
           </div>
           <p style={{ margin: '6px 0 0', fontSize: '0.72rem', color: 'var(--tts-muted)' }}>
-            Hệ thống tự động tách văn bản thành các câu hợp lý.
+            {t(
+              'Dòng trống luôn tách đoạn. “Tự động tách câu” thêm bước cắt theo . ! ?',
+              'Blank lines always split paragraphs. “Auto-split sentences” also cuts on . ! ?',
+            )}
           </p>
         </>
       )}

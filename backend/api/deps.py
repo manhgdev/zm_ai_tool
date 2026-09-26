@@ -242,6 +242,8 @@ class StudioSynthIn(BaseModel):
     keepTimeline: bool = False
     autoSplit: bool = False
     gapMs: int = 0
+    normalize: bool = False
+    trimSilence: bool = False
     title: str = ""
     outputDir: str = ""
     outputFormat: str = "wav48"

@@ -48,13 +48,15 @@ def _job_fingerprint(
     keep_timeline: bool,
     auto_split: bool,
     gap_ms: int,
+    normalize: bool = False,
+    trim_silence: bool = False,
 ) -> str:
     """Same voice + text + settings → reuse job (không tạo lịch sử trùng)."""
     import hashlib
 
     raw = "|".join(
         [
-            "v5",  # exact SRT cue timeline, neutral input speed
+            "v7",  # blank-line always splits parts; stronger trimSilence
             (text or "").strip(),
             (srt_text or "").strip(),
             (voice or "").strip(),
@@ -68,6 +70,8 @@ def _job_fingerprint(
             "1" if keep_timeline else "0",
             "1" if auto_split else "0",
             str(int(gap_ms or 0)),
+            "1" if normalize else "0",
+            "1" if trim_silence else "0",
         ]
     )
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
@@ -336,6 +340,14 @@ def _concat_wavs(parts: list[Path], out: Path, gap_ms: int = 0) -> float:
     return ffprobe_duration(out)
 
 
+def _postprocess_part(path: Path, *, trim: bool, normalize: bool) -> None:
+    """Apply Studio advanced audio options to one synthesized part."""
+    if trim:
+        audio_utils.trim_silence(path)
+    if normalize:
+        audio_utils.normalize_loudness(path)
+
+
 def synth_text_job(
     *,
     text: str,
@@ -349,6 +361,8 @@ def synth_text_job(
     title: str = "",
     auto_split: bool = True,
     gap_ms: int = 0,
+    normalize: bool = False,
+    trim_silence: bool = False,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     ensure_vieneu_dirs()
@@ -365,6 +379,8 @@ def synth_text_job(
         keep_timeline=True,
         auto_split=auto_split,
         gap_ms=gap_ms,
+        normalize=normalize,
+        trim_silence=trim_silence,
     )
     hit = _find_cached_job(fp)
     if hit:
@@ -383,12 +399,10 @@ def synth_text_job(
             set_job_context(job_id)
         except Exception:
             pass
-        # auto_split: mỗi câu 1 part TTS + 1 cue SRT (timeline = độ dài audio thật)
-        chunks = (
-            split_sentences(text, max_chars=240)
-            if auto_split
-            else [text.strip() or "."]
-        )
+        # auto_split: tách thêm theo .!? ; blank line luôn tách part riêng.
+        chunks = split_sentences(text, max_chars=240, by_sentence=bool(auto_split))
+        if not chunks:
+            chunks = [text.strip() or "."]
         total_chunks = len(chunks)
         set_job_progress(job_id, 0, total_chunks, f"Bắt đầu tạo {total_chunks} câu…")
         import concurrent.futures
@@ -448,6 +462,7 @@ def synth_text_job(
                 cancel_check=lambda: _is_cancelled(job_id),
                 on_progress=_on_progress,
             )
+            _postprocess_part(part, trim=trim_silence, normalize=normalize)
             with frac_lock:
                 chunk_frac[i] = 1.0
             _publish_frac(f"Đã xong câu {i + 1}/{total_chunks}…")
@@ -506,6 +521,8 @@ def synth_text_job(
             "volume": volume,
             "pitch": pitch,
             "autoSplit": auto_split,
+            "normalize": bool(normalize),
+            "trimSilence": bool(trim_silence),
             "cueCount": len(cues),
         }
         _write_meta(job_dir, meta)
@@ -545,6 +562,8 @@ def synth_srt_job(
     keep_timeline: bool = True,
     title: str = "",
     gap_ms: int = 0,
+    normalize: bool = False,
+    trim_silence: bool = False,
     job_id: str | None = None,
 ) -> dict[str, Any]:
     """Batch synth each SRT cue; fit duration with safe caps."""
@@ -568,6 +587,8 @@ def synth_srt_job(
         keep_timeline=keep_timeline,
         auto_split=False,
         gap_ms=gap_ms,
+        normalize=normalize,
+        trim_silence=trim_silence,
     )
     hit = _find_cached_job(fp)
     if hit:
@@ -651,6 +672,7 @@ def synth_srt_job(
                 cancel_check=lambda: _is_cancelled(job_id),
                 on_progress=_on_progress,
             )
+            _postprocess_part(part, trim=trim_silence, normalize=normalize)
             with frac_lock:
                 cue_frac[i] = 1.0
             _publish_frac(f"Đã xong đoạn SRT {i + 1}/{total_cues}…")
@@ -776,6 +798,8 @@ def synth_srt_job(
             "cueCount": len(export_cues),
             "keepTimeline": bool(keep_timeline),
             "matchDuration": match,
+            "normalize": bool(normalize),
+            "trimSilence": bool(trim_silence),
         }
         _write_meta(job_dir, meta)
         prune_history(HISTORY_MAX)

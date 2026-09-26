@@ -308,6 +308,8 @@ export const api = {
     keepTimeline?: boolean
     autoSplit?: boolean
     gapMs?: number
+    normalize?: boolean
+    trimSilence?: boolean
     title?: string
     outputDir?: string
     outputFormat?: 'wav48' | 'wav16' | 'mp3'

@@ -15,12 +15,12 @@ _SENT_END = re.compile(
 )
 
 
-def split_sentences(text: str, max_chars: int = 280) -> list[str]:
-    """Tách theo câu thật; mỗi phần = 1 cue SRT khi auto_split.
+def split_sentences(text: str, max_chars: int = 280, *, by_sentence: bool = True) -> list[str]:
+    """Tách text thành phần TTS.
 
-    - Tách sau . ! ? … khi tiếp theo là space + chữ (kể cả 2025. Tập…)
-    - Không tách 100.000 / 12.6 / 26,3
-    - Câu dài > max_chars: cắt tại khoảng trắng gần max
+    - Luôn tách theo đoạn trống (blank line) — mỗi đoạn = ít nhất 1 part.
+    - ``by_sentence`` (autoSplit): tiếp tục tách theo . ! ? … trong từng đoạn.
+    - Câu dài > max_chars: cắt tại khoảng trắng gần max.
     """
     raw = (text or "").strip()
     if not raw:
@@ -33,7 +33,9 @@ def split_sentences(text: str, max_chars: int = 280) -> list[str]:
         para = re.sub(r"[ \t\n]+", " ", para).strip()
         if not para:
             continue
-        # Đơn giản hơn: split bằng lookbehind an toàn
+        if not by_sentence:
+            sentences.append(para)
+            continue
         # 1) Tách ! ? …
         # 2) Tách . không bị kẹp giữa 2 chữ số
         parts = re.split(
@@ -61,6 +63,10 @@ def split_sentences(text: str, max_chars: int = 280) -> list[str]:
             out.append(s)
 
     # Gộp mẩu cực ngắn (< 24 ký tự) vào câu trước nếu còn chỗ
+    # (không gộp qua ranh giới đoạn — chỉ trong cùng lần tách câu)
+    if not by_sentence:
+        return out or ["."]
+
     merged: list[str] = []
     for s in out:
         if merged and len(s) < 24 and len(merged[-1]) + 1 + len(s) <= max_chars:

@@ -693,6 +693,8 @@ export default function TtsStudio({
         keepTimeline: useSrt ? keepTimeline : false,
         autoSplit: useSrt ? false : autoSplit,
         gapMs: useSrt ? 0 : gapOn ? gapMs : 0,
+        normalize,
+        trimSilence,
         title: (useSrt ? srtRaw : text).trim().slice(0, 48),
         outputDir: outputDir || '',
         outputFormat,
@@ -781,6 +783,8 @@ export default function TtsStudio({
         style,
         matchDuration: 'none',
         autoSplit: false,
+        normalize,
+        trimSilence,
         title: 'Nghe thử',
       })
       const jid = (res as { id?: string; job_id?: string }).id || requestJobId
@@ -1015,9 +1019,12 @@ export default function TtsStudio({
   }
 
   function playVoicePreview(voiceId: string, url: string) {
-    const player = new Audio(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`)
+    const stamped = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`
+    const player = new Audio(stamped)
+    voicePreviewRef.current?.pause()
     voicePreviewRef.current = player
     setPreviewingVoiceId(voiceId)
+    setError('')
     const clear = () => {
       if (voicePreviewRef.current === player) {
         voicePreviewRef.current = null
@@ -1027,11 +1034,16 @@ export default function TtsStudio({
     player.onended = clear
     player.onerror = () => {
       clear()
-      setError('Không phát được audio mẫu của giọng này')
+      setError(t('Không phát được audio mẫu của giọng này', 'Could not play this voice sample'))
     }
-    void player.play().catch(() => {
+    void player.play().catch((err: unknown) => {
       clear()
-      setError('Trình duyệt không cho phát audio mẫu')
+      const name = err && typeof err === 'object' && 'name' in err ? String((err as { name?: string }).name) : ''
+      if (name === 'NotAllowedError') {
+        setError(t('Trình duyệt không cho phát audio mẫu', 'Browser blocked sample audio playback'))
+      } else {
+        setError(t('Không phát được audio mẫu của giọng này', 'Could not play this voice sample'))
+      }
     })
   }
 
@@ -1064,6 +1076,8 @@ export default function TtsStudio({
         style,
         matchDuration: 'none',
         autoSplit: false,
+        normalize,
+        trimSilence,
         title: t(
           `Nghe thử · ${voiceDisplayName(v.id, voices, v.name)}`,
           `Preview · ${voiceDisplayName(v.id, voices, v.name)}`,

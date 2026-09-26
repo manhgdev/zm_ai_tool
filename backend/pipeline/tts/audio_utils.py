@@ -8,20 +8,41 @@ from ..core.media import ffprobe_duration
 
 
 def trim_leading_silence(wav: Path) -> float:
-    """Remove encoder/filter padding before a TTS utterance.
+    """Remove encoder/filter padding before a TTS utterance (start only)."""
+    return trim_silence(wav, trailing=False)
 
-    ``atempo`` may add a small silence prefix even after a provider already
-    normalized its response.  This runs as the final per-clip audio step so a
-    timeline cue and its first spoken phoneme share the same start time.
+
+def trim_silence(wav: Path, *, trailing: bool = True) -> float:
+    """Cut hush at the start (and optionally end / middle) of a clip.
+
+    Used by Studio's "Loại bỏ khoảng lặng thừa" and CapCut leading cleanup.
+    ``trailing=True`` also strips mid-file silence (stop_periods=-1) so pauses
+    between phrases inside one part get tightened — keep a short pad so speech
+    does not sound clipped.
     """
     if not wav.is_file():
         return 0.0
+    if trailing:
+        # stop_periods=-1 also strips mid-file hush (blank-line pauses inside one part).
+        # Tiny start/stop_silence pads avoid clipping consonant attacks.
+        af = (
+            "silenceremove="
+            "start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02:"
+            "stop_periods=-1:stop_duration=0.05:stop_threshold=-45dB:stop_silence=0.03:"
+            "detection=rms"
+        )
+    else:
+        af = (
+            "silenceremove="
+            "start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02:"
+            "detection=rms"
+        )
     trimmed = wav.with_name(wav.stem + "_trim.wav")
     try:
         subprocess.check_call(
             [
                 "ffmpeg", "-y", "-i", str(wav), "-map", "0:a:0",
-                "-af", "silenceremove=start_periods=1:start_duration=0.02:start_threshold=-45dB",
+                "-af", af,
                 "-acodec", "pcm_s16le", str(trimmed),
             ],
             stdout=subprocess.DEVNULL,
@@ -31,6 +52,29 @@ def trim_leading_silence(wav: Path) -> float:
             trimmed.replace(wav)
     finally:
         trimmed.unlink(missing_ok=True)
+    return ffprobe_duration(wav)
+
+
+def normalize_loudness(wav: Path) -> float:
+    """Even out clip loudness (Studio "Chuẩn hóa âm lượng")."""
+    if not wav.is_file():
+        return 0.0
+    out = wav.with_name(wav.stem + "_norm.wav")
+    try:
+        subprocess.check_call(
+            [
+                "ffmpeg", "-y", "-i", str(wav), "-map", "0:a:0",
+                # Single-pass loudnorm is enough for short TTS parts.
+                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                "-acodec", "pcm_s16le", str(out),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if out.is_file() and out.stat().st_size > 128:
+            out.replace(wav)
+    finally:
+        out.unlink(missing_ok=True)
     return ffprobe_duration(wav)
 
 

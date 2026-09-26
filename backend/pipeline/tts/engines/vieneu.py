@@ -20,6 +20,7 @@ import threading
 import warnings
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from ..schemas import PREFIX_VIENEU
 from .. import voice_store
@@ -32,6 +33,10 @@ _reference_lock = threading.Lock()
 _reference_cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
 _clone_lock = threading.Lock()
 _clone_cache: dict[str, tuple[int, int]] = {}
+
+
+def _preview_api_url(voice_id: str) -> str:
+    return f"/api/tts/voices/{quote(str(voice_id), safe='')}/preview"
 
 
 def _subprocess_env() -> dict[str, str]:
@@ -549,26 +554,32 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
                 "tags": voice_store.normalize_voice_tags(item.get("tags")),
                 "language": voice_store.normalize_voice_language(item.get("language")),
                 "favorite": bool(item.get("favorite")),
-                "previewUrl": f"/api/tts/voices/{voice_id}/preview" if ref_path.is_file() else None,
+                "previewUrl": _preview_api_url(voice_id) if ref_path.is_file() else None,
             }
         )
     # ZMTTS remains online until selected. Its demo is fetched and registered
     # as a local zmAI reference immediately before the first synthesis.
+    listed_ids = {str(v.get("id") or "") for v in out}
     for item in zmtss_catalog.voices():
         language = zmtss_catalog.language_code(item.get("language"))
         if requested_language and language != requested_language:
             continue
         remote_id = str(item["id"])
         voice_id = f"{zmtss_catalog.VOICE_ID_PREFIX}{remote_id}"
+        if voice_id in listed_ids:
+            continue  # already exposed from local voice-ref
         local = voice_store.get_reference_voice(voice_id)
         path = voice_store.reference_path(local or {})
+        # Same-origin preview URL — browsers/Electron often block raw GitHub audio.
         out.append({
             "id": voice_id,
             "name": voice_store.clean_display_name(str(item.get("name") or remote_id), fallback=remote_id),
             "engine": "zmai", "type": "zmAI", "mode": "remote-reference",
             "available": path.is_file(), "language": language,
-            "source": "zmtss", "previewUrl": zmtss_catalog.remote_url(item),
+            "source": "zmtss",
+            "previewUrl": _preview_api_url(voice_id),
         })
+        listed_ids.add(voice_id)
     # The live client also contains user clones, which are appended separately below.
     presets = list_preset_from_assets()
     for preset in presets:
@@ -596,7 +607,7 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
                 "tags": voice_store.normalize_voice_tags(item.get("tags")),
                 "language": voice_store.normalize_voice_language(item.get("language")),
                 "favorite": bool(item.get("favorite")),
-                "previewUrl": f"/api/tts/voices/{PREFIX_VIENEU}clone:{cid}/preview",
+                "previewUrl": _preview_api_url(f"{PREFIX_VIENEU}clone:{cid}"),
             }
         )
     return out
@@ -608,7 +619,7 @@ def preview_path(voice: str) -> Path | None:
     if not parsed:
         return None
     kind, voice_id = parsed
-    if kind == "reference":
+    if kind in ("reference", "remote-reference"):
         item = voice_store.get_reference_voice(voice_id)
         path = voice_store.reference_path(item or {})
     elif kind == "clone":
@@ -624,11 +635,13 @@ def preview_path(voice: str) -> Path | None:
 def parse_voice(voice: str) -> tuple[str, str] | None:
     if not voice:
         return None
-    if str(voice).startswith(zmtss_catalog.VOICE_ID_PREFIX):
-        return "remote-reference", str(voice)
+    # Materialized ZMTTS demos live in the local reference registry — treat as
+    # reference so preview/synth hit the on-disk WAV instead of a remote URL.
     direct = voice_store.get_reference_voice(str(voice))
     if direct:
         return "reference", str(direct["id"])
+    if str(voice).startswith(zmtss_catalog.VOICE_ID_PREFIX):
+        return "remote-reference", str(voice)
     if not str(voice).startswith(PREFIX_VIENEU):
         return None
     rest = str(voice)[len(PREFIX_VIENEU) :]

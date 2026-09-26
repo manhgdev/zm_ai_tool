@@ -88,11 +88,20 @@ def api_voices(lang: str = "vi"):
 @router.get("/api/tts/voices/{voice_id}/preview")
 def api_tts_voice_preview(voice_id: str):
     path = vieneu_engine.preview_path(voice_id)
+    if not path and str(voice_id).startswith("zmt:"):
+        # First preview of an online ZMTTS voice: materialize the demo WAV locally.
+        try:
+            vieneu_engine._ensure_remote_reference(voice_id)
+            path = vieneu_engine.preview_path(voice_id)
+        except Exception as exc:
+            raise HTTPException(404, str(exc) or "Không tải được audio mẫu") from exc
     if not path:
         raise HTTPException(404, "Giọng này không có audio mẫu")
+    suffix = path.suffix.lower()
+    media = "audio/wav" if suffix == ".wav" else "audio/mpeg" if suffix == ".mp3" else "application/octet-stream"
     return FileResponse(
         path,
-        media_type="audio/wav",
+        media_type=media,
         filename=path.name,
         content_disposition_type="inline",
     )

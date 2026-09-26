@@ -119,6 +119,8 @@ def api_tts_studio_synth(body: StudioSynthIn):
                     keep_timeline=bool(body.keepTimeline),
                     title=body.title or "",
                     gap_ms=int(body.gapMs or 0),
+                    normalize=bool(body.normalize),
+                    trim_silence=bool(body.trimSilence),
                     job_id=job_id,
                 )
             else:
@@ -134,6 +136,8 @@ def api_tts_studio_synth(body: StudioSynthIn):
                     title=body.title or "",
                     auto_split=bool(body.autoSplit),
                     gap_ms=int(body.gapMs or 0),
+                    normalize=bool(body.normalize),
+                    trim_silence=bool(body.trimSilence),
                     job_id=job_id,
                 )
             jid = result.get("id") or result.get("job_id")
