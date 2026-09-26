@@ -2269,6 +2269,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           setSettings((current) => ({ ...current, resolution }))
                         }
                         options={resolutionOptions}
+                        optionLabels={{
+                          "360p": t("360p · nhanh nhất", "360p · fastest"),
+                          "480p": t("480p · nhanh", "480p · fast"),
+                          "720p": t("720p · cân bằng", "720p · balanced"),
+                          "1080p": t("1080p · đẹp hơn", "1080p · sharper"),
+                        }}
                       />
                     ) : null}
                     <FlowSelect
@@ -2283,7 +2289,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       }
                       options={videoDownloadQualityOptions}
                       optionLabels={{
-                        "720p": t("720p · nhanh hơn", "720p · faster"),
+                        "360p": t("360p · nhanh nhất", "360p · fastest"),
+                        "720p": t("720p · cân bằng", "720p · balanced"),
                         "1080p": t("1080p · đẹp hơn", "1080p · sharper"),
                         "4K": t("4K · Ultra", "4K · Ultra"),
                       }}

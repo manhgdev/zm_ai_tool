@@ -29,16 +29,16 @@ export const FLOW_VIDEO_MODELS = [
 
 export const FLOW_OMNI_FLASH_DURATIONS = ["4", "6", "8", "10"] as const;
 
-export const FLOW_RESOLUTIONS = ["480p", "720p", "1080p"] as const;
-export const FLOW_VIDEO_DOWNLOAD_QUALITIES = ["720p", "1080p", "4K"] as const;
+export const FLOW_RESOLUTIONS = ["360p", "480p", "720p", "1080p"] as const;
+export const FLOW_VIDEO_DOWNLOAD_QUALITIES = ["360p", "720p", "1080p", "4K"] as const;
 
 /** Download menu options available for a Flow account plan (video only). */
 export function flowVideoDownloadQualities(plan: string | undefined | null): string[] {
   const normalized = String(plan || "Free").trim();
-  if (normalized === "Ultra") return ["720p", "1080p", "4K"];
-  if (normalized === "Pro" || /^plus$/i.test(normalized)) return ["720p", "1080p"];
-  // Free still generates video with credits; base download menu is 720p.
-  return ["720p"];
+  if (normalized === "Ultra") return ["360p", "720p", "1080p", "4K"];
+  if (normalized === "Pro" || /^plus$/i.test(normalized)) return ["360p", "720p", "1080p"];
+  // Free: 360p is the fastest/lowest Flow download tier; 720p still available.
+  return ["360p", "720p"];
 }
 
 export const FLOW_IMAGE_MODELS = [

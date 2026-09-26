@@ -165,13 +165,13 @@ def _video_media_status(media: dict[str, Any] | None) -> str:
 
 
 def _video_download_qualities_for_plan(plan: str | None) -> list[str]:
-    """Download menu tiers by Flow plan (mirrors image 1K/2K/4K gating)."""
+    """Download menu tiers by Flow plan (includes 360p for faster/smaller files)."""
     normalized = str(plan or "Free").strip()
     if normalized == "Ultra":
-        return ["720p", "1080p", "4K"]
+        return ["360p", "720p", "1080p", "4K"]
     if normalized in {"Pro", "Plus"} or normalized.lower() == "plus":
-        return ["720p", "1080p"]
-    return ["720p"]
+        return ["360p", "720p", "1080p"]
+    return ["360p", "720p"]
 
 
 def _video_download_quality(settings: dict[str, Any] | None, plan: str | None = None) -> str:
@@ -184,6 +184,8 @@ def _video_download_quality(settings: dict[str, Any] | None, plan: str | None = 
         preferred = "4K"
     elif raw in {"high", "1080", "1080p"} or "1080" in raw:
         preferred = "1080p"
+    elif raw in {"360", "360p", "low", "fast"} or "360" in raw:
+        preferred = "360p"
     else:
         preferred = "720p"
     if plan is None:
@@ -198,6 +200,8 @@ def _video_download_menu_labels(preferred: str) -> list[str]:
         return ["4K Upscaled", "4K"]
     if preferred == "1080p":
         return ["1080p Upscaled", "1080p"]
+    if preferred == "360p":
+        return ["360p"]
     return ["720p"]
 
 
@@ -367,7 +371,7 @@ def _catalog_section(account: dict[str, Any], kind: str) -> dict[str, Any]:
 
 
 def _video_ui_resolution(value: Any) -> str:
-    """Flow video tabs use 720p/1080p; image plan tiers (1K/2K/4K) are not selectable."""
+    """Flow video tabs use 360p/480p/720p/1080p; image plan tiers (1K/2K/4K) are not selectable."""
     text = str(value or "").strip()
     return text if re.fullmatch(r"\d{3,4}p", text, re.I) else ""
 
