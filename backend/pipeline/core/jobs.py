@@ -206,13 +206,9 @@ def request_cancel(project_id: str) -> bool:
                     _studio._cancel_flags[project_id] = True
         except Exception:
             pass
-    # Frozen VieNeu: tắt worker pool (giải phóng VRAM, dừng infer)
-    try:
-        from pipeline.tts.engines.vieneu_frozen import shutdown_all_workers
-
-        shutdown_all_workers()
-    except Exception:
-        pass
+    # Do NOT shutdown_all_workers() here — that wiped the warm VieNeu pool on
+    # every cancel (Flow/dub/queue), forcing a full model reload on the next
+    # /text-to-speech visit. Active workers are already killed via register_process.
     return True
 
 

@@ -493,12 +493,12 @@ export default function TtsStudio({
                 installed: false,
                 ready: false,
                 loadState: 'error',
-                message: t('Không đọc được trạng thái TTS', 'Could not read TTS status'),
+                message: 'Không đọc được trạng thái TTS / Could not read TTS status',
               },
             }
       ))
     }
-  }, [t])
+  }, [])
 
   const loadHistory = useCallback(async () => {
     try {
@@ -525,10 +525,10 @@ export default function TtsStudio({
         if (currentJobId) return currentJobId
         const latest = formattedRows[0]
         if (latest && latest.id && latest.audioUrl) {
-          const t = Date.now()
-          const finalAudio = `${latest.audioUrl}${latest.audioUrl.includes('?') ? '&' : '?'}t=${t}`
+          const stamp = Date.now()
+          const finalAudio = `${latest.audioUrl}${latest.audioUrl.includes('?') ? '&' : '?'}t=${stamp}`
           const mp3 = latest.mp3Url || `/api/tts/studio/jobs/${latest.id}/audio.mp3`
-          const finalMp3 = `${mp3}${mp3.includes('?') ? '&' : '?'}download=1&t=${t}`
+          const finalMp3 = `${mp3}${mp3.includes('?') ? '&' : '?'}download=1&t=${stamp}`
           setAudioUrl(finalAudio)
           setMp3Url(finalMp3)
           setDuration(Number(latest.duration || 0))
@@ -543,8 +543,20 @@ export default function TtsStudio({
   }, [])
 
   useEffect(() => {
-    void loadStatus()
-    void loadHistory()
+    let cancelled = false
+    void (async () => {
+      await loadStatus()
+      await loadHistory()
+      if (cancelled) return
+      // Warm once per mount; backend no-ops when model already ready.
+      try {
+        await api.ttsWarm()
+      } catch {
+        /* ignore */
+      }
+      if (!cancelled) void loadStatus()
+    })()
+    return () => { cancelled = true }
   }, [loadStatus, loadHistory])
 
   const vieneu = status.vieneu
@@ -562,19 +574,6 @@ export default function TtsStudio({
           : vieneuLoadOk
             ? t('Sẵn sàng', 'Ready')
             : t('Đã cài — nạp khi mở /text-to-speech', 'Installed — loads when opening /text-to-speech')
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        await api.ttsWarm()
-      } catch {
-        /* ignore — status poll still works */
-      }
-      if (!cancelled) void loadStatus()
-    })()
-    return () => { cancelled = true }
-  }, [loadStatus])
 
   useEffect(() => {
     if (vieneuLoadState !== 'loading' && !busy) return

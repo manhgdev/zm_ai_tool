@@ -379,6 +379,44 @@ def _job_concurrency(settings: dict[str, Any]) -> int:
     return max(1, min(_MAX_CONCURRENT_JOBS_PER_ACCOUNT, value))
 
 
+def _flow_job_credit_cost(account: dict[str, Any], kind: str, model: Any) -> int | None:
+    """Read the selected model cost from this account's verified catalog."""
+    if str(kind).lower() != "video":
+        return None
+    section = _catalog_section(account, "video")
+    requested = str(model or "").strip()
+    entries = section.get("models", []) if isinstance(section, dict) else []
+    selected = next(
+        (item for item in entries if isinstance(item, dict) and (
+            str(item.get("name") or "") == requested
+            or _match_model_choice(requested, str(item.get("name") or ""))
+        )),
+        None,
+    )
+    if not selected:
+        return None
+    raw = selected.get("creditCost", selected.get("cost"))
+    try:
+        return max(0, int(raw)) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_flow_credits_for_job(account: dict[str, Any], kind: str, settings: dict[str, Any]) -> None:
+    credits = account.get("credits")
+    if not isinstance(credits, (int, float)):
+        return
+    required = _flow_job_credit_cost(account, kind, settings.get("model"))
+    if required is None:
+        return
+    if int(credits) < required:
+        raise ValueError(
+            f"FLOW_CREDITS_INSUFFICIENT: Cần ít nhất {required} credits, "
+            f"nhưng tài khoản chỉ còn {int(credits)} (Need {required} credits; "
+            f"account has {int(credits)} left)"
+        )
+
+
 def _match_model_choice(requested: str, text: str) -> bool:
     req = requested.strip().lower()
     t = re.sub(r"\s+", " ", text).strip().lower()
@@ -722,9 +760,16 @@ def _is_settings_trigger(text: str, aria_label: str = "") -> bool:
 
 def _session_needs_login(error: Exception) -> bool:
     """Identify failures that require the visible Google re-login flow."""
+    text = str(error)
+    # API 401 without a login-wall is common when Bearer is missing but cookies
+    # still work for Flow UI — do not treat as reconnect.
+    if "avoid reconnect storm" in text.lower():
+        return False
+    if re.search(r"Could not obtain Bearer token", text, re.I) and "redirected" not in text.lower():
+        return False
     return bool(re.search(
-        r"LOGIN_REQUIRED|SESSION_EXPIRED|session.*expired|cookies.*expired|\b401\b|recaptcha|accounts\.google\.com|flow\.google\.com/about|/about|not signed in|unauthenticated|authentication required",
-        str(error),
+        r"LOGIN_REQUIRED|SESSION_EXPIRED|session.*expired|cookies.*expired|redirected to login|recaptcha|accounts\.google\.com|flow\.google\.com/about|/about|not signed in|unauthenticated|authentication required",
+        text,
         re.I,
     ))
 
@@ -1190,7 +1235,7 @@ class FlowService:
         threading.Thread(target=_cleanup_files, daemon=True, name="flow-folder-delete-cleanup").start()
         return len(removed)
 
-    def connect(self, account_id: str) -> dict[str, Any]:
+    def connect(self, account_id: str, *, force_interactive: bool = False) -> dict[str, Any]:
         account = store.get_row("accounts", account_id)
         if not account:
             raise KeyError(account_id)
@@ -1200,8 +1245,130 @@ class FlowService:
             self._connecting_accounts.add(account_id)
             store.patch_row("accounts", account_id, {"status": "connecting", "error": None, "updatedAt": time.time()})
         self._log("info", "account_connecting", account_id=account_id)
-        threading.Thread(target=lambda: asyncio.run(self._login(account_id)), daemon=True, name=f"flow-login-{account_id}").start()
+        threading.Thread(
+            target=lambda: asyncio.run(self._login(account_id, force_interactive=force_interactive)),
+            daemon=True,
+            name=f"flow-login-{account_id}",
+        ).start()
         return store.get_row("accounts", account_id) or account
+
+    def _ensure_shared_reconnect(
+        self,
+        account_id: str,
+        *,
+        job_id: str | None = None,
+        reason: str = "",
+    ) -> None:
+        """Start at most one reconnect/login for this account; never block the caller.
+
+        Jobs that hit 401/LOGIN_REQUIRED call this and free their concurrency
+        slot immediately. Other queued jobs wait at admission until the account
+        is online again — they must not each soft-refresh Chrome.
+        """
+        account = store.get_row("accounts", account_id) or {}
+        if not account:
+            return
+        with self._guard:
+            if account_id in self._connecting_accounts:
+                return
+        # Mark reconnect so admission blocks other workers on this account.
+        if account.get("status") == "online":
+            store.patch_row("accounts", account_id, {
+                "status": "reconnect",
+                "error": reason or account.get("error") or "LOGIN_REQUIRED",
+                "updatedAt": time.time(),
+            })
+        # Only force visible Chrome for real login-wall / unauthenticated sessions.
+        # Missing ya29 Bearer alone is normal on Angular Flow — do not reopen Chrome.
+        reason_l = (reason or "").lower()
+        force_interactive = bool(
+            re.search(
+                r"redirected to login|accounts\.google|/about|session cookies expired|not signed in",
+                reason_l,
+            )
+        ) and not bool(re.search(r"avoid reconnect storm|bearer token not available", reason_l))
+        # Explicit LOGIN_REQUIRED with login wall still forces interactive.
+        if "login_required" in reason_l and "avoid reconnect storm" not in reason_l:
+            if re.search(r"redirected|cookies expired|accounts\.google|/about|unauthenticated", reason_l):
+                force_interactive = True
+        try:
+            self.connect(account_id, force_interactive=force_interactive)
+        except KeyError:
+            return
+        with self._account_condition:
+            self._account_condition.notify_all()
+        self._log(
+            "warning",
+            "session_reconnect_started",
+            job_id=job_id,
+            account_id=account_id,
+            message=(
+                "Đang mở Chrome đăng nhập lại Flow (chung 1 lần / account) — "
+                "các job khác chờ / Opening Chrome to re-login Flow once; other jobs wait"
+                if force_interactive else
+                "Đang thử kết nối lại phiên Flow (headless) / Attempting Flow headless reconnect"
+            ),
+        )
+
+    def _account_session_blocked(self, account_id: str) -> bool:
+        """True while a shared reconnect/login is in progress for this account."""
+        if account_id in self._connecting_accounts:
+            return True
+        account = store.get_row("accounts", account_id) or {}
+        return account.get("status") in {"reconnect", "connecting"}
+
+    def _wake_account_waiters(self, account_id: str) -> None:
+        """Unblock queued jobs waiting on shared account reconnect."""
+        _ = account_id
+        with self._account_condition:
+            self._account_condition.notify_all()
+
+    def _requeue_auth_failed_jobs(self, account_id: str) -> int:
+        """After shared login succeeds, resume jobs that failed only on auth."""
+        account = store.get_row("accounts", account_id) or {}
+        if account.get("status") != "online" or not account.get("projectId"):
+            return 0
+        self._wake_account_waiters(account_id)
+        restarted = 0
+        for job in store.list_rows("jobs"):
+            if str(job.get("accountId") or "") != account_id:
+                continue
+            if job.get("status") != "action_required":
+                continue
+            if not _session_needs_login(Exception(str(job.get("error") or ""))):
+                continue
+            job_id = str(job.get("id") or "")
+            if not job_id:
+                continue
+            with self._account_condition:
+                if job_id in self._running_jobs or job_id in self._cancelled:
+                    continue
+                store.patch_row("jobs", job_id, {
+                    "status": "queued",
+                    "stage": "queued",
+                    "progress": 0,
+                    "error": None,
+                    "updatedAt": time.time(),
+                })
+            threading.Thread(
+                target=self._run_sync,
+                args=(job_id,),
+                daemon=True,
+                name=f"flow-reauth-{job_id}",
+            ).start()
+            restarted += 1
+        if restarted:
+            _log.info("Requeued %d auth-failed Flow jobs for account %s", restarted, account_id)
+            self._log(
+                "success",
+                "session_reconnect_ok",
+                account_id=account_id,
+                message=(
+                    f"Đã kết nối lại — chạy lại {restarted} job / "
+                    f"Reconnected — retrying {restarted} jobs"
+                ),
+            )
+        return restarted
 
     async def sync_credits_for_account(self, account_id: str) -> dict[str, Any]:
         """Fetch fresh credits from Google Flow using the existing browser profile.
@@ -1462,6 +1629,23 @@ class FlowService:
                 "defaultModel": original_model if any(item["name"] == original_model for item in models) else (models[0]["name"] if models else ""),
                 "models": models,
             }
+        # Credit cost is account-specific and is not rendered in the model
+        # selector. Merge the live API catalog when available; never invent a
+        # universal cost for every account/plan.
+        try:
+            from ._flow._api import FlowAPI
+            config = await FlowAPI(browser, project_id=project_id).get_video_model_config()
+            video_models = config.get("videoModels", []) if isinstance(config, dict) else []
+            for entry in catalog.get("video", {}).get("models", []):
+                name = str(entry.get("name") or "")
+                match = next((item for item in video_models if isinstance(item, dict) and (
+                    str(item.get("displayName") or item.get("name") or "") == name
+                    or _match_model_choice(name, str(item.get("displayName") or item.get("name") or ""))
+                )), None)
+                if match and match.get("creditCost") is not None:
+                    entry["creditCost"] = int(match["creditCost"])
+        except Exception as exc:
+            _log.debug("Flow credit-cost catalog unavailable: %s", exc)
         await switch_kind(original_kind)
         if not catalog["image"]["models"] or not catalog["video"]["models"]:
             raise RuntimeError("FLOW_CAPABILITY_SYNC_FAILED: Flow returned an empty model catalog")
@@ -1478,18 +1662,26 @@ class FlowService:
         if not account:
             raise ValueError("FLOW_PLAN_SYNC_REQUIRED: Flow account was not found")
         if account.get("status") != "online" or not account.get("projectId"):
-            # A queued job may start before the asynchronous account refresh
-            # finishes, or after Flow has dropped only the project. Reuse the
-            # saved browser session first; ask for manual work only if that
-            # session can no longer restore an online project.
-            restored = asyncio.run(
-                self._try_headless_reconnect(account_id, str(account.get("projectId") or ""))
+            # Do not block this worker on headless/interactive login — that
+            # stalls the whole account concurrency window. Kick one shared
+            # reconnect and let this job fail-fast as action_required; other
+            # jobs keep draining. Successful login requeues auth failures.
+            self._ensure_shared_reconnect(
+                account_id,
+                reason=str(account.get("error") or "FLOW_LOGIN_REQUIRED"),
             )
-            account = store.get_row("accounts", account_id) or account
-            if not restored or account.get("status") != "online" or not account.get("projectId"):
-                raise ValueError(
-                    "FLOW_LOGIN_REQUIRED: Không thể tự đồng bộ tài khoản Flow; hãy kết nối lại trong Cài đặt"
-                )
+            raise ValueError(
+                "FLOW_LOGIN_REQUIRED: Tài khoản Flow đang kết nối lại — job sẽ chạy lại sau khi đăng nhập / "
+                "Flow account is reconnecting — job will retry after login"
+            )
+        # A known zero balance is a deterministic admission failure. Check it
+        # before opening a browser/sync attempt so an expired session cannot
+        # mask the real user-facing error as FLOW_SESSION_EXPIRED.
+        known_credits = account.get("credits")
+        if isinstance(known_credits, (int, float)) and int(known_credits) <= 0:
+            raise ValueError(
+                "FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)"
+            )
         # Keep automatic verification, but do not launch a second browser for
         # every job in a batch. A fresh verified snapshot is safe to reuse for
         # five minutes; expired/unknown snapshots still force a live sync.
@@ -1534,35 +1726,38 @@ class FlowService:
 
 
 
-    async def _login(self, account_id: str) -> None:
+    async def _login(self, account_id: str, *, force_interactive: bool = False) -> None:
         """Open a visible Chrome window to authenticate and sync the Flow account.
 
         If the account already has a saved projectId (was previously connected),
-        first tries a fast headless probe.  Only opens visible Chrome when the
-        cookie is no longer valid.
+        first tries a fast headless probe — unless ``force_interactive`` (real
+        login-wall / expired cookies). Missing ya29 alone does not force Chrome.
         """
         account = store.get_row("accounts", account_id) or {}
         existing_project_id = str(account.get("projectId") or "")
 
         # Fast-path: try headless first when there's a saved session
-        if existing_project_id:
+        if existing_project_id and not force_interactive:
             try:
                 ok = await self._try_headless_reconnect(account_id, existing_project_id)
                 if ok:
                     with self._guard:
                         self._connecting_accounts.discard(account_id)
+                    self._wake_account_waiters(account_id)
+                    self._requeue_auth_failed_jobs(account_id)
                     return
             except Exception as probe_exc:
                 _log.debug("_login headless probe failed for %s, falling back to visible: %s", account_id, probe_exc)
-            # The saved project may have been deleted. Start at Flow home so
-            # the authenticated session can select/create a replacement.
-            existing_project_id = ""
-            store.patch_row("accounts", account_id, {
-                "status": "reconnect", "projectId": "", "error": "FLOW_PROJECT_NOT_FOUND",
-                "updatedAt": time.time(),
-            })
+            # Keep projectId — auth failure is not the same as a deleted project.
+            # Interactive login still continues into this project when possible.
+        elif force_interactive:
+            _log.info(
+                "_login: skipping headless for %s — opening visible Chrome (Bearer/LOGIN_REQUIRED)",
+                account_id,
+            )
 
         browser = None
+        login_ok = False
         try:
             from .browser import BrowserManager, FLOW_BASE_URL
             browser = BrowserManager(headless=False, profile_dir=store.profile_dir(account_id))
@@ -1713,11 +1908,13 @@ class FlowService:
                     raise RuntimeError("Chrome bị đóng trước khi đăng nhập xong")
                 raise RuntimeError("Login timed out or Chrome was closed before sign-in completed")
 
-            # Verify session and fetch credits
+            # Verify session, capture Bearer (jobs need ya29; credits alone are not enough),
+            # then close Chrome before cloning the profile for queued jobs.
             from ._flow._api import FlowAPI
             _log.info("_login: fetching credits for project=%s", project_id)
+            login_api = FlowAPI(browser, project_id=project_id)
             credit_info = await asyncio.wait_for(
-                FlowAPI(browser, project_id=project_id).get_credits(),
+                login_api.get_credits(),
                 timeout=30.0,
             )
             credits = int(credit_info.credits)
@@ -1729,6 +1926,16 @@ class FlowService:
                     "() => window.WIZ_global_data?.oPEP7c || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''"
                 )
 
+            access_token = ""
+            try:
+                # Soft capture only — Flow SPA often hides ya29 from CDP. Credits
+                # + project page already prove the Google session; do not fail
+                # connect (that caused Chrome open/refresh loops).
+                access_token = await login_api._get_bearer_token(required=False)
+            except Exception as bearer_exc:
+                _log.debug("_login: optional Bearer capture skipped: %s", bearer_exc)
+
+            now = time.time()
             patch: dict[str, Any] = {
                 "status": "online",
                 "projectId": project_id,
@@ -1741,14 +1948,30 @@ class FlowService:
                 "flowTier": str(getattr(credit_info, "tier", "") or "") if credit_info else "",
                 "flowSku": str(getattr(credit_info, "sku", "") or "") if credit_info else "",
                 "flowServiceTier": str(getattr(credit_info, "service_tier", "") or "") if credit_info else "",
-                "updatedAt": time.time(),
+                "connectedAt": now,
+                "updatedAt": now,
                 "error": None,
             }
+            if access_token and str(access_token).startswith("ya29."):
+                patch["accessToken"] = access_token
+                patch["accessTokenAt"] = now
             if detected_plan:
                 patch["plan"] = detected_plan
             store.patch_row("accounts", account_id, patch)
-            self._log("success", "account_connected", account_id=account_id, details={"projectId": project_id, "credits": credits, "plan": detected_plan})
+            self._log(
+                "success",
+                "account_connected",
+                account_id=account_id,
+                details={
+                    "projectId": project_id,
+                    "credits": credits,
+                    "plan": detected_plan,
+                    "bearer": bool(access_token),
+                },
+            )
+            login_ok = True
         except Exception as exc:
+            login_ok = False
             store.patch_row("accounts", account_id, {"status": "reconnect", "error": str(exc), "updatedAt": time.time()})
             self._log("error", "account_connect_failed", account_id=account_id, message=str(exc))
         finally:
@@ -1765,6 +1988,11 @@ class FlowService:
                 pass
             with self._guard:
                 self._connecting_accounts.discard(account_id)
+            self._wake_account_waiters(account_id)
+            # Clone only after Chrome released the profile — otherwise cookies are incomplete
+            # and every job raises "Could not obtain Bearer token" in a loop.
+            if login_ok:
+                self._requeue_auth_failed_jobs(account_id)
 
 
     async def _create_flow_project_ui(self, page, *, avoid_project_id: str = "") -> str:
@@ -1985,16 +2213,23 @@ class FlowService:
             credits = None
             credits_synced_at = None
             detected_plan = None
+            access_token = ""
             try:
                 from ._flow._api import FlowAPI
-                credit_info = await FlowAPI(browser, project_id=confirmed_id).get_credits()
+                api = FlowAPI(browser, project_id=confirmed_id)
+                credit_info = await api.get_credits()
                 credits = int(credit_info.credits)
                 credits_synced_at = time.time()
                 detected_plan = _detect_plan(credit_info)
                 if getattr(credit_info, "email", ""):
                     email = credit_info.email or email
+                try:
+                    access_token = await api._get_bearer_token(required=False)
+                except Exception:
+                    access_token = ""
             except Exception:
                 pass
+            now = time.time()
             account = store.get_row("accounts", account_id) or {}
             patch: dict[str, Any] = {
                 "status": "online",
@@ -2002,16 +2237,31 @@ class FlowService:
                 "email": email or account.get("email", ""),
                 "credits": credits,
                 "creditsSyncedAt": credits_synced_at,
-                "updatedAt": time.time(),
+                "connectedAt": now,
+                "updatedAt": now,
                 "error": None,
             }
+            if access_token and str(access_token).startswith("ya29."):
+                patch["accessToken"] = access_token
+                patch["accessTokenAt"] = now
             if project_id and confirmed_id != project_id:
                 patch["previousProjectId"] = project_id
                 patch["projectChangedAt"] = time.time()
             if detected_plan:
                 patch["plan"] = detected_plan
             store.patch_row("accounts", account_id, patch)
-            self._log("success", "account_connected", account_id=account_id, details={"projectId": confirmed_id, "credits": credits, "plan": detected_plan, "headless": True})
+            self._log(
+                "success",
+                "account_connected",
+                account_id=account_id,
+                details={
+                    "projectId": confirmed_id,
+                    "credits": credits,
+                    "plan": detected_plan,
+                    "headless": True,
+                    "bearer": bool(access_token),
+                },
+            )
             return True
         except Exception as exc:
             _log.debug("Headless reconnect probe failed for %s: %s", account_id, exc)
@@ -2053,6 +2303,7 @@ class FlowService:
             settings["model"] = "Nano Banana 2"
 
         settings, _ = _normalize_catalog_settings(account, kind, settings)
+        _ensure_flow_credits_for_job(account, kind, settings)
 
         if kind == "image":
             if not _catalog_section(account, kind) and str(settings.get("model") or "Nano Banana 2") not in _IMAGE_UI_MODELS:
@@ -2150,6 +2401,7 @@ class FlowService:
             while (
                 order != self._account_next_start[account_id]
                 or self._account_active.get(account_id, 0) >= concurrency
+                or self._account_session_blocked(account_id)
             ):
                 if job_id in self._cancelled:
                     if order == self._account_next_start[account_id]:
@@ -2164,6 +2416,8 @@ class FlowService:
                     self._account_next_start[account_id] = queued_order
                     self._account_condition.notify_all()
                     continue
+                # Shared account reconnect in progress — wait; do not start more
+                # jobs that would each soft-refresh Bearer / open Chrome.
                 self._account_condition.wait(timeout=1.0)
             if job_id in self._cancelled:
                 self._account_next_start[account_id] += 1
@@ -2182,81 +2436,71 @@ class FlowService:
         # Once Flow accepts a job, retrying can create a duplicate and charge
         # credits twice; media recovery owns all post-submit timeouts.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_RESULT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
+            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_RESULT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
             re.I,
         )
         profile_ready = False
         try:
             if job_id in self._cancelled:
                 return
-            verified_account = self._verify_account_plan_before_enqueue(account_id)
+            try:
+                verified_account = self._verify_account_plan_before_enqueue(account_id)
+            except ValueError as verify_exc:
+                # Account offline / reconnecting — fail-fast, free the slot,
+                # shared reconnect owns login. Do not hold concurrency.
+                if _session_needs_login(verify_exc):
+                    store.patch_row("jobs", job_id, {
+                        "status": "action_required",
+                        "stage": "action_required",
+                        "error": str(verify_exc),
+                        "updatedAt": time.time(),
+                    })
+                    account_row = store.get_row("accounts", account_id) or {}
+                    if account_row.get("status") not in {"connecting", "online"}:
+                        store.patch_row("accounts", account_id, {
+                            "status": "reconnect",
+                            "error": str(verify_exc),
+                            "updatedAt": time.time(),
+                        })
+                    self._ensure_shared_reconnect(account_id, job_id=job_id, reason=str(verify_exc))
+                    self._log(
+                        "warning",
+                        "session_expired",
+                        job_id=job_id,
+                        account_id=account_id,
+                        message="Phiên hết hạn — sẽ tự kết nối lại / Session expired — will auto-reconnect",
+                    )
+                    return
+                raise
             credits = verified_account.get("credits")
             if isinstance(credits, (int, float)) and int(credits) <= 0:
                 raise ValueError("FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)")
-            for auth_attempt in range(_JOB_AUTO_RETRY_MAX):
-                runtime_profile: Path | None = None
-                try:
-                    runtime_profile = self._clone_runtime_profile(account_id, job_id)
-                    profile_ready = True
-                    asyncio.run(self._run(job_id, profile_dir=runtime_profile))
-                finally:
-                    if runtime_profile is not None:
-                        shutil.rmtree(runtime_profile, ignore_errors=True)
-                finished = store.get_row("jobs", job_id) or {}
-                finished_error = str(finished.get("error") or "")
-                auth_error = _session_needs_login(Exception(finished_error)) and finished.get("status") in {
-                    "action_required", "failed",
-                }
-                if not auth_error or auth_attempt >= _JOB_AUTO_RETRY_MAX - 1:
-                    break
-                project_id = str(verified_account.get("projectId") or account_id)
-                _log.warning(
-                    "Flow session expired for %s; reconnect %d/%d",
-                    account_id, auth_attempt + 1, _JOB_AUTO_RETRY_MAX,
-                )
-                self._log(
-                    "warning",
-                    "session_reconnect_started",
+            _ensure_flow_credits_for_job(
+                verified_account,
+                str(job.get("kind") or "video"),
+                dict(job.get("settings") or {}),
+            )
+            # One run only for auth. On LOGIN_REQUIRED the job exits as
+            # action_required and kicks a shared account reconnect — never
+            # wait here for Chrome login (that blocked the whole queue).
+            runtime_profile: Path | None = None
+            try:
+                runtime_profile = self._clone_runtime_profile(account_id, job_id)
+                profile_ready = True
+                asyncio.run(self._run(job_id, profile_dir=runtime_profile))
+            finally:
+                if runtime_profile is not None:
+                    shutil.rmtree(runtime_profile, ignore_errors=True)
+            finished = store.get_row("jobs", job_id) or {}
+            finished_error = str(finished.get("error") or "")
+            auth_error = _session_needs_login(Exception(finished_error)) and finished.get("status") in {
+                "action_required", "failed",
+            }
+            if auth_error:
+                self._ensure_shared_reconnect(
+                    account_id,
                     job_id=job_id,
-                    account_id=account_id,
-                    message=f"Đang tự kết nối lại phiên Flow ({auth_attempt + 1}/{_JOB_AUTO_RETRY_MAX}) / Auto-reconnecting Flow session",
-                )
-                reconnect_ok = asyncio.run(self._try_headless_reconnect(account_id, project_id))
-                if not reconnect_ok:
-                    # Cookie/session truly dead — open interactive Chrome once, then retry.
-                    _log.warning(
-                        "Headless reconnect failed for %s; opening interactive login",
-                        account_id,
-                    )
-                    self._log(
-                        "warning",
-                        "session_reconnect_interactive",
-                        job_id=job_id,
-                        account_id=account_id,
-                        message="Mở Chrome để đăng nhập lại / Opening Chrome to re-login",
-                    )
-                    try:
-                        asyncio.run(self._login(account_id))
-                    except Exception as login_exc:
-                        _log.warning("Interactive reconnect failed for %s: %s", account_id, login_exc)
-                    refreshed_account = store.get_row("accounts", account_id) or {}
-                    reconnect_ok = refreshed_account.get("status") == "online" and bool(
-                        refreshed_account.get("projectId")
-                    )
-                if not reconnect_ok:
-                    break
-                store.patch_row("jobs", job_id, {
-                    "status": "queued", "stage": "queued", "progress": 0,
-                    "error": None, "updatedAt": time.time(),
-                })
-                verified_account = store.get_row("accounts", account_id) or verified_account
-                _log.info("Automatic Flow reconnect succeeded; resuming job %s", job_id)
-                self._log(
-                    "success",
-                    "session_reconnect_ok",
-                    job_id=job_id,
-                    account_id=account_id,
-                    message="Đã kết nối lại — chạy lại job / Reconnected — retrying job",
+                    reason=finished_error,
                 )
 
             # Project missing → recreate + retry up to _JOB_AUTO_RETRY_MAX times.
@@ -2358,25 +2602,52 @@ class FlowService:
             # an unhandled thread traceback (notably Windows profile races).
             current = store.get_row("jobs", job_id) or {}
             if current.get("status") not in _TERMINAL:
-                error = f"FLOW_WORKER_FAILED: {exc}"
-                store.patch_row(
-                    "jobs",
-                    job_id,
-                    {
-                        "status": "failed",
-                        "stage": "worker" if profile_ready else "profile",
-                        "error": error,
-                        "updatedAt": time.time(),
-                    },
-                )
-                self._log(
-                    "error",
-                    "job_failed",
-                    job_id=job_id,
-                    account_id=account_id,
-                    message=error,
-                    details={"stage": "worker" if profile_ready else "profile"},
-                )
+                if _session_needs_login(exc):
+                    store.patch_row(
+                        "jobs",
+                        job_id,
+                        {
+                            "status": "action_required",
+                            "stage": "action_required",
+                            "error": str(exc),
+                            "updatedAt": time.time(),
+                        },
+                    )
+                    account_row = store.get_row("accounts", account_id) or {}
+                    if account_row.get("status") not in {"connecting", "online"}:
+                        store.patch_row("accounts", account_id, {
+                            "status": "reconnect",
+                            "error": str(exc),
+                            "updatedAt": time.time(),
+                        })
+                    self._ensure_shared_reconnect(account_id, job_id=job_id, reason=str(exc))
+                    self._log(
+                        "warning",
+                        "session_expired",
+                        job_id=job_id,
+                        account_id=account_id,
+                        message="Phiên hết hạn — sẽ tự kết nối lại / Session expired — will auto-reconnect",
+                    )
+                else:
+                    error = f"FLOW_WORKER_FAILED: {exc}"
+                    store.patch_row(
+                        "jobs",
+                        job_id,
+                        {
+                            "status": "failed",
+                            "stage": "worker" if profile_ready else "profile",
+                            "error": error,
+                            "updatedAt": time.time(),
+                        },
+                    )
+                    self._log(
+                        "error",
+                        "job_failed",
+                        job_id=job_id,
+                        account_id=account_id,
+                        message=error,
+                        details={"stage": "worker" if profile_ready else "profile"},
+                    )
         finally:
             with self._account_condition:
                 self._account_active[account_id] = max(0, self._account_active.get(account_id, 1) - 1)
@@ -3558,6 +3829,13 @@ class FlowService:
             await browser.start()
             self._log("info", "browser_ready", job_id=job_id, account_id=account["id"])
             api = FlowAPI(browser, project_id=account["projectId"], default_timeout_s=600)
+            # Seed Bearer captured at login — cloned headless profiles often cannot
+            # mint ya29 themselves even when cookies are valid.
+            seed = str(account.get("accessToken") or "")
+            if seed.startswith("ya29."):
+                api._bearer_token = seed
+                api._bearer_token_ts = time.time()
+                self._log("info", "bearer_seeded", job_id=job_id, account_id=account["id"])
             client = FlowClient(api, browser, account["projectId"])
             settings = job.get("settings") or {}
             settings, catalog_changed = _normalize_catalog_settings(account, str(job["kind"]), settings)
@@ -3627,9 +3905,15 @@ class FlowService:
                 outputs = []
                 if job["kind"] == "video":
                     from ._flow._api import VideoJob
-                    for index, media_id in enumerate(media_ids, 1):
-                        self._check_cancel(job_id)
-                        if str(media_id).startswith("flow-thumb:"):
+                    from ._flow._exceptions import GenerationError as FlowGenerationError
+                    bearer_ok = str(getattr(api, "_bearer_token", "") or "").startswith("ya29.")
+                    # Modern Flow SPA rarely emits ya29; aisandbox poll then 401s.
+                    # Prefer UI tiles / fife URL from project payload over Bearer poll.
+                    thumb_ids = [m for m in media_ids if str(m).startswith("flow-thumb:")]
+                    uuid_ids = [m for m in media_ids if not str(m).startswith("flow-thumb:")]
+                    if thumb_ids and not uuid_ids:
+                        for index, media_id in enumerate(thumb_ids, 1):
+                            self._check_cancel(job_id)
                             thumb = str(media_id)[len("flow-thumb:"):]
                             tile_index = await page.evaluate("""(target) => {
                                 const tiles = [...document.querySelectorAll('flow-grid-tile-container')];
@@ -3647,14 +3931,41 @@ class FlowService:
                             outputs.append(str(output))
                             self._log("success", "output_downloaded", job_id=job_id,
                                       account_id=account["id"], details={"outputIndex": index, "quality": quality})
-                            continue
-                        remote_job = VideoJob.__new__(VideoJob)
-                        remote_job.media_name = media_id
-                        remote_job.project_id = account["projectId"]
-                        status = await api.wait_for_video(remote_job, timeout_s=900)
-                        output = self._output_path(job, index, "mp4")
-                        await api.download(status.fife_url, output)
-                        outputs.append(str(output))
+                    elif uuid_ids and bearer_ok:
+                        try:
+                            for index, media_id in enumerate(uuid_ids, 1):
+                                self._check_cancel(job_id)
+                                remote_job = VideoJob.__new__(VideoJob)
+                                remote_job.media_name = media_id
+                                remote_job.project_id = account["projectId"]
+                                status = await api.wait_for_video(remote_job, timeout_s=900)
+                                output = self._output_path(job, index, "mp4")
+                                await api.download(status.fife_url, output)
+                                outputs.append(str(output))
+                        except FlowGenerationError as poll_exc:
+                            if "avoid reconnect storm" not in str(poll_exc) and not re.search(r"\b401\b|\b403\b", str(poll_exc)):
+                                raise
+                            self._log(
+                                "warning", "video_poll_fallback_ui",
+                                job_id=job_id, account_id=account["id"],
+                                message="aisandbox poll unauthorized — falling back to Flow tiles",
+                            )
+                            outputs = []
+                    if not outputs:
+                        # No Bearer / poll failed: resolve fife URLs or download newest tiles.
+                        for index, media_id in enumerate(uuid_ids, 1):
+                            self._check_cancel(job_id)
+                            fife = await self._resolve_video_fife_url(api, str(media_id))
+                            if not fife:
+                                continue
+                            output = self._output_path(job, index, "mp4")
+                            await api.download(fife, output)
+                            outputs.append(str(output))
+                        if not outputs:
+                            count = max(1, min(4, int(settings.get("count", len(media_ids) or 1))))
+                            outputs = await self._wait_and_download_flow_videos(
+                                page, job, count, [], job_id,
+                            )
                 else:
                     await self._recover_submitted_media(api, page, job)
                     items = await self._find_existing_project_media(api, page, job, "image", len(media_ids))
@@ -3721,13 +4032,37 @@ class FlowService:
                     store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": 20})
                     await self._sync_credits(api, account["id"])
                     outputs = []
-                    for output_index, media_id in enumerate(media_ids, 1):
-                        self._check_cancel(job_id)
-                        status = await api.wait_for_video(remote[0], timeout_s=900, on_poll=lambda _s, elapsed: store.patch_row("jobs", job_id, {"progress": min(90, 20 + int(elapsed / 12)), "updatedAt": time.time()}))
-                        output = self._output_path(job, output_index, "mp4")
-                        await api.download(status.fife_url, output)
-                        outputs.append(str(output))
-                        self._log("success", "output_downloaded", job_id=job_id, account_id=account["id"], details={"outputIndex": output_index, "path": str(output)})
+                    bearer_ok = str(getattr(api, "_bearer_token", "") or "").startswith("ya29.")
+                    if bearer_ok:
+                        try:
+                            from ._flow._exceptions import GenerationError as FlowGenerationError
+                            for output_index, _media_id in enumerate(media_ids, 1):
+                                self._check_cancel(job_id)
+                                status = await api.wait_for_video(
+                                    remote[0],
+                                    timeout_s=900,
+                                    on_poll=lambda _s, elapsed: store.patch_row(
+                                        "jobs", job_id,
+                                        {"progress": min(90, 20 + int(elapsed / 12)), "updatedAt": time.time()},
+                                    ),
+                                )
+                                output = self._output_path(job, output_index, "mp4")
+                                await api.download(status.fife_url, output)
+                                outputs.append(str(output))
+                                self._log(
+                                    "success", "output_downloaded",
+                                    job_id=job_id, account_id=account["id"],
+                                    details={"outputIndex": output_index, "path": str(output)},
+                                )
+                        except FlowGenerationError as poll_exc:
+                            if "avoid reconnect storm" not in str(poll_exc) and not re.search(r"\b401\b|\b403\b", str(poll_exc)):
+                                raise
+                            outputs = []
+                    if not outputs:
+                        baseline_thumbs = await self._flow_tile_thumbs(page)
+                        outputs = await self._wait_and_download_flow_videos(
+                            page, job, max(1, len(media_ids)), baseline_thumbs, job_id,
+                        )
                 else:
                     baseline_thumbs = await self._flow_tile_thumbs(page)
                     await self._set_flow_count(page, count)
@@ -3836,7 +4171,7 @@ class FlowService:
                             await route.continue_()
 
                     await page.route("**/*batchGenerateImages*", _rewrite_image_request)
-                    interceptor = UIInterceptor()
+                    interceptor = UIInterceptor(api)
                     interceptor.attach(page)
                     submission_patch = {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)}
                     store.patch_row("jobs", job_id, submission_patch)
@@ -3933,15 +4268,27 @@ class FlowService:
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")
             store.patch_row("jobs", job_id, {"status": action, "stage": action, "error": str(exc), "updatedAt": time.time()})
             if needs_login:
-                # Mark reconnect so the worker's outer auth-retry loop (or the
-                # Accounts UI) can refresh the session without a manual nudge.
-                store.patch_row("accounts", account["id"], {"status": "reconnect", "error": str(exc), "updatedAt": time.time()})
+                # Kick the single shared account login immediately — do not
+                # wait for the outer worker loop (Bearer missing = re-login).
+                # Drop stale seeded token so cooldown does not block Chrome.
+                store.patch_row("accounts", account["id"], {
+                    "status": "reconnect",
+                    "error": str(exc),
+                    "accessToken": None,
+                    "accessTokenAt": None,
+                    "updatedAt": time.time(),
+                })
+                self._ensure_shared_reconnect(
+                    account["id"],
+                    job_id=job_id,
+                    reason=str(exc),
+                )
                 self._log(
                     "warning",
                     "session_expired",
                     job_id=job_id,
                     account_id=account["id"],
-                    message="Phiên hết hạn — sẽ tự kết nối lại / Session expired — will auto-reconnect",
+                    message="Phiên hết hạn — đang mở đăng nhập lại / Session expired — opening re-login",
                 )
             if job.get("seriesContext"):
                 from . import series

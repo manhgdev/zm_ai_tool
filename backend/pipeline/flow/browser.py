@@ -82,6 +82,43 @@ class BrowserManager:
             await self._ctx.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
+            # Capture ya29 if/when Flow emits an aisandbox Authorization header.
+            await self._ctx.add_init_script(
+                """
+                (() => {
+                  if (window.__zmFlowBearerHook) return;
+                  window.__zmFlowBearerHook = true;
+                  window.__zmFlowBearer = null;
+                  const grab = (h) => {
+                    if (!h) return;
+                    let v = null;
+                    try {
+                      if (typeof h.get === 'function')
+                        v = h.get('Authorization') || h.get('authorization');
+                      else
+                        v = h.Authorization || h.authorization;
+                    } catch (e) {}
+                    if (typeof v === 'string' && v.startsWith('Bearer ya29.'))
+                      window.__zmFlowBearer = v.slice(7);
+                  };
+                  const ofetch = window.fetch.bind(window);
+                  window.fetch = function(input, init) {
+                    try {
+                      if (input && typeof Request !== 'undefined' && input instanceof Request)
+                        grab(input.headers);
+                      grab(init && init.headers);
+                    } catch (e) {}
+                    return ofetch.apply(this, arguments);
+                  };
+                  const setHeader = XMLHttpRequest.prototype.setRequestHeader;
+                  XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+                    if (String(k).toLowerCase() === 'authorization' && String(v).startsWith('Bearer ya29.'))
+                      window.__zmFlowBearer = String(v).slice(7);
+                    return setHeader.apply(this, arguments);
+                  };
+                })();
+                """
+            )
         except asyncio.TimeoutError as exc:
             await self.stop()
             raise RuntimeError(

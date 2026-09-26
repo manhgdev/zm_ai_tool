@@ -119,29 +119,45 @@ def api_tts_status():
 @router.post("/api/tts/warm")
 def api_tts_warm():
     """Warm-load VieNeu when opening /text-to-speech — non-blocking."""
+    import sys
+
     from pipeline.tts.engines import vieneu as vieneu_engine
 
     installed = bool(vieneu_engine.available())
-    # Flip to loading before the background thread so /tts/status polls leave "Checking…".
+    load_state = getattr(vieneu_engine, "_load_state", "cold")
+    mode = vieneu_engine.current_mode()
+
+    def _payload(state: str) -> dict:
+        return {"ok": True, "loadState": state, "installed": installed, "mode": mode}
+
+    # Already warm / in progress — do not spawn another load thread (UI remount spam).
+    if installed and load_state == "ready":
+        if getattr(sys, "frozen", False):
+            try:
+                from pipeline.tts.engines import vieneu_frozen
+
+                if vieneu_frozen.has_ready_worker(mode=mode):
+                    return _payload("ready")
+            except Exception:
+                return _payload("ready")
+        else:
+            return _payload("ready")
+    if installed and load_state == "loading":
+        return _payload("loading")
+
     if installed:
         with vieneu_engine._lock:
             if vieneu_engine._load_state == "cold":
                 vieneu_engine._load_state = "loading"
 
-    def _run() -> None:
-        try:
-            vieneu_engine.warm()
-        except Exception:
-            pass
+        def _run() -> None:
+            try:
+                vieneu_engine.warm()
+            except Exception:
+                pass
 
-    if installed:
         threading.Thread(target=_run, name="tts-warm", daemon=True).start()
-    return {
-        "ok": True,
-        "loadState": getattr(vieneu_engine, "_load_state", "cold"),
-        "installed": installed,
-        "mode": vieneu_engine.current_mode(),
-    }
+    return _payload(getattr(vieneu_engine, "_load_state", "cold"))
 
 
 class VieNeuModelIn(BaseModel):

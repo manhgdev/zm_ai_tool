@@ -462,15 +462,9 @@ class FlowAPI:
     async def _get_auth_headers(self) -> dict:
         """Return auth headers for aisandbox-pa.googleapis.com requests.
 
-        Required headers (confirmed from live traffic capture 2026-03-06):
-          - ``Authorization: Bearer <token>``: OAuth2 token from next-auth session
-          - ``Referer: https://labs.google/`` (checked by server)
-
-        The ``X-goog-api-key`` header is only needed for non-auth endpoints
-        (checkAppAvailability). Video generation, credits, etc. need Bearer only.
-
-        Bearer token is extracted from ``window.__NEXT_DATA__`` after page navigation.
-        Cached for 55 min (tokens expire in ~1h).
+        Bearer may be absent on modern flow.google.com (Angular SPA no longer
+        embeds ya29 on load). Callers must tolerate a missing Authorization
+        header — Flow UI generation uses batchexecute / tiles instead.
         """
         hdrs = {
             "content-type": "text/plain;charset=UTF-8",
@@ -478,25 +472,17 @@ class FlowAPI:
             "origin":       "https://flow.google.com",
         }
 
-        token = await self._get_bearer_token()
+        token = await self._get_bearer_token(required=False)
         if token:
             hdrs["authorization"] = f"Bearer {token}"
         return hdrs
 
-    async def _get_bearer_token(self) -> str:
-        """Extract OAuth2 Bearer token from the Flow page.
+    async def _get_bearer_token(self, *, required: bool = False) -> str:
+        """Best-effort OAuth2 Bearer extraction from the Flow page.
 
-        The token is available in two places (both confirmed from live traffic):
-
-        1. **``window.__NEXT_DATA__.props.pageProps.session.access_token``** (fastest):
-           The next-auth session object is embedded in the page HTML and always
-           contains the current access token. This is the preferred method.
-
-        2. **CDP Network.requestWillBeSent** (fallback): If the page is navigated
-           or the session is fresh, we can catch the token from outgoing requests
-           on page load.
-
-        Tokens are cached for 55 min (they expire in ~1h).
+        Modern flow.google.com often never emits ``ya29`` until an aisandbox
+        call is made (and many flows use batchexecute instead). Missing token
+        is normal — return ``""`` unless ``required=True``.
         """
         import time as _time
 
@@ -506,15 +492,22 @@ class FlowAPI:
 
         page = await self._bm.page()
 
-        # ── Ensure we're on a flow.google.com page (needed for NEXT_DATA + auth session) ──
-        proj_url = f"{FLOW_BASE}/project/{self.project_id}"
+        proj_url = f"{FLOW_BASE}/project/{self.project_id}" if self.project_id else FLOW_BASE
         if "flow.google.com" not in page.url and "labs.google" not in page.url:
             log.info("Navigating to Flow project page for Bearer token extraction")
             await page.goto(proj_url, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
             page = await self._bm.page()
 
-        # ── Method 1: read from __NEXT_DATA__ (Next.js, legacy labs.google) ──
+        try:
+            hooked = await page.evaluate("() => window.__zmFlowBearer || null")
+            if hooked and str(hooked).startswith("ya29."):
+                self._bearer_token = hooked
+                self._bearer_token_ts = now
+                return self._bearer_token
+        except Exception:
+            pass
+
         try:
             token = await page.evaluate("""
                 () => {
@@ -532,13 +525,9 @@ class FlowAPI:
         except Exception as e:
             log.debug("__NEXT_DATA__ method failed: %s", e)
 
-        # ── Method 1.5: scan JS app state and storage for cached token ──
-        # flow.google.com (non-Next.js SPA) may cache the token in localStorage,
-        # sessionStorage, or expose it through a React/Angular context object.
         try:
             token = await page.evaluate("""
                 async () => {
-                    // Helper: find ya29.* token in any object (shallow scan)
                     const findToken = (obj, depth = 0) => {
                         if (!obj || depth > 3) return null;
                         if (typeof obj === 'string' && obj.startsWith('ya29.')) return obj;
@@ -552,37 +541,15 @@ class FlowAPI:
                         }
                         return null;
                     };
-                    // Try localStorage keys
                     try {
                         for (let i = 0; i < localStorage.length; i++) {
                             const k = localStorage.key(i);
-                            if (!k) continue;
-                            const raw = localStorage.getItem(k);
+                            const raw = k && localStorage.getItem(k);
                             if (!raw) continue;
                             if (raw.startsWith('ya29.')) return raw;
-                            try {
-                                const parsed = JSON.parse(raw);
-                                const t = findToken(parsed);
-                                if (t) return t;
-                            } catch(e) {}
+                            try { const t = findToken(JSON.parse(raw)); if (t) return t; } catch(e) {}
                         }
                     } catch(e) {}
-                    // Try sessionStorage
-                    try {
-                        for (let i = 0; i < sessionStorage.length; i++) {
-                            const k = sessionStorage.key(i);
-                            if (!k) continue;
-                            const raw = sessionStorage.getItem(k);
-                            if (!raw) continue;
-                            if (raw.startsWith('ya29.')) return raw;
-                            try {
-                                const parsed = JSON.parse(raw);
-                                const t = findToken(parsed);
-                                if (t) return t;
-                            } catch(e) {}
-                        }
-                    } catch(e) {}
-                    // Try next-auth and google auth APIs
                     try {
                         for (const path of ['/api/auth/session', '/fx/api/auth/session']) {
                             const resp = await fetch(path, {credentials: 'include'});
@@ -603,9 +570,6 @@ class FlowAPI:
         except Exception as e:
             log.debug("JS state scan failed: %s", e)
 
-        # ── Method 3: CDP Network intercept — navigate and capture outgoing Bearer tokens ──
-        # Most reliable for SPAs: any request to googleapis will carry the Bearer token.
-        # We wait up to 8 s to give the SPA time to bootstrap and fetch initial data.
         try:
             client = await page.context.new_cdp_session(page)
             await client.send("Network.enable")
@@ -613,26 +577,19 @@ class FlowAPI:
 
             def on_req(params):
                 url = params.get("request", {}).get("url", "")
-                # Catch any Google API endpoint that uses Bearer auth
-                if "googleapis.com" not in url and "google.com/v1" not in url:
+                if "aisandbox-pa.googleapis.com" not in url:
                     return
                 hdrs = params.get("request", {}).get("headers", {})
                 for k, v in hdrs.items():
-                    if k.lower() == "authorization" and v.startswith("Bearer ya29."):
-                        captured.append(v.replace("Bearer ", ""))
+                    if k.lower() == "authorization" and str(v).startswith("Bearer ya29."):
+                        captured.append(str(v).replace("Bearer ", "", 1))
 
             client.on("Network.requestWillBeSent", on_req)
-            # Always navigate (even if already on proj_url) to force a fresh page load
-            # and trigger the SPA's initial data fetches — this is where the Bearer token
-            # will appear in outgoing requests.
-            await page.goto(proj_url, wait_until="domcontentloaded", timeout=15000)
-            # Wait up to 8 s for the SPA to bootstrap and call googleapis.
-            for _ in range(8):
-                await asyncio.sleep(1)
+            for _ in range(4):
                 if captured:
                     break
+                await asyncio.sleep(0.4)
             await client.detach()
-
             if captured:
                 self._bearer_token = captured[0]
                 self._bearer_token_ts = now
@@ -641,16 +598,27 @@ class FlowAPI:
         except Exception as e:
             log.debug("CDP Network method failed: %s", e)
 
-        log.warning("Could not obtain Bearer token — requests may fail with 401")
-        return self._bearer_token or ""
+        if required:
+            raise AuthError(
+                "LOGIN_REQUIRED: Could not obtain Bearer token — re-login required"
+            )
+        log.debug("Bearer token not available yet (optional)")
+        return ""
 
     def _invalidate_bearer_token(self) -> None:
         """Drop cached OAuth token so the next lookup hits the live page/session."""
         self._bearer_token = ""
         self._bearer_token_ts = 0.0
 
+    def seed_bearer_token(self, token: str) -> None:
+        """Cache a Bearer captured from UIInterceptor / live traffic."""
+        if token and str(token).startswith("ya29."):
+            import time as _time
+            self._bearer_token = str(token)
+            self._bearer_token_ts = _time.time()
+
     async def _force_refresh_session(self) -> str:
-        """Reload Flow so next-auth / SPA can mint a fresh ya29 Bearer token."""
+        """Reload Flow project page once; return Bearer if the SPA emits one."""
         self._invalidate_bearer_token()
         page = await self._bm.page()
         proj_url = (
@@ -659,114 +627,107 @@ class FlowAPI:
             else FLOW_BASE
         )
         try:
-            # Soft reload first — keeps cookies, refreshes SPA session object.
             await page.reload(wait_until="domcontentloaded", timeout=20_000)
         except Exception:
             try:
                 await page.goto(proj_url, wait_until="domcontentloaded", timeout=20_000)
             except Exception as exc:
                 log.warning("Session refresh navigation failed: %s", exc)
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.0)
         page = await self._bm.page()
-        if "accounts.google.com" in page.url or "/about" in (page.url or ""):
+        if "accounts.google.com" in (page.url or "") or "/about" in (page.url or ""):
             raise AuthError(
-                "HTTP 401: Google session cookies expired — redirected to login"
+                "LOGIN_REQUIRED: Google session cookies expired — redirected to login"
             )
-        token = await self._get_bearer_token()
-        if not token:
-            # Cap cache-bypass path: Method 3 in _get_bearer_token already
-            # navigates; one more invalidate + extract after sleep.
-            self._invalidate_bearer_token()
-            await asyncio.sleep(1.0)
-            token = await self._get_bearer_token()
-        return token
+        return await self._get_bearer_token(required=False)
 
     # ── HTTP ──────────────────────────────────────────────────────────────────
 
-    async def _fetch(self, method: str, url: str, body: Optional[dict] = None) -> dict:
+    async def _fetch(
+        self,
+        method: str,
+        url: str,
+        body: Optional[dict] = None,
+        *,
+        _auth_retry: bool = True,
+    ) -> dict:
         """Authenticated request via Playwright browser context.
 
-        Google's aisandbox-pa.googleapis.com requires an ``Authorization: Bearer``
-        OAuth2 token in the request headers. This token is NOT available via
-        cookies alone — it's managed by the Flow frontend's JavaScript OAuth flow.
-
-        We extract it from ``window.__NEXT_DATA__`` (embedded in the page HTML)
-        or from the next-auth session API, then cache it for ~55 min.
-
-        This applies to both CDP mode and normal persistent-profile mode.
+        Prefer Bearer when available. Missing Bearer is not itself a login
+        failure on modern Flow (Angular + batchexecute). Only a real HTTP 401
+        plus a login-wall URL should escalate to LOGIN_REQUIRED.
         """
         if not url.startswith("http"):
             url = f"{API_BASE}/{url}"
 
         data = json.dumps(body) if body is not None else None
         ctx = self._bm.context.request
-        last_status = 0
-        last_text = ""
         endpoint = url.split("/")[-1].split(":")[-1]
 
-        for attempt in range(2):
-            hdrs = await self._get_auth_headers()
-            if method.upper() == "GET":
-                resp = await ctx.get(url, headers=hdrs)
-            elif method.upper() == "PATCH":
-                resp = await ctx.patch(url, headers=hdrs, data=data)
-            else:
-                resp = await ctx.post(url, headers=hdrs, data=data)
+        hdrs = await self._get_auth_headers()
+        if method.upper() == "GET":
+            resp = await ctx.get(url, headers=hdrs)
+        elif method.upper() == "PATCH":
+            resp = await ctx.patch(url, headers=hdrs, data=data)
+        else:
+            resp = await ctx.post(url, headers=hdrs, data=data)
 
-            if resp.status < 400:
-                try:
-                    return await resp.json()
-                except Exception:
-                    return {}
+        if resp.status < 400:
+            try:
+                return await resp.json()
+            except Exception:
+                return {}
 
-            text = await resp.text()
-            last_status = resp.status
-            last_text = text
-            log.error("API %d %s: %s", resp.status, url, text[:300])
+        text = await resp.text()
+        log.error("API %d %s: %s", resp.status, url, text[:300])
 
-            if resp.status in (401, 403) and attempt == 0:
-                # Stale Bearer mid-poll is common; refresh session once then retry.
-                log.warning(
-                    "HTTP %s on %s — refreshing Flow session and retrying once",
-                    resp.status,
-                    endpoint,
+        if resp.status == 404:
+            raise NotFoundError(
+                f"Endpoint not found (HTTP 404): {endpoint}\n"
+                f"This feature may be deprecated or unavailable via direct API.\n"
+                f"Response: {text[:200]}"
+            )
+        if resp.status == 400:
+            try:
+                err_body = json.loads(text)
+                msg = err_body.get("error", {}).get("message", text[:200])
+            except Exception:
+                msg = text[:200]
+            raise InvalidArgumentError(
+                f"HTTP 400 INVALID_ARGUMENT on {endpoint}: {msg}"
+            )
+        if resp.status in (401, 403):
+            self._invalidate_bearer_token()
+            try:
+                page = await self._bm.page()
+                wall = "accounts.google.com" in (page.url or "") or "/about" in (page.url or "")
+            except Exception:
+                wall = False
+            if wall:
+                raise AuthError(
+                    f"LOGIN_REQUIRED: HTTP {resp.status} on {endpoint}: session redirected to login"
                 )
+            # A resumed job may have no live UI interceptor to supply ya29.
+            # Refresh the existing Flow SPA once and retry only when a new
+            # token was actually obtained; never turn a 401 into a reconnect
+            # loop.  Cookies remain the source of truth for login state.
+            if _auth_retry:
                 try:
-                    await self._force_refresh_session()
+                    refreshed = await self._force_refresh_session()
                 except AuthError:
                     raise
                 except Exception as exc:
-                    log.warning("Flow session refresh failed: %s", exc)
-                continue
-
-            if resp.status == 404:
-                raise NotFoundError(
-                    f"Endpoint not found (HTTP 404): {endpoint}\n"
-                    f"This feature may be deprecated or unavailable via direct API.\n"
-                    f"Response: {text[:200]}"
-                )
-            if resp.status == 400:
-                try:
-                    err_body = json.loads(text)
-                    msg = err_body.get("error", {}).get("message", text[:200])
-                except Exception:
-                    msg = text[:200]
-                raise InvalidArgumentError(
-                    f"HTTP 400 INVALID_ARGUMENT on {endpoint}: {msg}"
-                )
-            if resp.status in (401, 403):
-                raise AuthError(
-                    f"HTTP {resp.status} on {endpoint}: authentication failed. "
-                    "Session cookies may be expired — re-open the browser."
-                )
-            raise GenerationError(f"HTTP {resp.status} on {endpoint}: {text[:200]}")
-
-        if last_status in (401, 403):
-            raise AuthError(
-                f"HTTP {last_status} on {endpoint}: authentication failed. "
-                "Session cookies may be expired — re-open the browser."
+                    log.debug("Bearer refresh after HTTP %d failed: %s", resp.status, exc)
+                    refreshed = ""
+                if refreshed:
+                    return await self._fetch(
+                        method, url, body, _auth_retry=False,
+                    )
+            raise GenerationError(
+                f"HTTP {resp.status} on {endpoint}: API auth rejected "
+                f"(Flow session cookie still valid — avoid reconnect storm). {text[:160]}"
             )
-        raise GenerationError(f"HTTP {last_status} on {endpoint}: {last_text[:200]}")
+        raise GenerationError(f"HTTP {resp.status} on {endpoint}: {text[:200]}")
 
     async def _trpc_get(self, proc: str, inp: dict) -> dict:
         from urllib.parse import quote
@@ -1457,15 +1418,39 @@ class FlowAPI:
         """
         Check the status of a pending video generation job.
 
-        Endpoint: POST /v1/video:batchCheckAsyncVideoGenerationStatus
+        Prefer aisandbox when Bearer is available. On 401/missing auth (common
+        on modern Angular Flow), fall back to project/DOM payload so callers
+        do not enter a LOGIN_REQUIRED reconnect loop.
         """
+        import re as _re
+
         pid  = project_id or self.project_id
-        data = await self._fetch(
-            "POST",
-            "video:batchCheckAsyncVideoGenerationStatus",
-            {"media": [{"name": media_name, "projectId": pid}]},
-        )
-        return VideoStatus(data)
+        if self._bearer_token:
+            try:
+                data = await self._fetch(
+                    "POST",
+                    "video:batchCheckAsyncVideoGenerationStatus",
+                    {"media": [{"name": media_name, "projectId": pid}]},
+                )
+                return VideoStatus(data)
+            except GenerationError as exc:
+                if "avoid reconnect storm" not in str(exc) and not _re.search(r"\b401\b|\b403\b", str(exc)):
+                    raise
+                log.debug("poll_video aisandbox unauthorized — using project payload")
+
+        data = await self.get_project_data()
+        for media in data.get("projectContents", {}).get("media", []):
+            if str((media or {}).get("name") or "") != str(media_name):
+                continue
+            return VideoStatus({"media": [media]})
+        return VideoStatus({
+            "media": [{
+                "name": media_name,
+                "mediaMetadata": {
+                    "mediaStatus": {"mediaGenerationStatus": "MEDIA_GENERATION_STATUS_PENDING"},
+                },
+            }],
+        })
 
     async def wait_for_video(
         self,

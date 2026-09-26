@@ -22,3 +22,13 @@ test("maps job_failed event title", () => {
   const event = explainFlowEvent("job_failed");
   assert.equal(event.titleEn, "Job failed");
 });
+
+test("distinguishes Flow unusual-activity blocks from content rejection", () => {
+  const explained = explainFlowError(
+    "FLOW_GENERATION_REJECTED: Chúng tôi nhận thấy có hoạt động bất thường nào đó. Vui lòng chờ vài giây rồi thử lại.",
+  );
+  assert.equal(explained.code, "FLOW_GENERATION_REJECTED");
+  assert.match(explained.titleVi, /tạm thời chặn/i);
+  assert.doesNotMatch(explained.titleVi, /từ chối nội dung/i);
+  assert.match(explained.actionVi, /Chờ vài giây/i);
+});

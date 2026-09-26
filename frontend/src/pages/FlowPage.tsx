@@ -317,6 +317,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     showIncludeDone: boolean;
     model: string;
     ratio: string;
+    duration: string;
+    resolution: string;
+    quality: string;
+    count: number;
     concurrency: string;
     accountId: string;
   } | null>(null);
@@ -745,6 +749,17 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const retryRatioOptions = retryModelCapability?.ratios.length
     ? retryModelCapability.ratios
     : retryTarget?.job.kind === "video" ? ["16:9", "9:16"] : ["1:1", "16:9", "9:16", "4:3", "3:4"];
+  const retryDurationOptions = retryModelCapability?.durations.length
+    ? retryModelCapability.durations
+    : retryTarget?.job.kind === "video" && /omni.*flash/i.test(retryTarget?.model || "")
+      ? [...FLOW_OMNI_FLASH_DURATIONS]
+      : [];
+  const retryResolutionOptions = retryModelCapability?.resolutions.length
+    ? retryModelCapability.resolutions
+    : retryTarget?.job.kind === "image" ? flowImageResolutions(retryAccount?.plan || "Free") : [];
+  const retryQualityOptions = retryTarget?.job.kind === "video"
+    ? flowVideoDownloadQualities(retryAccount?.plan || "Free")
+    : [];
   const previewOutput = preview?.job.outputs?.[preview.outputIndex] || "";
   const previewMediaKind = preview ? flowOutputMediaKind(previewOutput, preview.job.kind) : "file";
   const previewSrc = preview ? `/api/flow/jobs/${preview.job.id}/outputs/${preview.outputIndex}` : "";
@@ -1214,6 +1229,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       showIncludeDone,
       model: job.settings.model,
       ratio: job.settings.ratio,
+      duration: job.settings.duration || "",
+      resolution: job.settings.resolution || "",
+      quality: job.settings.quality || "",
+      count: Math.max(1, Math.min(4, Number((job.settings as { count?: number }).count) || 1)),
       concurrency: String(job.settings.concurrency || settings.concurrency),
       accountId: resolvedAccountId,
     });
@@ -1224,7 +1243,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const confirmRetryJob = () => {
     if (!retryTarget) return;
-    const { jobs: retryJobs, model, ratio, concurrency, accountId } = retryTarget;
+    const { jobs: retryJobs, model, ratio, duration, resolution, quality, count, concurrency, accountId } = retryTarget;
     if (!accountId || !accounts.some((account) => account.id === accountId)) {
       toast.error(t("Chọn tài khoản Flow còn online để chạy lại.", "Pick an online Flow account to retry."));
       return;
@@ -1233,7 +1252,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     void Promise.all(retryJobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId, settings: { model, ratio, concurrency } }),
+      body: JSON.stringify({ accountId, settings: { model, ratio, duration, resolution, quality, count, concurrency } }),
     })))
       .then(async () => {
         const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
@@ -3230,7 +3249,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     const ratio = capability?.ratios.includes(current.ratio)
                       ? current.ratio
                       : capability?.defaultRatio || capability?.ratios[0] || current.ratio;
-                    return { ...current, model, ratio };
+                    const duration = capability?.durations?.includes(current.duration)
+                      ? current.duration
+                      : capability?.defaultDuration || capability?.durations?.[0] || "";
+                    const resolution = capability?.resolutions?.includes(current.resolution)
+                      ? current.resolution
+                      : capability?.defaultResolution || capability?.resolutions?.[0] || current.resolution;
+                    return { ...current, model, ratio, duration, resolution };
                   })}
                   options={retryModelOptions}
                 />
@@ -3240,6 +3265,40 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   onChange={(ratio) => setRetryTarget((current) => current ? { ...current, ratio } : current)}
                   options={retryRatioOptions}
                 />
+                {retryTarget.job.kind === "video" && retryDurationOptions.length > 0 && (
+                  <FlowSelect
+                    label={t("Thời lượng", "Duration")}
+                    value={retryDurationOptions.includes(retryTarget.duration) ? retryTarget.duration : retryDurationOptions[0]}
+                    onChange={(duration) => setRetryTarget((current) => current ? { ...current, duration } : current)}
+                    options={retryDurationOptions}
+                    suffix={t(" giây", " sec")}
+                    disabled={retryDurationOptions.length < 2}
+                  />
+                )}
+                {retryResolutionOptions.length > 0 && (
+                  <FlowSelect
+                    label={t("Độ phân giải", "Resolution")}
+                    value={retryResolutionOptions.includes(retryTarget.resolution) ? retryTarget.resolution : retryResolutionOptions[0]}
+                    onChange={(resolution) => setRetryTarget((current) => current ? { ...current, resolution } : current)}
+                    options={retryResolutionOptions}
+                  />
+                )}
+                {retryTarget.job.kind === "video" && retryQualityOptions.length > 0 && (
+                  <FlowSelect
+                    label={t("Chất lượng tải", "Download quality")}
+                    value={retryQualityOptions.includes(retryTarget.quality) ? retryTarget.quality : retryQualityOptions[0]}
+                    onChange={(quality) => setRetryTarget((current) => current ? { ...current, quality } : current)}
+                    options={retryQualityOptions}
+                  />
+                )}
+                <label className="flow-settings-count">
+                  <span>{retryTarget.job.kind === "video" ? t("Số video", "Videos") : t("Số ảnh", "Images")}</span>
+                  <div className="flow-counter">
+                    <button type="button" onClick={() => setRetryTarget((current) => current ? { ...current, count: Math.max(1, current.count - 1) } : current)} aria-label={t("Giảm số lượng", "Decrease quantity")}>−</button>
+                    <strong>{retryTarget.count}</strong>
+                    <button type="button" onClick={() => setRetryTarget((current) => current ? { ...current, count: Math.min(4, current.count + 1) } : current)} aria-label={t("Tăng số lượng", "Increase quantity")}>+</button>
+                  </div>
+                </label>
                 <FlowSelect
                   label={t("Tài khoản", "Account")}
                   value={retryTarget.accountId}

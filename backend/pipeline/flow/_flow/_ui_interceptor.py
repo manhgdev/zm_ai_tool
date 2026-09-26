@@ -61,9 +61,10 @@ class UIInterceptor:
 
     AISANDBOX_HOST = "aisandbox-pa.googleapis.com"
 
-    def __init__(self):
+    def __init__(self, api=None):
         self._calls: list[CapturedCall] = []
         self._bearer: Optional[str] = None
+        self._api = api
         self._attached = False
 
     # ── Attach ────────────────────────────────────────────────────────────────
@@ -91,6 +92,14 @@ class UIInterceptor:
         auth = request.headers.get("authorization", "") or request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             self._bearer = auth[7:]
+            # The UI request is the authoritative source on current Flow SPA
+            # builds. Keep the API poller in sync before it sends its first
+            # batchCheck request; cloned profiles often cannot mint ya29.
+            if self._api is not None:
+                try:
+                    self._api.seed_bearer_token(self._bearer)
+                except Exception:
+                    log.debug("Could not seed FlowAPI Bearer from UI request", exc_info=True)
 
         try:
             body = request.post_data or ""

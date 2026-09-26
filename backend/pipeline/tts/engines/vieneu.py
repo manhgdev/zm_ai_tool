@@ -1193,16 +1193,22 @@ def warm() -> str:
         if getattr(sys, "frozen", False):
             from . import vieneu_frozen
 
-            with _lock:
-                if _load_state == "ready" and vieneu_frozen.has_ready_worker(mode=current_mode()):
-                    return "ready"
+            # Keep warm pool: any live worker for this mode → already cached.
+            if vieneu_frozen.has_ready_worker(mode=current_mode()):
+                with _lock:
+                    _load_state = "ready"
+                    _client_err = None
+                return "ready"
             # Single-flight: concurrent warm() callers wait behind the first probe.
             if not _warm_gate.acquire(blocking=False):
                 return "loading"
             try:
+                if vieneu_frozen.has_ready_worker(mode=current_mode()):
+                    with _lock:
+                        _load_state = "ready"
+                        _client_err = None
+                    return "ready"
                 with _lock:
-                    if _load_state == "ready" and vieneu_frozen.has_ready_worker(mode=current_mode()):
-                        return "ready"
                     _load_state = "loading"
                     _client_err = None
                 ok, detail = vieneu_frozen.probe()
@@ -1217,6 +1223,8 @@ def warm() -> str:
             finally:
                 _warm_gate.release()
         with _lock:
+            if _load_state == "ready" and _client is not None:
+                return str(status().get("device") or "ready")
             if _load_state == "cold":
                 _load_state = "loading"
         get_client()

@@ -188,7 +188,7 @@ class FlowClient:
         page = await self._bm.page()
         await self._ensure_project_page(page)
 
-        interceptor = UIInterceptor()
+        interceptor = UIInterceptor(self._api)
         interceptor.attach(page)
 
         # Configure settings
@@ -248,7 +248,7 @@ class FlowClient:
         page = await self._bm.page()
         await self._ensure_project_page(page)
 
-        interceptor = UIInterceptor()
+        interceptor = UIInterceptor(self._api)
         interceptor.attach(page)
 
         await self._ui.open_settings_panel(page)
@@ -303,7 +303,7 @@ class FlowClient:
         page = await self._bm.page()
         await self._ui.navigate_to_edit(page, self.project_id, wid)
 
-        interceptor = UIInterceptor()
+        interceptor = UIInterceptor(self._api)
         interceptor.attach(page)
 
         await self._ui.click_extend(page)
@@ -404,7 +404,7 @@ class FlowClient:
         page = await self._bm.page()
         await self._ui.navigate_to_edit(page, self.project_id, wid)
 
-        interceptor = UIInterceptor()
+        interceptor = UIInterceptor(self._api)
         interceptor.attach(page)
 
         await self._ui.click_camera(page)
@@ -444,7 +444,7 @@ class FlowClient:
         page = await self._bm.page()
         await self._ui.navigate_to_edit(page, self.project_id, wid)
 
-        interceptor = UIInterceptor()
+        interceptor = UIInterceptor(self._api)
         interceptor.attach(page)
 
         await self._ui.click_camera(page)
@@ -481,7 +481,7 @@ class FlowClient:
         page = await self._bm.page()
         await self._ui.navigate_to_edit(page, self.project_id, wid)
 
-        interceptor = UIInterceptor()
+        interceptor = UIInterceptor(self._api)
         interceptor.attach(page)
 
         await self._ui.click_insert(page)
@@ -529,7 +529,7 @@ class FlowClient:
         page = await self._bm.page()
         await self._ui.navigate_to_edit(page, self.project_id, wid)
 
-        interceptor = UIInterceptor()
+        interceptor = UIInterceptor(self._api)
         interceptor.attach(page)
 
         await self._ui.click_remove(page)
@@ -572,7 +572,7 @@ class FlowClient:
         page = await self._bm.page()
         await self._ui.navigate_to_edit(page, self.project_id, wid)
 
-        interceptor = UIInterceptor()
+        interceptor = UIInterceptor(self._api)
         interceptor.attach(page)
 
         await self._ui.click_download_button(page)

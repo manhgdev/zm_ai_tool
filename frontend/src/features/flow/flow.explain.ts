@@ -133,6 +133,17 @@ export function explainFlowError(message: string): FlowExplain {
     };
   }
   if (code === "FLOW_GENERATION_REJECTED") {
+    if (/abnormal activity|hoạt động bất thường|vui lòng chờ vài giây|please wait a few seconds/i.test(raw)) {
+      return {
+        code,
+        titleVi: "Flow tạm thời chặn yêu cầu",
+        titleEn: "Flow temporarily blocked the request",
+        summaryVi: "Flow phát hiện hoạt động bất thường và tạm thời từ chối yêu cầu; đây không phải lỗi nội dung và thường không trừ credits.",
+        summaryEn: "Flow detected unusual activity and temporarily blocked the request; this is not a content-safety rejection and usually does not charge credits.",
+        actionVi: "Chờ vài giây rồi chạy lại; nếu còn lặp, giảm số job đồng thời hoặc mở Trung tâm trợ giúp Flow.",
+        actionEn: "Wait a few seconds and retry; if it repeats, reduce concurrent jobs or open the Flow Help Center.",
+      };
+    }
     return {
       code,
       titleVi: "Flow từ chối nội dung",
@@ -152,6 +163,17 @@ export function explainFlowError(message: string): FlowExplain {
       summaryEn: "Submitted, but the result was not ready before the timeout.",
       actionVi: "Chạy lại (recovery có thể lấy media nếu Flow đã tạo xong sau đó).",
       actionEn: "Retry (recovery may pick up media if Flow finished later).",
+    };
+  }
+  if (code === "FLOW_CREDITS_INSUFFICIENT" || /FLOW_CREDITS_INSUFFICIENT|insufficient credits|not enough credits/i.test(raw)) {
+    return {
+      code: "FLOW_CREDITS_INSUFFICIENT",
+      titleVi: "Không đủ credits Flow",
+      titleEn: "Not enough Flow credits",
+      summaryVi: "Số credits hiện có thấp hơn chi phí của model/cấu hình đã chọn nên Flow không thể tạo media.",
+      summaryEn: "The available credits are below the cost of the selected model/settings, so Flow cannot create the media.",
+      actionVi: "Đồng bộ credits, chọn model rẻ hơn hoặc chờ credits được nạp lại rồi tạo lại.",
+      actionEn: "Sync credits, choose a cheaper model, or wait for credits to return before creating again.",
     };
   }
   if (code === "FLOW_CREDITS_EMPTY" || /FLOW_CREDITS_EMPTY|hết tín dụng|out of flow credits/i.test(raw)) {
@@ -279,7 +301,7 @@ export function isFlowLimitError(raw: string | null | undefined): boolean {
   const text = String(raw || "");
   if (!text.trim()) return false;
   const explained = explainFlowError(text);
-  if (explained.code === "FLOW_CREDITS_EMPTY" || explained.code === "FLOW_QUOTA_EXHAUSTED") {
+  if (explained.code === "FLOW_CREDITS_EMPTY" || explained.code === "FLOW_CREDITS_INSUFFICIENT" || explained.code === "FLOW_QUOTA_EXHAUSTED") {
     return true;
   }
   return /insufficient credits|not enough credits|out of credits|hết tín dụng|hết lượt|hết hạn mức|usage limit|generation limit|daily limit|monthly limit|quota|rate.?limit|too many requests/i.test(text);
@@ -292,7 +314,7 @@ export function flowLimitPopupCopy(
 ): { title: string; message: string } {
   const explained = explainFlowError(String(raw || "FLOW_CREDITS_EMPTY"));
   const formatted = formatFlowExplain(
-    explained.code === "FLOW_QUOTA_EXHAUSTED" || explained.code === "FLOW_CREDITS_EMPTY"
+    explained.code === "FLOW_QUOTA_EXHAUSTED" || explained.code === "FLOW_CREDITS_EMPTY" || explained.code === "FLOW_CREDITS_INSUFFICIENT"
       ? explained
       : explainFlowError("FLOW_CREDITS_EMPTY"),
     t,
