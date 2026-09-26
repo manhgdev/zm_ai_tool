@@ -1102,13 +1102,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     // Nếu pool toàn done (Tạo mới) hoặc single job → giữ nguyên danh sách.
     const initialJobs = showIncludeDone ? retryOnlyJobs : retryJobs;
     const onlineAccounts = accounts.filter((account) => account.status === "online");
-    const resolvedAccountId = onlineAccounts.some((account) => account.id === job.accountId)
-      ? job.accountId
-      : accounts.find((account) => account.id === job.accountId)?.id
-        || accounts.find((account) => account.label === job.account)?.id
-        || onlineAccounts[0]?.id
-        || accounts[0]?.id
-        || "";
+    const resolvedAccountId =
+      (onlineAccounts.some((account) => account.id === job.accountId) ? job.accountId : "")
+      || accounts.find((account) => account.id === job.accountId)?.id
+      || accounts.find((account) => account.label === job.account)?.id
+      || onlineAccounts[0]?.id
+      || accounts[0]?.id
+      || "";
     setRetryTarget({
       job: initialJobs[0] || job,
       jobs: initialJobs,
