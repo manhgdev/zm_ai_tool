@@ -1223,6 +1223,25 @@
 .flow-retry-kind-card > strong { color: var(--ink); font-size: 0.78rem; }
 .flow-retry-kind-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .flow-retry-dialog[data-multi-kind="true"] .flow-retry-fields > label:not(.flow-retry-include-done) { display: none; }
+/* macOS native selects use a different intrinsic baseline/arrow box. Keep
+   every retry field on the same fixed box so the two-column grid stays even. */
+.platform-macos .flow-retry-dialog .flow-retry-fields select {
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  width: 100%;
+  height: 40px;
+  min-height: 40px;
+  padding: 0 32px 0 10px;
+  line-height: 1.2;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.platform-macos .flow-retry-dialog .flow-retry-fields label { align-content: start; min-width: 0; }
+.platform-macos .flow-retry-dialog .flow-retry-fields label > span { min-height: 16px; line-height: 16px; }
+.platform-macos .flow-retry-dialog .flow-counter { height: 40px; min-height: 40px; }
 @media (max-width: 680px) {
   .flow-retry-fields { grid-template-columns: 1fr; }
   .flow-retry-kind-grid { grid-template-columns: 1fr; }

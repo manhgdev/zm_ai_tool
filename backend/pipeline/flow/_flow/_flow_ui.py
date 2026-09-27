@@ -424,9 +424,21 @@ class FlowUI:
                 if await confirm.count() and await confirm.is_visible():
                     await confirm.click(timeout=5_000)
                     await asyncio.sleep(1)
+                    try:
+                        if await page.locator(".cdk-overlay-backdrop, .cdk-overlay-container > div").count() > 0:
+                            await page.keyboard.press("Escape")
+                            await asyncio.sleep(0.5)
+                    except Exception:
+                        pass
                     return True
                 if not await option.count() or not await option.is_visible():
                     await asyncio.sleep(0.6)
+                    try:
+                        if await page.locator(".cdk-overlay-backdrop, .cdk-overlay-container > div").count() > 0:
+                            await page.keyboard.press("Escape")
+                            await asyncio.sleep(0.5)
+                    except Exception:
+                        pass
                     return True
             shot = Path(tempfile.gettempdir()) / "zm-flow-picker-fail.png"
             await page.screenshot(path=str(shot))

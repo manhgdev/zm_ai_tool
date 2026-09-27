@@ -55,218 +55,159 @@ function codeOf(message: string): string {
 export function explainFlowError(message: string): FlowExplain {
   const raw = String(message || "").trim();
   const code = codeOf(raw);
+  // Strip the leading CODE: prefix to get the human-readable detail.
+  const detail = raw.replace(/^FLOW_[A-Z0-9_]+:\s*/i, "").trim() || raw;
+
+  /** Helper: build result with raw detail as title, no summary, custom action. */
+  const make = (
+    resolvedCode: string,
+    actionVi: string,
+    actionEn: string,
+  ): FlowExplain => ({
+    code: resolvedCode,
+    titleVi: detail,
+    titleEn: detail,
+    summaryVi: "",
+    summaryEn: "",
+    actionVi,
+    actionEn,
+  });
 
   if (code === "FLOW_RESULT_NOT_FOUND") {
-    return {
+    return make(
       code,
-      titleVi: "Không tìm thấy kết quả đã gửi",
-      titleEn: "Submitted result not found",
-      summaryVi:
-        "Job vào bước phục hồi nhưng Flow không còn media đang tạo hay đã xong cho lần gửi này (có thể bị reject, đổi project, hoặc mất tile).",
-      summaryEn:
-        "Recovery ran, but Flow has no pending or finished media for this submission (reject, project switch, or missing tile).",
-      actionVi: "Bấm Chạy lại để gửi yêu cầu mới. Nếu lặp lại: Đồng bộ tài khoản rồi thử lại.",
-      actionEn: "Click Retry to submit a new request. If it repeats: Sync the account, then retry.",
-    };
+      "Flow sẽ tự gửi một yêu cầu mới. Nếu vẫn lặp lại sau các lần tự thử: Đồng bộ tài khoản rồi thử lại.",
+      "Flow will automatically submit a new request. If it repeats after the automatic attempts: sync the account and retry.",
+    );
   }
   if (code === "FLOW_IMAGE_RPC_TIMEOUT") {
-    return {
+    return make(
       code,
-      titleVi: "Timeout khi chờ Flow tạo ảnh",
-      titleEn: "Timed out waiting for image generation",
-      summaryVi:
-        "Đã bấm tạo ảnh nhưng trong thời gian chờ không bắt được phản hồi API batchGenerateImages (Captured so far rỗng = không thấy RPC).",
-      summaryEn:
-        "Image create was clicked, but batchGenerateImages was not captured in time (empty Captured so far means no RPC seen).",
-      actionVi:
-        "Chạy lại job. Kiểm tra Chrome Flow còn đăng nhập, credits còn, và model ảnh còn dùng được trên gói tài khoản.",
-      actionEn:
-        "Retry the job. Confirm Chrome Flow is signed in, credits remain, and the image model is allowed on this plan.",
-    };
+      "Chạy lại job. Kiểm tra Chrome Flow còn đăng nhập, credits còn, và model ảnh còn dùng được trên gói tài khoản.",
+      "Retry the job. Confirm Chrome Flow is signed in, credits remain, and the image model is allowed on this plan.",
+    );
   }
   if (code === "FLOW_VIDEO_RPC_TIMEOUT") {
-    return {
+    return make(
       code,
-      titleVi: "Timeout khi chờ Flow tạo video",
-      titleEn: "Timed out waiting for video generation",
-      summaryVi:
-        "Đã gửi tạo video nhưng không bắt được phản hồi API video trong thời gian chờ.",
-      summaryEn:
-        "Video generation was submitted, but the video RPC was not captured before the timeout.",
-      actionVi: "Chạy lại. Nếu lặp: đồng bộ tài khoản / mở lại session Flow trong Chrome.",
-      actionEn: "Retry. If it repeats: sync the account / reopen the Flow session in Chrome.",
-    };
+      "Chạy lại. Nếu lặp: đồng bộ tài khoản / mở lại session Flow trong Chrome.",
+      "Retry. If it repeats: sync the account / reopen the Flow session in Chrome.",
+    );
   }
   if (code === "FLOW_DURATION_CONTROL_TIMEOUT" || /invalid duration|duration .* was not/i.test(raw)) {
-    return {
-      code: code === "FLOW_ERROR" ? "FLOW_DURATION_MISMATCH" : code,
-      titleVi: "Lỗi chọn thời lượng trên Flow",
-      titleEn: "Flow duration control error",
-      summaryVi:
-        "Worker cố chọn thời lượng (ví dụ 8s) nhưng model/gói này không có control đó trên UI Flow (Veo thường không có tab 4/6/8/10s).",
-      summaryEn:
-        "The worker tried to pick a duration (e.g. 8s) that this model/plan does not expose in Flow UI (Veo often has no 4/6/8/10s tabs).",
-      actionVi: "Cập nhật app / chạy lại với model đúng. Veo: để Flow dùng thời lượng mặc định; Omni Flash mới có chọn giây.",
-      actionEn: "Update the app / retry with the right model. Veo uses Flow’s default length; only Omni Flash has duration radios.",
-    };
+    const isOmni = /omni(?:\s+1\.1)?\s+flash/i.test(raw);
+    return make(
+      code === "FLOW_ERROR" ? "FLOW_DURATION_MISMATCH" : code,
+      isOmni
+        ? "Cập nhật app, đồng bộ tài khoản Flow rồi chạy lại; không tự đổi sang 8s."
+        : "Cập nhật app / chạy lại với model đúng. Veo: để Flow dùng thời lượng mặc định; Omni Flash mới có chọn giây.",
+      isOmni
+        ? "Update the app, sync the Flow account, then retry; it will not silently switch to 8s."
+        : "Update the app / retry with the right model. Veo uses Flow's default length; only Omni Flash has duration radios.",
+    );
   }
   if (code === "FLOW_SETTING_MISMATCH" || /FLOW_SETTING_MISMATCH/i.test(raw)) {
-    return {
-      code: "FLOW_SETTING_MISMATCH",
-      titleVi: "Cài đặt không khớp UI Flow",
-      titleEn: "Settings do not match Flow UI",
-      summaryVi: raw.replace(/^FLOW_SETTING_MISMATCH:\s*/i, "") || "Tỷ lệ / thời lượng / độ phân giải không chọn được trên Flow.",
-      summaryEn: raw.replace(/^FLOW_SETTING_MISMATCH:\s*/i, "") || "Ratio / duration / resolution could not be selected in Flow.",
-      actionVi: "Đồng bộ catalog tài khoản (Sync), chọn lại model/tỷ lệ theo gói Free·Pro·Ultra, rồi chạy lại.",
-      actionEn: "Sync the account catalog, pick model/ratio allowed for Free·Pro·Ultra, then retry.",
-    };
+    return make(
+      "FLOW_SETTING_MISMATCH",
+      "Đồng bộ catalog tài khoản (Sync), chọn lại model/tỷ lệ theo gói Free·Pro·Ultra, rồi chạy lại.",
+      "Sync the account catalog, pick model/ratio allowed for Free·Pro·Ultra, then retry.",
+    );
   }
   if (code === "FLOW_EMPTY_OUTPUT" || code === "FLOW_OUTPUT_MISSING" || code === "FLOW_OUTPUT_EMPTY") {
-    return {
+    return make(
       code,
-      titleVi: "Không có file output",
-      titleEn: "No output file",
-      summaryVi: "Flow báo xong nhưng không tải được file ảnh/video về máy.",
-      summaryEn: "Flow finished, but no image/video file was downloaded.",
-      actionVi: "Chạy lại job. Kiểm tra thư mục output còn ghi được.",
-      actionEn: "Retry the job. Check the output folder is writable.",
-    };
+      "Chạy lại job. Kiểm tra thư mục output còn ghi được.",
+      "Retry the job. Check the output folder is writable.",
+    );
   }
   if (code === "FLOW_GENERATION_REJECTED") {
     if (/abnormal activity|hoạt động bất thường|vui lòng chờ vài giây|please wait a few seconds/i.test(raw)) {
-      return {
+      return make(
         code,
-        titleVi: "Flow tạm thời chặn yêu cầu",
-        titleEn: "Flow temporarily blocked the request",
-        summaryVi: "Flow phát hiện hoạt động bất thường và tạm thời từ chối yêu cầu; đây không phải lỗi nội dung và thường không trừ credits.",
-        summaryEn: "Flow detected unusual activity and temporarily blocked the request; this is not a content-safety rejection and usually does not charge credits.",
-        actionVi: "Chờ vài giây rồi chạy lại; nếu còn lặp, giảm số job đồng thời hoặc mở Trung tâm trợ giúp Flow.",
-        actionEn: "Wait a few seconds and retry; if it repeats, reduce concurrent jobs or open the Flow Help Center.",
-      };
+        "Chờ vài giây rồi chạy lại; nếu còn lặp, giảm số job đồng thời hoặc mở Trung tâm trợ giúp Flow.",
+        "Wait a few seconds and retry; if it repeats, reduce concurrent jobs or open the Flow Help Center.",
+      );
     }
-    return {
+    return make(
       code,
-      titleVi: "Flow từ chối nội dung",
-      titleEn: "Flow rejected the content",
-      summaryVi: "Flow không tạo được nội dung này và thường không trừ credits.",
-      summaryEn: "Flow could not generate this content and usually does not charge credits.",
-      actionVi: "Sửa prompt / bỏ ảnh tham chiếu nhạy cảm, rồi chạy lại.",
-      actionEn: "Edit the prompt / remove sensitive references, then retry.",
-    };
+      "Sửa prompt / bỏ ảnh tham chiếu nhạy cảm, rồi chạy lại.",
+      "Edit the prompt / remove sensitive references, then retry.",
+    );
   }
   if (code === "FLOW_AUTOMATION_BLOCKED" || /FLOW_AUTOMATION_BLOCKED/i.test(raw)) {
-    return {
-      code: "FLOW_AUTOMATION_BLOCKED",
-      titleVi: "Flow tạm thời chặn hoạt động tự động",
-      titleEn: "Flow temporarily blocked automated activity",
-      summaryVi: "Flow phát hiện hoạt động bất thường từ phiên APP; đây không phải lỗi nội dung.",
-      summaryEn: "Flow detected unusual activity from the app session; this is not a content rejection.",
-      actionVi: "Không tự chạy lại liên tục. Chờ vài giây, giảm số job đồng thời và chạy lại thủ công; nếu còn lặp, dùng trực tiếp trên Flow.",
-      actionEn: "Do not retry repeatedly. Wait a few seconds, reduce concurrent jobs, and retry manually; if it persists, use Flow directly.",
-    };
+    return make(
+      "FLOW_AUTOMATION_BLOCKED",
+      "Không tự chạy lại liên tục. Chờ vài giây, giảm số job đồng thời và chạy lại thủ công; nếu còn lặp, dùng trực tiếp trên Flow.",
+      "Do not retry repeatedly. Wait a few seconds, reduce concurrent jobs, and retry manually; if it persists, use Flow directly.",
+    );
   }
   if (code === "FLOW_GENERATION_TIMEOUT") {
-    return {
+    return make(
       code,
-      titleVi: "Timeout chờ kết quả Flow",
-      titleEn: "Timed out waiting for Flow result",
-      summaryVi: "Đã gửi nhưng kết quả chưa sẵn sàng trong thời gian chờ.",
-      summaryEn: "Submitted, but the result was not ready before the timeout.",
-      actionVi: "Chạy lại (recovery có thể lấy media nếu Flow đã tạo xong sau đó).",
-      actionEn: "Retry (recovery may pick up media if Flow finished later).",
-    };
+      "Chạy lại (recovery có thể lấy media nếu Flow đã tạo xong sau đó).",
+      "Retry (recovery may pick up media if Flow finished later).",
+    );
   }
   if (code === "FLOW_CREDITS_INSUFFICIENT" || /FLOW_CREDITS_INSUFFICIENT|insufficient credits|not enough credits/i.test(raw)) {
-    return {
-      code: "FLOW_CREDITS_INSUFFICIENT",
-      titleVi: "Không đủ credits Flow",
-      titleEn: "Not enough Flow credits",
-      summaryVi: "Số credits hiện có thấp hơn chi phí của model/cấu hình đã chọn nên Flow không thể tạo media.",
-      summaryEn: "The available credits are below the cost of the selected model/settings, so Flow cannot create the media.",
-      actionVi: "Đồng bộ credits, chọn model rẻ hơn hoặc chờ credits được nạp lại rồi tạo lại.",
-      actionEn: "Sync credits, choose a cheaper model, or wait for credits to return before creating again.",
-    };
+    return make(
+      "FLOW_CREDITS_INSUFFICIENT",
+      "Đồng bộ credits, chọn model rẻ hơn hoặc chờ credits được nạp lại rồi tạo lại.",
+      "Sync credits, choose a cheaper model, or wait for credits to return before creating again.",
+    );
   }
   if (code === "FLOW_CREDITS_EMPTY" || /FLOW_CREDITS_EMPTY|hết tín dụng|out of flow credits/i.test(raw)) {
-    return {
-      code: code === "FLOW_ERROR" ? "FLOW_CREDITS_EMPTY" : code,
-      titleVi: "Hết tín dụng Flow",
-      titleEn: "Out of Flow credits",
-      summaryVi: "Tài khoản không còn tín dụng — Free/Plus/Pro/Ultra đều cần credits để tạo ảnh hoặc video.",
-      summaryEn: "This account has no credits left — Free/Plus/Pro/Ultra all need credits to create images or videos.",
-      actionVi: "Đồng bộ credits, đợi reset hàng ngày/tháng, hoặc dùng tài khoản còn dư tín dụng.",
-      actionEn: "Sync credits, wait for the daily/monthly reset, or use an account that still has credits.",
-    };
+    return make(
+      code === "FLOW_ERROR" ? "FLOW_CREDITS_EMPTY" : code,
+      "Đồng bộ credits, đợi reset hàng ngày/tháng, hoặc dùng tài khoản còn dư tín dụng.",
+      "Sync credits, wait for the daily/monthly reset, or use an account that still has credits.",
+    );
   }
   if (
     code === "FLOW_QUOTA_EXHAUSTED"
     || /FLOW_QUOTA_EXHAUSTED|hết lượt|hết hạn mức|usage limit|generation limit|daily limit|monthly limit|rate.?limit|too many requests/i.test(raw)
   ) {
-    return {
-      code: code === "FLOW_ERROR" ? "FLOW_QUOTA_EXHAUSTED" : code,
-      titleVi: "Hết lượt tạo Flow",
-      titleEn: "Flow creation limit reached",
-      summaryVi: "Tài khoản đã hết lượt/hạn mức tạo trên Flow (không phải lỗi model).",
-      summaryEn: "This account hit Flow’s creation quota or rate limit (not a model error).",
-      actionVi: "Đợi reset lượt, đổi tài khoản còn dư, hoặc giảm số lượng tạo đồng thời.",
-      actionEn: "Wait for the quota reset, switch to an account with remaining allowance, or lower concurrency.",
-    };
+    return make(
+      code === "FLOW_ERROR" ? "FLOW_QUOTA_EXHAUSTED" : code,
+      "Đợi reset lượt, đổi tài khoản còn dư, hoặc giảm số lượng tạo đồng thời.",
+      "Wait for the quota reset, switch to an account with remaining allowance, or lower concurrency.",
+    );
   }
   if (code === "FLOW_SESSION_EXPIRED" || code === "FLOW_LOGIN_REQUIRED") {
-    return {
+    return make(
       code,
-      titleVi: "Phiên Flow hết hạn",
-      titleEn: "Flow session expired",
-      summaryVi: "Chrome profile mất đăng nhập Google Flow.",
-      summaryEn: "The Chrome profile lost the Google Flow sign-in.",
-      actionVi: "Vào Tài khoản → Kết nối lại, đăng nhập Google, rồi chạy lại job.",
-      actionEn: "Open Accounts → Reconnect, sign in to Google, then retry the job.",
-    };
+      "Vào Tài khoản → Kết nối lại, đăng nhập Google, rồi chạy lại job.",
+      "Open Accounts → Reconnect, sign in to Google, then retry the job.",
+    );
   }
   if (code === "FLOW_MODEL_UNAVAILABLE") {
-    return {
+    return make(
       code,
-      titleVi: "Model không có trên tài khoản",
-      titleEn: "Model unavailable on this account",
-      summaryVi: raw.replace(/^FLOW_MODEL_UNAVAILABLE:\s*/i, "") || "Model không nằm trong danh sách UI Flow của gói này.",
-      summaryEn: raw.replace(/^FLOW_MODEL_UNAVAILABLE:\s*/i, "") || "The model is not in this plan’s Flow UI list.",
-      actionVi: "Đồng bộ tài khoản và chọn model còn hiện trên gói Free/Plus/Pro/Ultra.",
-      actionEn: "Sync the account and pick a model still shown for Free/Plus/Pro/Ultra.",
-    };
+      "Đồng bộ tài khoản và chọn model còn hiện trên gói Free/Plus/Pro/Ultra.",
+      "Sync the account and pick a model still shown for Free/Plus/Pro/Ultra.",
+    );
   }
   if (code === "FLOW_UI_TIMEOUT") {
-    return {
+    return make(
       code,
-      titleVi: "Timeout thao tác UI Flow",
-      titleEn: "Flow UI action timed out",
-      summaryVi: "Playwright chờ một nút/tab trên trang Flow quá lâu (UI đổi hoặc panel chưa mở).",
-      summaryEn: "Playwright waited too long for a Flow control (UI changed or settings panel closed).",
-      actionVi: "Chạy lại. Nếu lặp: Đồng bộ tài khoản để cập nhật catalog control.",
-      actionEn: "Retry. If it repeats: Sync the account to refresh the control catalog.",
-    };
+      "Chạy lại. Nếu lặp: Đồng bộ tài khoản để cập nhật catalog control.",
+      "Retry. If it repeats: Sync the account to refresh the control catalog.",
+    );
   }
   if (/UnicodeDecodeError|invalid start byte/i.test(raw)) {
-    return {
-      code: "BUILD_ENCODING",
-      titleVi: "Lỗi encoding khi đóng gói",
-      titleEn: "Packaging encoding error",
-      summaryVi: "File nguồn không phải UTF-8 (thường launcher.py bị corrupt).",
-      summaryEn: "A source file is not valid UTF-8 (often a corrupted launcher.py).",
-      actionVi: "Cần bản build mới đã sửa encoding.",
-      actionEn: "Need a new build with the encoding fix.",
-    };
+    return make(
+      "BUILD_ENCODING",
+      "Cần bản build mới đã sửa encoding.",
+      "Need a new build with the encoding fix.",
+    );
   }
 
-  return {
-    code: code || "FLOW_ERROR",
-    titleVi: "Job gặp lỗi",
-    titleEn: "Job failed",
-    summaryVi: raw || "Không có chi tiết lỗi.",
-    summaryEn: raw || "No error detail.",
-    actionVi: "Chạy lại. Nếu vẫn lỗi, sao chép log gửi để kiểm tra.",
-    actionEn: "Retry. If it persists, copy the log for debugging.",
-  };
+  return make(
+    code || "FLOW_ERROR",
+    "Chạy lại. Nếu vẫn lỗi, sao chép log gửi để kiểm tra.",
+    "Retry. If it persists, copy the log for debugging.",
+  );
 }
+
 
 export function explainFlowEvent(event: string): { titleVi: string; titleEn: string } {
   const map: Record<string, [string, string]> = {

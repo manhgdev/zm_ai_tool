@@ -15,7 +15,7 @@ test('local cleaner explains conservative matching and localizes its stable erro
 
 test('Series AI create view is bilingual and uses backend provider labels only as brand names', () => {
   const source = readFileSync(new URL('../frontend/src/pages/FlowSeriesPanel.tsx', import.meta.url), 'utf8')
-  for (const [vi, en] of [['Tạo Series bằng AI', 'Create a Series with AI'], ['Chủ đề', 'Topic'], ['Lưu thành Series', 'Save as Series'], ['Cài đặt tạo', 'Generation settings'], ['Nhân vật & ảnh neo', 'Characters & anchors']]) {
+  for (const [vi, en] of [['Tạo Series bằng AI', 'Create a Series with AI'], ['Chủ đề', 'Topic'], ['Lưu thành Series', 'Save as Series'], ['Cài đặt nhanh', 'Quick settings'], ['Nhân vật & ảnh neo', 'Characters & anchors']]) {
     assert.ok(source.includes(`t('${vi}', '${en}')`), `${vi} / ${en}`)
   }
   assert.match(source, /chưa sẵn sàng', 'not ready'/)

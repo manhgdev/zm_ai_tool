@@ -749,6 +749,14 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                 )}
               </div>
               <div className="fsp-ws-actions">
+                <button
+                  type="button"
+                  className="fsp-btn fsp-btn-quick-settings"
+                  onClick={() => setActiveTab('settings')}
+                  title={t('Mở cài đặt nhanh cho model, tỷ lệ, thời lượng và luồng chạy', 'Open quick settings for model, ratio, duration and threads')}
+                >
+                  ⚙ {t('Cài đặt nhanh', 'Quick settings')}
+                </button>
                 {totalScenes > 0 && (
                   <button
                     type="button"
@@ -820,7 +828,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
               {([
                 ['episodes', t('Cảnh', 'Scenes')],
                 ['assets', t('Nhân vật & ảnh neo', 'Characters & anchors')],
-                ['settings', t('Cài đặt tạo', 'Generation settings')],
+                ['settings', t('Cài đặt nhanh', 'Quick settings')],
               ] as [typeof activeTab, string][]).map(([tab, label]) => (
                 <button key={tab} type="button" className={`fsp-tab${activeTab === tab ? ' is-active' : ''}`} onClick={() => setActiveTab(tab)}>
                   {label}

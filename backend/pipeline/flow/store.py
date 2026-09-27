@@ -145,7 +145,7 @@ def _publish(topic_name: str, action: str, row_id: str, row: dict[str, Any] | No
         if topic_name == "accounts":
             kind = "flow.account"
         elif topic_name == "logs":
-            kind = "flow.log"
+            kind = "flow.log.appended" if action in {"created", "updated"} else "flow.log.deleted"
         elif topic_name == "series":
             kind = "series"
         else:

@@ -325,6 +325,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     count: number;
     concurrency: string;
     accountId: string;
+    fresh: boolean;
     groups: Array<{
       kind: CreateKind;
       jobs: FlowJob[];
@@ -599,13 +600,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     };
   }, [accounts, backendReady, hasActiveFlowJobs, realtimeStatus]);
   useEffect(() => {
-    if (tab !== "logs" || realtimeStatus === "connected") return;
+    if (tab !== "logs") return;
     let active = true;
     const refreshLogs = () =>
       void flowRequest<{ logs: FlowLog[] }>("/api/flow/logs")
         .then((data) => { if (active) setLogs(data.logs); })
         .catch(() => undefined);
     refreshLogs();
+    if (realtimeStatus === "connected") return () => { active = false; };
     if (!hasActiveFlowJobs) return () => { active = false; };
     const timer = window.setInterval(refreshLogs, 10000);
     return () => {
@@ -1308,6 +1310,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       concurrency: String(job.settings.concurrency || settings.concurrency),
       accountId: resolvedAccountId,
       groups,
+      fresh: initialJobs.length > 0 && initialJobs.every(isFreshCreateJob),
     });
   };
   const retryJob = (id: string) => {
@@ -1332,7 +1335,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       return group.jobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId: group.accountId, settings: retrySettings }),
+      body: JSON.stringify({ accountId: group.accountId, settings: retrySettings, fresh: retryTarget.fresh }),
       }));
     });
     void Promise.all(retryRequests)
@@ -2759,6 +2762,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 const groupKey = `${group.kind}-${group.outputDir}`;
                 const isCollapsed = !!collapsedFolders[groupKey];
                 const summary = flowGroupProgress(group.jobs);
+                const folderHasActive = group.jobs.some((job) => job.status === "queued" || job.status === "processing");
+                const folderHasRetryErrors = group.jobs.some((job) => job.status === "failed" || job.status === "cancelled");
+                const folderDoneOnly = !folderHasActive && !folderHasRetryErrors && group.jobs.some((job) => job.status === "done");
                 const folderPathText = queueFolderLabel(group.kind, group.outputDir, group.outputFolder, group.displayOutputFolder);
                 return (
                   <div key={groupKey} className="flow-queue-group-item">
@@ -2788,9 +2794,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </div>
                         <div className="flow-queue-folder-actions">
                           <button className="flow-text-button" type="button" onClick={() => openSrtImageWithFlowFolder(queueFolderLabel(group.kind, group.outputDir, group.outputFolder, group.displayOutputFolder))}>{t("Ghép", "Merge")}</button>
-                          {group.jobs.some(canRetryJob) && (
+                          {(folderHasRetryErrors || folderDoneOnly) && (
                             <button className="flow-text-button is-retry" type="button" disabled={actionBusy} onClick={() => retryFolderJobs(group.outputDir, group.kind, group.jobs)}>
-                              {retryActionLabel(group.jobs.filter(canRetryJob))}
+                              {folderHasRetryErrors ? t("Chạy lại", "Retry") : t("Tạo mới", "Create new")}
                             </button>
                           )}
                           <button className="flow-text-button is-warning" type="button" disabled={actionBusy || !group.jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={() => cancelFolderJobs(group.outputDir, group.jobs)}>{t("Hủy", "Cancel")}</button>
@@ -3226,7 +3232,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </strong>
                         {explained ? (
                           <>
-                            <p className="flow-log-summary">{explained.summary}</p>
+                            {explained.summary ? (
+                              <p className="flow-log-summary">{explained.summary}</p>
+                            ) : null}
                             <p className="flow-log-action">
                               <span>{t("Cách xử lý", "Next step")}:</span> {explained.action}
                             </p>
@@ -3259,12 +3267,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           )}
                         </div>
                         {(entry.message || extraDetails) && (
-                          <details className="flow-log-tech">
+                          <details className="flow-log-tech" open>
                             <summary>{t("Chi tiết kỹ thuật", "Technical detail")}</summary>
                             {entry.message && <pre>{entry.message}</pre>}
                             {extraDetails && <pre>{extraDetails}</pre>}
                           </details>
                         )}
+
                       </div>
                     </article>
                   );

@@ -41,6 +41,7 @@ class GenerateIn(BaseModel):
 class RetryIn(BaseModel):
     accountId: str | None = None
     settings: dict[str, Any] = {}
+    fresh: bool = False
 
 
 class OutputFolderIn(BaseModel):

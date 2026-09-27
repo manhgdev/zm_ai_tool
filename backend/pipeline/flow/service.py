@@ -597,9 +597,10 @@ def _normalize_catalog_settings(
                 changed = True
         if kind == "video" and _video_ui_duration(account, normalized) is None:
             if str(normalized.get("duration") or "").strip():
-                # Omit the field entirely; Flow treats an empty value as an
-                # explicit setting instead of using the model default.
-                normalized.pop("duration", None)
+                # Keep the empty field for settings/UI compatibility. The
+                # worker converts it to None and therefore does not click a
+                # duration control for fixed-length models such as Veo.
+                normalized["duration"] = ""
                 changed = True
         return normalized, changed
     requested = str(settings.get("model") or "")
@@ -620,7 +621,7 @@ def _normalize_catalog_settings(
             if str(normalized.get("duration") or "") not in durations:
                 normalized["duration"] = str(selected.get("defaultDuration") or durations[0])
         elif str(normalized.get("duration") or "").strip():
-            normalized.pop("duration", None)
+            normalized["duration"] = ""
     resolutions = [str(value) for value in selected.get("resolutions", []) if str(value)]
     if kind == "video":
         resolutions = [value for value in resolutions if _video_ui_resolution(value)]
@@ -678,9 +679,9 @@ def _flow_control_selected_from_attrs(
     """Return whether a Flow tab/radio reports the selected state."""
     state = str(data_state or "").strip().lower()
     return (
-        aria_selected == "true"
-        or aria_checked == "true"
-        or aria_pressed == "true"
+        str(aria_selected or "").strip().lower() == "true"
+        or str(aria_checked or "").strip().lower() == "true"
+        or str(aria_pressed or "").strip().lower() == "true"
         or state in {"checked", "on", "active", "selected"}
     )
 
@@ -717,12 +718,30 @@ def _selected_flow_folder(selected: Path, kind: str) -> Path:
 async def _flow_control_is_selected(control) -> bool:
     """Read selection state across Flow's old and new control markup."""
     try:
-        return _flow_control_selected_from_attrs(
+        attrs_selected = _flow_control_selected_from_attrs(
             aria_selected=await control.get_attribute("aria-selected"),
             aria_checked=await control.get_attribute("aria-checked"),
             data_state=await control.get_attribute("data-state"),
             aria_pressed=await control.get_attribute("aria-pressed"),
         )
+        if attrs_selected:
+            return True
+        aria_current = str(await control.get_attribute("aria-current") or "").lower()
+        css_class = str(await control.get_attribute("class") or "").lower()
+        if aria_current in {"true", "page", "step"} or bool(
+            re.search(r"(?:^|[ _-])(selected|active|checked)(?:$|[ _-])", css_class)
+        ):
+            return True
+        # Angular Material/Flow builds sometimes expose the state only on a
+        # nested input or through the host's checked pseudo-state.
+        # mat-button-toggle puts mat-button-toggle-checked on the host element
+        # while visible_duration_tab resolves to the inner button child, so we
+        # must also walk ancestors via closest().
+        return bool(await control.evaluate("""(node) => Boolean(
+          node.matches(':checked, .mat-button-toggle-checked, [aria-selected="true"], [aria-checked="true"], [data-state="on"]')
+          || node.querySelector(':checked, .mat-button-toggle-checked, [aria-selected="true"], [aria-checked="true"], [data-state="on"]')
+          || node.closest('.mat-button-toggle-checked, [aria-selected="true"], [aria-checked="true"], [data-state="on"]')
+        )"""))
     except Exception:
         return False
 
@@ -1612,11 +1631,29 @@ class FlowService:
 
         async def control_snapshot() -> list[tuple[str, bool]]:
             snapshot: list[tuple[str, bool]] = []
+            seen_text: set[str] = set()
             for index in range(await controls.count()):
                 control = controls.nth(index)
                 if not await control.is_visible() or await control.is_disabled():
                     continue
-                snapshot.append(((await control.inner_text()).strip(), await _flow_control_is_selected(control)))
+                text = (await control.inner_text()).strip()
+                snapshot.append((text, await _flow_control_is_selected(control)))
+                seen_text.add(re.sub(r"\s+", " ", text).lower())
+            # Omni duration controls have also appeared as plain buttons. Read
+            # those explicitly so a capability sync does not erase 6s/8s/10s
+            # from the account catalog before a job is submitted.
+            duration_controls = page.locator(
+                'button, [role="option"], [role="menuitem"], [data-value]'
+            ).filter(has_text=re.compile(rf"(?<!\d)\d{{1,3}}\s*{_DURATION_UNITS}(?!\w)", re.I))
+            for index in range(await duration_controls.count()):
+                control = duration_controls.nth(index)
+                if not await control.is_visible() or await control.is_disabled():
+                    continue
+                text = (await control.inner_text()).strip()
+                key = re.sub(r"\s+", " ", text).lower()
+                if key not in seen_text:
+                    snapshot.append((text, await _flow_control_is_selected(control)))
+                    seen_text.add(key)
             return snapshot
 
         catalog: dict[str, Any] = {"version": 1, "source": "flow_ui", "syncedAt": time.time()}
@@ -2450,9 +2487,11 @@ class FlowService:
             self._account_active[account_id] = self._account_active.get(account_id, 0) + 1
         # Retry only failures that happen before a generation is submitted.
         # Once Flow accepts a job, retrying can create a duplicate and charge
-        # credits twice; media recovery owns all post-submit timeouts.
+        # credits twice; media recovery owns all post-submit timeouts. A
+        # RESULT_NOT_FOUND is the exception: Flow has no pending/completed
+        # media, so submit a fresh generation automatically.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|AUTOMATION_BLOCKED|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_RESULT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
+            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|AUTOMATION_BLOCKED|FLOW_SETTING_MISMATCH|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
             re.I,
         )
         profile_ready = False
@@ -3010,6 +3049,7 @@ class FlowService:
         ratio: str,
         duration: str | None = None,
         resolution: str | None = None,
+        duration_model: str = "",
     ) -> None:
         """Select current numeric Flow tabs and verify the requested format.
 
@@ -3026,6 +3066,58 @@ class FlowService:
                 if await candidate.is_visible():
                     return candidate
             return None
+
+        async def visible_duration_tab(label: re.Pattern[str]):
+            # Flow has shipped duration controls as tabs, radios, and plain
+            # Material buttons. Keep the broad fallback scoped to the exact
+            # duration text so model/ratio controls cannot be selected by it.
+            selectors = (
+                _FLOW_CONTROL_SELECTOR,
+                'button, [role="option"], [role="menuitem"], [data-value]',
+            )
+            candidates = []
+            for selector in selectors:
+                matches = page.locator(selector).filter(has_text=label)
+                for index in range(await matches.count()):
+                    candidate = matches.nth(index)
+                    if await candidate.is_visible():
+                        try:
+                            text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip())
+                        except Exception:
+                            text = ""
+                        candidates.append((len(text) or 10_000, candidate))
+            # has_text also matches a parent group containing all four pills.
+            # Prefer the smallest matching node so the click lands on the
+            # actual 6s/8s/10s control rather than the group wrapper.
+            if candidates:
+                candidates.sort(key=lambda item: item[0])
+                return candidates[0][1]
+            return None
+
+        async def duration_debug(label: re.Pattern[str]) -> list[dict[str, str]]:
+            result: list[dict[str, str]] = []
+            matches = page.locator(
+                'button, [role="tab"], [role="radio"], [role="option"], [role="menuitem"], [data-value]'
+            ).filter(has_text=label)
+            for index in range(min(12, await matches.count())):
+                candidate = matches.nth(index)
+                try:
+                    if not await candidate.is_visible():
+                        continue
+                    parent_info = await candidate.evaluate(
+                        "node => { const p = node.parentElement; return p ? p.tagName + '|' + (p.className||'') : ''; }"
+                    )
+                    result.append({
+                        "text": re.sub(r"\s+", " ", (await candidate.inner_text()).strip()),
+                        "ariaSelected": str(await candidate.get_attribute("aria-selected") or ""),
+                        "ariaChecked": str(await candidate.get_attribute("aria-checked") or ""),
+                        "ariaPressed": str(await candidate.get_attribute("aria-pressed") or ""),
+                        "class": str(await candidate.get_attribute("class") or ""),
+                        "parentTag": str(parent_info or ""),
+                    })
+                except Exception:
+                    continue
+            return result
 
         ratio_label = str(ratio or "").strip()
         if not re.fullmatch(r"\d{1,2}:\d{1,2}", ratio_label):
@@ -3098,36 +3190,97 @@ class FlowService:
             if not re.fullmatch(r"\d{1,3}", duration_value):
                 raise RuntimeError(f"FLOW_SETTING_MISMATCH: invalid duration {duration_value!r}")
             duration_label = f"{duration_value}s"
-            duration_tab = await visible_tab(_duration_pattern(duration_value))
+            duration_tab = await visible_duration_tab(_duration_pattern(duration_value))
             if duration_tab is None:
-                # Model has no duration radios (typical Veo) or the panel closed —
-                # never wait for a missing 8s/10s control.
-                _log.info(
-                    "_prepare_ui_format: duration %s control is hidden; using Flow model default",
-                    duration_label,
+                # An explicit duration is a contract. Silently accepting the
+                # model default turns a requested 6s Omni job into 8s output.
+                # Callers that omit the model are legacy/internal probes; they
+                # cannot tell Veo's fixed default from a missing Omni control.
+                if not duration_model:
+                    _log.info("_prepare_ui_format: duration %s control is hidden; using Flow model default", duration_label)
+                    return
+                raise RuntimeError(
+                    f"FLOW_SETTING_MISMATCH: duration {duration_label} was not confirmed selected (model={duration_model or 'unknown'})"
                 )
             else:
-                if not await _flow_control_is_selected(duration_tab):
+                # The MAT-BUTTON-TOGGLE host has role="presentation" and Angular
+                # sets aria-checked on the inner mat-button-toggle-button, not on
+                # the host. force=True clicks bypass Angular's zone; use a standard
+                # click on the inner button so Angular processes the event normally.
+                # _flow_control_is_selected already checks closest() ancestors so
+                # mat-button-toggle-checked on the host is also caught as a fallback.
+                _host_tag = ""
+                _inner_btn = duration_tab  # keep reference to inner button for click
+                try:
+                    host = await duration_tab.evaluate_handle(
+                        "node => node.closest('mat-button-toggle') || node"
+                    )
+                    if host:
+                        resolved = host.as_element()
+                        if resolved:
+                            _host_tag = await resolved.evaluate(
+                                "node => node.tagName + '.' + (node.className||'').replace(/\\s+/g,'.')"
+                            )
+                            # keep duration_tab as the inner button for aria-checked checks
+                except Exception as _e:
+                    _host_tag = f"err:{_e}"
+
+                if not await _flow_control_is_selected(_inner_btn):
                     try:
-                        await duration_tab.scroll_into_view_if_needed()
+                        await _inner_btn.scroll_into_view_if_needed()
                     except Exception:
                         pass
+                    # Standard click first — lets Angular's NgZone process the event.
+                    _clicked = False
                     try:
-                        await duration_tab.click(force=True, timeout=5_000)
-                        await asyncio.sleep(0.35)
+                        await _inner_btn.click(timeout=3_000)
+                        await asyncio.sleep(0.4)
+                        _clicked = True
                     except Exception:
-                        _log.info(
-                            "_prepare_ui_format: duration %s click failed; using Flow model default",
-                            duration_label,
-                        )
-                        duration_tab = None
-                # Flow sometimes leaves radios without aria-selected after a successful
-                # click (especially 10s). Soft-fail like a hidden control — do not abort.
+                        pass
+                    # Fall back to force click if the standard click was intercepted.
+                    if not _clicked or not await _flow_control_is_selected(_inner_btn):
+                        try:
+                            await _inner_btn.click(force=True, timeout=5_000)
+                            await asyncio.sleep(0.4)
+                        except Exception as exc:
+                            raise RuntimeError(
+                                f"FLOW_SETTING_MISMATCH: duration {duration_label} was not confirmed selected (model={duration_model or 'unknown'})"
+                            ) from exc
+
+
+                for _ in range(8):
+                    if await _flow_control_is_selected(duration_tab):
+                        break
+                    await asyncio.sleep(0.2)
                 if duration_tab is not None and not await _flow_control_is_selected(duration_tab):
-                    _log.info(
-                        "_prepare_ui_format: duration %s not confirmed selected; continuing with Flow default/UI state",
-                        duration_label,
+                    if not duration_model:
+                        _log.info("_prepare_ui_format: duration %s not confirmed; using Flow model default", duration_label)
+                        return
+                    try:
+                        _host_attrs = await duration_tab.evaluate("""node => {
+                            const attrs = {};
+                            for (const a of node.attributes) attrs[a.name] = a.value;
+                            attrs['_class'] = node.className;
+                            // If this is the inner button, also report parent host state
+                            const host = node.closest('mat-button-toggle');
+                            if (host) {
+                                attrs['_host_class'] = host.className;
+                                attrs['_host_aria_checked'] = host.getAttribute('aria-checked');
+                            }
+                            return attrs;
+                        }""")
+                    except Exception:
+                        _host_attrs = {}
+                    raise RuntimeError(
+                        f"FLOW_SETTING_MISMATCH: duration {duration_label} was not confirmed selected"
+                        f" (model={duration_model or 'unknown'}; host={_host_tag}; hostAttrs={_host_attrs};"
+                        f" controls={await duration_debug(_duration_pattern(duration_value))})"
                     )
+
+
+
+
 
         if resolution:
             resolution_value = _video_ui_resolution(resolution).lower()
@@ -3344,6 +3497,7 @@ class FlowService:
                     break
             if kind == "video" and len(found) < max(1, int(count or 1)):
                 baseline_thumbs = {str(value) for value in job.get("baselineThumbs") or []}
+                clean_baseline_thumbs = {u.split("?")[0].strip() for u in baseline_thumbs if u}
                 try:
                     tiles = await page.evaluate("""() =>
                         [...document.querySelectorAll('flow-grid-tile-container')].slice(0, 24).map((tile, index) => {
@@ -3362,7 +3516,8 @@ class FlowService:
                     tiles = []
                 for tile in tiles:
                     thumb = str(tile.get("thumb") or "")
-                    if (not thumb.startswith("http") or thumb in baseline_thumbs
+                    clean_thumb = thumb.split("?")[0].strip()
+                    if (not thumb.startswith("http") or thumb in baseline_thumbs or (clean_thumb and clean_thumb in clean_baseline_thumbs)
                             or tile.get("busy") or int(tile.get("pct") or -1) >= 0):
                         continue
                     media_id = f"flow-thumb:{thumb}"
@@ -3600,8 +3755,27 @@ class FlowService:
         preferred = _video_download_quality({"quality": quality})
         output.parent.mkdir(parents=True, exist_ok=True)
         grid_url = str(page.url or "")
+        # Close any lingering modals/drawers/backdrops before interacting with the tile
+        try:
+            for _ in range(3):
+                backdrop = page.locator(".cdk-overlay-backdrop")
+                if await backdrop.count() > 0 and await backdrop.first.is_visible():
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
+                else:
+                    break
+        except Exception:
+            pass
         tile = page.locator("flow-grid-tile-container").nth(tile_index)
-        await tile.locator(".thumbnail").first.click()
+        try:
+            await tile.locator(".thumbnail").first.click(timeout=8_000)
+        except Exception:
+            try:
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
+            except Exception:
+                pass
+            await tile.locator(".thumbnail").first.click(force=True, timeout=10_000)
         dl_btn = page.locator(
             'button[aria-label*="Tải"], button[aria-label*="Download"], '
             'button[aria-label*="download"], button:has-text("download"), button:has-text("Tải")'
@@ -3830,6 +4004,23 @@ class FlowService:
         account = store.get_row("accounts", str(job.get("accountId"))) if job else None
         if not job or not account:
             return
+        if job.get("forceNew"):
+            # Create-new must never enter recovery. A completed job may still
+            # carry stale submission metadata from an older attempt.
+            reset = {
+                "submissionStartedAt": None,
+                "submissionProjectId": None,
+                "baselineMediaIds": [],
+                "baselineThumbs": [],
+                "mediaIds": [],
+                "resumeOnly": False,
+                "forceNew": False,
+                "stage": "submitting",
+                "progress": 5,
+                "updatedAt": time.time(),
+            }
+            store.patch_row("jobs", job_id, reset)
+            job = {**job, **reset}
         browser = None
         try:
             self._log("info", "job_started", job_id=job_id, account_id=account["id"], details={"kind": job["kind"]})
@@ -3933,9 +4124,13 @@ class FlowService:
                             thumb = str(media_id)[len("flow-thumb:"):]
                             tile_index = await page.evaluate("""(target) => {
                                 const tiles = [...document.querySelectorAll('flow-grid-tile-container')];
+                                const clean = (u) => (u || '').split('?')[0].trim();
+                                const targetClean = clean(target);
                                 return tiles.findIndex(tile => {
                                     const image = tile.querySelector('.thumbnail');
-                                    return image && (image.currentSrc || image.src || '') === target;
+                                    if (!image) return false;
+                                    const src = image.currentSrc || image.src || '';
+                                    return src === target || (targetClean && clean(src) === targetClean);
                                 });
                             }""", thumb)
                             if int(tile_index) < 0:
@@ -4009,6 +4204,7 @@ class FlowService:
                     ratio,
                     _video_ui_duration(account, settings),
                     _video_ui_resolution(settings.get("resolution")) or None,
+                    model,
                 )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
                 baseline_media = await self._project_media_elements(page)
@@ -4398,6 +4594,7 @@ class FlowService:
         if not existing:
             return None
         overrides = overrides or {}
+        force_new = bool(overrides.get("fresh"))
         account_id = str(overrides.get("accountId") or existing.get("accountId") or "")
         settings = dict(existing.get("settings") or {})
         settings.update({key: value for key, value in dict(overrides.get("settings") or {}).items() if value not in (None, "")})
@@ -4438,6 +4635,7 @@ class FlowService:
                 "accountId": account_id, "settings": settings,
                 "generationRejectRetryCount": 0,
                 "autoRetryCount": 0,
+                "forceNew": force_new,
             })
             self._account_condition.notify_all()
         if job:
