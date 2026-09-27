@@ -1122,15 +1122,17 @@ class FlowService:
             "updatedAt": time.time(),
         }
         store.patch_row("accounts", account_id, patch)
+        label = account.get("label", account_id)
+        until_str = time.strftime("%H:%M %d/%m", time.localtime(until))
+        # Extract the short code prefix (e.g. "FLOW_AUTOMATION_BLOCKED") from reason
+        code = str(reason or "").split(":")[0].strip() or "SUSPENDED"
         self._log(
             "warning",
             "account_suspended",
             account_id=account_id,
             message=(
-                f"Tài khoản {account.get('label', account_id)} bị tạm cách ly đến "
-                f"{time.strftime('%H:%M %d/%m', time.localtime(until))} do: {reason} / "
-                f"Account {account.get('label', account_id)} quarantined until "
-                f"{time.strftime('%H:%M %d/%m', time.localtime(until))} due to: {reason}"
+                f"Tài khoản {label} bị tạm cách ly đến {until_str} ({code}) / "
+                f"Account {label} quarantined until {until_str} ({code})"
             ),
             details={"suspendedUntil": until, "reason": reason, "duration": duration_seconds},
         )
