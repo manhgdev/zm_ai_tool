@@ -465,7 +465,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     } catch { }
   }, [videoMode]);
   useEffect(() => {
-    if (!accounts.length || accounts.some((account) => account.label === settings.account)) return;
+    if (settings.account === "random" || !accounts.length || accounts.some((account) => account.label === settings.account)) return;
     const fallback = selectedFlowAccount(accounts, settings.account);
     if (fallback) {
       setSettings((current) => ({ ...current, account: fallback.label }));
@@ -755,12 +755,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     (job) => job.kind === "video" && job.status === "done" && job.outputs?.length,
   );
   const displayedAccount = selectedFlowAccount(accounts, settings.account);
-  const accountOptionLabels = Object.fromEntries(
-    accounts.map((account) => [
-      account.label,
-      `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`,
-    ]),
-  );
+  const accountOptionLabels = {
+    random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
+    ...Object.fromEntries(
+      accounts.map((account) => [
+        account.label,
+        `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`,
+      ]),
+    ),
+  };
   const capabilityModels = accountCapabilityModels(displayedAccount, createKind);
   const capabilityModel = capabilityModels.find((item) => item.name === settings.model);
   const modelOptions = capabilityModels.length
@@ -956,43 +959,51 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     // available while the request is still being accepted.
     setTab("queue");
     writeFlowRoutePanel("queue");
-    if (account.status !== "online") {
-      // Thử tự reconnect headless trước
-      toast.info(t("Đang thử kết nối lại tự động...", "Attempting auto-reconnect..."));
-      try {
-        const refreshed = await flowRequest<FlowAccount>(
-          `/api/flow/accounts/${account.id}/sync`,
-          { method: "POST" },
-        );
-        if (refreshed.status === "online") {
-          // Headless thành công → cập nhật state và chạy tiếp (fall-through)
-          setAccounts((current) =>
-            current.map((item) => (item.id === refreshed.id ? refreshed : item)),
-          );
-        } else {
-          throw new Error("not-online");
-        }
-      } catch {
-        // Headless thất bại → tự mở Chrome để user đăng nhập lại
-        setUtilityView("accounts");
-        toast.info(
-          t(
-            "Cần đăng nhập lại — đang mở Chrome...",
-            "Re-login required — opening Chrome...",
-          ),
-        );
-        connectAccount(account);
+    if (settings.account === "random") {
+      const hasOnline = accounts.some((a) => a.status === "online");
+      if (!hasOnline) {
+        setApiError(t("Không có tài khoản Flow nào đang online.", "No Flow accounts are currently online."));
         return;
       }
-    }
-    if (account.credits != null && account.credits <= 0) {
-      const message = t(
-        "Hết tín dụng — không tạo được ảnh/video. Đồng bộ lại hoặc đợi tín dụng reset.",
-        "Out of credits — cannot create images/videos. Sync again or wait for credits to reset.",
-      );
-      setApiError(message);
-      showLimitNotice("FLOW_CREDITS_EMPTY");
-      return;
+    } else {
+      if (account.status !== "online") {
+        // Thử tự reconnect headless trước
+        toast.info(t("Đang thử kết nối lại tự động...", "Attempting auto-reconnect..."));
+        try {
+          const refreshed = await flowRequest<FlowAccount>(
+            `/api/flow/accounts/${account.id}/sync`,
+            { method: "POST" },
+          );
+          if (refreshed.status === "online") {
+            // Headless thành công → cập nhật state và chạy tiếp (fall-through)
+            setAccounts((current) =>
+              current.map((item) => (item.id === refreshed.id ? refreshed : item)),
+            );
+          } else {
+            throw new Error("not-online");
+          }
+        } catch {
+          // Headless thất bại → tự mở Chrome để user đăng nhập lại
+          setUtilityView("accounts");
+          toast.info(
+            t(
+              "Cần đăng nhập lại — đang mở Chrome...",
+              "Re-login required — opening Chrome...",
+            ),
+          );
+          connectAccount(account);
+          return;
+        }
+      }
+      if (account.credits != null && account.credits <= 0) {
+        const message = t(
+          "Hết tín dụng — không tạo được ảnh/video. Đồng bộ lại hoặc đợi tín dụng reset.",
+          "Out of credits — cannot create images/videos. Sync again or wait for credits to reset.",
+        );
+        setApiError(message);
+        showLimitNotice("FLOW_CREDITS_EMPTY");
+        return;
+      }
     }
     try {
       if (!isDesktopApp && settings.autoDownload && !webOutputRootRef.current) {
@@ -1051,8 +1062,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           : "",
       };
 
-      if (createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
-        effectiveSettings = { ...effectiveSettings, model: "Nano Banana 2", imageModel: "Nano Banana 2" };
+      if (settings.account !== "random" && createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
+        const proOnline = accounts.find((a) => a.status === "online" && (a.plan === "Ultra" || a.plan === "Pro" || a.plan === "Plus"));
+        if (!proOnline) {
+          setApiError(t("Tài khoản Free không hỗ trợ tạo ảnh Nano Banana Pro. Vui lòng chọn gói Pro/Plus/Ultra hoặc đổi sang model Nano Banana 2.", "Free accounts cannot generate with Nano Banana Pro. Please select a Pro/Plus/Ultra account or switch to Nano Banana 2."));
+          return;
+        }
       }
 
       if (effectiveSettings !== settings) {
@@ -1127,8 +1142,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         status: "queued" as const,
         stage: "",
         progress: 0,
-        accountId: account.id,
-        account: account.label,
+        accountId: settings.account === "random" ? "random" : account.id,
+        account: settings.account === "random" ? t("🎲 Ngẫu nhiên", "🎲 Random") : account.label,
         outputs: [],
         output: "",
         outputFolder: effectiveSettings.outputDir || "",
@@ -1168,7 +1183,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               : videoMode === "frame"
                 ? "frame"
                 : "text",
-          accountId: account.id,
+          accountId: settings.account === "random" ? "random" : account.id,
           inputType: promptInputType,
           sourceFiles: uploaded,
           settings: requestSettings,
@@ -1323,7 +1338,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const groups = retryTarget.groups.length === 1
       ? [{ ...retryTarget.groups[0], model: retryTarget.model, ratio: retryTarget.ratio, duration: retryTarget.duration, resolution: retryTarget.resolution, quality: retryTarget.quality, count: retryTarget.count, accountId: retryTarget.accountId }]
       : retryTarget.groups;
-    if (groups.some((group) => !group.accountId || !accounts.some((account) => account.id === group.accountId))) {
+    if (groups.some((group) => !group.accountId || (group.accountId !== "random" && !accounts.some((account) => account.id === group.accountId)))) {
       toast.error(t("Chọn tài khoản Flow còn online để chạy lại.", "Pick an online Flow account to retry."));
       return;
     }
@@ -2605,7 +2620,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         );
                       })
                     }
-                    options={accounts.map((account) => account.label)}
+                    options={["random", ...accounts.map((account) => account.label)]}
                     optionLabels={accountOptionLabels}
                     online
                     className="flow-select-account"
@@ -3362,7 +3377,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           <div className="flow-retry-kind-grid">
                             <FlowSelect label={t("Model", "Model")} value={group.model} options={models} onChange={(model) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, model } : item) } : current)} />
                             <FlowSelect label={t("Tỷ lệ", "Ratio")} value={group.ratio} options={ratios} onChange={(ratio) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, ratio } : item) } : current)} />
-                            <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={accounts.filter((account) => account.status === "online").map((account) => account.id)} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`]))} />
+                            <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={["random", ...accounts.filter((account) => account.status === "online").map((account) => account.id)]} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={{ random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"), ...Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`])) }} />
                           </div>
                         </div>
                       );
@@ -3432,11 +3447,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   label={t("Tài khoản", "Account")}
                   value={retryTarget.accountId}
                   onChange={(accountId) => setRetryTarget((current) => current ? { ...current, accountId } : current)}
-                  options={accounts.filter((account) => account.status === "online").map((account) => account.id)}
-                  optionLabels={Object.fromEntries(accounts.map((account) => [
-                    account.id,
-                    `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`,
-                  ]))}
+                  options={["random", ...accounts.filter((account) => account.status === "online").map((account) => account.id)]}
+                  optionLabels={{
+                    random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
+                    ...Object.fromEntries(accounts.map((account) => [
+                      account.id,
+                      `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`,
+                    ])),
+                  }}
                 />
                 <FlowSelect
                   label={t("Luồng chạy", "Concurrent jobs")}

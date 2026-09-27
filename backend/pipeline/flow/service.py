@@ -1704,6 +1704,99 @@ class FlowService:
             raise RuntimeError("FLOW_CAPABILITY_SYNC_FAILED: Flow returned an empty model catalog")
         return catalog
 
+    def _pick_eligible_account(
+        self,
+        kind: str = "image",
+        model: str | None = None,
+        exclude_ids: set[str] | list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Pick a random online account that has credits and satisfies model requirements."""
+        exclude_set = {str(x) for x in (exclude_ids or []) if str(x)}
+        accounts = store.list_rows("accounts")
+        eligible: list[dict[str, Any]] = []
+        for acc in accounts:
+            acc_id = str(acc.get("id") or "")
+            if not acc_id or acc_id in exclude_set:
+                continue
+            if acc.get("status") != "online" or not acc.get("projectId"):
+                continue
+            credits = acc.get("credits")
+            if isinstance(credits, (int, float)) and int(credits) <= 0:
+                continue
+            # Gói Free không hỗ trợ tạo ảnh Nano Banana Pro
+            if kind == "image" and model == "Nano Banana Pro" and acc.get("plan") == "Free":
+                continue
+            eligible.append(acc)
+        if not eligible:
+            return None
+        import random
+        return random.choice(eligible)
+
+    def _try_fallback_account(self, job_id: str, failed_account_id: str, reason: str) -> bool:
+        """Attempt to fallback a failed/blocked job to another eligible online account."""
+        job = store.get_row("jobs", job_id)
+        if not job or job.get("status") in {"done", "cancelled"} or job_id in self._cancelled:
+            return False
+        if not job.get("allowAccountFallback", True):
+            return False
+
+        kind = str(job.get("kind") or "image")
+        settings = dict(job.get("settings") or {})
+        model = settings.get("model")
+        tried = list(job.get("triedAccountIds") or [failed_account_id])
+        if failed_account_id not in tried:
+            tried.append(failed_account_id)
+
+        alt = self._pick_eligible_account(kind=kind, model=model, exclude_ids=tried)
+        if not alt:
+            return False
+
+        alt_id = str(alt.get("id"))
+        alt_label = str(alt.get("label") or alt_id)
+        next_tried = list(dict.fromkeys(tried + [alt_id]))
+
+        with self._account_condition:
+            order = self._account_next_order.get(alt_id)
+            if order is None:
+                persisted_orders = [
+                    int(row.get("queueOrder")) for row in store.list_rows("jobs")
+                    if row.get("accountId") == alt_id and str(row.get("queueOrder", "")).isdigit()
+                ]
+                order = max(persisted_orders, default=-1) + 1
+            self._account_next_order[alt_id] = order + 1
+
+        store.patch_row("jobs", job_id, {
+            "accountId": alt_id,
+            "queueOrder": order,
+            "status": "queued",
+            "stage": "queued",
+            "progress": 0,
+            "error": None,
+            "autoRetryCount": 0,
+            "generationRejectRetryCount": 0,
+            "triedAccountIds": next_tried,
+            "updatedAt": time.time(),
+        })
+
+        self._log(
+            "warning",
+            "account_fallback",
+            job_id=job_id,
+            account_id=alt_id,
+            message=(
+                f"Tự động chuyển sang tài khoản {alt_label} sau sự cố tài khoản {failed_account_id}: {reason} / "
+                f"Auto-fallback to account {alt_label} after issue on {failed_account_id}: {reason}"
+            ),
+        )
+
+        threading.Thread(
+            target=self._run_sync,
+            args=(job_id,),
+            daemon=True,
+            name=f"flow-job-{job_id}-fallback",
+        ).start()
+        return True
+
     def _verify_account_plan_before_enqueue(self, account_id: str) -> dict[str, Any]:
         """Refresh Flow entitlement before every generation entry point.
 
@@ -2330,13 +2423,49 @@ class FlowService:
 
     def enqueue(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         prompts = [str(value).strip() for value in payload.get("prompts", []) if str(value).strip()]
-        account_id = str(payload.get("accountId") or "")
-        if not prompts or not store.get_row("accounts", account_id):
-            raise ValueError("Prompts and a valid Flow account are required")
-        settings = dict(payload.get("settings") or {})
-        settings["concurrency"] = _job_concurrency(settings)
+        if not prompts:
+            raise ValueError("Prompts are required")
+
+        account_id = str(payload.get("accountId") or "").strip()
         kind = str(payload.get("kind") or "video")
         mode = str(payload.get("mode") or "text")
+        settings = dict(payload.get("settings") or {})
+        model = settings.get("model")
+
+        is_random = account_id in {"random", "auto", ""}
+        allow_fallback = bool(payload.get("allowAccountFallback", True))
+
+        if is_random:
+            chosen = self._pick_eligible_account(kind=kind, model=model)
+            if not chosen:
+                if kind == "image" and model == "Nano Banana Pro":
+                    raise ValueError(
+                        "FLOW_PLAN_INSUFFICIENT: Không có tài khoản Pro/Plus/Ultra nào online còn tín dụng để tạo ảnh Nano Banana Pro (tài khoản Free không hỗ trợ)."
+                    )
+                raise ValueError("FLOW_NO_ONLINE_ACCOUNTS: Không có tài khoản Flow nào đang online còn tín dụng.")
+            account_id = str(chosen.get("id"))
+            account = chosen
+        else:
+            account = store.get_row("accounts", account_id) or {}
+            if not account:
+                raise ValueError("Prompts and a valid Flow account are required")
+            if account.get("plan") == "Free" and kind == "image" and model == "Nano Banana Pro":
+                alt = self._pick_eligible_account(kind=kind, model=model, exclude_ids=[account_id])
+                if alt:
+                    self._log(
+                        "info",
+                        "account_fallback_plan",
+                        account_id=alt["id"],
+                        message=f"Tài khoản {account.get('label')} là Free không hỗ trợ Nano Banana Pro; tự động fallback sang {alt.get('label')}",
+                    )
+                    account_id = str(alt.get("id"))
+                    account = alt
+                else:
+                    raise ValueError(
+                        "FLOW_PLAN_INSUFFICIENT: Tài khoản Free không hỗ trợ tạo ảnh Nano Banana Pro. Vui lòng chọn gói Pro/Plus/Ultra hoặc đổi sang model Nano Banana 2."
+                    )
+
+        settings["concurrency"] = _job_concurrency(settings)
         input_type = str(payload.get("inputType") or "prompt").lower()
         if input_type not in {"prompt", "txt", "csv", "json"}:
             input_type = "prompt"
@@ -2346,14 +2475,11 @@ class FlowService:
         # take minutes; doing it here made the UI look stuck and prevented the
         # user from seeing/cancelling the complete batch. The worker verifies
         # the account immediately before submitting each job.
-        account = store.get_row("accounts", account_id) or {}
         # Free/Plus/Pro/Ultra all spend credits for video+image; only block when
         # the synced balance is known and empty. Plan no longer gates create kind.
         credits = account.get("credits")
         if isinstance(credits, (int, float)) and int(credits) <= 0:
             raise ValueError("FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)")
-        if account.get("plan") == "Free" and kind == "image" and settings.get("model") == "Nano Banana Pro":
-            settings["model"] = "Nano Banana 2"
 
         settings, _ = _normalize_catalog_settings(account, kind, settings)
         _ensure_flow_credits_for_job(account, kind, settings)
@@ -2405,6 +2531,9 @@ class FlowService:
                 "status": "queued", "stage": "queued", "progress": 0, "mediaIds": [], "outputs": [],
                 "generationRejectRetryCount": 0,
                 "autoRetryCount": 0,
+                "allowAccountFallback": allow_fallback,
+                "randomAccount": is_random,
+                "triedAccountIds": [account_id],
                 "error": None, "createdAt": now, "updatedAt": now,
             }
             job["outputFolder"] = str(self._output_folder(job, create=False))
@@ -2530,6 +2659,8 @@ class FlowService:
             credits = verified_account.get("credits")
             if isinstance(credits, (int, float)) and int(credits) <= 0:
                 raise ValueError("FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)")
+            if verified_account.get("plan") == "Free" and str(job.get("kind") or "video") == "image" and dict(job.get("settings") or {}).get("model") == "Nano Banana Pro":
+                raise ValueError("FLOW_PLAN_INSUFFICIENT: Tài khoản Free không hỗ trợ tạo ảnh Nano Banana Pro (chỉ khả dụng trên gói Pro/Plus/Ultra)")
             _ensure_flow_credits_for_job(
                 verified_account,
                 str(job.get("kind") or "video"),
@@ -2708,6 +2839,11 @@ class FlowService:
                 self._account_active[account_id] = max(0, self._account_active.get(account_id, 1) - 1)
                 self._running_jobs.discard(job_id)
                 self._account_condition.notify_all()
+
+            current_job = store.get_row("jobs", job_id) or {}
+            if current_job.get("status") in {"failed", "action_required"} and current_job.get("allowAccountFallback", True):
+                err_msg = str(current_job.get("error") or "Unknown error")
+                self._try_fallback_account(job_id, account_id, err_msg)
 
     def _clone_runtime_profile(self, account_id: str, job_id: str) -> Path:
         from .browser import profile_lock
@@ -4595,10 +4731,27 @@ class FlowService:
             return None
         overrides = overrides or {}
         force_new = bool(overrides.get("fresh"))
-        account_id = str(overrides.get("accountId") or existing.get("accountId") or "")
+        account_id = str(overrides.get("accountId") or existing.get("accountId") or "").strip()
         settings = dict(existing.get("settings") or {})
         settings.update({key: value for key, value in dict(overrides.get("settings") or {}).items() if value not in (None, "")})
-        account = store.get_row("accounts", account_id) or {}
+        kind = str(existing.get("kind") or "video")
+        model = settings.get("model")
+
+        if account_id in {"random", "auto", ""}:
+            chosen = self._pick_eligible_account(kind=kind, model=model)
+            if chosen:
+                account = chosen
+                account_id = str(chosen["id"])
+            else:
+                account = {}
+        else:
+            account = store.get_row("accounts", account_id) or {}
+            if account.get("plan") == "Free" and kind == "image" and model == "Nano Banana Pro":
+                alt = self._pick_eligible_account(kind=kind, model=model, exclude_ids=[account_id])
+                if alt:
+                    account = alt
+                    account_id = str(alt["id"])
+
         if not account:
             # Stale/placeholder ids (e.g. leaked test "account") — fall back to an online account.
             online = [row for row in store.list_rows("accounts") if row.get("status") == "online" and row.get("id")]
@@ -4607,7 +4760,7 @@ class FlowService:
                 raise ValueError("Flow account not found")
             account = fallback
             account_id = str(fallback["id"])
-        settings, _ = _normalize_catalog_settings(account, str(existing.get("kind") or "video"), settings)
+        settings, _ = _normalize_catalog_settings(account, kind, settings)
         if existing.get("kind") == "video" and not _catalog_section(account, "video"):
             settings["model"] = _normalize_video_model(settings.get("model"))
         with self._account_condition:

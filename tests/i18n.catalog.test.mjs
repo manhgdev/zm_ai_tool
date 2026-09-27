@@ -96,6 +96,13 @@ test('runtime setup stages and errors have Vietnamese and English labels', () =>
   assert.doesNotMatch(component, /checks\?\.summary \|\|/)
 })
 
+test('Flow random account options are bilingual in FlowPage and FlowSeriesPanel', () => {
+  const flowPage = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
+  assert.match(flowPage, /t\("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"\)/)
+  const seriesPanel = readFileSync(new URL('../frontend/src/pages/FlowSeriesPanel.tsx', import.meta.url), 'utf8')
+  assert.match(seriesPanel, /t\('🎲 Ngẫu nhiên tài khoản', '🎲 Random account'\)/)
+})
+
 test('static English catalog entries are non-empty', () => {
   const catalog = JSON.parse(readFileSync(new URL('../frontend/src/app/ui.en.json', import.meta.url), 'utf8'))
   for (const [key, value] of Object.entries(catalog)) {
@@ -103,3 +110,4 @@ test('static English catalog entries are non-empty', () => {
     assert.ok(value.trim(), key)
   }
 })
+

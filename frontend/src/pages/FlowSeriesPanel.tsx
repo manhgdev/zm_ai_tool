@@ -109,7 +109,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const [imageModel, setImageModel] = useState(() => {
     try { return JSON.parse(localStorage.getItem(SERIES_SETTINGS_KEY) || '{}').imageModel || 'Nano Banana 2' } catch { return 'Nano Banana 2' }
   })
-  const selectedAccount = accounts.find((account) => account.id === seriesSettings.accountId) || accounts[0]
+  const selectedAccount = (seriesSettings.accountId === 'random' ? accounts.find((a) => a.status === 'online' && (a.plan === 'Ultra' || a.plan === 'Pro' || a.plan === 'Plus')) : undefined) || accounts.find((account) => account.id === seriesSettings.accountId) || accounts[0]
   const videoSection = selectedAccount?.capabilityStatus === 'verified' ? selectedAccount.capabilityCatalog?.video : undefined
   const imageSection = selectedAccount?.capabilityStatus === 'verified' ? selectedAccount.capabilityCatalog?.image : undefined
   const videoModelOptions = videoSection?.models.map((item) => item.name) || [...VIDEO_MODELS]
@@ -215,6 +215,8 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
     if (!accounts.length) return
     const saved = readSeriesSettings()
     setSeriesSettings((prev) => {
+      if (prev.accountId === 'random') return prev
+      if (saved.accountId === 'random') return { ...prev, accountId: 'random' }
       if (prev.accountId && accounts.some((a) => a.id === prev.accountId)) return prev
       if (saved.accountId && accounts.some((a) => a.id === saved.accountId)) {
         return { ...prev, accountId: saved.accountId }
@@ -864,6 +866,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                           onChange={(e) => saveSeriesSettings({ accountId: e.target.value })}
                           aria-label={t('Tài khoản', 'Account')}
                         >
+                          <option value="random">{t('🎲 Ngẫu nhiên tài khoản', '🎲 Random account')}</option>
                           {accounts.map((acc) => (
                             <option key={acc.id} value={acc.id}>
                               {acc.label} · {t(`Gói ${acc.plan}`, `${acc.plan} plan`)}
