@@ -1875,14 +1875,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         </nav>
         <div className="flow-rail-credit">
           <strong>
-            {displayedAccount?.credits != null
-              ? displayedAccount.credits.toLocaleString()
-              : "—"}
+            {settings.account === "random"
+              ? accounts.filter((a) => a.status === "online").reduce((sum, a) => sum + (Number(a.credits) || 0), 0).toLocaleString()
+              : (displayedAccount?.credits != null
+                ? displayedAccount.credits.toLocaleString()
+                : "—")}
           </strong>
           <span>
-            {displayedAccount?.credits != null
-              ? t("credits còn lại", "credits left")
-              : t("Chưa đồng bộ", "Not synced")}
+            {settings.account === "random"
+              ? t("credits (ngẫu nhiên)", "credits (random)")
+              : (displayedAccount?.credits != null
+                ? t("credits còn lại", "credits left")
+                : t("Chưa đồng bộ", "Not synced"))}
           </span>
         </div>
       </aside>
@@ -2606,26 +2610,54 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       </button>
                     </div>
                   </label>
-                  <FlowSelect
-                    label={t("Tài khoản", "Account")}
-                    value={settings.account}
-                    onChange={(account) =>
-                      setSettings((current) => {
-                        const selected = accounts.find((item) => item.label === account);
-                        return applyAccountCapabilities(
-                          selected,
-                          { ...current, account },
-                          createKind,
-                          createKind === "image" ? current.imageModel : current.videoModel || current.model,
-                        );
-                      })
-                    }
-                    options={["random", ...accounts.map((account) => account.label)]}
-                    optionLabels={accountOptionLabels}
-                    online
-                    className="flow-select-account"
-                  />
+                  <div className="flow-select-account-wrap">
+                    <div className="flow-account-label-bar">
+                      <span>{t("Tài khoản", "Account")}</span>
+                      <button
+                        type="button"
+                        className={`flow-random-toggle-btn ${settings.account === "random" ? "is-active" : ""}`}
+                        onClick={() => {
+                          const nextAccount = settings.account === "random" ? (accounts[0]?.label || "") : "random";
+                          setSettings((current) => {
+                            const selected = accounts.find((item) => item.label === nextAccount);
+                            return applyAccountCapabilities(
+                              selected,
+                              { ...current, account: nextAccount },
+                              createKind,
+                              createKind === "image" ? current.imageModel : current.videoModel || current.model,
+                            );
+                          });
+                        }}
+                      >
+                        🎲 {settings.account === "random" ? t("Đang ngẫu nhiên", "Random active") : t("Bật ngẫu nhiên", "Randomize")}
+                      </button>
+                    </div>
+                    <FlowSelect
+                      label=""
+                      value={settings.account}
+                      onChange={(account) =>
+                        setSettings((current) => {
+                          const selected = accounts.find((item) => item.label === account);
+                          return applyAccountCapabilities(
+                            selected,
+                            { ...current, account },
+                            createKind,
+                            createKind === "image" ? current.imageModel : current.videoModel || current.model,
+                          );
+                        })
+                      }
+                      options={["random", ...accounts.map((account) => account.label)]}
+                      optionLabels={accountOptionLabels}
+                      online
+                      className="flow-select-account"
+                    />
+                  </div>
                 </div>
+                {settings.account === "random" && (
+                  <div className="flow-random-info-box">
+                    🎲 {t("Chế độ ngẫu nhiên tài khoản: Các ảnh/video sẽ được tự động luân phiên giữa các tài khoản online và tự động fallback sang tài khoản khác khi gặp lỗi.", "Random mode active: Jobs are automatically distributed across online accounts with automatic error fallback.")}
+                  </div>
+                )}
               </div>
               {advancedOpen && (
                 <div className="flow-advanced">
@@ -2881,7 +2913,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             {formatFlowJobSettingsMeta(job.kind, job.settings, {
                               downloadLabel: t("tải", "DL"),
                             })}{" "}
-                            · {job.account}
+                            · {job.randomAccount ? "🎲 " : ""}{job.account}
                           </span>
                           <div className="flow-job-progress">
                             <i>
@@ -3087,7 +3119,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       <td title={job.settings.model}>
                         {job.settings.model}
                       </td>
-                      <td title={job.account}>{job.account}</td>
+                      <td title={job.account}>{job.randomAccount ? `🎲 ${job.account}` : job.account}</td>
                       <td>
                         <mark className={`flow-status-${job.status}`}>
                           {jobStatusText(job)}

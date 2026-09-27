@@ -236,6 +236,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       stage: String(raw.stage || ""),
       progress: Number(raw.progress || 0),
       accountId: String(raw.accountId || ""),
+      randomAccount: Boolean(raw.randomAccount),
       account: accounts.find((a) => a.id === raw.accountId)?.label || String(raw.accountId || ""),
       outputs: Array.isArray(raw.outputs) ? raw.outputs.map(String) : [],
       output: Array.isArray(raw.outputs) ? String(raw.outputs[0] || "") : "",

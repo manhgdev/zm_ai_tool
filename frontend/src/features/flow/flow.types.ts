@@ -25,6 +25,7 @@ export type FlowJob = {
   displayOutputFolder?: string;
   outputs?: string[];
   accountId?: string;
+  randomAccount?: boolean;
   error?: string | null;
   seriesContext?: { seriesTitle?: string; episodeIndex?: number; sceneIndex?: number; artifact?: string };
   settings: {

@@ -2510,21 +2510,29 @@ class FlowService:
                 # delete-all fired mid-submission — stop creating jobs immediately
                 break
             job_input_index = int(payload.get("inputIndex") or series_context.get("sceneIndex") or index)
+            if is_random:
+                picked = self._pick_eligible_account(kind=kind, model=model)
+                job_account = picked or account
+                job_account_id = str(job_account.get("id"))
+            else:
+                job_account = account
+                job_account_id = account_id
+
             with self._account_condition:
-                order = self._account_next_order.get(account_id)
+                order = self._account_next_order.get(job_account_id)
                 if order is None:
                     # Lightweight rows only — never call self.jobs() under this lock
                     # (jobs() migrates folders / resolves paths and blocks delete-all).
                     persisted_orders = [
                         int(row.get("queueOrder")) for row in store.list_rows("jobs")
-                        if row.get("accountId") == account_id and str(row.get("queueOrder", "")).isdigit()
+                        if row.get("accountId") == job_account_id and str(row.get("queueOrder", "")).isdigit()
                     ]
                     order = max(persisted_orders, default=-1) + 1
-                self._account_next_order[account_id] = order + 1
+                self._account_next_order[job_account_id] = order + 1
             job = {
                 "id": uuid.uuid4().hex[:12], "inputIndex": job_input_index, "kind": kind,
                 "queueOrder": order,
-                "mode": mode, "prompt": prompt, "accountId": account_id,
+                "mode": mode, "prompt": prompt, "accountId": job_account_id,
                 "inputType": input_type,
                 "settings": settings, "sourceFiles": source_files,
                 "seriesContext": series_context,
@@ -2533,7 +2541,7 @@ class FlowService:
                 "autoRetryCount": 0,
                 "allowAccountFallback": allow_fallback,
                 "randomAccount": is_random,
-                "triedAccountIds": [account_id],
+                "triedAccountIds": [job_account_id],
                 "error": None, "createdAt": now, "updatedAt": now,
             }
             job["outputFolder"] = str(self._output_folder(job, create=False))
@@ -2547,7 +2555,7 @@ class FlowService:
             if series_context:
                 from . import series
                 series.register_job(job)
-            self._log("info", "job_queued", job_id=job["id"], account_id=account_id, details={"kind": job["kind"], "inputIndex": job["inputIndex"]})
+            self._log("info", "job_queued", job_id=job["id"], account_id=job["accountId"], details={"kind": job["kind"], "inputIndex": job["inputIndex"]})
             created.append(job)
             threading.Thread(target=self._run_sync, args=(job["id"],), daemon=True, name=f"flow-job-{job['id']}").start()
         return created

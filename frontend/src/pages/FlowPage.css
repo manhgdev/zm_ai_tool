@@ -389,6 +389,50 @@
 .flow-settings-grid .flow-select-account {
   min-width: 0;
 }
+.flow-account-label-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.flow-account-label-bar span {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.flow-random-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.flow-random-toggle-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.flow-random-toggle-btn.is-active {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.flow-random-info-box {
+  grid-column: 1 / -1;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px dashed rgba(99, 102, 241, 0.3);
+  font-size: 12px;
+  color: var(--primary);
+  margin-top: 4px;
+}
 .flow-counter {
   display: grid;
   grid-template-columns: 30px 1fr 30px;
