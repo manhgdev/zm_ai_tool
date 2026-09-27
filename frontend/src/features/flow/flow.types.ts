@@ -115,6 +115,8 @@ export type FlowSettings = {
   filePrefix: string;
   referenceStrength: number;
   autoDownload: boolean;
+  /** Keep Flow's Chrome window hidden unless explicitly requested. */
+  headless: boolean;
 };
 
 export type FlowSnapshot = {

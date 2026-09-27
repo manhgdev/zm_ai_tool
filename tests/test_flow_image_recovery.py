@@ -84,6 +84,11 @@ class _UnconfirmableDurationLocator:
 
 
 class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_image_worker_does_not_use_legacy_direct_generation(self):
+        source = (Path(__file__).resolve().parents[1] / 'backend/pipeline/flow/service.py').read_text()
+        self.assertNotIn('await api.generate_image(', source)
+        self.assertIn('await self._click_flow_submit(page)', source)
+
     async def test_progress_await_returns_interceptor_result(self):
         async def completed():
             return {'ok': True}

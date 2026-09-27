@@ -286,13 +286,12 @@ class FlowUI:
                 log.debug("fill_prompt candidate failed: %s", exc)
                 return False
 
-        for attempt in range(2):
-            if attempt == 1:
-                try:
-                    await page.keyboard.press("Escape")
-                    await asyncio.sleep(0.35)
-                except Exception:
-                    pass
+        # Angular can attach the composer several seconds after the project
+        # URL reports loaded, especially in a fresh headed profile. Poll the
+        # real composer instead of pressing Escape (which closes its popover).
+        deadline = time.monotonic() + 30
+        attempt = 0
+        while time.monotonic() < deadline:
             for sel in selectors:
                 loc = page.locator(sel)
                 count = await loc.count()
@@ -331,6 +330,8 @@ class FlowUI:
                     for index in range(count):
                         if await _try_fill(loc.nth(index)):
                             return True
+            attempt += 1
+            await asyncio.sleep(min(0.5 + attempt * 0.25, 2.0))
         log.warning("Could not fill prompt input")
         return False
 

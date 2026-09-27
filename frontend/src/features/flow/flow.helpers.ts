@@ -174,7 +174,7 @@ export function readSettings(): FlowSettings {
     videoAccount: "Ultra 01",
     imageAccount: "Ultra 01",
     outputDir: defaultFlowOutputFolder(), quality: "720p", resolution: "1K",
-    concurrency: "3", format: "PNG", filePrefix: "flow", referenceStrength: 70, autoDownload: true,
+    concurrency: "3", format: "PNG", filePrefix: "flow", referenceStrength: 70, autoDownload: true, headless: true,
   };
   try {
     const { enhancePrompt: _ep, seed: _s, ...saved } = JSON.parse(

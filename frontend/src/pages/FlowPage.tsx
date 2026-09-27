@@ -531,6 +531,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     (job) => job.status === "processing" || job.status === "queued",
   );
   const hasConnectingAccounts = accounts.some((account) => account.status === "connecting");
+  // Job ids being deleted — SSE updated events must not resurrect them before DELETE finishes
+  const deletingIdsRef = useRef<Set<string>>(new Set());
   const onFlowRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
     if (event.type === "snapshot") {
       const snapshot = event.payload as { jobs?: Array<Record<string, unknown>>; accounts?: FlowAccount[]; logs?: FlowLog[] } | null;
@@ -563,6 +565,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       const account = normalizeFlowAccounts([row as unknown as FlowAccount])[0];
       if (account) setAccounts((current) => [...current.filter((item) => item.id !== account.id), account]);
     } else {
+      // Ignore worker updates for jobs that were deleted by the user — the
+      // worker thread may still emit patch events while winding down.
+      if (deletingIdsRef.current.has(event.entityId)) return;
       const job = normalizeFlowJobs([row], accounts)[0];
       if (job) setJobs((current) => [...current.filter((item) => item.id !== job.id), job].sort((a, b) => b.createdAt - a.createdAt));
     }
@@ -932,8 +937,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const submitAbortRef = useRef<AbortController | null>(null);
   // Blocks poll from overwriting cleared UI while delete-all is running
   const deletingAllRef = useRef(false);
-  // Job ids removed by folder-delete — poll must not resurrect them until API finishes
-  const deletingIdsRef = useRef<Set<string>>(new Set());
+  // deletingIdsRef is declared earlier (before onFlowRealtime) so the SSE callback can read it
   const [actionBusy, setActionBusy] = useState(false);
   const runAction = async (action: () => void | Promise<unknown>) => {
     if (actionLock.current) return;
@@ -1413,6 +1417,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       message: t("Xóa job và file đầu ra trên đĩa? Không thể hoàn tác.", "Delete this job and its output files from disk? This cannot be undone."),
       confirmLabel: t("Xóa job", "Delete job"),
       run: () => {
+        deletingIdsRef.current.add(id);
         setJobs((current) => current.filter((item) => item.id !== id));
         toast.success(t("Đã xóa job thành công.", "Job deleted successfully."));
         void (async () => {
@@ -1421,6 +1426,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             if (job) await deleteWebFlowOutputs(job);
           } catch {
             // Background cleanup
+          } finally {
+            deletingIdsRef.current.delete(id);
           }
         })();
       },
@@ -2700,24 +2707,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <div className="flow-select-account-wrap">
                     <div className="flow-account-label-bar">
                       <span>{createKind === "image" ? t("Tài khoản tạo ảnh", "Image account") : t("Tài khoản tạo video", "Video account")}</span>
-                      <button
-                        type="button"
-                        className={`flow-random-toggle-btn ${settings.account === "random" ? "is-active" : ""}`}
-                        onClick={() => {
-                          const nextAccount = settings.account === "random" ? (accounts[0]?.label || "") : "random";
-                          setSettings((current) => {
-                            const selected = accounts.find((item) => item.label === nextAccount);
-                            return applyAccountCapabilities(
-                              selected,
-                              settingsWithSelectedAccount(current, createKind, nextAccount),
-                              createKind,
-                              createKind === "image" ? current.imageModel : current.videoModel || current.model,
-                            );
-                          });
-                        }}
-                      >
-                        🎲 {settings.account === "random" ? t("Đang ngẫu nhiên", "Random active") : t("Bật ngẫu nhiên", "Randomize")}
-                      </button>
                     </div>
                     <FlowSelect
                       label=""
@@ -2739,6 +2728,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       className="flow-select-account"
                     />
                   </div>
+                  <button
+                    type="button"
+                    className={`flow-headless-switch${settings.headless ? "" : " is-on"}`}
+                    role="switch"
+                    aria-checked={!settings.headless}
+                    onClick={() =>
+                      setSettings((current) => ({ ...current, headless: !current.headless }))
+                    }
+                  >
+                    <span className="flow-headless-switch-track" aria-hidden="true" />
+                    <span>{t("Mở Chrome khi chạy Flow", "Show Chrome while Flow runs")}</span>
+                  </button>
                 </div>
                 {settings.account === "random" && (
                   <div className="flow-random-info-box">

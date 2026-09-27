@@ -399,6 +399,19 @@ def _job_concurrency(settings: dict[str, Any]) -> int:
     return max(1, min(_MAX_CONCURRENT_JOBS_PER_ACCOUNT, value))
 
 
+def _flow_headless(settings: dict[str, Any]) -> bool:
+    """Normalize visible-browser settings from current and legacy clients."""
+    if "headless" in settings:
+        value = settings.get("headless")
+    elif "showBrowser" in settings:
+        value = not settings.get("showBrowser")
+    else:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "off", "no"}
+    return bool(value)
+
+
 async def _wait_before_flow_submit() -> float:
     """Jitter only the submit edge; leave concurrency/render/download unchanged."""
     delay = random.uniform(_FLOW_SUBMIT_DELAY_MIN_S, _FLOW_SUBMIT_DELAY_MAX_S)
@@ -2560,6 +2573,7 @@ class FlowService:
         kind = str(payload.get("kind") or "video")
         mode = str(payload.get("mode") or "text")
         settings = dict(payload.get("settings") or {})
+        settings["headless"] = _flow_headless(settings)
         model = settings.get("model")
 
         is_random = account_id in {"random", "auto", ""}
@@ -2860,7 +2874,14 @@ class FlowService:
                 try:
                     runtime_profile2 = self._clone_runtime_profile(account_id, job_id)
                     profile_ready = True
-                    asyncio.run(self._run(job_id, profile_dir=runtime_profile2))
+                    # A visible browser is a diagnostic surface, not a new
+                    # window for every recovery attempt. Keep retries hidden
+                    # so one account cannot spawn a Chrome storm.
+                    asyncio.run(self._run(
+                        job_id,
+                        profile_dir=runtime_profile2,
+                        headless_override=True,
+                    ))
                 finally:
                     if runtime_profile2 is not None:
                         shutil.rmtree(runtime_profile2, ignore_errors=True)
@@ -2915,7 +2936,11 @@ class FlowService:
                 try:
                     runtime_profile2 = self._clone_runtime_profile(account_id, job_id)
                     profile_ready = True
-                    asyncio.run(self._run(job_id, profile_dir=runtime_profile2))
+                    asyncio.run(self._run(
+                        job_id,
+                        profile_dir=runtime_profile2,
+                        headless_override=True,
+                    ))
                 finally:
                     if runtime_profile2 is not None:
                         shutil.rmtree(runtime_profile2, ignore_errors=True)
@@ -4278,7 +4303,13 @@ class FlowService:
             # reconnect can refresh it if Google's balance endpoint is busy.
             pass
 
-    async def _run(self, job_id: str, *, profile_dir: Path | None = None) -> None:
+    async def _run(
+        self,
+        job_id: str,
+        *,
+        profile_dir: Path | None = None,
+        headless_override: bool | None = None,
+    ) -> None:
         job = store.get_row("jobs", job_id)
         account = store.get_row("accounts", str(job.get("accountId"))) if job else None
         if not job or not account:
@@ -4308,10 +4339,15 @@ class FlowService:
             from ._flow._api import FlowAPI
             from .browser import BrowserManager
             from ._flow._client import FlowClient
-            # Generation uses the already-authenticated persistent profile in
-            # background mode. Only the explicit account-connect flow opens a
-            # visible Chrome window for interactive Google sign-in.
-            browser = BrowserManager(headless=True, profile_dir=profile_dir or store.profile_dir(account["id"]))
+            # Keep the default queue invisible. Users can opt into a visible
+            # Chrome window from Flow quick settings when debugging UI drift.
+            headless = (
+                headless_override
+                if headless_override is not None
+                else _flow_headless(job.get("settings") or {})
+            )
+            self._log("info", "browser_mode", job_id=job_id, account_id=account["id"], details={"headless": headless})
+            browser = BrowserManager(headless=headless, profile_dir=profile_dir or store.profile_dir(account["id"]))
             await browser.start()
             self._log("info", "browser_ready", job_id=job_id, account_id=account["id"])
             api = FlowAPI(browser, project_id=account["projectId"], default_timeout_s=600)
@@ -4601,7 +4637,21 @@ class FlowService:
                     page, api=api, client=client, account=account, job_id=job_id,
                 )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
-                # Skip UI model/format selectors — all settings sent directly in API payload.
+                prompt_text = _prompt_with_reference_strength(
+                    job["prompt"], mode, settings.get("referenceStrength", 70),
+                )
+                # The migrated composer exposes its settings button only after
+                # the composer has focus/content (Flow issue #749).
+                if not await client._ui.fill_prompt(page, prompt_text):
+                    raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
+                # Migrated Flow authenticates generation inside the live browser
+                # session and submits through batchexecute. The legacy
+                # aisandbox REST endpoint returns 401 for migrated accounts.
+                await self._prepare_ui_model(page, "image", model, ui=client._ui)
+                await self._prepare_ui_format(page, str(settings.get("ratio") or "16:9"))
+                count = max(1, min(4, int(settings.get("count", 1))))
+                await client._ui.open_settings_panel(page)
+                await self._set_flow_count(page, count)
                 baseline_media = await self._project_media_elements(page)
                 baseline_ids = {str(item.get("id")) for item in baseline_media if item.get("id")}
                 uploaded_media_names: list[str] = []
@@ -4628,34 +4678,42 @@ class FlowService:
                         "image_%s: upload reported ok but no new media ids yet; continuing with UI-attached refs",
                         mode,
                     )
-                count = max(1, min(4, int(settings.get("count", 1))))
-                store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
-
-                # ── Direct REST API — no UI clicks, no intercept race ──────────────────
-                from ._flow._api import ui_to_api_image_model, ui_to_api_image_ratio
-                api_model = ui_to_api_image_model(model)
-                api_ratio = ui_to_api_image_ratio(str(settings.get("ratio") or "16:9"))
-                prompt_text = _prompt_with_reference_strength(
-                    job["prompt"], mode, settings.get("referenceStrength", 70),
+                store.patch_row("jobs", job_id, {
+                    "submissionStartedAt": time.time(),
+                    "submissionProjectId": account["projectId"],
+                    "baselineMediaIds": sorted(baseline_ids),
+                    "stage": "submitting",
+                    "progress": 15,
+                    "updatedAt": time.time(),
+                })
+                await _wait_before_flow_submit()
+                await self._click_flow_submit(page)
+                store.patch_row("jobs", job_id, {
+                    "stage": "generating", "progress": 20, "updatedAt": time.time(),
+                })
+                self._log(
+                    "success", "generation_submitted",
+                    job_id=job_id, account_id=account["id"],
+                    details={"model": model, "ratio": settings.get("ratio"), "count": count},
                 )
-                generated = await api.generate_image(
-                    prompt_text,
-                    model=api_model,
-                    aspect_ratio=api_ratio,
-                    count=count,
-                    reference_images=uploaded_media_names or None,
+                submitted_job = {
+                    **job,
+                    "submissionStartedAt": time.time(),
+                    "submissionProjectId": account["projectId"],
+                    "baselineMediaIds": sorted(baseline_ids),
+                }
+                media_items = await self._wait_for_project_media(
+                    page, baseline_ids, "image", count, job_id,
+                    api=api, job=submitted_job,
                 )
-                media_items: list[dict[str, Any]] = [
-                    {"id": img.media_name, "tag": "img", "src": img.fife_url}
-                    for img in generated if img.fife_url
-                ]
                 if not media_items:
-                    raise RuntimeError("FLOW_EMPTY_OUTPUT: API returned no images with fife_url")
-                self._log("success", "api_generation_complete", job_id=job_id, account_id=account["id"],
-                          details={"model": api_model, "ratio": api_ratio, "count": count,
-                                   "mediaIds": [m["id"] for m in media_items]})
-                media_ids = [str(item["id"]) for item in media_items]
-                self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": settings.get("model"), "mediaIds": media_ids})
+                    raise RuntimeError("FLOW_EMPTY_OUTPUT: Flow returned no completed images")
+                media_ids = self._claim_media_ids(
+                    [str(item["id"]) for item in media_items], count,
+                )
+                if len(media_ids) < count:
+                    raise RuntimeError("FLOW_RESULT_NOT_FOUND: generated images were claimed by another job")
+                media_items = [item for item in media_items if str(item["id"]) in set(media_ids)]
                 store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "downloading", "progress": 80})
                 # Download all images in parallel for speed
                 fmt = str(settings.get("format", "png")).lower()
