@@ -480,45 +480,21 @@ class FlowAPI:
     FLOW_API_KEY = "AIzaSyBtrm0o5ab1c-Ec8ZuLcGt3oJAA5VWt3pY"
 
     async def _get_auth_headers(self) -> dict:
-        """Return auth headers for aisandbox-pa.googleapis.com requests.
+        """Auth headers for aisandbox-pa.googleapis.com requests.
 
-        Priority:
-          1. Bearer ya29.xxx (OAuth2 access token) when cached and fresh.
-          2. SAPISIDHASH — Google's signed-cookie auth scheme for private APIs.
-             Computed from the SAPISID cookie: {ts}_{sha1("{ts} {sapisid} {origin}")}.
-             Never expires (recomputed each call) — works as long as user is logged in.
+        - Bearer ya29.xxx when cached (fastest, avoids any cookie dance).
+        - Otherwise empty: page.evaluate(fetch(..., credentials:'include')) sends
+          Google's cross-site SSO cookies (__Secure-1PAPISID etc.) which flow.google.com
+          has already authenticated. context.request drops those SameSite=None cookies.
         """
-        import hashlib
-
         hdrs = {
             "content-type": "text/plain;charset=UTF-8",
             "referer":      "https://flow.google.com/",
             "origin":       "https://flow.google.com",
         }
-
         token = await self._get_bearer_token(required=False)
         if token:
             hdrs["authorization"] = f"Bearer {token}"
-            return hdrs
-
-        # SAPISIDHASH fallback — compute from SAPISID browser cookie
-        try:
-            cookies = await self._bm.context.cookies()
-            sapisid = next(
-                (c["value"] for c in cookies
-                 if c["name"] == "SAPISID" and "google.com" in c.get("domain", "")),
-                None,
-            )
-            if sapisid:
-                ts = int(_time.time())
-                sha1 = hashlib.sha1(
-                    f"{ts} {sapisid} https://flow.google.com".encode()
-                ).hexdigest()
-                hdrs["authorization"] = f"SAPISIDHASH {ts}_{sha1}"
-                log.debug("Using SAPISIDHASH auth (no Bearer cached)")
-        except Exception as exc:
-            log.debug("SAPISIDHASH computation failed: %s", exc)
-
         return hdrs
 
     async def _get_bearer_token(self, *, required: bool = False) -> str:
@@ -726,65 +702,90 @@ class FlowAPI:
         *,
         _auth_retry: bool = True,
     ) -> dict:
-        """Authenticated request via Playwright browser context."""
+        """Authenticated request via in-page fetch() in the Playwright browser.
+
+        Uses page.evaluate(fetch(..., credentials:'include')) so that Google's
+        cross-site SSO cookies (SameSite=None: __Secure-1PAPISID, __Secure-3PAPISID
+        etc.) are sent to aisandbox-pa.googleapis.com. context.request drops these
+        cookies and always gets 401.
+
+        When a Bearer token is cached, it is also attached as Authorization: Bearer.
+        Either auth mechanism alone is sufficient; both together are belt-and-suspenders.
+        """
         if not url.startswith("http"):
             url = f"{API_BASE}/{url}"
         endpoint = url.split("/")[-1].split(":")[-1]
-        data = json.dumps(body) if body is not None else None
-        ctx = self._bm.context.request
         hdrs = await self._get_auth_headers()
 
-        if method.upper() == "GET":
-            resp = await ctx.get(url, headers=hdrs)
-        elif method.upper() == "PATCH":
-            resp = await ctx.patch(url, headers=hdrs, data=data)
-        else:
-            resp = await ctx.post(url, headers=hdrs, data=data)
+        try:
+            page = await self._bm.page()
+            result: dict = await page.evaluate(
+                """async ([url, method, bodyStr, hdrs]) => {
+                    try {
+                        const resp = await fetch(url, {
+                            method,
+                            credentials: 'include',
+                            headers: hdrs,
+                            body: bodyStr ?? undefined,
+                        });
+                        let data = {};
+                        const text = await resp.text();
+                        try { data = JSON.parse(text); } catch {}
+                        return {status: resp.status, data, text};
+                    } catch (e) {
+                        return {status: 0, data: {}, text: String(e)};
+                    }
+                }""",
+                [url, method.upper(),
+                 json.dumps(body) if body is not None else None,
+                 hdrs],
+            )
+        except Exception as exc:
+            raise GenerationError(f"page fetch error on {endpoint}: {exc}") from exc
 
-        if resp.status < 400:
-            try:
-                return await resp.json()
-            except Exception:
-                return {}
+        status: int = result.get("status", 0)
+        text: str   = result.get("text", "")
+        data: dict  = result.get("data", {})
 
-        text = await resp.text()
-        log.error("API %d %s: %s", resp.status, url, text[:300])
+        if status < 400:
+            return data
 
-        if resp.status == 404:
+        log.error("API %d %s: %s", status, url, text[:300])
+
+        if status == 404:
             raise NotFoundError(
                 f"Endpoint not found (HTTP 404): {endpoint}\n"
                 f"This feature may be deprecated or unavailable via direct API.\n"
                 f"Response: {text[:200]}"
             )
-        if resp.status == 400:
-            try:
-                msg = json.loads(text).get("error", {}).get("message", text[:200])
-            except Exception:
-                msg = text[:200]
+        if status == 400:
+            msg = (data.get("error") or {}).get("message", text[:200]) if isinstance(data, dict) else text[:200]
             raise InvalidArgumentError(f"HTTP 400 INVALID_ARGUMENT on {endpoint}: {msg}")
 
-        if resp.status in (401, 403):
+        if status in (401, 403):
             self._invalidate_bearer_token()
             try:
-                wall = "accounts.google.com" in (await self._bm.page()).url or "/about" in (await self._bm.page()).url
+                wall = "accounts.google.com" in (page.url or "") or "/about" in (page.url or "")
             except Exception:
                 wall = False
             if wall:
-                raise AuthError(f"LOGIN_REQUIRED: HTTP {resp.status} on {endpoint}: session redirected to login")
+                raise AuthError(f"LOGIN_REQUIRED: HTTP {status} on {endpoint}: session redirected to login")
             if _auth_retry:
+                # On 401: reload page so Angular re-initialises and re-authenticates.
+                # After reload the cross-site cookies will be refreshed and Bearer may
+                # be captured by CDP, making the retry succeed.
                 try:
-                    refreshed = await self._force_refresh_session()
+                    await self._force_refresh_session()
                 except AuthError:
                     raise
                 except Exception as exc:
-                    log.debug("Bearer refresh after HTTP %d failed: %s", resp.status, exc)
-                    refreshed = ""
-                if refreshed:
-                    return await self._fetch(method, url, body, _auth_retry=False)
+                    log.debug("Session refresh after HTTP %d failed: %s", status, exc)
+                return await self._fetch(method, url, body, _auth_retry=False)
             raise GenerationError(
-                f"HTTP {resp.status} on {endpoint}: API auth rejected. {text[:160]}"
+                f"HTTP {status} on {endpoint}: API auth rejected after session refresh. "
+                f"Check Flow login and credits. {text[:160]}"
             )
-        raise GenerationError(f"HTTP {resp.status} on {endpoint}: {text[:200]}")
+        raise GenerationError(f"HTTP {status} on {endpoint}: {text[:200]}")
 
 
     async def _trpc_get(self, proc: str, inp: dict) -> dict:
