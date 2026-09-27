@@ -596,8 +596,9 @@ class FlowAPI:
             captured: list[str] = []
 
             def on_req(params):
+                # Broaden filter: Angular init calls any googleapis.com endpoint with Bearer
                 url = params.get("request", {}).get("url", "")
-                if "aisandbox-pa.googleapis.com" not in url:
+                if "googleapis.com" not in url and "google.com" not in url:
                     return
                 hdrs = params.get("request", {}).get("headers", {})
                 for k, v in hdrs.items():
@@ -605,10 +606,11 @@ class FlowAPI:
                         captured.append(str(v).replace("Bearer ", "", 1))
 
             client.on("Network.requestWillBeSent", on_req)
-            for _ in range(4):
+            # Wait up to 8s — Angular needs a few seconds to init and emit its first API calls
+            for _ in range(16):
                 if captured:
                     break
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.5)
             await client.detach()
             if captured:
                 self._bearer_token = captured[0]
@@ -638,7 +640,7 @@ class FlowAPI:
             self._bearer_token_ts = _time.time()
 
     async def _force_refresh_session(self) -> str:
-        """Reload Flow project page once; return Bearer if the SPA emits one."""
+        """Reload Flow project page and wait for Angular to emit a Bearer token."""
         self._invalidate_bearer_token()
         page = await self._bm.page()
         proj_url = (
@@ -646,20 +648,49 @@ class FlowAPI:
             if self.project_id
             else FLOW_BASE
         )
+
+        # Set up CDP monitoring BEFORE reload so we catch Angular init requests
         try:
-            await page.reload(wait_until="domcontentloaded", timeout=20_000)
-        except Exception:
+            client = await page.context.new_cdp_session(page)
+            await client.send("Network.enable")
+            captured: list[str] = []
+
+            def _on_req(params):
+                url = params.get("request", {}).get("url", "")
+                if "googleapis.com" not in url and "google.com" not in url:
+                    return
+                hdrs = params.get("request", {}).get("headers", {})
+                for k, v in hdrs.items():
+                    if k.lower() == "authorization" and str(v).startswith("Bearer ya29."):
+                        captured.append(str(v).replace("Bearer ", "", 1))
+
+            client.on("Network.requestWillBeSent", _on_req)
             try:
-                await page.goto(proj_url, wait_until="domcontentloaded", timeout=20_000)
-            except Exception as exc:
-                log.warning("Session refresh navigation failed: %s", exc)
-        await asyncio.sleep(1.0)
+                await page.reload(wait_until="domcontentloaded", timeout=20_000)
+            except Exception:
+                try:
+                    await page.goto(proj_url, wait_until="domcontentloaded", timeout=20_000)
+                except Exception as exc:
+                    log.warning("Session refresh navigation failed: %s", exc)
+            # Wait up to 8s for Angular to emit authenticated requests
+            for _ in range(16):
+                if captured:
+                    break
+                await asyncio.sleep(0.5)
+            await client.detach()
+            if captured:
+                self._bearer_token = captured[0]
+                self._bearer_token_ts = _time.time()
+                log.info("Bearer token via CDP refresh (%d chars)", len(captured[0]))
+        except Exception as exc:
+            log.debug("CDP refresh bearer failed: %s", exc)
+
         page = await self._bm.page()
         if "accounts.google.com" in (page.url or "") or "/about" in (page.url or ""):
             raise AuthError(
                 "LOGIN_REQUIRED: Google session cookies expired — redirected to login"
             )
-        return await self._get_bearer_token(required=False)
+        return self._bearer_token
 
     # ── HTTP ──────────────────────────────────────────────────────────────────
 
