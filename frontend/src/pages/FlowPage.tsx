@@ -2115,11 +2115,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     )}
                   </div>
                   <p>{account.email}</p>
-                  <small className="flow-account-plan-source">
-                    {account.planStatus === "verified"
-                      ? t("Đã xác minh từ Flow", "Verified from Flow")
-                      : t("Cần đồng bộ gói trước khi tạo", "Sync plan before generation")}
-                  </small>
+
 
                   {Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000) && (
                     <div
@@ -2132,6 +2128,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         borderRadius: 6,
                         fontSize: 12,
                         color: "#c2410c",
+                        overflow: "hidden",
                       }}
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
