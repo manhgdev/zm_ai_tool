@@ -3435,7 +3435,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   ×
                 </button>
               </header>
-              <div className="flow-preview-media">
+              <div
+                className="flow-preview-media"
+                onPointerDown={(event) => {
+                  const target = event.target as HTMLElement;
+                  if (!target.closest("video, audio, button, a")) event.preventDefault();
+                }}
+                onDragStart={(event) => event.preventDefault()}
+              >
                 {previewMediaKind === "video" ? (
                   <video
                     key={previewSrc}
@@ -3450,6 +3457,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     key={previewSrc}
                     src={previewSrc}
                     alt={preview.job.prompt}
+                    draggable={false}
                   />
                 ) : (
                   <iframe
@@ -3463,6 +3471,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     <button
                       className="flow-preview-nav is-previous"
                       type="button"
+                      onPointerDown={(event) => event.preventDefault()}
+                      onMouseDown={(event) => event.preventDefault()}
                       onClick={() => movePreview(-1)}
                       aria-label={t("Kết quả trước", "Previous output")}
                       title={t("Kết quả trước (Phím ←)", "Previous output (Left Arrow)")}
@@ -3472,6 +3482,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     <button
                       className="flow-preview-nav is-next"
                       type="button"
+                      onPointerDown={(event) => event.preventDefault()}
+                      onMouseDown={(event) => event.preventDefault()}
                       onClick={() => movePreview(1)}
                       aria-label={t("Kết quả tiếp theo", "Next output")}
                       title={t("Kết quả tiếp theo (Phím →)", "Next output (Right Arrow)")}

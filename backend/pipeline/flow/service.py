@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import re
 try:
     from ._flow._models import GenerationMode as _GenerationMode
@@ -36,6 +37,8 @@ _JOB_AUTO_RETRY_MAX = 3
 _VIDEO_GENERATION_TIMEOUT_S = 600
 _PLAN_SYNC_TTL_S = 300
 _PROJECT_MIGRATION_RECOVERY_WINDOW_S = 600
+_FLOW_SUBMIT_DELAY_MIN_S = 0.1
+_FLOW_SUBMIT_DELAY_MAX_S = 1.0
 _PROFILE_COPY_IGNORES = {
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
     "GraphiteDawnCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache",
@@ -382,6 +385,13 @@ def _job_concurrency(settings: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         value = _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT
     return max(1, min(_MAX_CONCURRENT_JOBS_PER_ACCOUNT, value))
+
+
+async def _wait_before_flow_submit() -> float:
+    """Jitter only the submit edge; leave concurrency/render/download unchanged."""
+    delay = random.uniform(_FLOW_SUBMIT_DELAY_MIN_S, _FLOW_SUBMIT_DELAY_MAX_S)
+    await asyncio.sleep(delay)
+    return delay
 
 
 def _flow_job_credit_cost(account: dict[str, Any], kind: str, model: Any) -> int | None:
@@ -4031,6 +4041,7 @@ class FlowService:
                     if not workflow_id:
                         raise RuntimeError("FLOW_EXTEND_WORKFLOW_MISSING: prior video has no workflow")
                     store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids), "baselineThumbs": []})
+                    await _wait_before_flow_submit()
                     remote = [await client.extend_video(media_id, workflow_id, job["prompt"])]
                     media_ids = [item.media_name for item in remote]
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model, "mediaIds": media_ids})
@@ -4090,6 +4101,7 @@ class FlowService:
                             raise RuntimeError("FLOW_UI_CHANGED: start frame could not be uploaded")
                         self._log("info", "start_frame_set", job_id=job_id, account_id=account["id"], details={"source": Path(source).name})
                     store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)})
+                    await _wait_before_flow_submit()
                     await self._click_flow_submit(page)
                     store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model})
@@ -4189,6 +4201,7 @@ class FlowService:
                     store.patch_row("jobs", job_id, submission_patch)
                     job = {**job, **submission_patch}  # keep local var in sync
                     try:
+                        await _wait_before_flow_submit()
                         await self._click_flow_submit(page)
                         store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
                         # Race: interceptor RPC capture vs project-API polling.

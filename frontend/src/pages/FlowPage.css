@@ -1012,6 +1012,22 @@
   min-height: 280px;
   overflow: auto;
   background: #111;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.flow-preview-media::selection,
+.flow-preview-media *::selection {
+  background: transparent;
+  color: inherit;
+}
+.flow-preview-dialog,
+.flow-preview-dialog button,
+.flow-preview-dialog img,
+.flow-preview-dialog video,
+.flow-preview-dialog iframe {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 .flow-preview-media img,
 .flow-preview-media video,

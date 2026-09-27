@@ -7,7 +7,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from pipeline.flow.service import _classify_visible_flow_error
+from pipeline.flow.service import (
+    _classify_visible_flow_error,
+    _FLOW_SUBMIT_DELAY_MAX_S,
+    _FLOW_SUBMIT_DELAY_MIN_S,
+)
 
 
 class FlowVisibleErrorClassifyTest(unittest.TestCase):
@@ -29,6 +33,10 @@ class FlowVisibleErrorClassifyTest(unittest.TestCase):
             "Chúng tôi nhận thấy có hoạt động bất thường nào đó. Vui lòng chờ vài giây rồi thử lại."
         )
         self.assertTrue(msg.startswith("FLOW_AUTOMATION_BLOCKED:"))
+
+    def test_submit_delay_bounds(self) -> None:
+        self.assertEqual(_FLOW_SUBMIT_DELAY_MIN_S, 0.1)
+        self.assertEqual(_FLOW_SUBMIT_DELAY_MAX_S, 1.0)
 
 
 if __name__ == "__main__":
