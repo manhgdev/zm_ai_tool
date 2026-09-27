@@ -265,6 +265,10 @@ def _classify_visible_flow_error(text: str) -> str:
     return f"FLOW_GENERATION_REJECTED: {raw}"
 
 
+_COOLDOWN_SEVERE_S = 12 * 3600    # 12 giờ cho AUTOMATION_BLOCKED, GENERATION_REJECTED
+_COOLDOWN_STANDARD_S = 2 * 3600   # 2 giờ cho QUOTA, LOGIN, CREDITS_EMPTY, rate limit
+
+
 def _captured_image_items(response: dict[str, Any]) -> list[dict[str, str]]:
     """Normalize both current and legacy batchGenerateImages response shapes."""
     values: list[dict[str, str]] = []
@@ -1069,6 +1073,8 @@ class FlowService:
             "capabilityStatus": existing.get("capabilityStatus", "unknown"),
             "capabilitySyncedAt": existing.get("capabilitySyncedAt"),
             "capabilityError": existing.get("capabilityError", ""),
+            "suspendedUntil": existing.get("suspendedUntil"),
+            "suspendReason": existing.get("suspendReason"),
             "isDefault": bool(payload.get("isDefault", existing.get("isDefault", not self.accounts()))),
             "createdAt": existing.get("createdAt", now),
             "updatedAt": now,
@@ -1078,6 +1084,69 @@ class FlowService:
                 if account["id"] != row["id"]:
                     store.patch_row("accounts", account["id"], {"isDefault": False})
         return store.put_row("accounts", row)
+
+    def suspend_account(
+        self, account_id: str, reason: str, duration_seconds: float | None = None
+    ) -> dict[str, Any]:
+        """Tạm cách ly tài khoản trong một khoảng thời gian dài."""
+        account = store.get_row("accounts", account_id)
+        if not account:
+            return {}
+        if duration_seconds is None:
+            severe_pattern = (
+                r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_AUTOMATION_BLOCKED|"
+                r"FLOW_GENERATION_REJECTED|blocked|rejected"
+            )
+            duration_seconds = (
+                _COOLDOWN_SEVERE_S
+                if re.search(severe_pattern, str(reason), re.I)
+                else _COOLDOWN_STANDARD_S
+            )
+        until = time.time() + duration_seconds
+        patch = {
+            "suspendedUntil": until,
+            "suspendReason": str(reason or "").strip(),
+            "updatedAt": time.time(),
+        }
+        store.patch_row("accounts", account_id, patch)
+        self._log(
+            "warning",
+            "account_suspended",
+            account_id=account_id,
+            message=(
+                f"Tài khoản {account.get('label', account_id)} bị tạm cách ly đến "
+                f"{time.strftime('%H:%M %d/%m', time.localtime(until))} do: {reason} / "
+                f"Account {account.get('label', account_id)} quarantined until "
+                f"{time.strftime('%H:%M %d/%m', time.localtime(until))} due to: {reason}"
+            ),
+            details={"suspendedUntil": until, "reason": reason, "duration": duration_seconds},
+        )
+        return store.get_row("accounts", account_id) or {}
+
+    def clear_account_suspension(self, account_id: str) -> dict[str, Any]:
+        """Gỡ bỏ đánh dấu cách ly tài khoản."""
+        account = store.get_row("accounts", account_id)
+        if not account:
+            return {}
+        store.patch_row(
+            "accounts",
+            account_id,
+            {
+                "suspendedUntil": None,
+                "suspendReason": None,
+                "updatedAt": time.time(),
+            },
+        )
+        self._log(
+            "info",
+            "account_unsuspended",
+            account_id=account_id,
+            message=(
+                f"Đã gỡ tạm cách ly cho tài khoản {account.get('label', account_id)} / "
+                f"Suspension cleared for account {account.get('label', account_id)}"
+            ),
+        )
+        return store.get_row("accounts", account_id) or {}
 
     def delete_account(self, account_id: str) -> bool:
         if any(job.get("accountId") == account_id and job.get("status") not in _TERMINAL for job in self.jobs()):
@@ -1474,6 +1543,8 @@ class FlowService:
                 "updatedAt": time.time(),
                 "status": "online",
                 "error": None,
+                "suspendedUntil": None,
+                "suspendReason": None,
             }
             if capability_catalog:
                 patch.update({
@@ -1722,6 +1793,13 @@ class FlowService:
                 continue
             if acc.get("status") != "online" or not acc.get("projectId"):
                 continue
+            suspended_until = acc.get("suspendedUntil")
+            if suspended_until:
+                try:
+                    if float(suspended_until) > time.time():
+                        continue
+                except (ValueError, TypeError):
+                    pass
             credits = acc.get("credits")
             if isinstance(credits, (int, float)) and int(credits) <= 0:
                 continue
@@ -1764,6 +1842,9 @@ class FlowService:
 
     def _try_fallback_account(self, job_id: str, failed_account_id: str, reason: str) -> bool:
         """Attempt to fallback a failed/blocked job to another eligible online account."""
+        # Cách ly tài khoản bị lỗi/nghi ngờ để bảo vệ tài khoản và tránh gán job random tiếp theo
+        self.suspend_account(failed_account_id, reason)
+
         job = store.get_row("jobs", job_id)
         if not job or job.get("status") in {"done", "cancelled"} or job_id in self._cancelled:
             return False
@@ -2881,9 +2962,12 @@ class FlowService:
                 self._account_condition.notify_all()
 
             current_job = store.get_row("jobs", job_id) or {}
-            if current_job.get("status") in {"failed", "action_required"} and current_job.get("allowAccountFallback", True):
+            if current_job.get("status") in {"failed", "action_required"}:
                 err_msg = str(current_job.get("error") or "Unknown error")
-                self._try_fallback_account(job_id, account_id, err_msg)
+                if current_job.get("allowAccountFallback", True):
+                    self._try_fallback_account(job_id, account_id, err_msg)
+                elif re.search(r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED", err_msg, re.I):
+                    self.suspend_account(account_id, err_msg)
 
     def _clone_runtime_profile(self, account_id: str, job_id: str) -> Path:
         from .browser import profile_lock

@@ -104,6 +104,17 @@ function selectedFlowAccount(accounts: FlowAccount[], accountLabel: string) {
     || resolveSelectedFlowAccount(accounts, accountLabel);
 }
 
+function formatRemainingCooldown(untilSec: number, t: (vi: string, en: string) => string): string {
+  const diffSec = Math.max(0, Math.floor(untilSec - Date.now() / 1000));
+  if (diffSec <= 0) return t("Hết hạn", "Expired");
+  const hours = Math.floor(diffSec / 3600);
+  const minutes = Math.floor((diffSec % 3600) / 60);
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m`;
+}
+
 function accountCapabilityModels(account: FlowAccount | undefined, kind: CreateKind): FlowModelCapability[] {
   if (account?.capabilityStatus !== "verified") return [];
   return account.capabilityCatalog?.[kind]?.models || [];
@@ -758,10 +769,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const accountOptionLabels = {
     random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
     ...Object.fromEntries(
-      accounts.map((account) => [
-        account.label,
-        `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`,
-      ]),
+      accounts.map((account) => {
+        const isSuspended = Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000);
+        const suspendTag = isSuspended ? ` · ⚠️ ${t("Tạm cách ly", "Suspended")}` : "";
+        return [
+          account.label,
+          `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}${suspendTag}`,
+        ];
+      }),
     ),
   };
   const capabilityModels = accountCapabilityModels(displayedAccount, createKind);
@@ -1642,6 +1657,17 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       })
       .finally(() => setSyncingAccountIds((s) => { const next = new Set(s); next.delete(account.id); return next; }));
   };
+  const clearSuspension = (account: FlowAccount) => {
+    void flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/clear-suspension`, { method: "POST" })
+      .then((updated) => {
+        setAccounts((current) => current.map((item) => item.id === updated.id ? normalizeFlowAccounts([updated])[0] : item));
+        toast.success(t(`Đã bỏ tạm cách ly cho ${account.label}`, `Suspension cleared for ${account.label}`));
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        toast.error(t("Không thể bỏ cách ly", "Failed to clear suspension") + ": " + msg);
+      });
+  };
   const syncAllAccounts = async () => {
     const online = accounts.filter((a) => a.status === "online" && a.projectId);
     if (!online.length || isSyncingAll) return;
@@ -2029,13 +2055,28 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     <span>{account.plan === "Free" || account.plan === "Plus" || account.plan === "Pro" || account.plan === "Ultra"
                       ? account.plan
                       : t("Chưa xác minh", "Unverified")}</span>
-                    <mark className={account.status}>
-                      {account.status === "online"
-                        ? t("Online", "Online")
-                        : account.status === "connecting"
-                          ? t("Đang kết nối", "Connecting")
-                          : t("Cần kết nối lại", "Reconnect needed")}
-                    </mark>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      {Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000) && (
+                        <mark
+                          className="suspended"
+                          style={{
+                            background: "rgba(234, 88, 12, 0.15)",
+                            color: "#ea580c",
+                            borderColor: "#ea580c",
+                            fontWeight: 600,
+                          }}
+                        >
+                          ⚠️ {t("Tạm cách ly", "Suspended")}
+                        </mark>
+                      )}
+                      <mark className={account.status}>
+                        {account.status === "online"
+                          ? t("Online", "Online")
+                          : account.status === "connecting"
+                            ? t("Đang kết nối", "Connecting")
+                            : t("Cần kết nối lại", "Reconnect needed")}
+                      </mark>
+                    </div>
                   </div>
                   <div className="flow-account-name-row">
                     <h3>
@@ -2067,6 +2108,50 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       ? t("Đã xác minh từ Flow", "Verified from Flow")
                       : t("Cần đồng bộ gói trước khi tạo", "Sync plan before generation")}
                   </small>
+
+                  {Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000) && (
+                    <div
+                      className="flow-account-suspension-box"
+                      style={{
+                        margin: "8px 0",
+                        padding: "8px 10px",
+                        background: "rgba(234, 88, 12, 0.08)",
+                        border: "1px solid rgba(234, 88, 12, 0.25)",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        color: "#c2410c",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600 }}>
+                          {t("Tạm cách ly đến: ", "Suspended until: ")}
+                          {new Date((account.suspendedUntil || 0) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ({formatRemainingCooldown(account.suspendedUntil || 0, t)})
+                        </div>
+                        {account.suspendReason && (
+                          <div style={{ fontSize: 11, opacity: 0.9, marginTop: 2, wordBreak: "break-word" }}>
+                            {t("Lý do: ", "Reason: ")}{account.suspendReason}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        style={{
+                          fontSize: 11,
+                          padding: "3px 8px",
+                          cursor: "pointer",
+                          borderRadius: 4,
+                          whiteSpace: "nowrap",
+                        }}
+                        onClick={() => void clearSuspension(account)}
+                      >
+                        {t("Bỏ cách ly", "Unblock")}
+                      </button>
+                    </div>
+                  )}
 
                   <div className="flow-account-credits">
                     <div className="flow-account-credits-head">
@@ -2105,6 +2190,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         onClick={() => void setDefaultAccount(account.id)}
                       >
                         {t("Đặt mặc định", "Set default")}
+                      </button>
+                    )}
+                    {Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000) && (
+                      <button
+                        type="button"
+                        onClick={() => void clearSuspension(account)}
+                      >
+                        {t("Bỏ cách ly", "Unblock")}
                       </button>
                     )}
                     <button
@@ -3409,7 +3502,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           <div className="flow-retry-kind-grid">
                             <FlowSelect label={t("Model", "Model")} value={group.model} options={models} onChange={(model) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, model } : item) } : current)} />
                             <FlowSelect label={t("Tỷ lệ", "Ratio")} value={group.ratio} options={ratios} onChange={(ratio) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, ratio } : item) } : current)} />
-                            <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={["random", ...accounts.filter((account) => account.status === "online").map((account) => account.id)]} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={{ random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"), ...Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`])) }} />
+                            <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={["random", ...accounts.filter((account) => account.status === "online").map((account) => account.id)]} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={{ random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"), ...Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}${account.suspendedUntil && account.suspendedUntil > Date.now() / 1000 ? ` · ⚠️ ${t("Tạm cách ly", "Suspended")}` : ""}`])) }} />
                           </div>
                         </div>
                       );
@@ -3484,7 +3577,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
                     ...Object.fromEntries(accounts.map((account) => [
                       account.id,
-                      `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`,
+                      `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}${account.suspendedUntil && account.suspendedUntil > Date.now() / 1000 ? ` · ⚠️ ${t("Tạm cách ly", "Suspended")}` : ""}`,
                     ])),
                   }}
                 />

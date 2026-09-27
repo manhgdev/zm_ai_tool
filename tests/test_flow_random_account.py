@@ -161,11 +161,14 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
              patch("threading.Thread.start"):
             switched = self.service._try_fallback_account("job_123", "acc_pro", "Quota exceeded")
             self.assertTrue(switched)
-            mock_patch_row.assert_called_once()
-            args = mock_patch_row.call_args[0]
-            self.assertEqual(args[0], "jobs")
-            self.assertEqual(args[1], "job_123")
-            patched_data = args[2]
+            self.assertEqual(mock_patch_row.call_count, 2)
+            account_patch = next(c[0] for c in mock_patch_row.call_args_list if c[0][0] == "accounts")
+            self.assertEqual(account_patch[1], "acc_pro")
+            self.assertIn("suspendedUntil", account_patch[2])
+
+            job_patch = next(c[0] for c in mock_patch_row.call_args_list if c[0][0] == "jobs")
+            self.assertEqual(job_patch[1], "job_123")
+            patched_data = job_patch[2]
             # Since acc_pro was tried and Banana Pro requires non-free, next eligible MUST be acc_ultra
             self.assertEqual(patched_data["accountId"], "acc_ultra")
             self.assertEqual(patched_data["status"], "queued")
@@ -196,6 +199,88 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
             # Với Banana Pro, chỉ có acc_pro và acc_ultra hợp lệ. 6 jobs phải chia đều đúng 3 - 3!
             self.assertEqual(account_counts.get("acc_pro"), 3)
             self.assertEqual(account_counts.get("acc_ultra"), 3)
+
+    def test_pick_eligible_account_skips_suspended_account(self):
+        import time
+        accounts_with_suspension = [
+            dict(self.mock_accounts[1], suspendedUntil=time.time() + 7200, suspendReason="Quota reached"), # acc_pro suspended
+            self.mock_accounts[2], # acc_ultra online
+        ]
+        with patch("pipeline.flow.store.list_rows", return_value=accounts_with_suspension):
+            for _ in range(10):
+                picked = self.service._pick_eligible_account(kind="image", model="Nano Banana Pro")
+                self.assertIsNotNone(picked)
+                self.assertEqual(picked["id"], "acc_ultra")
+
+    def test_pick_eligible_account_reincludes_after_suspension_expires(self):
+        import time
+        accounts_expired_suspension = [
+            dict(self.mock_accounts[1], suspendedUntil=time.time() - 100, suspendReason="Old issue"), # expired
+            self.mock_accounts[2],
+        ]
+        with patch("pipeline.flow.store.list_rows", return_value=accounts_expired_suspension):
+            picked_ids = set()
+            for _ in range(20):
+                picked = self.service._pick_eligible_account(kind="image", model="Nano Banana Pro")
+                self.assertIsNotNone(picked)
+                picked_ids.add(picked["id"])
+            self.assertIn("acc_pro", picked_ids)
+            self.assertIn("acc_ultra", picked_ids)
+
+    def test_suspend_account_severe_duration(self):
+        import time
+        acc = dict(self.mock_accounts[1])
+        with patch("pipeline.flow.store.get_row", return_value=acc), \
+             patch("pipeline.flow.store.patch_row") as mock_patch:
+            now = time.time()
+            self.service.suspend_account("acc_pro", "FLOW_AUTOMATION_BLOCKED: abnormal activity")
+            mock_patch.assert_called_once()
+            patched = mock_patch.call_args[0][2]
+            # Severe cooldown is 12h = 43200s
+            self.assertAlmostEqual(patched["suspendedUntil"], now + 43200, delta=5)
+            self.assertIn("AUTOMATION_BLOCKED", patched["suspendReason"])
+
+    def test_suspend_account_standard_duration(self):
+        import time
+        acc = dict(self.mock_accounts[1])
+        with patch("pipeline.flow.store.get_row", return_value=acc), \
+             patch("pipeline.flow.store.patch_row") as mock_patch:
+            now = time.time()
+            self.service.suspend_account("acc_pro", "FLOW_QUOTA_EXHAUSTED: daily limit reached")
+            mock_patch.assert_called_once()
+            patched = mock_patch.call_args[0][2]
+            # Standard cooldown is 2h = 7200s
+            self.assertAlmostEqual(patched["suspendedUntil"], now + 7200, delta=5)
+            self.assertIn("QUOTA_EXHAUSTED", patched["suspendReason"])
+
+    def test_clear_account_suspension(self):
+        acc = dict(self.mock_accounts[1], suspendedUntil=9999999999, suspendReason="Some error")
+        with patch("pipeline.flow.store.get_row", return_value=acc), \
+             patch("pipeline.flow.store.patch_row") as mock_patch:
+            self.service.clear_account_suspension("acc_pro")
+            mock_patch.assert_called_once()
+            patched = mock_patch.call_args[0][2]
+            self.assertIsNone(patched["suspendedUntil"])
+            self.assertIsNone(patched["suspendReason"])
+
+    def test_try_fallback_account_suspends_failed_account(self):
+        fake_job = {
+            "id": "job_123",
+            "status": "failed",
+            "kind": "image",
+            "accountId": "acc_pro",
+            "settings": {"model": "Nano Banana Pro"},
+            "triedAccountIds": ["acc_pro"],
+            "allowAccountFallback": True,
+        }
+        with patch("pipeline.flow.store.list_rows", return_value=self.mock_accounts), \
+             patch("pipeline.flow.store.get_row", return_value=fake_job), \
+             patch("pipeline.flow.store.patch_row") as mock_patch_row, \
+             patch.object(self.service, "suspend_account") as mock_suspend, \
+             patch("threading.Thread.start"):
+            switched = self.service._try_fallback_account("job_123", "acc_pro", "FLOW_AUTOMATION_BLOCKED: captcha")
+            self.assertTrue(switched)
+            mock_suspend.assert_called_once_with("acc_pro", "FLOW_AUTOMATION_BLOCKED: captcha")
 
 
 if __name__ == "__main__":

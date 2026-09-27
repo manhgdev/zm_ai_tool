@@ -303,6 +303,8 @@ export function normalizeFlowAccounts(rows: FlowAccount[]): FlowAccount[] {
     used: Number(a.used || 0),
     credits: a.creditsSyncedAt || (a.status === "online" && a.projectId && a.credits != null)
       ? Number(a.credits) : null,
+    suspendedUntil: a.suspendedUntil ? Number(a.suspendedUntil) : null,
+    suspendReason: a.suspendReason ? String(a.suspendReason) : null,
   }));
 }
 

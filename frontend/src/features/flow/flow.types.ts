@@ -80,6 +80,8 @@ export type FlowAccount = {
   capabilityStatus?: "verified" | "stale" | "unknown";
   capabilitySyncedAt?: number | null;
   capabilityError?: string;
+  suspendedUntil?: number | null;
+  suspendReason?: string | null;
 };
 
 export type FlowLog = {

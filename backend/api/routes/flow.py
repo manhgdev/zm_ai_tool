@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -167,6 +167,27 @@ async def accounts_sync_one(account_id: str):
         if "Auth" in exc_name or "401" in str(exc):
             raise HTTPException(409, f"FLOW_SESSION_EXPIRED: {exc}") from exc
         raise HTTPException(500, str(exc)) from exc
+
+
+@router.post("/accounts/{account_id}/clear-suspension")
+def accounts_clear_suspension(account_id: str):
+    """Clear suspended cooldown state for an account."""
+    acc = service.clear_account_suspension(account_id)
+    if not acc:
+        raise HTTPException(404, "Flow account not found")
+    return acc
+
+
+@router.post("/accounts/{account_id}/suspend")
+def accounts_suspend(account_id: str, payload: dict[str, Any] = Body(...)):
+    """Manually mark an account as suspended/cooldown."""
+    reason = str(payload.get("reason") or "Thủ công bởi người dùng / Manually by user").strip()
+    duration = payload.get("duration")
+    duration_val = float(duration) if duration is not None else None
+    acc = service.suspend_account(account_id, reason, duration_seconds=duration_val)
+    if not acc:
+        raise HTTPException(404, "Flow account not found")
+    return acc
 
 
 
