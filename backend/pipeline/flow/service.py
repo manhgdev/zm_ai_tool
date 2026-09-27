@@ -247,10 +247,13 @@ def _classify_visible_flow_error(text: str) -> str:
         return ""
     low = raw.lower()
     if re.search(
-        r"abnormal activity|hoạt động bất thường|please wait a few seconds|vui lòng chờ vài giây",
+        r"abnormal activity|hoạt động bất thường",
         low,
     ):
         return f"FLOW_AUTOMATION_BLOCKED: {raw}"
+    # "please wait a few seconds" is a transient server-side throttle, not bot detection.
+    if re.search(r"please wait a few seconds|vui lòng chờ vài giây", low):
+        return f"FLOW_GENERATION_REJECTED: {raw}"
     if re.search(
         r"credit|t[ií]n d[uụ]ng|insufficient|not enough|out of\s+credits|h[eế]t t[ií]n",
         low,
@@ -1857,7 +1860,8 @@ class FlowService:
 
     def _try_fallback_account(self, job_id: str, failed_account_id: str, reason: str) -> bool:
         """Attempt to fallback a failed/blocked job to another eligible online account."""
-        # Cách ly tài khoản bị lỗi/nghi ngờ để bảo vệ tài khoản và tránh gán job random tiếp theo
+        # Only suspend for errors that are genuinely account-level faults.
+        # GENERATION_REJECTED / unknown reasons already return early in suspend_account.
         self.suspend_account(failed_account_id, reason)
 
         job = store.get_row("jobs", job_id)
