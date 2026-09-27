@@ -482,19 +482,48 @@ class FlowAPI:
     async def _get_auth_headers(self) -> dict:
         """Auth headers for aisandbox-pa.googleapis.com requests.
 
-        - Bearer ya29.xxx when cached (fastest, avoids any cookie dance).
-        - Otherwise empty: page.evaluate(fetch(..., credentials:'include')) sends
-          Google's cross-site SSO cookies (__Secure-1PAPISID etc.) which flow.google.com
-          has already authenticated. context.request drops those SameSite=None cookies.
+        Priority:
+          1. Bearer ya29.xxx (OAuth2 access token) when cached.
+          2. SAPISIDHASH — Google's signed-cookie auth for private APIs.
+             Formula: SAPISIDHASH {ts}_{sha1("{ts} {SAPISID} {origin}")}
+             Valid as long as user is logged in. Works when request is made
+             via page.evaluate(fetch) which sends the correct
+             Origin: https://flow.google.com header (required for validation).
+             Does NOT work via context.request (wrong origin context).
         """
+        import hashlib
+
         hdrs = {
             "content-type": "text/plain;charset=UTF-8",
             "referer":      "https://flow.google.com/",
             "origin":       "https://flow.google.com",
         }
+
         token = await self._get_bearer_token(required=False)
         if token:
             hdrs["authorization"] = f"Bearer {token}"
+            return hdrs
+
+        # SAPISIDHASH fallback — compute from SAPISID browser cookie.
+        # Google validates this against the Origin header, which page.evaluate(fetch)
+        # supplies correctly as "https://flow.google.com".
+        try:
+            cookies = await self._bm.context.cookies()
+            sapisid = next(
+                (c["value"] for c in cookies
+                 if c["name"] == "SAPISID" and "google.com" in c.get("domain", "")),
+                None,
+            )
+            if sapisid:
+                ts = int(_time.time())
+                digest = hashlib.sha1(
+                    f"{ts} {sapisid} https://flow.google.com".encode()
+                ).hexdigest()
+                hdrs["authorization"] = f"SAPISIDHASH {ts}_{digest}"
+                log.debug("Using SAPISIDHASH auth (no Bearer cached)")
+        except Exception as exc:
+            log.debug("SAPISIDHASH computation failed: %s", exc)
+
         return hdrs
 
     async def _get_bearer_token(self, *, required: bool = False) -> str:
