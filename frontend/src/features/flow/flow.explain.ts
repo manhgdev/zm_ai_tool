@@ -154,6 +154,17 @@ export function explainFlowError(message: string): FlowExplain {
       actionEn: "Edit the prompt / remove sensitive references, then retry.",
     };
   }
+  if (code === "FLOW_AUTOMATION_BLOCKED" || /FLOW_AUTOMATION_BLOCKED/i.test(raw)) {
+    return {
+      code: "FLOW_AUTOMATION_BLOCKED",
+      titleVi: "Flow tạm thời chặn hoạt động tự động",
+      titleEn: "Flow temporarily blocked automated activity",
+      summaryVi: "Flow phát hiện hoạt động bất thường từ phiên APP; đây không phải lỗi nội dung.",
+      summaryEn: "Flow detected unusual activity from the app session; this is not a content rejection.",
+      actionVi: "Không tự chạy lại liên tục. Chờ vài giây, giảm số job đồng thời và chạy lại thủ công; nếu còn lặp, dùng trực tiếp trên Flow.",
+      actionEn: "Do not retry repeatedly. Wait a few seconds, reduce concurrent jobs, and retry manually; if it persists, use Flow directly.",
+    };
+  }
   if (code === "FLOW_GENERATION_TIMEOUT") {
     return {
       code,

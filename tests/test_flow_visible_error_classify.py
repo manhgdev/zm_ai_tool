@@ -24,6 +24,12 @@ class FlowVisibleErrorClassifyTest(unittest.TestCase):
         msg = _classify_visible_flow_error("Something went wrong")
         self.assertTrue(msg.startswith("FLOW_GENERATION_REJECTED:"))
 
+    def test_abnormal_activity_stops_auto_retry(self) -> None:
+        msg = _classify_visible_flow_error(
+            "Chúng tôi nhận thấy có hoạt động bất thường nào đó. Vui lòng chờ vài giây rồi thử lại."
+        )
+        self.assertTrue(msg.startswith("FLOW_AUTOMATION_BLOCKED:"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -244,6 +244,11 @@ def _classify_visible_flow_error(text: str) -> str:
         return ""
     low = raw.lower()
     if re.search(
+        r"abnormal activity|hoạt động bất thường|please wait a few seconds|vui lòng chờ vài giây",
+        low,
+    ):
+        return f"FLOW_AUTOMATION_BLOCKED: {raw}"
+    if re.search(
         r"credit|t[ií]n d[uụ]ng|insufficient|not enough|out of\s+credits|h[eế]t t[ií]n",
         low,
     ):
@@ -2436,7 +2441,7 @@ class FlowService:
         # Once Flow accepts a job, retrying can create a duplicate and charge
         # credits twice; media recovery owns all post-submit timeouts.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_RESULT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
+            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|AUTOMATION_BLOCKED|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_RESULT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
             re.I,
         )
         profile_ready = False
