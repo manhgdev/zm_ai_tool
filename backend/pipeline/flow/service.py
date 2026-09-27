@@ -4638,13 +4638,6 @@ class FlowService:
                 prompt_text = _prompt_with_reference_strength(
                     job["prompt"], mode, settings.get("referenceStrength", 70),
                 )
-                # Proactively ensure Bearer token before direct API call.
-                # Without UI clicks Angular doesn't automatically emit ya29 tokens,
-                # so we force a page reload + CDP capture if the cache is stale.
-                bearer = await api._get_bearer_token(required=False)
-                if not bearer:
-                    _log.info("image_api: no Bearer cached — refreshing session to capture Angular token")
-                    await api._force_refresh_session()
                 generated = await api.generate_image(
                     prompt_text,
                     model=api_model,
