@@ -265,8 +265,13 @@ def _classify_visible_flow_error(text: str) -> str:
     return f"FLOW_GENERATION_REJECTED: {raw}"
 
 
-_COOLDOWN_SEVERE_S = 12 * 3600    # 12 giờ cho AUTOMATION_BLOCKED, GENERATION_REJECTED
-_COOLDOWN_STANDARD_S = 2 * 3600   # 2 giờ cho QUOTA, LOGIN, CREDITS_EMPTY, rate limit
+# Cooldown per error type (0 = no suspension):
+_COOLDOWN_BOT_S       = 3 * 3600    # 3h  — AUTOMATION_BLOCKED
+_COOLDOWN_QUOTA_S     = 14 * 3600   # 14h — FLOW_QUOTA_EXHAUSTED (daily quota)
+_COOLDOWN_RATELIMIT_S = 60          # 1min — HTTP 429 / rate limit
+_COOLDOWN_CREDITS_S   = 24 * 3600   # 24h — FLOW_CREDITS_EMPTY (needs manual top-up)
+# GENERATION_REJECTED — no suspension (content/prompt issue, not account issue)
+# FLOW_LOGIN_REQUIRED — no suspension (_ensure_shared_reconnect handles it)
 
 
 def _captured_image_items(response: dict[str, Any]) -> list[dict[str, str]]:
@@ -1093,15 +1098,23 @@ class FlowService:
         if not account:
             return {}
         if duration_seconds is None:
-            severe_pattern = (
-                r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_AUTOMATION_BLOCKED|"
-                r"FLOW_GENERATION_REJECTED|blocked|rejected"
-            )
-            duration_seconds = (
-                _COOLDOWN_SEVERE_S
-                if re.search(severe_pattern, str(reason), re.I)
-                else _COOLDOWN_STANDARD_S
-            )
+            r = str(reason)
+            if re.search(r"AUTOMATION_BLOCKED|FLOW_AUTOMATION_BLOCKED|abnormal activity", r, re.I):
+                duration_seconds = _COOLDOWN_BOT_S
+            elif re.search(r"FLOW_QUOTA_EXHAUSTED|quota|hết lượt|hết hạn mức|usage limit|generation limit|daily limit|monthly limit", r, re.I):
+                duration_seconds = _COOLDOWN_QUOTA_S
+            elif re.search(r"HTTP\s*429|rate.?limit|too many requests", r, re.I):
+                duration_seconds = _COOLDOWN_RATELIMIT_S
+            elif re.search(r"FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit", r, re.I):
+                duration_seconds = _COOLDOWN_CREDITS_S
+            elif re.search(r"GENERATION_REJECTED|FLOW_GENERATION_REJECTED", r, re.I):
+                return account  # content/prompt issue — not an account fault, no suspension
+            elif re.search(r"LOGIN_REQUIRED|FLOW_LOGIN_REQUIRED", r, re.I):
+                return account  # session issue — _ensure_shared_reconnect() owns this
+            else:
+                return account  # unrecognised automation error — do not penalise account
+        if not duration_seconds:
+            return account  # caller passed 0 explicitly
         until = time.time() + duration_seconds
         patch = {
             "suspendedUntil": until,

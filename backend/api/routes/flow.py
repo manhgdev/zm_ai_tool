@@ -183,7 +183,9 @@ def accounts_suspend(account_id: str, payload: dict[str, Any] = Body(...)):
     """Manually mark an account as suspended/cooldown."""
     reason = str(payload.get("reason") or "Thủ công bởi người dùng / Manually by user").strip()
     duration = payload.get("duration")
-    duration_val = float(duration) if duration is not None else None
+    # No duration = indefinite: stays suspended until user manually unblocks.
+    _INDEFINITE = 10 * 365 * 24 * 3600  # 10-year sentinel = "until Unblock"
+    duration_val = float(duration) if duration is not None else _INDEFINITE
     acc = service.suspend_account(account_id, reason, duration_seconds=duration_val)
     if not acc:
         raise HTTPException(404, "Flow account not found")
