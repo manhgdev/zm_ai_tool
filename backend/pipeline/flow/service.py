@@ -358,7 +358,7 @@ def _detect_plan(credit_info: Any) -> str | None:
     combined = re.sub(r"[^a-z0-9]+", "_", f"{tier} {sku} {service_tier}")
     if "ultra" in combined or "tier_two" in combined or "tier_2" in combined:
         return "Ultra"
-    if "plus" in combined:
+    if "plus" in combined or "tier_5" in combined:
         return "Plus"
     if "pro" in combined or "tier_one" in combined or "tier_1" in combined:
         return "Pro"
