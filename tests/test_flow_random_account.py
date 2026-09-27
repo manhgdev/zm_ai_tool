@@ -172,6 +172,31 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
             self.assertIn("acc_ultra", patched_data["triedAccountIds"])
             self.assertIn("acc_pro", patched_data["triedAccountIds"])
 
+    def test_enqueue_multiple_prompts_distributes_evenly_across_accounts(self):
+        prompts = [f"Prompt {i}" for i in range(6)]
+        with patch("pipeline.flow.store.list_rows", return_value=self.mock_accounts), \
+             patch("pipeline.flow.store.get_row") as mock_get_row, \
+             patch("pipeline.flow.store.put_rows"), \
+             patch("threading.Thread.start"):
+            def fake_get_row(table, row_id):
+                return next((a for a in self.mock_accounts if a["id"] == row_id), None)
+            mock_get_row.side_effect = fake_get_row
+
+            jobs = self.service.enqueue({
+                "prompts": prompts,
+                "kind": "image",
+                "accountId": "random",
+                "settings": {"model": "Nano Banana Pro"},
+            })
+            self.assertEqual(len(jobs), 6)
+            account_counts = {}
+            for j in jobs:
+                acc = j["accountId"]
+                account_counts[acc] = account_counts.get(acc, 0) + 1
+            # Với Banana Pro, chỉ có acc_pro và acc_ultra hợp lệ. 6 jobs phải chia đều đúng 3 - 3!
+            self.assertEqual(account_counts.get("acc_pro"), 3)
+            self.assertEqual(account_counts.get("acc_ultra"), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -870,6 +870,7 @@ class FlowService:
         self._account_condition = threading.Condition(self._guard)
         # Set to True during delete_all_jobs to stop enqueue from creating new jobs mid-loop
         self._stop_enqueue: bool = False
+        self._random_rr_counter: int = 0
 
     def _claim_media_ids(self, candidates: list[str], expected_count: int) -> list[str]:
         """Atomically assign project media so concurrent jobs cannot share one output."""
@@ -1709,8 +1710,9 @@ class FlowService:
         kind: str = "image",
         model: str | None = None,
         exclude_ids: set[str] | list[str] | None = None,
+        extra_counts: dict[str, int] | None = None,
     ) -> dict[str, Any] | None:
-        """Pick a random online account that has credits and satisfies model requirements."""
+        """Pick an online account with balanced round-robin and least workload."""
         exclude_set = {str(x) for x in (exclude_ids or []) if str(x)}
         accounts = store.list_rows("accounts")
         eligible: list[dict[str, Any]] = []
@@ -1729,8 +1731,36 @@ class FlowService:
             eligible.append(acc)
         if not eligible:
             return None
-        import random
-        return random.choice(eligible)
+
+        # Stable sort by id for fair deterministic rotation
+        eligible.sort(key=lambda a: str(a.get("id") or ""))
+
+        # Count active/queued jobs per account so workload distributes evenly
+        job_counts: dict[str, int] = {}
+        try:
+            job_rows = store.list_rows("jobs")
+        except Exception:
+            job_rows = []
+        for r in job_rows:
+            if isinstance(r, dict) and r.get("status") in {"queued", "processing"}:
+                a_id = str(r.get("accountId") or "")
+                job_counts[a_id] = job_counts.get(a_id, 0) + 1
+
+        extras = extra_counts or {}
+        loads = {
+            str(a.get("id")): self._account_active.get(str(a.get("id")), 0)
+            + job_counts.get(str(a.get("id")), 0)
+            + extras.get(str(a.get("id")), 0)
+            for a in eligible
+        }
+        min_load = min(loads.values())
+        best_candidates = [a for a in eligible if loads[str(a.get("id"))] == min_load]
+
+        with self._guard:
+            rr_index = getattr(self, "_random_rr_counter", 0)
+            chosen = best_candidates[rr_index % len(best_candidates)]
+            self._random_rr_counter = rr_index + 1
+        return chosen
 
     def _try_fallback_account(self, job_id: str, failed_account_id: str, reason: str) -> bool:
         """Attempt to fallback a failed/blocked job to another eligible online account."""
@@ -2505,15 +2535,17 @@ class FlowService:
         created = []
         pending: list[dict] = []
         now = time.time()
+        extra_counts: dict[str, int] = {}
         for index, prompt in enumerate(prompts, 1):
             if self._stop_enqueue:
                 # delete-all fired mid-submission — stop creating jobs immediately
                 break
             job_input_index = int(payload.get("inputIndex") or series_context.get("sceneIndex") or index)
             if is_random:
-                picked = self._pick_eligible_account(kind=kind, model=model)
+                picked = self._pick_eligible_account(kind=kind, model=model, extra_counts=extra_counts)
                 job_account = picked or account
                 job_account_id = str(job_account.get("id"))
+                extra_counts[job_account_id] = extra_counts.get(job_account_id, 0) + 1
             else:
                 job_account = account
                 job_account_id = account_id
