@@ -1180,7 +1180,7 @@
   padding: 10px 14px 12px;
   background: var(--surface);
 }
-.flow-retry-dialog { width: min(460px, 92vw) !important; }
+.flow-retry-dialog { width: min(640px, 94vw) !important; }
 .flow-retry-dialog > header { padding: 12px 14px; }
 .flow-retry-dialog > header strong { display: block; font-size: 0.86rem; }
 .flow-retry-dialog > header small { display: block; margin-top: 2px; color: var(--muted-foreground); font-size: 0.65rem; font-weight: 600; }
@@ -1216,9 +1216,16 @@
 .flow-retry-fields label:last-child { grid-column: auto; }
 .flow-retry-fields .flow-select-wrap,
 .flow-retry-fields select { width: 100%; min-width: 0; }
-.flow-retry-fields select { min-height: 29px; padding: 0 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--background); color: var(--ink); font-size: 0.7rem; font-weight: 750; }
+.flow-retry-fields select { min-height: 38px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--background); color: var(--ink); font-size: 0.82rem; font-weight: 750; }
+.flow-retry-kind-groups { grid-column: 1 / -1; display: grid; gap: 10px; }
+.flow-retry-kind-help { margin: 0; color: var(--muted-foreground); font-size: 0.72rem; line-height: 1.35; }
+.flow-retry-kind-card { display: grid; gap: 9px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--background) 86%, var(--primary) 14%); }
+.flow-retry-kind-card > strong { color: var(--ink); font-size: 0.78rem; }
+.flow-retry-kind-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.flow-retry-dialog[data-multi-kind="true"] .flow-retry-fields > label:not(.flow-retry-include-done) { display: none; }
 @media (max-width: 680px) {
   .flow-retry-fields { grid-template-columns: 1fr; }
+  .flow-retry-kind-grid { grid-template-columns: 1fr; }
 }
 .flow-history-scroll {
   max-height: min(62vh, 620px);

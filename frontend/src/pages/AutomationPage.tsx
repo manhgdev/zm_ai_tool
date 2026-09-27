@@ -6,6 +6,7 @@ import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { MediaPreviewModal, type MediaPreviewAction, type MediaPreviewItem } from '@/shared/components/MediaPreviewModal'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { useRemountState } from '@/shared/lib/useRemountState'
+import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
 import { normalizeChatProviders, type ChatProviderOption } from '@/features/chat/chatProviders'
 import './AutomationPage.css'
 
@@ -256,6 +257,23 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
     } finally { setLoading(false) }
   }, [locale])
 
+  const onAutomationRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    if (event.type === 'snapshot') {
+      const snapshot = event.payload as { jobs?: AutomationJob[] } | null
+      if (Array.isArray(snapshot?.jobs)) setJobs(snapshot.jobs.filter(job => !deletedJobIds.current.has(job.id)))
+      return
+    }
+    if (!event.type.startsWith('automation.job.')) return
+    if (event.type === 'automation.job.deleted') {
+      setJobs(current => current.filter(job => job.id !== event.entityId))
+      return
+    }
+    const job = event.payload as AutomationJob | null
+    if (!job?.id) return
+    setJobs(current => [...current.filter(item => item.id !== job.id), job].sort((a, b) => String(b.id).localeCompare(String(a.id))))
+  }, [setJobs])
+  const realtimeStatus = useRealtimeEvents('automation', onAutomationRealtime)
+
   useEffect(() => {
     void Promise.all([
       fetchWithTimeout(`${API}/settings`).then(response => response.ok ? response.json() as Promise<Partial<AutomationSettings>> : null).then(value => { if (value) setSettings(mergeSettings(value)) }).catch(() => undefined),
@@ -324,10 +342,10 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
 
   useEffect(() => {
     const active = jobs.some(job => job.status === 'queued' || job.status === 'running' || job.status === 'awaiting_topic')
-    if (!active) return undefined
+    if (!active || realtimeStatus === 'connected') return undefined
     const timer = window.setInterval(() => void refresh(), 1000)
     return () => window.clearInterval(timer)
-  }, [jobs, refresh])
+  }, [jobs, refresh, realtimeStatus])
 
   const openFlowQueue = () => {
     try {

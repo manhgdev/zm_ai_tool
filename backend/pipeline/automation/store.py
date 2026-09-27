@@ -141,6 +141,7 @@ class AutomationStore:
                 ),
             )
             self._db.commit()
+        _publish("automation.job.created", job_id, item)
         return item
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
@@ -156,7 +157,10 @@ class AutomationStore:
             cursor = self._db.execute("DELETE FROM automation_jobs WHERE id=?", (job_id,))
             self._db.execute("DELETE FROM automation_logs WHERE job_id=?", (job_id,))
             self._db.commit()
-        return cursor.rowcount > 0
+        removed = cursor.rowcount > 0
+        if removed:
+            _publish("automation.job.deleted", job_id, None)
+        return removed
 
     def list_jobs(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -180,7 +184,10 @@ class AutomationStore:
             columns = ",".join(f"{key}=?" for key in encoded)
             self._db.execute(f"UPDATE automation_jobs SET {columns} WHERE id=?", (*encoded.values(), job_id))
             self._db.commit()
-        return self.get_job(job_id)
+        result = self.get_job(job_id)
+        if result:
+            _publish("automation.job.updated", job_id, result)
+        return result
 
     def append_log(self, job_id: str, level: str, message: str, *, stage: str = "", details: dict[str, Any] | None = None) -> dict[str, Any]:
         item = {
@@ -216,3 +223,19 @@ class AutomationStore:
             item["createdAt"] = item.pop("created_at")
             result.append(item)
         return result
+
+
+def _publish(event_type: str, job_id: str, job: dict[str, Any] | None) -> None:
+    try:
+        from pipeline.core.realtime import realtime
+        payload = None
+        if job:
+            payload = {
+                key: job.get(key) for key in (
+                    "id", "title", "input_mode", "status", "stage", "progress",
+                    "artifacts", "child_job_ids", "error", "created_at", "updated_at",
+                )
+            }
+        realtime.publish("automation", event_type, job_id, payload)
+    except Exception:
+        return

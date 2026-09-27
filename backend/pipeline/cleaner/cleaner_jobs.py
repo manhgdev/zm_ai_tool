@@ -70,12 +70,17 @@ def create_job(filename: str, method: str, options: dict, input_path: str, outpu
     }
     with _LOCK:
         _JOBS[job_id] = job
+    _publish("cleaner.job.created", job_id, job)
     return job
 
 def update_job(job_id: str, updates: dict[str, Any]) -> None:
+    updated: dict[str, Any] | None = None
     with _LOCK:
         if job_id in _JOBS:
             _JOBS[job_id].update(updates)
+            updated = dict(_JOBS[job_id])
+    if updated is not None:
+        _publish("cleaner.job.updated", job_id, updated)
 
 
 def append_job_log(job_id: str, message: str) -> None:
@@ -127,6 +132,7 @@ def cancel_job(job_id: str) -> bool:
         kill_process_tree(proc.pid)
     
     _cleanup_temp_files(job_id)
+    _publish("cleaner.job.updated", job_id, get_job(job_id))
     return True
 
 def delete_job(job_id: str) -> bool:
@@ -148,7 +154,16 @@ def delete_job(job_id: str) -> bool:
     if output.is_file() and output.parent == CLEANER_OUT_DIR:
         try: output.unlink()
         except OSError: pass
+    _publish("cleaner.job.deleted", job_id, None)
     return True
+
+
+def _publish(event_type: str, job_id: str, payload: dict[str, Any] | None) -> None:
+    try:
+        from pipeline.core.realtime import realtime
+        realtime.publish("cleaner", event_type, job_id, payload)
+    except Exception:
+        return
 
 def _cleanup_temp_files(job_id: str) -> None:
     job = get_job(job_id)

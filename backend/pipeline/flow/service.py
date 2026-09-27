@@ -597,8 +597,9 @@ def _normalize_catalog_settings(
                 changed = True
         if kind == "video" and _video_ui_duration(account, normalized) is None:
             if str(normalized.get("duration") or "").strip():
-                # Keep display value empty so workers do not chase missing 8s tabs.
-                normalized["duration"] = ""
+                # Omit the field entirely; Flow treats an empty value as an
+                # explicit setting instead of using the model default.
+                normalized.pop("duration", None)
                 changed = True
         return normalized, changed
     requested = str(settings.get("model") or "")
@@ -619,7 +620,7 @@ def _normalize_catalog_settings(
             if str(normalized.get("duration") or "") not in durations:
                 normalized["duration"] = str(selected.get("defaultDuration") or durations[0])
         elif str(normalized.get("duration") or "").strip():
-            normalized["duration"] = ""
+            normalized.pop("duration", None)
     resolutions = [str(value) for value in selected.get("resolutions", []) if str(value)]
     if kind == "video":
         resolutions = [value for value in resolutions if _video_ui_resolution(value)]

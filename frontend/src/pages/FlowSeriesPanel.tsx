@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { localize, useLocale } from '@/app/i18n'
 import './FlowSeriesPanel.css'
@@ -13,6 +13,7 @@ import {
   readSeriesSettings, toUrl, countSeriesScript,
 } from '@/features/flow/flowSeries.helpers'
 import { chatProviderUsable, normalizeChatProviders, type ChatProviderOption } from '@/features/chat/chatProviders'
+import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
 
 export type { SeriesArtifact, FlowSeriesSceneContext }
 
@@ -25,6 +26,20 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const [items, setItems] = useState<Series[]>([])
+  const onSeriesRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    if (event.type === 'snapshot') {
+      const snapshot = event.payload as { items?: Series[] } | null
+      if (Array.isArray(snapshot?.items)) setItems(snapshot.items.map(normalizeSeries))
+      return
+    }
+    if (event.type === 'series.deleted') {
+      setItems(current => current.filter(item => item.id !== event.entityId))
+      return
+    }
+    const series = event.payload as Series | null
+    if (series?.id) setItems(current => [...current.filter(item => item.id !== series.id), normalizeSeries(series)])
+  }, [])
+  const realtimeStatus = useRealtimeEvents('series', onSeriesRealtime)
   const [selectedId, setSelectedId] = useState(() => {
     try { return localStorage.getItem(SERIES_SELECTED_ID_KEY) || '' } catch { return '' }
   })
@@ -412,14 +427,14 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   // Refresh scene data every 6s while a run is active so keyframe/video status
   // updates live without needing F5 — ponytail: lightweight GET, stops when run ends
   useEffect(() => {
-    if (!activeRun || !selected || ['done', 'done_with_errors', 'failed', 'cancelled'].includes(activeRun.status)) return
+    if (!activeRun || !selected || ['done', 'done_with_errors', 'failed', 'cancelled'].includes(activeRun.status) || realtimeStatus === 'connected') return
     const t2 = window.setInterval(() => {
       void request<Series>(`/series/${selected.id}`)
         .then((fresh) => setSelected(normalizeSeries(fresh)))
         .catch(() => {/* ignore transient errors */})
     }, 6000)
     return () => window.clearInterval(t2)
-  }, [activeRun?.runId, activeRun?.status, selected?.id])
+  }, [activeRun?.runId, activeRun?.status, realtimeStatus, selected?.id])
 
   const create = async () => {
     if (!title.trim()) return

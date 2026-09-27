@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
 import { toast } from 'sonner'
 import './SrtImagePage.css'
@@ -6,6 +6,7 @@ import { localize, useLocale } from '../app/i18n'
 import { BackTitle } from '../shared/components/BackTitle'
 import { copyText } from '../shared/lib/clipboard'
 import { useRemountState } from '../shared/lib/useRemountState'
+import { useRealtimeEvents } from '../realtime/RealtimeProvider'
 import { CAPTION_FONT_PRESETS, captionChromeStyle, captionFontCss } from '../features/editor/lib/previewStyles'
 import {
   type Job, type MissingMediaInfo, type HelpKey,
@@ -115,6 +116,15 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   const [missingMedia, setMissingMedia] = useState<MissingMediaInfo | null>(null)
   const [logStart, setLogStart] = useState(0)
   const settingsSnapshot = useRef('')
+  const onRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    if (event.type === 'snapshot') {
+      const jobs = (event.payload as { jobs?: Job[] } | null)?.jobs || []
+      if (jobs.length) setJob(current => jobs.find(item => item.id === current?.id) || jobs[0])
+      return
+    }
+    if (event.entityId === job?.id && event.type === 'srt-image.job.updated') setJob(event.payload as Job)
+  }, [job?.id, setJob])
+  const realtimeStatus = useRealtimeEvents('srt-image', onRealtime)
 
   useEffect(() => {
     if (!initialMediaFolder) return
@@ -169,13 +179,13 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   }, [job?.id])
 
   useEffect(() => {
-    if (!job || !['queued', 'processing', 'paused'].includes(job.status)) return
+    if (!job || !['queued', 'processing', 'paused'].includes(job.status) || realtimeStatus === 'connected') return
     const timer = window.setInterval(async () => {
       const response = await fetch(`/api/srt-image/jobs/${job.id}`)
       if (response.ok) setJob(await response.json())
-    }, 1000)
+    }, 10000)
     return () => window.clearInterval(timer)
-  }, [job?.id, job?.status])
+  }, [job?.id, job?.status, realtimeStatus, setJob])
 
   useEffect(() => {
     if (!helpKey) return

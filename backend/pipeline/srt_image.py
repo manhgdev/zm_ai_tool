@@ -729,6 +729,7 @@ def create_job(
     }
     with _LOCK:
         _JOBS[job_id] = job
+    _publish("srt-image.job.created", job_id, job)
     return dict(job)
 
 
@@ -744,9 +745,13 @@ def get_job(job_id: str) -> dict | None:
 
 
 def _update(job_id: str, **values: Any) -> None:
+    updated: dict[str, Any] | None = None
     with _LOCK:
         if job_id in _JOBS:
             _JOBS[job_id].update(values)
+            updated = dict(_JOBS[job_id])
+    if updated is not None:
+        _publish("srt-image.job.updated", job_id, updated)
 
 
 def _log(job_id: str, message: str) -> None:
@@ -786,7 +791,16 @@ def cancel(job_id: str) -> bool:
         proc = _PROCS.get(job_id)
     if proc:
         kill_process_tree(proc.pid)
+    _publish("srt-image.job.updated", job_id, get_job(job_id))
     return True
+
+
+def _publish(event_type: str, job_id: str, payload: dict[str, Any] | None) -> None:
+    try:
+        from pipeline.core.realtime import realtime
+        realtime.publish("srt-image", event_type, job_id, payload)
+    except Exception:
+        return
 
 
 def pause(job_id: str, paused: bool) -> bool:

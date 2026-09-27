@@ -246,7 +246,11 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       settings: {
         model: savedModel === "Veo 3.1 - Lite [Lower Priority]" ? "Veo 3.1 - Fast" : savedModel,
         ratio: String(s.ratio || "16:9"),
-        duration: String(s.duration || "8"),
+        // Veo models have no duration control. Keep it empty so retry/create
+        // payloads omit the key instead of sending a fabricated 8s value.
+        duration: s.duration != null && String(s.duration).trim()
+          ? String(s.duration)
+          : (/^Veo\b/i.test(savedModel) ? "" : "8"),
         resolution: raw.kind === "image"
           ? clampFlowImageResolution(String(s.resolution || "1K"))
           : (isFlowVideoUiResolution(String(s.resolution || "")) ? String(s.resolution) : ""),

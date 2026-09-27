@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { applyEngineProfile, defaultSettings } from '@/app/appSettings'
 import { localize, useLocale } from '@/app/i18n'
@@ -11,6 +11,7 @@ import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { IconArrowRight, IconGear } from '@/shared/components/Icons'
 import { MediaPreviewModal } from '@/shared/components/MediaPreviewModal'
 import { useRemountState } from '@/shared/lib/useRemountState'
+import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
 import { DEFAULT_REVIEW_SETTINGS, STYLE_TO_PIPE, type ReviewSettings } from '@/features/studio/reviewSettings'
 import './StudioPages.css'
 import './FilmPage.css'
@@ -125,7 +126,22 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
   const tabJobs = tab === 'all' ? jobs : jobs.filter((job) => job.type === tab)
   const readyQueueJobs = tabJobs.filter((job) => job.status === 'paused')
   const readyDrawingJobs = drawingJobs.filter((job) => job.status === 'queued')
-  const hasActiveJobs = jobs.some((job) => job.status === 'running' || job.status === 'queued') || drawingJobs.some((job) => job.status === 'queued' || job.status === 'processing')
+  const hasActiveQueueJobs = jobs.some((job) => job.status === 'running' || job.status === 'queued')
+  const onDrawingRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    if (event.type === 'snapshot') {
+      const snapshot = event.payload as { jobs?: DrawingJob[] } | null
+      if (Array.isArray(snapshot?.jobs)) setDrawingJobs(snapshot.jobs)
+      return
+    }
+    if (!event.type.startsWith('drawing.job.')) return
+    if (event.type === 'drawing.job.deleted') {
+      setDrawingJobs(current => current.filter(job => job.id !== event.entityId))
+      return
+    }
+    const job = event.payload as DrawingJob | null
+    if (job?.id) setDrawingJobs(current => [...current.filter(item => item.id !== job.id), job])
+  }, [setDrawingJobs])
+  const drawingRealtimeStatus = useRealtimeEvents('drawing', onDrawingRealtime)
 
   const setReview = (patch: Partial<ReviewSettings>) => setReviewSettings((cur) => ({ ...cur, ...patch }))
   const setClone = (next: ProjectSettings) => setCloneSettings(next)
@@ -164,10 +180,10 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
 
   useEffect(() => {
     void refresh()
-    if (!hasActiveJobs) return
+    if (!hasActiveQueueJobs || drawingRealtimeStatus !== 'fallback') return
     const timer = window.setInterval(() => void refresh().catch(() => undefined), 3000)
     return () => window.clearInterval(timer)
-  }, [hasActiveJobs])
+  }, [hasActiveQueueJobs, drawingRealtimeStatus])
   useEffect(() => { void fetch('/api/config').then(async (response) => response.ok && setIsDesktopApp(Boolean((await response.json() as { desktop?: boolean }).desktop))).catch(() => undefined) }, [])
 
   useEffect(() => {

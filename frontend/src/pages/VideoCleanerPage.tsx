@@ -5,6 +5,7 @@ import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { MediaPreviewModal } from '@/shared/components/MediaPreviewModal'
 import { copyText } from '@/shared/lib/clipboard'
 import { useRemountState } from '@/shared/lib/useRemountState'
+import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
 import { toast } from 'sonner'
 import './VideoCleanerPage.css'
 
@@ -166,6 +167,20 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
   const [method, setMethod] = useState<CleanMethod>(loadMethod)
   const [options, setOptions] = useState<AdvancedOptions>(loadOpts)
   const [jobs, setJobs] = useRemountState<CleanJob[]>('cleaner.jobs', loadJobs)
+  const onCleanerRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    if (event.type === 'snapshot') {
+      const snapshot = event.payload as { jobs?: CleanJob[] } | null
+      if (Array.isArray(snapshot?.jobs)) setJobs(snapshot.jobs)
+      return
+    }
+    if (event.type === 'cleaner.job.deleted') {
+      setJobs(current => current.filter(job => job.id !== event.entityId))
+      return
+    }
+    const job = event.payload as CleanJob | null
+    if (job?.id) setJobs(current => [...current.filter(item => item.id !== job.id), job])
+  }, [setJobs])
+  const realtimeStatus = useRealtimeEvents('cleaner', onCleanerRealtime)
   const [activeTab, setActiveTab] = useState<ResultTab>('all')
   const [isDragging, setIsDragging] = useState(false)
   const [logExpanded, setLogExpanded] = useState(false)
@@ -212,10 +227,10 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
   }, [refreshCleanerJobs])
 
   useEffect(() => {
-    if (!jobs.some(job => ACTIVE_STATES.has(job.status))) return
-    const interval = window.setInterval(() => void refreshCleanerJobs(), 1500)
+    if (!jobs.some(job => ACTIVE_STATES.has(job.status)) || realtimeStatus === 'connected') return
+    const interval = window.setInterval(() => void refreshCleanerJobs(), 10000)
     return () => window.clearInterval(interval)
-  }, [jobs, refreshCleanerJobs])
+  }, [jobs, refreshCleanerJobs, realtimeStatus])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 

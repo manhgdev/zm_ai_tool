@@ -59,7 +59,9 @@ def put_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
         else:
             rows[index] = dict(row)
         _write(name, rows)
-        return dict(row)
+        result = dict(row)
+    _publish_row(name, "created" if index < 0 else "updated", result)
+    return result
 
 
 def put_rows(name: str, new_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -76,18 +78,25 @@ def put_rows(name: str, new_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             else:
                 rows.append(dict(row))
         _write(name, rows)
-    return [dict(r) for r in new_rows]
+    result = [dict(r) for r in new_rows]
+    for row in result:
+        _publish_row(name, "updated", row)
+    return result
 
 
 def patch_row(name: str, row_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
+    result: dict[str, Any] | None = None
     with _LOCK:
         rows = _read(name)
         for row in rows:
             if row.get("id") == row_id:
                 row.update(patch)
                 _write(name, rows)
-                return dict(row)
-    return None
+                result = dict(row)
+                break
+    if result is not None:
+        _publish_row(name, "updated", result)
+    return result
 
 
 def delete_row(name: str, row_id: str) -> bool:
@@ -97,10 +106,12 @@ def delete_row(name: str, row_id: str) -> bool:
         if len(kept) == len(rows):
             return False
         _write(name, kept)
-        return True
+    _publish(name, "deleted", row_id, None)
+    return True
 
 
 def cancel_active_jobs(ids: set[str], updated_at: float) -> int:
+    changed_rows: list[dict[str, Any]] = []
     with _LOCK:
         rows = _read('jobs')
         changed = 0
@@ -108,9 +119,12 @@ def cancel_active_jobs(ids: set[str], updated_at: float) -> int:
             if row.get('id') in ids and row.get('status') not in {'done', 'failed', 'cancelled', 'action_required'}:
                 row.update(status='cancelled', stage='cancelled', progress=0, updatedAt=updated_at)
                 changed += 1
+                changed_rows.append(dict(row))
         if changed:
             _write('jobs', rows)
-        return changed
+    for row in changed_rows:
+        _publish_row("jobs", "updated", row)
+    return changed
 
 
 def delete_rows(name: str, ids: set[str]) -> list[dict[str, Any]]:
@@ -119,4 +133,29 @@ def delete_rows(name: str, ids: set[str]) -> list[dict[str, Any]]:
         removed = [row for row in rows if row.get('id') in ids]
         if removed:
             _write(name, [row for row in rows if row.get('id') not in ids])
-        return removed
+    for row in removed:
+        _publish_row(name, "deleted", row)
+    return removed
+
+
+def _publish(topic_name: str, action: str, row_id: str, row: dict[str, Any] | None) -> None:
+    try:
+        from pipeline.core.realtime import realtime
+        topic = "series" if topic_name == "series" else "flow"
+        if topic_name == "accounts":
+            kind = "flow.account"
+        elif topic_name == "logs":
+            kind = "flow.log"
+        elif topic_name == "series":
+            kind = "series"
+        else:
+            kind = "flow.job"
+        realtime.publish(topic, f"{kind}.{action}", str(row_id), row)
+    except Exception:
+        # Realtime delivery is best-effort; persistence must never fail because
+        # the browser stream is unavailable.
+        return
+
+
+def _publish_row(topic_name: str, action: str, row: dict[str, Any]) -> None:
+    _publish(topic_name, action, str(row.get("id") or ""), row)

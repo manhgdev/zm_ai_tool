@@ -12,6 +12,7 @@ import { localize, useLocale } from '@/app/i18n'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { copyText } from '@/shared/lib/clipboard'
 import { toast } from 'sonner'
+import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
 import './DownloadStudio.css'
 
 const ACTIVE = new Set(['queued', 'running'])
@@ -234,6 +235,20 @@ export default function DownloadStudio({ onBack, onUseInClone }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const pollRef = useRef<number | null>(null)
+  const onRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    if (event.type === 'snapshot') {
+      const snapshot = event.payload as { jobs?: DownloadJob[] } | null
+      if (Array.isArray(snapshot?.jobs)) setJobs(snapshot.jobs)
+      return
+    }
+    if (event.type === 'download.job.deleted') {
+      setJobs(current => current.filter(job => job.id !== event.entityId))
+      return
+    }
+    const job = event.payload as DownloadJob | null
+    if (job?.id) setJobs(current => [...current.filter(item => item.id !== job.id), job].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))))
+  }, [])
+  const realtimeStatus = useRealtimeEvents('download', onRealtime)
 
   function persistTextareaH() {
     const el = taRef.current
@@ -364,7 +379,7 @@ export default function DownloadStudio({ onBack, onUseInClone }: Props) {
 
   useEffect(() => {
     const need = jobs.some((j) => ACTIVE.has(j.status))
-    if (!need) {
+    if (!need || realtimeStatus === 'connected') {
       if (pollRef.current != null) {
         window.clearInterval(pollRef.current)
         pollRef.current = null
@@ -374,14 +389,14 @@ export default function DownloadStudio({ onBack, onUseInClone }: Props) {
     if (pollRef.current != null) return
     pollRef.current = window.setInterval(() => {
       void refresh()
-    }, 1500)
+    }, 10000)
     return () => {
       if (pollRef.current != null) {
         window.clearInterval(pollRef.current)
         pollRef.current = null
       }
     }
-  }, [jobs, refresh])
+  }, [jobs, refresh, realtimeStatus])
 
   function patchOpt<K extends keyof DownloadOpts>(key: K, val: DownloadOpts[K]) {
     setOpts((o) => ({ ...o, [key]: val }))

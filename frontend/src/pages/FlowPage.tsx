@@ -17,6 +17,7 @@ import { BackTitle } from "@/shared/components/BackTitle";
 import { OutputFolderField } from "@/shared/components/OutputFolderField";
 import { copyText } from "@/shared/lib/clipboard";
 import { useRemountState } from "@/shared/lib/useRemountState";
+import { useRealtimeEvents } from "@/realtime/RealtimeProvider";
 import FlowSeriesPanel, { type FlowSeriesSceneContext } from "./FlowSeriesPanel";
 import { FlowTemplatesPanel } from "@/features/flow/FlowTemplatesPanel";
 import {
@@ -324,6 +325,17 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     count: number;
     concurrency: string;
     accountId: string;
+    groups: Array<{
+      kind: CreateKind;
+      jobs: FlowJob[];
+      model: string;
+      ratio: string;
+      duration: string;
+      resolution: string;
+      quality: string;
+      count: number;
+      accountId: string;
+    }>;
   } | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     message: string;
@@ -495,6 +507,43 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     (job) => job.status === "processing" || job.status === "queued",
   );
   const hasConnectingAccounts = accounts.some((account) => account.status === "connecting");
+  const onFlowRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    if (event.type === "snapshot") {
+      const snapshot = event.payload as { jobs?: Array<Record<string, unknown>>; accounts?: FlowAccount[]; logs?: FlowLog[] } | null;
+      if (snapshot?.accounts) setAccounts(normalizeFlowAccounts(snapshot.accounts));
+      if (snapshot?.jobs) setJobs(normalizeFlowJobs(snapshot.jobs, snapshot.accounts ? normalizeFlowAccounts(snapshot.accounts) : accounts));
+      if (snapshot?.logs) setLogs(snapshot.logs);
+      return;
+    }
+    if (!event.type.startsWith("flow.")) return;
+    if (event.type === "flow.job.deleted") {
+      setJobs((current) => current.filter((job) => job.id !== event.entityId));
+      return;
+    }
+    if (event.type === "flow.account.deleted") {
+      setAccounts((current) => current.filter((account) => account.id !== event.entityId));
+      return;
+    }
+    if (event.type === "flow.log.appended") {
+      const log = event.payload as FlowLog | null;
+      if (log) setLogs((current) => [log, ...current].slice(0, 30));
+      return;
+    }
+    if (event.type === "flow.log.deleted") {
+      setLogs([]);
+      return;
+    }
+    const row = event.payload as Record<string, unknown> | null;
+    if (!row) return;
+    if (event.type.startsWith("flow.account.")) {
+      const account = normalizeFlowAccounts([row as unknown as FlowAccount])[0];
+      if (account) setAccounts((current) => [...current.filter((item) => item.id !== account.id), account]);
+    } else {
+      const job = normalizeFlowJobs([row], accounts)[0];
+      if (job) setJobs((current) => [...current.filter((item) => item.id !== job.id), job].sort((a, b) => b.createdAt - a.createdAt));
+    }
+  }, [accounts]);
+  const realtimeStatus = useRealtimeEvents("flow", onFlowRealtime);
   // Track trạng thái trước để detect khi connecting → online/reconnect
   const prevAccountStatusRef = useRef<Record<string, string>>({});
   useEffect(() => {
@@ -519,7 +568,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   }, [jobs, showLimitNotice]);
   useEffect(() => {
-    if (!backendReady || !hasActiveFlowJobs) return;
+    if (!backendReady || !hasActiveFlowJobs || realtimeStatus === "connected") return;
     let active = true;
     const refreshJobs = () =>
       void flowRequest<{ jobs: Array<Record<string, unknown>>; accounts?: FlowAccount[] }>("/api/flow/jobs")
@@ -548,9 +597,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       active = false;
       window.clearInterval(timer);
     };
-  }, [accounts, backendReady, hasActiveFlowJobs]);
+  }, [accounts, backendReady, hasActiveFlowJobs, realtimeStatus]);
   useEffect(() => {
-    if (tab !== "logs") return;
+    if (tab !== "logs" || realtimeStatus === "connected") return;
     let active = true;
     const refreshLogs = () =>
       void flowRequest<{ logs: FlowLog[] }>("/api/flow/logs")
@@ -563,9 +612,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       active = false;
       window.clearInterval(timer);
     };
-  }, [hasActiveFlowJobs, tab]);
+  }, [hasActiveFlowJobs, realtimeStatus, tab]);
   useEffect(() => {
-    if (!hasConnectingAccounts) return;
+    if (!hasConnectingAccounts || realtimeStatus === "connected") return;
     let active = true;
     const refreshAccounts = () =>
       void flowRequest<{ accounts: FlowAccount[] }>("/api/flow/accounts")
@@ -578,7 +627,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       active = false;
       window.clearInterval(timer);
     };
-  }, [hasConnectingAccounts]);
+  }, [hasConnectingAccounts, realtimeStatus]);
   useEffect(() => {
     void flowRequest<{ desktop?: boolean }>("/api/config")
       .then((data) => setIsDesktopApp(Boolean(data.desktop)))
@@ -1008,6 +1057,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         setSettings(effectiveSettings);
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(effectiveSettings));
       }
+      // A model without duration controls must omit the field entirely.
+      const { duration: requestDuration, ...settingsWithoutDuration } = effectiveSettings;
+      const requestSettings = requestDuration.trim()
+        ? { ...settingsWithoutDuration, duration: requestDuration }
+        : settingsWithoutDuration;
       if (seriesDraft) {
         const created = await flowRequest<{ jobs: Array<Record<string, unknown>> }>(
           `/api/flow/series/${seriesDraft.seriesId}/episodes/${seriesDraft.episodeId}/scenes/${seriesDraft.sceneId}/generate`,
@@ -1017,7 +1071,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             body: JSON.stringify({
               artifact: seriesDraft.artifact,
               accountId: account.id,
-              settings: { ...effectiveSettings, count: 1 },
+              settings: { ...requestSettings, count: 1 },
               promptOverride: prompt.trim() === seriesDraft.scenePrompt.trim() ? "" : prompt.trim(),
             }),
           },
@@ -1081,7 +1135,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         settings: {
           model: effectiveSettings.model || (createKind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"),
           ratio: effectiveSettings.ratio || "16:9",
-          duration: String(effectiveSettings.duration || "8"),
+          duration: String(effectiveSettings.duration || ""),
           resolution: effectiveSettings.resolution || (createKind === "image" ? "1K" : ""),
           outputDir: effectiveSettings.outputDir || "flow",
         },
@@ -1115,7 +1169,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           accountId: account.id,
           inputType: promptInputType,
           sourceFiles: uploaded,
-          settings: effectiveSettings,
+          settings: requestSettings,
         }),
       });
       postInFlightRef.current = false;
@@ -1222,6 +1276,23 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       || onlineAccounts[0]?.id
       || accounts[0]?.id
       || "";
+    const groups = [...new Set(initialJobs.map((item) => item.kind))].map((kind) => {
+      const groupJobs = initialJobs.filter((item) => item.kind === kind);
+      const first = groupJobs[0];
+      const groupAccountId = onlineAccounts.some((account) => account.id === first.accountId)
+        ? (first.accountId || resolvedAccountId) : resolvedAccountId;
+      return {
+        kind,
+        jobs: groupJobs,
+        model: first.settings.model,
+        ratio: first.settings.ratio,
+        duration: first.settings.duration || "",
+        resolution: first.settings.resolution || "",
+        quality: first.settings.quality || "",
+        count: Math.max(1, Math.min(4, Number((first.settings as { count?: number }).count) || 1)),
+        accountId: groupAccountId,
+      };
+    });
     setRetryTarget({
       job: initialJobs[0] || job,
       jobs: initialJobs,
@@ -1236,6 +1307,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       count: Math.max(1, Math.min(4, Number((job.settings as { count?: number }).count) || 1)),
       concurrency: String(job.settings.concurrency || settings.concurrency),
       accountId: resolvedAccountId,
+      groups,
     });
   };
   const retryJob = (id: string) => {
@@ -1244,17 +1316,26 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const confirmRetryJob = () => {
     if (!retryTarget) return;
-    const { jobs: retryJobs, model, ratio, duration, resolution, quality, count, concurrency, accountId } = retryTarget;
-    if (!accountId || !accounts.some((account) => account.id === accountId)) {
+    const { jobs: retryJobs, concurrency } = retryTarget;
+    const groups = retryTarget.groups.length === 1
+      ? [{ ...retryTarget.groups[0], model: retryTarget.model, ratio: retryTarget.ratio, duration: retryTarget.duration, resolution: retryTarget.resolution, quality: retryTarget.quality, count: retryTarget.count, accountId: retryTarget.accountId }]
+      : retryTarget.groups;
+    if (groups.some((group) => !group.accountId || !accounts.some((account) => account.id === group.accountId))) {
       toast.error(t("Chọn tài khoản Flow còn online để chạy lại.", "Pick an online Flow account to retry."));
       return;
     }
     setRetryTarget(null);
-    void Promise.all(retryJobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
+    const retryRequests = groups.flatMap((group) => {
+      const retrySettings = group.duration.trim()
+        ? { model: group.model, ratio: group.ratio, duration: group.duration, resolution: group.resolution, quality: group.quality, count: group.count, concurrency }
+        : { model: group.model, ratio: group.ratio, resolution: group.resolution, quality: group.quality, count: group.count, concurrency };
+      return group.jobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId, settings: { model, ratio, duration, resolution, quality, count, concurrency } }),
-    })))
+      body: JSON.stringify({ accountId: group.accountId, settings: retrySettings }),
+      }));
+    });
+    void Promise.all(retryRequests)
       .then(async () => {
         const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
         setJobs(normalizeFlowJobs(data.jobs, accounts));
@@ -3206,7 +3287,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         {actionBusy && <p role="status" aria-live="polite">{t("Đang xử lý yêu cầu, vui lòng chờ…", "Processing your request, please wait…")}</p>}
         {retryTarget && (
           <div className="flow-preview-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRetryTarget(null); }}>
-            <section className="flow-confirm-dialog flow-retry-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-retry-title">
+            <section className="flow-confirm-dialog flow-retry-dialog" data-multi-kind={retryTarget.groups.length > 1 ? "true" : undefined} role="dialog" aria-modal="true" aria-labelledby="flow-retry-title">
               <header>
                 <div><strong id="flow-retry-title">{retryTarget.jobs.every(isFreshCreateJob) ? t("Cài đặt tạo mới", "Create-new settings") : t("Cài đặt chạy lại", "Retry settings")}</strong><small>{t(`${retryTarget.jobs.length} job sẽ tạo media mới`, `${retryTarget.jobs.length} jobs will generate new media`)}</small></div>
                 <button type="button" onClick={() => setRetryTarget(null)} aria-label={t("Đóng", "Close")}>×</button>
@@ -3229,6 +3310,22 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             includeDone,
                             jobs: nextJobs,
                             job: nextJobs[0] || current.job,
+                            groups: [...new Set(nextJobs.map((item) => item.kind))].map((kind) => {
+                              const existing = current.groups.find((group) => group.kind === kind);
+                              if (existing) return { ...existing, jobs: nextJobs.filter((item) => item.kind === kind) };
+                              const first = nextJobs.find((item) => item.kind === kind) as FlowJob;
+                              return {
+                                kind,
+                                jobs: nextJobs.filter((item) => item.kind === kind),
+                                model: first.settings.model,
+                                ratio: first.settings.ratio,
+                                duration: first.settings.duration || "",
+                                resolution: first.settings.resolution || "",
+                                quality: first.settings.quality || "",
+                                count: Math.max(1, Math.min(4, Number((first.settings as { count?: number }).count) || 1)),
+                                accountId: first.accountId || current.accountId,
+                              };
+                            }),
                           };
                         });
                       }}
@@ -3240,6 +3337,28 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       )}
                     </span>
                   </label>
+                )}
+                {retryTarget.groups.length > 1 && (
+                  <div className="flow-retry-kind-groups">
+                    <p className="flow-retry-kind-help">{t("Mỗi loại media giữ cấu hình riêng. Chỉnh Model và tài khoản theo từng nhóm.", "Each media type keeps its own settings. Choose the model and account per group.")}</p>
+                    {retryTarget.groups.map((group, index) => {
+                      const groupAccount = accounts.find((account) => account.id === group.accountId);
+                      const capabilities = accountCapabilityModels(groupAccount, group.kind);
+                      const models = capabilities.length ? capabilities.map((item) => item.name) : group.kind === "video" ? [...FLOW_VIDEO_MODELS] : [...FLOW_IMAGE_MODELS];
+                      const capability = capabilities.find((item) => item.name === group.model);
+                      const ratios = capability?.ratios.length ? capability.ratios : group.kind === "video" ? ["16:9", "9:16"] : ["1:1", "16:9", "9:16", "4:3", "3:4"];
+                      return (
+                        <div className="flow-retry-kind-card" key={group.kind}>
+                          <strong>{group.kind === "video" ? t("Video", "Video") : t("Ảnh", "Image")} · {group.jobs.length} {t("job", "jobs")}</strong>
+                          <div className="flow-retry-kind-grid">
+                            <FlowSelect label={t("Model", "Model")} value={group.model} options={models} onChange={(model) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, model } : item) } : current)} />
+                            <FlowSelect label={t("Tỷ lệ", "Ratio")} value={group.ratio} options={ratios} onChange={(ratio) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, ratio } : item) } : current)} />
+                            <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={accounts.filter((account) => account.status === "online").map((account) => account.id)} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}`]))} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
                 <FlowSelect
                   label={t("Model", "Model")}

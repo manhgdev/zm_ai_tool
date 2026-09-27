@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { fetchJson } from '@/shared/api/fetchJson'
 import { SRT_STYLE_OPTIONS } from '@/features/tts/lib/srt'
@@ -8,6 +8,7 @@ import { localize, useLocale } from '@/app/i18n'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { useRemountState } from '@/shared/lib/useRemountState'
+import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
 import './SrtExportPage.css'
 
 type SourceKind = 'media' | 'caption' | 'manual' | 'url'
@@ -43,6 +44,16 @@ export default function SrtExportPage({ onBack }: { onBack: () => void }) {
   const [translator, setTranslator] = useState(() => normalizeTranslatorForEngine('whisper', saved.translator))
   const [recognitionEngine, setRecognitionEngine] = useState<RecognitionEngine>('whisper')
   const capcutTranslate = kind === 'media' && recognitionEngine === 'capcut'
+  const onRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    if (event.type === 'snapshot') {
+      const jobs = (event.payload as { jobs?: Job[] } | null)?.jobs || []
+      if (jobs.length) setJob(current => jobs.find(item => item.id === current?.id) || jobs[0])
+      return
+    }
+    if (event.entityId !== job?.id) return
+    if (event.type === 'srt-export.job.updated') setJob(event.payload as Job)
+  }, [job?.id, setJob])
+  const realtimeStatus = useRealtimeEvents('srt-export', onRealtime)
 
   useEffect(() => { try { localStorage.setItem(CACHE_KEY, kind) } catch {} }, [kind])
   useEffect(() => { try { localStorage.setItem(OUTPUT_DIR_KEY, outputDir) } catch {} }, [outputDir])
@@ -67,10 +78,10 @@ export default function SrtExportPage({ onBack }: { onBack: () => void }) {
     } catch { /* unavailable storage */ }
   }, [job?.id])
   useEffect(() => {
-    if (!job || !['queued', 'processing'].includes(job.status)) return
-    const timer = window.setInterval(() => fetchJson<Job>(`/api/srt-export/jobs/${job.id}`).then(setJob).catch(() => {}), 900)
+    if (!job || !['queued', 'processing'].includes(job.status) || realtimeStatus === 'connected') return
+    const timer = window.setInterval(() => fetchJson<Job>(`/api/srt-export/jobs/${job.id}`).then(setJob).catch(() => {}), 10000)
     return () => window.clearInterval(timer)
-  }, [job?.id, job?.status])
+  }, [job?.id, job?.status, realtimeStatus, setJob])
 
   async function submit() {
     if ((!file && kind !== 'manual' && kind !== 'url') || (kind === 'manual' && !manualText.trim()) || (kind === 'url' && !sourceUrl.trim()) || busy) return

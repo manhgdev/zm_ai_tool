@@ -65,6 +65,7 @@ import {
   useSessionRestore,
 } from '@/app/useProjectSession'
 import './App.css'
+import { RealtimeProvider } from '@/realtime/RealtimeProvider'
 
 function fmtDuration(sec: number) {
   const m = Math.floor(sec / 60)
@@ -838,6 +839,7 @@ export default function App() {
   const configModalOpen = configOpen || firstRunBlocked
 
   return (
+    <RealtimeProvider>
     <LocaleContext.Provider value={{ locale, setLocale: changeLocale }}>
     <LocaleTextSync />
     <div className={`app${licenseBlocked ? ' app-license-gate' : ''}`}>
@@ -1269,5 +1271,6 @@ export default function App() {
       />
     </div>
     </LocaleContext.Provider>
+    </RealtimeProvider>
   )
 }

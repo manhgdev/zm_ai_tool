@@ -512,6 +512,7 @@ def cancel_job(job_id: str) -> bool:
     if proc and proc.poll() is None:
         kill_process_tree(proc)
     _schedule_persist()
+    _publish("download.job.updated", job_id, get_job(job_id))
     return True
 
 
@@ -683,6 +684,7 @@ def start_job(url: str, quality: str = "best", **kwargs: Any) -> dict[str, Any]:
     }
     with _LOCK:
         _JOBS[job_id] = job
+    _publish("download.job.created", job_id, _public_job(job))
     _schedule_persist()
 
     def wrap():
@@ -702,16 +704,27 @@ def start_job(url: str, quality: str = "best", **kwargs: Any) -> dict[str, Any]:
 
 
 def _patch(job_id: str, **kw: Any) -> None:
+    public: dict[str, Any] | None = None
     with _LOCK:
         j = _JOBS.get(job_id)
         if not j:
             return
         j.update(kw)
+        public = _public_job(j)
+    _publish("download.job.updated", job_id, public)
     # progress spam → debounce; terminal states flush soon
     if kw.get("status") in ("done", "error", "queued"):
         _schedule_persist()
     elif "progress" in kw or "message" in kw or "title" in kw:
         _schedule_persist()
+
+
+def _publish(event_type: str, job_id: str, payload: dict[str, Any] | None) -> None:
+    try:
+        from pipeline.core.realtime import realtime
+        realtime.publish("download", event_type, job_id, payload)
+    except Exception:
+        return
 
 
 def _run_ytdlp(job_id: str) -> None:

@@ -27,9 +27,13 @@ _CACHE = ArtifactCache("srt-export", version=2)
 
 
 def _update(job_id: str, **values: Any) -> None:
+    updated: dict[str, Any] | None = None
     with _LOCK:
         if job_id in _JOBS:
             _JOBS[job_id].update(values)
+            updated = dict(_JOBS[job_id])
+    if updated is not None:
+        _publish("srt-export.job.updated", job_id, updated)
 
 
 def list_jobs() -> list[dict[str, Any]]:
@@ -59,6 +63,7 @@ def create_job(filename: str, input_path: Path | None, source_kind: str, *, sour
     }
     with _LOCK:
         _JOBS[job_id] = job
+    _publish("srt-export.job.created", job_id, job)
     return job
 
 
@@ -68,6 +73,14 @@ def cancel_job(job_id: str) -> bool:
         return False
     _update(job_id, cancelled=True, status="cancelled", message="Đã hủy")
     return True
+
+
+def _publish(event_type: str, job_id: str, payload: dict[str, Any] | None) -> None:
+    try:
+        from pipeline.core.realtime import realtime
+        realtime.publish("srt-export", event_type, job_id, payload)
+    except Exception:
+        return
 
 
 def _caption_cues(path: Path) -> list[dict[str, Any]]:

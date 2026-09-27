@@ -108,9 +108,13 @@ def _log(job_id: str, message: str) -> None:
 
 
 def _update(job_id: str, **values: Any) -> None:
+    updated: dict[str, Any] | None = None
     with _LOCK:
         if job_id in _JOBS:
             _JOBS[job_id].update(values)
+            updated = dict(_JOBS[job_id])
+    if updated is not None:
+        _publish("drawing.job.updated", job_id, updated)
 
 
 def get_job(job_id: str) -> dict[str, Any] | None:
@@ -140,6 +144,7 @@ def create_job(filename: str, source: Path, options: dict[str, Any]) -> dict[str
     }
     with _LOCK:
         _JOBS[job_id] = job
+    _publish("drawing.job.created", job_id, job)
     _log(job_id, "Drawing job created")
     return dict(job)
 
@@ -585,7 +590,16 @@ def remove(job_id: str) -> bool:
         _JOBS.pop(job_id, None)
         _WORKERS.pop(job_id, None)
     shutil.rmtree(work, ignore_errors=True)
+    _publish("drawing.job.deleted", job_id, None)
     return True
+
+
+def _publish(event_type: str, job_id: str, payload: dict[str, Any] | None) -> None:
+    try:
+        from pipeline.core.realtime import realtime
+        realtime.publish("drawing", event_type, job_id, payload)
+    except Exception:
+        return
 
 
 def artifact(job_id: str, name: str) -> Path | None:
