@@ -403,13 +403,81 @@ class FlowAPI:
         self._project_page_url = (
             f"{FLOW_BASE}/project/{project_id}" if project_id else ""
         )
-        # Bearer token cache (CDP mode only)
+        # Bearer token cache
         self._bearer_token:    str   = ""
         self._bearer_token_ts: float = 0.0
+        self._gis_hook_injected: bool = False  # inject once per page lifecycle
+
 
     # ── Auth ─────────────────────────────────────────────────────────────────
 
+    async def _inject_gis_hook(self):
+        """Inject a GIS hook at DOCUMENT_START so we capture Bearer on every page load.
+
+        Angular on flow.google.com uses Google Identity Services (GIS) to mint
+        OAuth2 access tokens. Angular calls google.accounts.oauth2.initTokenClient()
+        with a callback; the callback receives {access_token: 'ya29.xxx'}.
+
+        page.add_init_script runs BEFORE any page script, so our monkey-patch
+        installs before Angular can call initTokenClient. Every time Angular
+        calls requestAccessToken (initial load + silent 1-hour refresh), the
+        callback fires and stores the token in window.__zmFlowBearer.
+        _get_bearer_token() already reads that window variable.
+        """
+        if self._gis_hook_injected:
+            return
+        try:
+            page = await self._bm.page()
+            await page.add_init_script("""
+            (() => {
+                const _captureToken = (t) => {
+                    if (t && typeof t === 'string' && t.startsWith('ya29.'))
+                        window.__zmFlowBearer = t;
+                };
+
+                // Hook 1: Modern GIS — google.accounts.oauth2.initTokenClient
+                // Angular calls this on startup; the callback fires with access_token.
+                const _patchGIS = () => {
+                    try {
+                        if (!window.google?.accounts?.oauth2?.initTokenClient) return;
+                        const _orig = window.google.accounts.oauth2.initTokenClient;
+                        window.google.accounts.oauth2.initTokenClient = function(cfg) {
+                            const _cb = cfg.callback;
+                            cfg.callback = function(resp) {
+                                _captureToken(resp?.access_token);
+                                if (_cb) _cb(resp);
+                            };
+                            return _orig.call(this, cfg);
+                        };
+                    } catch(e) {}
+                };
+
+                // Hook 2: Older GAPI — gapi.auth2
+                const _patchGAPI = () => {
+                    try {
+                        if (!window.gapi?.auth2?.init) return;
+                        const auth = window.gapi.auth2.getAuthInstance();
+                        if (auth) {
+                            _captureToken(auth.currentUser.get()?.getAuthResponse()?.access_token);
+                            auth.currentUser.listen((u) => _captureToken(u?.getAuthResponse()?.access_token));
+                        }
+                    } catch(e) {}
+                };
+
+                // Apply immediately and watch for GIS/GAPI to load dynamically
+                _patchGIS(); _patchGAPI();
+                const _obs = new MutationObserver(() => { _patchGIS(); _patchGAPI(); });
+                _obs.observe(document.head || document.documentElement, {childList: true});
+            })();
+            """)
+            self._gis_hook_injected = True
+            log.debug("GIS Bearer hook injected")
+        except Exception as exc:
+            log.debug("GIS hook injection failed: %s", exc)
+
     async def _ensure_project_page(self):
+        # Inject GIS hook BEFORE any navigation so it runs at DOCUMENT_START
+        await self._inject_gis_hook()
         page = await self._bm.page()
         if self.project_id and self._project_page_url not in page.url:
             await page.goto(
@@ -480,50 +548,27 @@ class FlowAPI:
     FLOW_API_KEY = "AIzaSyBtrm0o5ab1c-Ec8ZuLcGt3oJAA5VWt3pY"
 
     async def _get_auth_headers(self) -> dict:
-        """Auth headers for aisandbox-pa.googleapis.com requests.
+        """Auth headers for aisandbox-pa.googleapis.com.
 
-        Priority:
-          1. Bearer ya29.xxx (OAuth2 access token) when cached.
-          2. SAPISIDHASH — Google's signed-cookie auth for private APIs.
-             Formula: SAPISIDHASH {ts}_{sha1("{ts} {SAPISID} {origin}")}
-             Valid as long as user is logged in. Works when request is made
-             via page.evaluate(fetch) which sends the correct
-             Origin: https://flow.google.com header (required for validation).
-             Does NOT work via context.request (wrong origin context).
+        Bearer ya29.xxx is the only credential aisandbox accepts (confirmed).
+        It is captured via the GIS hook injected by _inject_gis_hook() which
+        monkey-patches initTokenClient before Angular runs.
+
+        No auth header is added when Bearer is unavailable — the request will
+        401 and trigger _force_refresh_session() which reloads the page,
+        giving GIS another chance to fire and populate window.__zmFlowBearer.
         """
-        import hashlib
-
         hdrs = {
             "content-type": "text/plain;charset=UTF-8",
             "referer":      "https://flow.google.com/",
             "origin":       "https://flow.google.com",
         }
-
         token = await self._get_bearer_token(required=False)
         if token:
             hdrs["authorization"] = f"Bearer {token}"
-            return hdrs
-
-        # SAPISIDHASH fallback — compute from SAPISID browser cookie.
-        # Google validates this against the Origin header, which page.evaluate(fetch)
-        # supplies correctly as "https://flow.google.com".
-        try:
-            cookies = await self._bm.context.cookies()
-            sapisid = next(
-                (c["value"] for c in cookies
-                 if c["name"] == "SAPISID" and "google.com" in c.get("domain", "")),
-                None,
-            )
-            if sapisid:
-                ts = int(_time.time())
-                digest = hashlib.sha1(
-                    f"{ts} {sapisid} https://flow.google.com".encode()
-                ).hexdigest()
-                hdrs["authorization"] = f"SAPISIDHASH {ts}_{digest}"
-                log.debug("Using SAPISIDHASH auth (no Bearer cached)")
-        except Exception as exc:
-            log.debug("SAPISIDHASH computation failed: %s", exc)
-
+            log.debug("Using Bearer auth (%d chars)", len(token))
+        else:
+            log.debug("No Bearer available — request will likely 401 and trigger page reload")
         return hdrs
 
     async def _get_bearer_token(self, *, required: bool = False) -> str:
@@ -669,8 +714,17 @@ class FlowAPI:
             self._bearer_token_ts = _time.time()
 
     async def _force_refresh_session(self) -> str:
-        """Reload Flow project page and wait for Angular to emit a Bearer token."""
+        """Reload Flow project page to refresh the Bearer token.
+
+        Strategy:
+          1. Ensure GIS hook (add_init_script) is installed before reload so
+             Angular's initTokenClient callback populates window.__zmFlowBearer.
+          2. Reload the page; hook runs at DOCUMENT_START.
+          3. Wait up to 20s polling window.__zmFlowBearer and CDP traffic.
+        """
         self._invalidate_bearer_token()
+        # Allow hook re-injection on next navigate
+        self._gis_hook_injected = False
         page = await self._bm.page()
         proj_url = (
             f"{FLOW_BASE}/project/{self.project_id}"
@@ -678,7 +732,10 @@ class FlowAPI:
             else FLOW_BASE
         )
 
-        # Set up CDP monitoring BEFORE reload so we catch Angular init requests
+        # Inject GIS hook BEFORE reload so it runs at DOCUMENT_START
+        await self._inject_gis_hook()
+
+        # CDP monitoring as parallel fallback
         try:
             client = await page.context.new_cdp_session(page)
             await client.send("Network.enable")
@@ -701,18 +758,21 @@ class FlowAPI:
                     await page.goto(proj_url, wait_until="domcontentloaded", timeout=20_000)
                 except Exception as exc:
                     log.warning("Session refresh navigation failed: %s", exc)
-            # Wait up to 8s for Angular to emit authenticated requests
-            for _ in range(16):
+
+            # Wait up to 20s — Angular needs time to init GIS and call initTokenClient
+            for _ in range(40):
+                token = await self._get_bearer_token(required=False)
+                if token:
+                    break
                 if captured:
+                    self._bearer_token = captured[0]
+                    self._bearer_token_ts = _time.time()
+                    log.info("Bearer token via CDP refresh (%d chars)", len(captured[0]))
                     break
                 await asyncio.sleep(0.5)
             await client.detach()
-            if captured:
-                self._bearer_token = captured[0]
-                self._bearer_token_ts = _time.time()
-                log.info("Bearer token via CDP refresh (%d chars)", len(captured[0]))
         except Exception as exc:
-            log.debug("CDP refresh bearer failed: %s", exc)
+            log.debug("CDP/GIS refresh failed: %s", exc)
 
         page = await self._bm.page()
         if "accounts.google.com" in (page.url or "") or "/about" in (page.url or ""):
@@ -720,6 +780,7 @@ class FlowAPI:
                 "LOGIN_REQUIRED: Google session cookies expired — redirected to login"
             )
         return self._bearer_token
+
 
     # ── HTTP ──────────────────────────────────────────────────────────────────
 
