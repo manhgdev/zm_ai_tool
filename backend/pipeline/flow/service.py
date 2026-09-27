@@ -4601,15 +4601,7 @@ class FlowService:
                     page, api=api, client=client, account=account, job_id=job_id,
                 )
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
-                await self._prepare_ui_model(page, "image", model, ui=client._ui)
-                store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 12, "updatedAt": time.time()})
-                await self._prepare_ui_format(
-                    page,
-                    str(settings.get("ratio") or "16:9"),
-                    # Image resolution ("1K"/"2K"/"4K") is a plan-tier label only;
-                    # Flow has no UI tab for it — do not pass to avoid FLOW_SETTING_MISMATCH.
-                )
-                store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 15, "updatedAt": time.time()})
+                # Skip UI model/format selectors — all settings sent directly in API payload.
                 baseline_media = await self._project_media_elements(page)
                 baseline_ids = {str(item.get("id")) for item in baseline_media if item.get("id")}
                 uploaded_media_names: list[str] = []
@@ -4637,97 +4629,31 @@ class FlowService:
                         mode,
                     )
                 count = max(1, min(4, int(settings.get("count", 1))))
-                media_items: list[dict[str, Any]] = []
+                store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
+
+                # ── Direct REST API — no UI clicks, no intercept race ──────────────────
+                from ._flow._api import ui_to_api_image_model, ui_to_api_image_ratio
+                api_model = ui_to_api_image_model(model)
+                api_ratio = ui_to_api_image_ratio(str(settings.get("ratio") or "16:9"))
+                prompt_text = _prompt_with_reference_strength(
+                    job["prompt"], mode, settings.get("referenceStrength", 70),
+                )
+                generated = await api.generate_image(
+                    prompt_text,
+                    model=api_model,
+                    aspect_ratio=api_ratio,
+                    count=count,
+                    reference_images=uploaded_media_names or None,
+                )
+                media_items: list[dict[str, Any]] = [
+                    {"id": img.media_name, "tag": "img", "src": img.fife_url}
+                    for img in generated if img.fife_url
+                ]
                 if not media_items:
-                    await self._set_flow_count(page, count)
-                    prompt_text = _prompt_with_reference_strength(
-                        job["prompt"], mode, settings.get("referenceStrength", 70),
-                    )
-                    if not await client._ui.fill_prompt(page, prompt_text):
-                        raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
-                    from ._flow._ui_interceptor import UIInterceptor
-                    from ._flow._exceptions import GenerationTimeout
-                    import json as _json
-
-                    async def _rewrite_image_request(route) -> None:
-                        try:
-                            if "batchGenerateImages" not in route.request.url:
-                                await route.continue_()
-                                return
-                            raw = route.request.post_data or "{}"
-                            body = _json.loads(raw)
-                            patched = _patch_batch_generate_image_inputs(
-                                body, mode=mode, media_names=uploaded_media_names,
-                            )
-                            await route.continue_(
-                                post_data=_json.dumps(patched, ensure_ascii=False),
-                                headers={
-                                    **route.request.headers,
-                                    "content-type": "application/json",
-                                },
-                            )
-                        except Exception as exc:
-                            _log.debug("batchGenerateImages patch skipped: %s", exc)
-                            await route.continue_()
-
-                    await page.route("**/*batchGenerateImages*", _rewrite_image_request)
-                    interceptor = UIInterceptor(api)
-                    interceptor.attach(page)
-                    submission_patch = {"submissionStartedAt": time.time(), "submissionProjectId": account["projectId"], "baselineMediaIds": sorted(baseline_ids)}
-                    store.patch_row("jobs", job_id, submission_patch)
-                    job = {**job, **submission_patch}  # keep local var in sync
-                    try:
-                        await _wait_before_flow_submit()
-                        await self._click_flow_submit(page)
-                        store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
-                        # Race: interceptor RPC capture vs project-API polling.
-                        # batchGenerateImages may be async (returns 200 without fifeUrl),
-                        # so don't wait 180s for it — poll project media in parallel.
-                        intercept_task = asyncio.create_task(
-                            interceptor.wait_for("batchGenerateImages", timeout=120, require_success=True)
-                        )
-                        poll_task = asyncio.create_task(
-                            self._wait_for_project_media(
-                                page, baseline_ids, "image", count, job_id,
-                                api=api, job=job, timeout_s=900,
-                            )
-                        )
-                        try:
-                            done, pending = await asyncio.wait(
-                                {intercept_task, poll_task},
-                                return_when=asyncio.FIRST_COMPLETED,
-                            )
-                            # Cancel the loser
-                            for t in pending:
-                                t.cancel()
-                                await asyncio.gather(t, return_exceptions=True)
-                            finished = next(iter(done))
-                            result = finished.result()
-                            if finished is intercept_task:
-                                captured_resp = result.resp or {}
-                                media_items = _captured_image_items(captured_resp)
-                                if media_items:
-                                    self._log("success", "api_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
-                                else:
-                                    # RPC returned but no fifeUrl → use poll result
-                                    media_items = await poll_task if not poll_task.cancelled() else await self._wait_for_project_media(
-                                        page, baseline_ids, "image", count, job_id, api=api, job=job, timeout_s=900,
-                                    )
-                            else:
-                                # Poll task won
-                                media_items = result
-                                self._log("success", "poll_generation_complete", job_id=job_id, account_id=account["id"], details={"mediaIds": [item["id"] for item in media_items]})
-                        except (GenerationTimeout, Exception):
-                            for t in [intercept_task, poll_task]:
-                                if not t.done():
-                                    t.cancel()
-                                    await asyncio.gather(t, return_exceptions=True)
-                            raise
-                    finally:
-                        try:
-                            await page.unroute("**/*batchGenerateImages*", _rewrite_image_request)
-                        except Exception:
-                            pass
+                    raise RuntimeError("FLOW_EMPTY_OUTPUT: API returned no images with fife_url")
+                self._log("success", "api_generation_complete", job_id=job_id, account_id=account["id"],
+                          details={"model": api_model, "ratio": api_ratio, "count": count,
+                                   "mediaIds": [m["id"] for m in media_items]})
                 media_ids = [str(item["id"]) for item in media_items]
                 self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": settings.get("model"), "mediaIds": media_ids})
                 store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "downloading", "progress": 80})

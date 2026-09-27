@@ -76,6 +76,26 @@ IMAGE_AR_PORTRAIT  = "IMAGE_ASPECT_RATIO_PORTRAIT"    # 9:16
 IMAGE_AR_LANDSCAPE = "IMAGE_ASPECT_RATIO_LANDSCAPE"   # 16:9
 IMAGE_AR_SQUARE    = "IMAGE_ASPECT_RATIO_SQUARE"      # 1:1
 
+
+def ui_to_api_image_model(ui_name: str) -> str:
+    """Map Flow UI model display name → API imageModelName constant."""
+    return {
+        "Nano Banana 2":      IMAGE_MODEL_NARWHAL,
+        "Nano Banana Pro":    IMAGE_MODEL_NARWHAL,  # same key, plan-tier guard is in service.py
+        "Nano Banana 2 Lite": IMAGE_MODEL_IMAGEN3,
+        "Imagen 3":           IMAGE_MODEL_IMAGEN3,
+    }.get(str(ui_name or "").strip(), IMAGE_MODEL_NARWHAL)
+
+
+def ui_to_api_image_ratio(ui_ratio: str) -> str:
+    """Map '16:9' / '9:16' / '1:1' → IMAGE_ASPECT_RATIO_* constant."""
+    return {
+        "16:9": IMAGE_AR_LANDSCAPE,
+        "9:16": IMAGE_AR_PORTRAIT,
+        "1:1":  IMAGE_AR_SQUARE,
+    }.get(str(ui_ratio or "").strip(), IMAGE_AR_LANDSCAPE)
+
+
 # ── Video models (videoModelKey field) ───────────────────────────────────────
 # Source: videoFx.getVideoModelConfig API (32 active models, 2026-03-06)
 
