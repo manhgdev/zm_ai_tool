@@ -114,6 +114,7 @@ _checks_warming = False
 _UPDATE_REPOSITORY = "manhgdev/zm_ai_tool"
 _UPDATE_LOCK = threading.Lock()
 _UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30 * 60
+_UPDATE_RANGE_IDLE_TIMEOUT_SECONDS = 45
 _UPDATE_CANCEL = threading.Event()
 _UPDATE_RUN_ID = 0
 _UPDATE_STATE: dict[str, Any] = {
@@ -263,14 +264,13 @@ def _download_update_parallel(url: str, partial: Path, expected_size: int) -> bo
     parts = [partial.with_name(f"{partial.name}.{i}") for i in range(workers)]
     received = 0
     received_lock = threading.Lock()
-    next_progress_at = 0.0
 
     def fetch(index: int) -> Path:
-        nonlocal received, next_progress_at
+        nonlocal received
         start = index * chunk_size
         end = min(expected_size - 1, start + chunk_size - 1)
         req = urllib.request.Request(url, headers={"User-Agent": "ZM-AI-TOOL", "Range": f"bytes={start}-{end}"})
-        with urllib.request.urlopen(req, timeout=_UPDATE_DOWNLOAD_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(req, timeout=_UPDATE_RANGE_IDLE_TIMEOUT_SECONDS) as response:
             if response.status != 206:
                 raise RuntimeError("UPDATE_RANGE_UNSUPPORTED")
             target = parts[index]
@@ -282,19 +282,29 @@ def _download_update_parallel(url: str, partial: Path, expected_size: int) -> bo
                     stream.write(block)
                     with received_lock:
                         received += len(block)
-                        now = time.monotonic()
-                        if now >= next_progress_at:
-                            progress = min(99, int(received * 100 / expected_size)) if expected_size else 0
-                            _set_update_state(progress=progress)
-                            next_progress_at = now + 0.25
         if target.stat().st_size != end - start + 1:
             raise OSError("UPDATE_RANGE_INCOMPLETE")
         return target
     try:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="update-range") as pool:
             futures = [pool.submit(fetch, i) for i in range(workers)]
-            for future in as_completed(futures):
+            while not all(future.done() for future in futures):
+                if _UPDATE_CANCEL.is_set():
+                    raise _UpdateCancelled
+                for future in futures:
+                    if future.done() and future.exception() is not None:
+                        future.result()
+                with received_lock:
+                    downloaded = received
+                _set_update_state(
+                    progress=min(99, int(downloaded * 100 / expected_size)),
+                    downloadedBytes=downloaded,
+                    totalBytes=expected_size,
+                )
+                time.sleep(0.2)
+            for future in futures:
                 future.result()
+            _set_update_state(progress=99, downloadedBytes=expected_size, totalBytes=expected_size)
         with partial.open("wb") as output:
             for part in parts:
                 with part.open("rb") as source:
@@ -339,6 +349,8 @@ def _download_update(asset: dict[str, Any], updates: Path, version: str) -> Path
     except _UpdateCancelled:
         raise
     except Exception:
+        # A stalled/unsupported range request falls back to the resumable
+        # single stream instead of leaving progress parked at one chunk (25%).
         parallel_done = False
     if parallel_done:
         partial.replace(target)
