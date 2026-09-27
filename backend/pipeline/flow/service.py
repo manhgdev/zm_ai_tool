@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import re
+import unicodedata
 try:
     from ._flow._models import GenerationMode as _GenerationMode
 except Exception:  # ponytail: graceful if flow lib version lacks this
@@ -211,13 +212,20 @@ def _pick_video_menu_item(items: list[str], preferred: str) -> int | None:
     the tier. 360p/720p may fall back to the original-size item, never 1080p/4K.
     """
     tier = str(preferred or "").strip().lower()
-    texts = [re.sub(r"\s+", " ", str(item or "")).strip().lower() for item in items]
+    def menu_text(value: Any) -> str:
+        # Flow sometimes returns Vietnamese accents in decomposed Unicode
+        # form (e.g. ``Kích thước gốc``), so normalize before matching.
+        value = unicodedata.normalize("NFKD", str(value or ""))
+        value = "".join(ch for ch in value if not unicodedata.combining(ch))
+        return re.sub(r"\s+", " ", value).strip().lower()
+
+    texts = [menu_text(item) for item in items]
     for index, text in enumerate(texts):
         if re.match(rf"{re.escape(tier)}(?![0-9a-z])", text):
             return index
     if tier in {"360p", "720p"}:
         for index, text in enumerate(texts):
-            if "gốc" in text or "original" in text:
+            if "goc" in text or "original" in text:
                 return index
     return None
 
@@ -887,6 +895,7 @@ class FlowService:
         self._account_next_start: dict[str, int] = {}
         self._connecting_accounts: set[str] = set()
         self._syncing_accounts: set[str] = set()  # guard concurrent credit syncs
+        self._visible_account_locks: dict[str, threading.Lock] = {}
         self._running_jobs: set[str] = set()
         self._claimed_media_ids: set[str] = set()
         self._claimed_error_tiles: set[str] = set()
@@ -2767,14 +2776,24 @@ class FlowService:
                 "updatedAt": time.time(),
             })
             self._account_next_start[account_id] += 1
-            self._account_active[account_id] = self._account_active.get(account_id, 0) + 1
+        self._account_active[account_id] = self._account_active.get(account_id, 0) + 1
+        # A visible Chrome is a per-account diagnostic surface. Multiple jobs
+        # for the same account must never launch competing windows/profiles;
+        # other accounts remain free to run in parallel.
+        visible_account_lock: threading.Lock | None = None
+        if not _flow_headless(job.get("settings") or {}):
+            with self._guard:
+                visible_account_lock = self._visible_account_locks.setdefault(
+                    account_id, threading.Lock()
+                )
+            visible_account_lock.acquire()
         # Retry only failures that happen before a generation is submitted.
         # Once Flow accepts a job, retrying can create a duplicate and charge
         # credits twice; media recovery owns all post-submit timeouts. A
         # RESULT_NOT_FOUND is the exception: Flow has no pending/completed
         # media, so submit a fresh generation automatically.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|AUTOMATION_BLOCKED|FLOW_SETTING_MISMATCH|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
+            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|AUTOMATION_BLOCKED|FLOW_SETTING_MISMATCH|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED|FLOW_DOWNLOAD_QUALITY_UNAVAILABLE|FLOW_RESULT_NOT_FOUND",
             re.I,
         )
         profile_ready = False
@@ -3000,6 +3019,8 @@ class FlowService:
                         details={"stage": "worker" if profile_ready else "profile"},
                     )
         finally:
+            if visible_account_lock is not None:
+                visible_account_lock.release()
             with self._account_condition:
                 self._account_active[account_id] = max(0, self._account_active.get(account_id, 1) - 1)
                 self._running_jobs.discard(job_id)

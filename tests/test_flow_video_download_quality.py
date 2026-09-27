@@ -38,8 +38,10 @@ class FlowVideoDownloadQualityTest(unittest.TestCase):
 
     def test_menu_pick_never_downgrades(self) -> None:
         vi = ["270p Ảnh GIF động", "720p Kích thước gốc", "1080p Đã tăng độ phân giải", "4K Đã tăng độ phân giải"]
+        vi_decomposed = ["270p\nẢnh GIF động", "720p\nKích thước gốc", "1080p\nĐã tăng độ phân giải", "4K\nĐã tăng độ phân giải"]
         en = ["270p Animated GIF", "720p Original size", "1080p Upscaled"]
         self.assertEqual(_pick_video_menu_item(vi, "720p"), 1)
+        self.assertEqual(_pick_video_menu_item(vi_decomposed, "360p"), 1)
         self.assertEqual(_pick_video_menu_item(vi, "1080p"), 2)
         self.assertEqual(_pick_video_menu_item(vi, "4K"), 3)
         self.assertEqual(_pick_video_menu_item(vi, "360p"), 1)
