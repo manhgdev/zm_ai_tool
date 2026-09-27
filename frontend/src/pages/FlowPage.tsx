@@ -2145,7 +2145,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </div>
                         {account.suspendReason && (
                           <div style={{ fontSize: 11, opacity: 0.9, marginTop: 2, wordBreak: "break-word" }}>
-                            {t("Lý do: ", "Reason: ")}{account.suspendReason}
+                            {t("Lý do: ", "Reason: ")}{(account.suspendReason || "").split(":")[0].trim()}
                           </div>
                         )}
                       </div>
@@ -2204,14 +2204,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         {t("Đặt mặc định", "Set default")}
                       </button>
                     )}
-                    {Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000) && (
-                      <button
-                        type="button"
-                        onClick={() => void clearSuspension(account)}
-                      >
-                        {t("Bỏ cách ly", "Unblock")}
-                      </button>
-                    )}
+
                     <button
                       type="button"
                       disabled={account.status === "connecting"}
