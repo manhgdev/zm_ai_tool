@@ -101,6 +101,8 @@ test('Flow random account options and suspension badges are bilingual', () => {
   assert.match(flowPage, /t\("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"\)/)
   assert.match(flowPage, /t\("Tạm cách ly", "Suspended"\)/)
   assert.match(flowPage, /t\("Bỏ cách ly", "Unblock"\)/)
+  assert.match(flowPage, /t\("Tài khoản tạo ảnh", "Image account"\)/)
+  assert.match(flowPage, /t\("Tài khoản tạo video", "Video account"\)/)
   const seriesPanel = readFileSync(new URL('../frontend/src/pages/FlowSeriesPanel.tsx', import.meta.url), 'utf8')
   assert.match(seriesPanel, /t\('🎲 Ngẫu nhiên tài khoản', '🎲 Random account'\)/)
 })

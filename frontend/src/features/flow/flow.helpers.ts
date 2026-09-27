@@ -85,9 +85,13 @@ export const isImageModel = (model: string) =>
 // ── Settings helpers ──────────────────────────────────────────────────────────
 export function settingsForCreateKind(settings: FlowSettings, kind: CreateKind): FlowSettings {
   const model = kind === "image" ? settings.imageModel : settings.videoModel;
+  const account = kind === "image"
+    ? (settings.imageAccount || settings.account)
+    : (settings.videoAccount || settings.account);
   return {
     ...settings,
     model: model || (kind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"),
+    account: account || settings.account,
   };
 }
 
@@ -96,6 +100,14 @@ export function settingsWithSelectedModel(settings: FlowSettings, kind: CreateKi
     ...settings,
     model,
     ...(kind === "image" ? { imageModel: model } : { videoModel: model }),
+  };
+}
+
+export function settingsWithSelectedAccount(settings: FlowSettings, kind: CreateKind, account: string): FlowSettings {
+  return {
+    ...settings,
+    account,
+    ...(kind === "image" ? { imageAccount: account } : { videoAccount: account }),
   };
 }
 
@@ -159,6 +171,8 @@ export function readSettings(): FlowSettings {
     model: "Veo 3.1 - Fast", videoModel: "Veo 3.1 - Fast", imageModel: "Nano Banana 2",
     ratio: "16:9", imageRatio: "16:9", duration: "8", count: 1, imageCount: 1,
     account: "Ultra 01",
+    videoAccount: "Ultra 01",
+    imageAccount: "Ultra 01",
     outputDir: defaultFlowOutputFolder(), quality: "720p", resolution: "1K",
     concurrency: "3", format: "PNG", filePrefix: "flow", referenceStrength: 70, autoDownload: true,
   };
@@ -167,6 +181,8 @@ export function readSettings(): FlowSettings {
       localStorage.getItem(SETTINGS_KEY) || "{}",
     ) as Partial<FlowSettings> & { enhancePrompt?: boolean; seed?: string };
     const merged = { ...fallback, ...saved };
+    if (!String(merged.videoAccount || "").trim()) merged.videoAccount = merged.account || fallback.videoAccount;
+    if (!String(merged.imageAccount || "").trim()) merged.imageAccount = merged.account || fallback.imageAccount;
     if (merged.model === "Veo 3.1 Fast") merged.model = "Veo 3.1 - Fast";
     if (merged.model === "Veo 3.1 Quality") merged.model = "Veo 3.1 - Quality";
     if (merged.model === "Omni Flash") merged.model = "Omni 1.1 Flash";

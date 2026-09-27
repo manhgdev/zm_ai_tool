@@ -44,7 +44,7 @@ import {
   isFlowVideoUiResolution,
   isFlowImageUiResolution,
   clampFlowImageResolution,
-  settingsForCreateKind, settingsWithSelectedModel,
+  settingsForCreateKind, settingsWithSelectedModel, settingsWithSelectedAccount,
   defaultFlowOutputFolder as buildDefaultFlowOutputFolder,
   flowConfiguredOutputFolder as buildFlowConfiguredOutputFolder,
   normalizeLegacyFlowOutputDir as normalizeFlowOutputDir,
@@ -253,15 +253,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       ),
     ),
   );
+  const [createKind, setCreateKind] = useState<CreateKind>(() =>
+    flowRoutePanel() === "image" || (!flowRoutePanel() && readText(CREATE_KIND_KEY, "video") === "image") ? "image" : "video",
+  );
   // readSettings keeps the stable default ``concurrency: "3"`` for Flow.
-  const [settings, setSettings] = useState<FlowSettings>(readSettings);
+  const [settings, setSettings] = useState<FlowSettings>(() => {
+    const initialKind = flowRoutePanel() === "image" || (!flowRoutePanel() && readText(CREATE_KIND_KEY, "video") === "image") ? "image" : "video";
+    return settingsForCreateKind(readSettings(), initialKind);
+  });
   const [importName, setImportName] = useState("");
   const [promptInputType, setPromptInputType] = useState<PromptInputType>("prompt");
   const [jobs, setJobs] = useRemountState<FlowJob[]>("flow.jobs", []);
   const [logs, setLogs] = useState<FlowLog[]>([]);
-  const [createKind, setCreateKind] = useState<CreateKind>(() =>
-    flowRoutePanel() === "image" || (!flowRoutePanel() && readText(CREATE_KIND_KEY, "video") === "image") ? "image" : "video",
-  );
   const prompt = createKind === "video" ? videoPrompt : imagePrompt;
   const setPrompt = (val: string | ((prev: string) => string)) => {
     if (createKind === "video") {
@@ -363,7 +366,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const selectCreateKind = (kind: CreateKind) => {
     setCreateKind(kind);
     setSourceFiles([]);
-    setSettings((current) => settingsForCreateKind(current, kind));
+    setSettings((current) => {
+      const nextSettings = settingsForCreateKind(current, kind);
+      const selected = accounts.find((item) => item.label === nextSettings.account);
+      return applyAccountCapabilities(
+        selected,
+        nextSettings,
+        kind,
+        kind === "image" ? nextSettings.imageModel : nextSettings.videoModel,
+      );
+    });
   };
   useEffect(() => {
     const applyRoute = () => {
@@ -479,9 +491,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     if (settings.account === "random" || !accounts.length || accounts.some((account) => account.label === settings.account)) return;
     const fallback = selectedFlowAccount(accounts, settings.account);
     if (fallback) {
-      setSettings((current) => ({ ...current, account: fallback.label }));
+      setSettings((current) => settingsWithSelectedAccount(current, createKind, fallback.label));
     }
-  }, [accounts, settings.account]);
+  }, [accounts, settings.account, createKind]);
   useEffect(() => {
     const account = selectedFlowAccount(accounts, settings.account);
     if (!account?.capabilityCatalog || account.capabilityStatus !== "verified") return;
@@ -2260,7 +2272,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               writeFlowRoutePanel(context.artifact === "keyframe" ? "image" : "video");
             }}
             onGenerateAnchor={async (seriesId, anchorPrompt) => {
-              const account = selectedFlowAccount(accounts, settings.account);
+              const account = selectedFlowAccount(accounts, settings.imageAccount || settings.account);
               if (!account) throw new Error(t("Cần tài khoản Flow đã kết nối để tạo ảnh neo.", "A connected Flow account is required to generate an anchor image."));
               const accountSettings = applyAccountCapabilities(account, settings, "image", settings.imageModel);
               const imageSettings = { ...accountSettings, model: accountSettings.imageModel, ratio: accountSettings.imageRatio, count: 1 };
@@ -2705,7 +2717,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   </label>
                   <div className="flow-select-account-wrap">
                     <div className="flow-account-label-bar">
-                      <span>{t("Tài khoản", "Account")}</span>
+                      <span>{createKind === "image" ? t("Tài khoản tạo ảnh", "Image account") : t("Tài khoản tạo video", "Video account")}</span>
                       <button
                         type="button"
                         className={`flow-random-toggle-btn ${settings.account === "random" ? "is-active" : ""}`}
@@ -2715,7 +2727,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             const selected = accounts.find((item) => item.label === nextAccount);
                             return applyAccountCapabilities(
                               selected,
-                              { ...current, account: nextAccount },
+                              settingsWithSelectedAccount(current, createKind, nextAccount),
                               createKind,
                               createKind === "image" ? current.imageModel : current.videoModel || current.model,
                             );
@@ -2733,7 +2745,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           const selected = accounts.find((item) => item.label === account);
                           return applyAccountCapabilities(
                             selected,
-                            { ...current, account },
+                            settingsWithSelectedAccount(current, createKind, account),
                             createKind,
                             createKind === "image" ? current.imageModel : current.videoModel || current.model,
                           );
@@ -2748,7 +2760,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 </div>
                 {settings.account === "random" && (
                   <div className="flow-random-info-box">
-                    🎲 {t("Chế độ ngẫu nhiên tài khoản: Các ảnh/video sẽ được tự động luân phiên giữa các tài khoản online và tự động fallback sang tài khoản khác khi gặp lỗi.", "Random mode active: Jobs are automatically distributed across online accounts with automatic error fallback.")}
+                    🎲 {createKind === "image"
+                      ? t(
+                          "Chế độ ngẫu nhiên tài khoản tạo ảnh: Các ảnh sẽ được tự động luân phiên giữa các tài khoản online và tự động fallback sang tài khoản khác khi gặp lỗi.",
+                          "Random mode active for image generation: Images are automatically distributed across online accounts with automatic error fallback."
+                        )
+                      : t(
+                          "Chế độ ngẫu nhiên tài khoản tạo video: Các video sẽ được tự động luân phiên giữa các tài khoản online và tự động fallback sang tài khoản khác khi gặp lỗi.",
+                          "Random mode active for video generation: Videos are automatically distributed across online accounts with automatic error fallback."
+                        )}
                   </div>
                 )}
               </div>

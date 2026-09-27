@@ -105,6 +105,8 @@ export type FlowSettings = {
   count: number;        // video count
   imageCount: number;   // image count (separate from video)
   account: string;
+  videoAccount?: string;
+  imageAccount?: string;
   outputDir: string;
   quality: string;
   resolution: string;
