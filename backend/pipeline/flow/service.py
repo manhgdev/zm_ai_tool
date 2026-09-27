@@ -4799,7 +4799,7 @@ class FlowService:
                 "kind": job.get("kind"),
                 "model": (job.get("settings") or {}).get("model"),
                 "ratio": (job.get("settings") or {}).get("ratio"),
-                "duration": (job.get("settings") or {}).get("duration"),
+                **({"duration": (job.get("settings") or {}).get("duration")} if job.get("kind") == "video" else {}),
             })
         finally:
             if browser:
