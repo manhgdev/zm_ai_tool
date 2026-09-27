@@ -2126,42 +2126,34 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       className="flow-account-suspension-box"
                       style={{
                         margin: "8px 0",
-                        padding: "8px 10px",
+                        padding: "5px 8px",
                         background: "rgba(234, 88, 12, 0.08)",
                         border: "1px solid rgba(234, 88, 12, 0.25)",
                         borderRadius: 6,
                         fontSize: 12,
                         color: "#c2410c",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: 8,
                       }}
                     >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600 }}>
-                          {t("Tạm cách ly đến: ", "Suspended until: ")}
-                          {new Date((account.suspendedUntil || 0) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ({formatRemainingCooldown(account.suspendedUntil || 0, t)})
-                        </div>
-                        {account.suspendReason && (
-                          <div style={{ fontSize: 11, opacity: 0.9, marginTop: 2, wordBreak: "break-word" }}>
-                            {t("Lý do: ", "Reason: ")}{(account.suspendReason || "").split(":")[0].trim()}
-                          </div>
-                        )}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontWeight: 600 }}>
+                          ⏸ {new Date((account.suspendedUntil || 0) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ({formatRemainingCooldown(account.suspendedUntil || 0, t)})
+                        </span>
+                        <button
+                          type="button"
+                          style={{ fontSize: 11, padding: "2px 7px", cursor: "pointer", borderRadius: 4, whiteSpace: "nowrap", flexShrink: 0 }}
+                          onClick={() => void clearSuspension(account)}
+                        >
+                          {t("Bỏ cách ly", "Unblock")}
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        style={{
-                          fontSize: 11,
-                          padding: "3px 8px",
-                          cursor: "pointer",
-                          borderRadius: 4,
-                          whiteSpace: "nowrap",
-                        }}
-                        onClick={() => void clearSuspension(account)}
-                      >
-                        {t("Bỏ cách ly", "Unblock")}
-                      </button>
+                      {account.suspendReason && (
+                        <div
+                          title={account.suspendReason}
+                          style={{ fontSize: 10, opacity: 0.8, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        >
+                          {account.suspendReason}
+                        </div>
+                      )}
                     </div>
                   )}
 
