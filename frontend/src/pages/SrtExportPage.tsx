@@ -7,6 +7,7 @@ import { translatorOptions, normalizeTranslatorForEngine, loadSettings } from '@
 import { localize, useLocale } from '@/app/i18n'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
+import { useRemountState } from '@/shared/lib/useRemountState'
 import './SrtExportPage.css'
 
 type SourceKind = 'media' | 'caption' | 'manual' | 'url'
@@ -30,7 +31,7 @@ export default function SrtExportPage({ onBack }: { onBack: () => void }) {
   const [file, setFile] = useState<File | null>(null)
   const [manualText, setManualText] = useState('')
   const [sourceUrl, setSourceUrl] = useState('')
-  const [job, setJob] = useState<Job | null>(null)
+  const [job, setJob] = useRemountState<Job | null>('srt-export.job', null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [outputDir, setOutputDir] = useState(() => localStorage.getItem(OUTPUT_DIR_KEY) || '')

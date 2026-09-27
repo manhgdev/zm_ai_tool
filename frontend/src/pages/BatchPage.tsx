@@ -10,6 +10,7 @@ import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { IconArrowRight, IconGear } from '@/shared/components/Icons'
 import { MediaPreviewModal } from '@/shared/components/MediaPreviewModal'
+import { useRemountState } from '@/shared/lib/useRemountState'
 import { DEFAULT_REVIEW_SETTINGS, STYLE_TO_PIPE, type ReviewSettings } from '@/features/studio/reviewSettings'
 import './StudioPages.css'
 import './FilmPage.css'
@@ -108,14 +109,14 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
   const [cloneSettings, setCloneSettings] = useState<ProjectSettings>(loadBatchCloneSettings)
   const [reviewSettings, setReviewSettings] = useState<ReviewSettings>(loadBatchReviewSettings)
   const [drawingSettings, setDrawingSettings] = useState<DrawingBatchOptions>(loadDrawingBatchSettings)
-  const [drawingJobs, setDrawingJobs] = useState<DrawingJob[]>([])
+  const [drawingJobs, setDrawingJobs] = useRemountState<DrawingJob[]>('batch.drawingJobs', [])
   const [drawingPreview, setDrawingPreview] = useState<DrawingJob | null>(null)
   const [queuePreview, setQueuePreview] = useState<QueueJob | null>(null)
   const [drawingSettingsOpen, setDrawingSettingsOpen] = useState(false)
   const [editingDrawingJobId, setEditingDrawingJobId] = useState<string | null>(null)
   const [editingQueueJob, setEditingQueueJob] = useState<QueueJob | null>(null)
   const drawingInputRef = useRef<HTMLInputElement>(null)
-  const [jobs, setJobs] = useState<QueueJob[]>([])
+  const [jobs, setJobs] = useRemountState<QueueJob[]>('batch.jobs', [])
   const [pauseAll, setPauseAll] = useState(false)
   const [error, setError] = useState('')
   const [isDesktopApp, setIsDesktopApp] = useState(false)

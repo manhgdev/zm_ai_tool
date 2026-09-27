@@ -4,6 +4,7 @@ import { localize, useLocale } from '@/app/i18n'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { IconBatch, IconCam, IconGear, IconVideo } from '@/shared/components/Icons'
+import { useRemountState } from '@/shared/lib/useRemountState'
 import './DrawingPage.css'
 
 type PreviewTab = 'preview' | 'line-map' | 'stroke-path'
@@ -125,8 +126,8 @@ export default function DrawingPage({ onBack }: { onBack: () => void }) {
   const [showOriginalEnd, setShowOriginalEnd] = useState(saved.showOriginalEnd)
   const [outputDir, setOutputDir] = useState(() => window.localStorage.getItem(DRAWING_OUTPUT_DIR_KEY) || '')
   const [isDesktopApp, setIsDesktopApp] = useState(false)
-  const [job, setJob] = useState<DrawingJob | null>(null)
-  const [batchJobs, setBatchJobs] = useState<DrawingJob[]>([])
+  const [job, setJob] = useRemountState<DrawingJob | null>('drawing.job', null)
+  const [batchJobs, setBatchJobs] = useRemountState<DrawingJob[]>('drawing.batchJobs', [])
   const [dragging, setDragging] = useState(false)
   const [artifactError, setArtifactError] = useState<PreviewTab | null>(null)
   const [jobsRestored, setJobsRestored] = useState(false)
@@ -138,7 +139,7 @@ export default function DrawingPage({ onBack }: { onBack: () => void }) {
   const [script, setScript] = useState('')
   const [timelineScenes, setTimelineScenes] = useState<TimelineScene[]>([])
   const [audioFile, setAudioFile] = useState<File | null>(null)
-  const [renderJob, setRenderJob] = useState<RenderJob | null>(null)
+  const [renderJob, setRenderJob] = useRemountState<RenderJob | null>('drawing.renderJob', null)
   const [rendering, setRendering] = useState(false)
   const [includeCaptions, setIncludeCaptions] = useState(true)
   const [isPortrait, setIsPortrait] = useState(false)

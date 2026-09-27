@@ -5,6 +5,7 @@ import type { FlowCapabilityCatalog } from '@/features/flow/flow.types'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { MediaPreviewModal, type MediaPreviewAction, type MediaPreviewItem } from '@/shared/components/MediaPreviewModal'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
+import { useRemountState } from '@/shared/lib/useRemountState'
 import { normalizeChatProviders, type ChatProviderOption } from '@/features/chat/chatProviders'
 import './AutomationPage.css'
 
@@ -185,7 +186,7 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
   const [flowAccounts, setFlowAccounts] = useState<FlowAccountOption[]>([])
   const [ttsVoices, setTtsVoices] = useState<TtsVoiceOption[]>([])
   const [optionsLoading, setOptionsLoading] = useState(true)
-  const [jobs, setJobs] = useState<AutomationJob[]>([])
+  const [jobs, setJobs] = useRemountState<AutomationJob[]>('automation.jobs', [])
   const deletedJobIds = useRef(new Set<string>())
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)

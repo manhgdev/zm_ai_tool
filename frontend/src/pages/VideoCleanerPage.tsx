@@ -4,6 +4,7 @@ import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { MediaPreviewModal } from '@/shared/components/MediaPreviewModal'
 import { copyText } from '@/shared/lib/clipboard'
+import { useRemountState } from '@/shared/lib/useRemountState'
 import { toast } from 'sonner'
 import './VideoCleanerPage.css'
 
@@ -164,7 +165,7 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
   const [selectedFiles, setSelectedFiles] = useState<FileInfo[]>([])
   const [method, setMethod] = useState<CleanMethod>(loadMethod)
   const [options, setOptions] = useState<AdvancedOptions>(loadOpts)
-  const [jobs, setJobs] = useState<CleanJob[]>(loadJobs)
+  const [jobs, setJobs] = useRemountState<CleanJob[]>('cleaner.jobs', loadJobs)
   const [activeTab, setActiveTab] = useState<ResultTab>('all')
   const [isDragging, setIsDragging] = useState(false)
   const [logExpanded, setLogExpanded] = useState(false)

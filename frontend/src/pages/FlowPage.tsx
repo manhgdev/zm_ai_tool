@@ -16,6 +16,7 @@ import {
 import { BackTitle } from "@/shared/components/BackTitle";
 import { OutputFolderField } from "@/shared/components/OutputFolderField";
 import { copyText } from "@/shared/lib/clipboard";
+import { useRemountState } from "@/shared/lib/useRemountState";
 import FlowSeriesPanel, { type FlowSeriesSceneContext } from "./FlowSeriesPanel";
 import { FlowTemplatesPanel } from "@/features/flow/FlowTemplatesPanel";
 import {
@@ -244,7 +245,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const [settings, setSettings] = useState<FlowSettings>(readSettings);
   const [importName, setImportName] = useState("");
   const [promptInputType, setPromptInputType] = useState<PromptInputType>("prompt");
-  const [jobs, setJobs] = useState<FlowJob[]>([]);
+  const [jobs, setJobs] = useRemountState<FlowJob[]>("flow.jobs", []);
   const [logs, setLogs] = useState<FlowLog[]>([]);
   const [createKind, setCreateKind] = useState<CreateKind>(() =>
     flowRoutePanel() === "image" || (!flowRoutePanel() && readText(CREATE_KIND_KEY, "video") === "image") ? "image" : "video",

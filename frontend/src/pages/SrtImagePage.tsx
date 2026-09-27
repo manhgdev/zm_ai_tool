@@ -5,6 +5,7 @@ import './SrtImagePage.css'
 import { localize, useLocale } from '../app/i18n'
 import { BackTitle } from '../shared/components/BackTitle'
 import { copyText } from '../shared/lib/clipboard'
+import { useRemountState } from '../shared/lib/useRemountState'
 import { CAPTION_FONT_PRESETS, captionChromeStyle, captionFontCss } from '../features/editor/lib/previewStyles'
 import {
   type Job, type MissingMediaInfo, type HelpKey,
@@ -109,7 +110,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   const [outputName, setOutputName] = useState(String(cached.outputName ?? 'output.mp4'))
   const [outputPath, setOutputPath] = useState(String(cached.outputPath ?? ''))
   const [defaultOutputDirectory, setDefaultOutputDirectory] = useState('ZM_AI_TOOL/subtitles/image-video/')
-  const [job, setJob] = useState<Job | null>(null)
+  const [job, setJob] = useRemountState<Job | null>('srt-image.job', null)
   const [sending, setSending] = useState(false)
   const [missingMedia, setMissingMedia] = useState<MissingMediaInfo | null>(null)
   const [logStart, setLogStart] = useState(0)

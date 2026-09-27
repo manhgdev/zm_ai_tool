@@ -9,6 +9,7 @@ import { DEFAULT_REVIEW_SETTINGS, STYLE_TO_PIPE, modeLabel, resolveBuildMode, ty
 import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { copyText } from '@/shared/lib/clipboard'
+import { useRemountState } from '@/shared/lib/useRemountState'
 import './FilmPage.css'
 
 type Props = { onBack: () => void; onOpenEditor?: (projectId: string) => void }
@@ -210,7 +211,7 @@ export default function FilmPage({ onBack, onOpenEditor }: Props) {
   const [filter, setFilter] = useState<'all' | 'running' | 'done' | 'failed'>('all')
   const [draft, setDraft] = useState<Draft>(loadDraft)
   const [isDesktopApp, setIsDesktopApp] = useState(false)
-  const [jobs, setJobs] = useState<QueueJob[]>([])
+  const [jobs, setJobs] = useRemountState<QueueJob[]>('film.jobs', [])
   // Removing a running project is asynchronous: the worker must release its
   // files before the backend can delete them. Keep it out of the project UI
   // immediately, while polling continues from the unfiltered source list.
