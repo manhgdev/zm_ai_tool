@@ -81,7 +81,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
       accountId: saved.accountId || accounts[0]?.id || '',
       model: saved.model || 'Omni 1.1 Flash',
       ratio: saved.ratio || '16:9',
-      duration: saved.duration || '4',
+      duration: saved.duration || (/omni.*flash/i.test(saved.model || 'Omni 1.1 Flash') ? 'auto' : '8'),
       resolution: /^\d{3,4}p$/i.test(String(saved.resolution || '')) ? saved.resolution : '360p',
       quality: saved.quality || '360p',
       concurrency: saved.concurrency || '3',
@@ -116,9 +116,10 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const imageModelOptions = imageSection?.models.map((item) => item.name) || [...IMAGE_MODELS]
   const selectedVideoCapability = videoSection?.models.find((item) => item.name === seriesSettings.model)
   const seriesRatioOptions = selectedVideoCapability?.ratios.length ? selectedVideoCapability.ratios : ['16:9', '9:16']
+  const isOmniFlash = /omni.*flash/i.test(seriesSettings.model)
   const seriesDurationOptions = selectedVideoCapability?.durations.length
     ? selectedVideoCapability.durations
-    : (/omni.*flash/i.test(seriesSettings.model) ? ['4', '6', '8', '10'] : [])
+    : ['4', '6', '8', '10']
 
   const seriesResolutionOptions = (selectedVideoCapability?.resolutions || [])
     .filter((value) => /^\d{3,4}p$/i.test(value))
@@ -130,9 +131,11 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
         || videoSection.models.find((item) => item.name === videoSection.defaultModel)
         || videoSection.models[0]
       const ratio = selectedModel.ratios.includes(current.ratio) ? current.ratio : selectedModel.defaultRatio || selectedModel.ratios[0] || current.ratio
-      const duration = selectedModel.durations.length
-        ? (selectedModel.durations.includes(current.duration) ? current.duration : selectedModel.defaultDuration || selectedModel.durations[0] || current.duration)
-        : ''
+      const _isFlash = /omni.*flash/i.test(selectedModel.name)
+      const _dCh = selectedModel.durations.length ? selectedModel.durations : ['4', '6', '8', '10']
+      const duration = current.duration === 'auto'
+        ? (_isFlash ? 'auto' : '8')
+        : (_dCh.includes(current.duration) ? current.duration : (_isFlash ? 'auto' : selectedModel.defaultDuration || '8'))
       const resolution = selectedModel.resolutions.filter((value) => /^\d{3,4}p$/i.test(value))
       // Prefer 360p for Omni Flash when offered (fast continuous Series drafts).
       const preferFast = /omni.*flash/i.test(selectedModel.name) && resolution.includes('360p')
@@ -252,7 +255,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
           settings: {
             model: videoModelOptions.includes(seriesSettings.model) ? seriesSettings.model : videoModelOptions[0],
             ratio: seriesSettings.ratio,
-            duration: seriesSettings.duration,
+            ...(seriesSettings.duration && seriesSettings.duration !== 'auto' ? { duration: seriesSettings.duration } : {}),
             resolution: seriesSettings.resolution || '360p',
             quality: seriesSettings.quality || (/360p/i.test(seriesSettings.resolution) ? '360p' : '720p'),
             concurrency: seriesSettings.concurrency || '1',
@@ -309,7 +312,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
           settings: {
             model: isKeyframe ? (imageModelOptions.includes(imageModel) ? imageModel : imageModelOptions[0]) : (videoModelOptions.includes(seriesSettings.model) ? seriesSettings.model : videoModelOptions[0]),
             ratio: seriesSettings.ratio,
-            duration: seriesSettings.duration,
+            ...(seriesSettings.duration && seriesSettings.duration !== 'auto' ? { duration: seriesSettings.duration } : {}),
             resolution: seriesSettings.resolution || '360p',
             quality: seriesSettings.quality || (/360p/i.test(seriesSettings.resolution) ? '360p' : '720p'),
             count: 1,
@@ -356,7 +359,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                 ? (imageModelOptions.includes(imageModel) ? imageModel : imageModelOptions[0])
                 : (videoModelOptions.includes(seriesSettings.model) ? seriesSettings.model : videoModelOptions[0]),
               ratio: seriesSettings.ratio,
-              duration: seriesSettings.duration,
+              ...(seriesSettings.duration && seriesSettings.duration !== 'auto' ? { duration: seriesSettings.duration } : {}),
               resolution: seriesSettings.resolution || '360p',
               quality: seriesSettings.quality || (/360p/i.test(seriesSettings.resolution) ? '360p' : '720p'),
               count: 1,
@@ -750,6 +753,78 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                   </div>
                 )}
               </div>
+
+              {/* ── Inline quick-settings bar ── */}
+              <div className="fsp-inline-settings">
+                {accounts.length > 0 && (
+                  <label className="fsp-inline-field">
+                    <span>{t('Tài khoản', 'Account')}</span>
+                    <select
+                      value={seriesSettings.accountId}
+                      onChange={(e) => saveSeriesSettings({ accountId: e.target.value })}
+                      aria-label={t('Tài khoản', 'Account')}
+                    >
+                      <option value="random">{t('🎲 Ngẫu nhiên', '🎲 Random')}</option>
+                      {accounts.map((acc) => (
+                        <option key={acc.id} value={acc.id}>
+                          {acc.label} · {acc.plan}{acc.status === 'online' ? ' ✓' : acc.status === 'reconnect' ? ' ↻' : ' ✗'}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label className="fsp-inline-field">
+                  <span>{t('Model video', 'Video model')}</span>
+                  <select
+                    value={seriesSettings.model}
+                    onChange={(e) => saveSeriesSettings({ model: e.target.value })}
+                    aria-label={t('Model video', 'Video model')}
+                  >
+                    {videoModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </label>
+                <label className="fsp-inline-field">
+                  <span>{t('Model ảnh', 'Image model')}</span>
+                  <select
+                    value={imageModel}
+                    onChange={(e) => {
+                      setImageModel(e.target.value)
+                      localStorage.setItem(SERIES_SETTINGS_KEY, JSON.stringify({ ...seriesSettings, imageModel: e.target.value }))
+                    }}
+                    aria-label={t('Model ảnh', 'Image model')}
+                  >
+                    {imageModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </label>
+                <label className="fsp-inline-field">
+                  <span>{t('Chế độ', 'Mode')}</span>
+                  <select
+                    value={autoMode}
+                    onChange={(e) => setAutoMode(e.target.value as AutoMode)}
+                    aria-label={t('Chế độ chạy', 'Run mode')}
+                  >
+                    <option value="full">{t('Đầy đủ', 'Full')}</option>
+                    <option value="keyframes_only">{t('Chỉ ảnh', 'Images only')}</option>
+                    <option value="videos_only">{t('Chỉ video', 'Videos only')}</option>
+                  </select>
+                </label>
+                <label className="fsp-inline-field">
+                  <span>{t('Thời lượng', 'Duration')}</span>
+                  <select
+                    value={seriesSettings.duration}
+                    onChange={(e) => saveSeriesSettings({ duration: e.target.value })}
+                    aria-label={t('Thời lượng video', 'Video duration')}
+                  >
+                    {isOmniFlash && (
+                      <option value="auto">{t('⏱ Auto (timecode)', '⏱ Auto (timecode)')}</option>
+                    )}
+                    {seriesDurationOptions.map((d) => (
+                      <option key={d} value={d}>{d}s</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
               <div className="fsp-ws-actions">
                 <button
                   type="button"
@@ -757,7 +832,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                   onClick={() => setActiveTab('settings')}
                   title={t('Mở cài đặt nhanh cho model, tỷ lệ, thời lượng và luồng chạy', 'Open quick settings for model, ratio, duration and threads')}
                 >
-                  ⚙ {t('Cài đặt nhanh', 'Quick settings')}
+                  ⚙ {t('Thêm cài đặt', 'More settings')}
                 </button>
                 {totalScenes > 0 && (
                   <button
@@ -912,11 +987,13 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                     <div className="fsp-auto-field fsp-field-xs">
                       <label>{t('Thời lượng', 'Duration')}</label>
                       <select
-                        value={seriesDurationOptions.includes(seriesSettings.duration) ? seriesSettings.duration : seriesDurationOptions[0]}
+                        value={seriesSettings.duration}
                         onChange={(e) => saveSeriesSettings({ duration: e.target.value })}
                         aria-label={t('Thời lượng', 'Duration')}
-                        disabled={seriesDurationOptions.length < 2}
                       >
+                        {isOmniFlash && (
+                          <option value="auto">{t('⏱ Auto (timecode)', '⏱ Auto (timecode)')}</option>
+                        )}
                         {seriesDurationOptions.map((duration) => <option key={duration} value={duration}>{duration}s</option>)}
                       </select>
                     </div>

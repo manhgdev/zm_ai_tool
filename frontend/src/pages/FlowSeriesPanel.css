@@ -207,6 +207,43 @@
   flex-shrink: 0;
 }
 
+/* ── Inline quick-settings bar (account / model / mode) ── */
+.fsp-inline-settings {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 6px 0 2px;
+}
+.fsp-inline-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.fsp-inline-field > span {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-foreground, #64748b);
+  white-space: nowrap;
+}
+.fsp-inline-field > select {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+  cursor: pointer;
+  max-width: 200px;
+}
+.fsp-inline-field > select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
 /* ══════════════════════════════════════════════════════════════════
    TAB BAR
    ══════════════════════════════════════════════════════════════════ */
