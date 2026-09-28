@@ -662,8 +662,12 @@ def _normalize_catalog_settings(
     if kind == "video":
         resolutions = [value for value in resolutions if _video_ui_resolution(value)]
         requested_resolution = str(normalized.get("resolution") or "").lower()
-        resolution_l = [value.lower() for value in resolutions]
-        if resolutions and requested_resolution not in resolution_l:
+        if not resolutions:
+            # Model has no resolution UI tabs — clear any leftover value so the
+            # worker does not try to click a control that does not exist.
+            if requested_resolution:
+                normalized["resolution"] = ""
+        elif requested_resolution not in [value.lower() for value in resolutions]:
             fallback = str(selected.get("defaultResolution") or resolutions[0])
             normalized["resolution"] = _video_ui_resolution(fallback) or resolutions[0]
         elif requested_resolution and not _video_ui_resolution(requested_resolution):

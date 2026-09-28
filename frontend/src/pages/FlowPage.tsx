@@ -844,9 +844,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       : [];
   const retryResolutionOptions = retryModelCapability?.resolutions.length
     ? retryModelCapability.resolutions
-    : retryTarget?.job.kind === "video"
-      ? flowVideoDownloadQualities(retryAccount?.plan || "Free")
-      : retryTarget?.job.kind === "image" ? flowImageResolutions(retryAccount?.plan || "Free") : [];
+    : retryTarget?.job.kind === "image" ? flowImageResolutions(retryAccount?.plan || "Free") : [];
   const retryQualityOptions = retryTarget?.job.kind === "video"
     ? flowVideoDownloadQualities(retryAccount?.plan || "Free")
     : [];
