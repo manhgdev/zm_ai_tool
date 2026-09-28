@@ -47,6 +47,8 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const [title, setTitle] = useState('')
   const [creating, setCreating] = useState(false)
   const [topic, setTopic] = useState('')
+  const [numEpisodes, setNumEpisodes] = useState('')
+  const [sceneDuration, setSceneDuration] = useState('')
   const [draft, setDraft] = useState<{ text: string; bible: string } | null>(null)
   const [drafting, setDrafting] = useState(false)
   const [aiProviders, setAiProviders] = useState<ChatProviderOption[]>([])
@@ -456,7 +458,13 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
     try {
       const result = await request<{ text: string; bible: string }>('/series/draft', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic, provider: aiConfig.provider, model: aiConfig.model }),
+        body: JSON.stringify({
+          topic,
+          provider: aiConfig.provider,
+          model: aiConfig.model,
+          ...(numEpisodes ? { num_episodes: Number(numEpisodes) } : {}),
+          ...(sceneDuration ? { scene_duration: Number(sceneDuration) } : {}),
+        }),
       })
       setDraft(result)
     } catch (error) {
@@ -675,6 +683,23 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                   <select value={aiConfig.model} onChange={(e) => setAiConfig({ ...aiConfig, model: e.target.value })} disabled={!aiProvider?.models.length}>
                     {!aiProvider?.models.length && <option value="">{aiLoading ? t('Đang tải model…', 'Loading models…') : t('Chưa có model khả dụng', 'No available model')}</option>}
                     {(aiProvider?.models || []).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                  </select>
+                </label>
+                <label className="fsp-field">
+                  <span className="fsp-label">{t('Số tập', 'Episodes')}</span>
+                  <select value={numEpisodes} onChange={(e) => setNumEpisodes(e.target.value)} aria-label={t('Số tập', 'Episodes')}>
+                    <option value="">{t('🤖 Tự chọn', '🤖 Auto')}</option>
+                    {[1,2,3,4,5,6,7,8,9,10].map((n) => <option key={n} value={String(n)}>{n} {t('tập', 'ep.')}</option>)}
+                  </select>
+                </label>
+                <label className="fsp-field">
+                  <span className="fsp-label">{t('Thời lượng cảnh', 'Scene duration')}</span>
+                  <select value={sceneDuration} onChange={(e) => setSceneDuration(e.target.value)} aria-label={t('Thời lượng cảnh', 'Scene duration')}>
+                    <option value="">{t('🤖 Tự chọn', '🤖 Auto')}</option>
+                    <option value="4">4s</option>
+                    <option value="6">6s</option>
+                    <option value="8">8s</option>
+                    <option value="10">10s</option>
                   </select>
                 </label>
                 <button type="button" className="fsp-btn fsp-btn-primary fsp-create-go" onClick={() => void draftWithAi()} disabled={!topic.trim() || !aiConfig.provider || drafting}>

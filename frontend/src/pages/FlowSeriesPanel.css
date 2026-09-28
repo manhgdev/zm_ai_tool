@@ -131,7 +131,10 @@
 .fsp-create-head p { margin: 0; color: var(--muted-foreground); font-size: 13px; line-height: 1.5; }
 .fsp-create-card { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface, var(--card)); }
 .fsp-create-card textarea { resize: vertical; }
-.fsp-create-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; align-items: end; gap: 10px; }
+.fsp-create-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; }
+.fsp-create-row .fsp-field { flex: 1 1 130px; min-width: 110px; }
+.fsp-create-row .fsp-field:first-child { flex: 1.5 1 160px; }
+.fsp-create-row .fsp-field:nth-child(2) { flex: 1.5 1 160px; }
 .fsp-create-go { min-height: 36px; padding: 0 18px; }
 .fsp-create-hint { margin: 0; font-size: 12px; color: var(--muted-foreground); }
 .fsp-draft-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

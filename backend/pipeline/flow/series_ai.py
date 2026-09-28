@@ -36,7 +36,15 @@ def split_bible(text: str) -> tuple[str, str]:
     return "\n".join(script).strip(), "\n".join(bible).strip()
 
 
-def _prompt(topic: str) -> str:
+def _prompt(topic: str, num_episodes: int | None = None, scene_duration: int | None = None) -> str:
+    ep_constraint = (
+        f"Create exactly {num_episodes} episode{'s' if num_episodes != 1 else ''}."
+        if num_episodes else "Choose 1 to 5 episodes, sized to the topic."
+    )
+    dur_constraint = (
+        f"Every scene must last exactly {scene_duration} seconds; timecodes span {scene_duration} seconds each."
+        if scene_duration else "Each scene lasts 4, 6, 8 or 10 seconds, chosen to fit its action."
+    )
     return f"""You are a professional visual-series planner for AI video generation. Plan a complete Series from this topic:
 
 {topic.strip()}
@@ -51,21 +59,22 @@ Style: art style, lighting, camera language
 001_[00.00_00.00-00.00_08.00] visual scene prompt
 002_[00.00_08.00-00.00_14.00] visual scene prompt
 
-Choose 1 to 5 episodes with 3 to 8 scenes each, sized to the topic; if the topic asks for a total length, the scene lengths must add up to it. Scene numbering restarts at 001 in every episode. Each scene lasts 4, 6, 8 or 10 seconds, chosen to fit its action; timecodes (HH.MM_SS.cc) are continuous inside each episode. Every scene prompt must include:
+{ep_constraint} Use 3 to 8 scenes per episode. Scene numbering restarts at 001 in every episode. {dur_constraint} Timecodes (HH.MM_SS.cc) are continuous inside each episode. Every scene prompt must include:
 - START STATE: where characters/camera begin (matches the previous END when continuing)
 - ACTION: what happens in this shot only
 - END STATE: freeze-frame pose/set for the next shot to continue from
 Keep the bible's character appearance, clothes, props, setting and art style identical in every scene. Do not restart the plot each scene."""
 
 
-def draft_series(*, provider: str, model: str, topic: str) -> dict[str, str]:
+def draft_series(*, provider: str, model: str, topic: str, num_episodes: int | None = None, scene_duration: int | None = None) -> dict[str, str]:
     """Return `{"text", "bible"}` drafted by any Chat provider/model."""
     from pipeline.automation.service import service as automation
 
     if not topic.strip():
         raise ValueError("SERIES_AI_TOPIC_REQUIRED")
     raw = automation._request_ephemeral_chat(
-        _prompt(topic), {"textProvider": provider, "textModel": model}, "Series Draft",
+        _prompt(topic, num_episodes=num_episodes, scene_duration=scene_duration),
+        {"textProvider": provider, "textModel": model}, "Series Draft",
     )
     text, bible = split_bible(_clean_text(raw))
     if not text:

@@ -79,6 +79,8 @@ class SeriesDraftIn(BaseModel):
     topic: str = Field(min_length=1, max_length=12000)
     provider: str = Field(pattern="^[a-z0-9_]{1,40}$")
     model: str = Field(default="", max_length=200)
+    num_episodes: int | None = Field(default=None, ge=1, le=20)
+    scene_duration: int | None = Field(default=None, ge=4, le=10)
 
 
 class SeriesGenerationIn(BaseModel):
@@ -267,7 +269,10 @@ def series_draft(body: SeriesDraftIn):
     from pipeline.flow.series_ai import draft_series
 
     try:
-        return draft_series(provider=body.provider, model=body.model, topic=body.topic)
+        return draft_series(
+            provider=body.provider, model=body.model, topic=body.topic,
+            num_episodes=body.num_episodes, scene_duration=body.scene_duration,
+        )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except RuntimeError as exc:
