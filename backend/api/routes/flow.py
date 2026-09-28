@@ -79,7 +79,7 @@ class SeriesDraftIn(BaseModel):
     topic: str = Field(min_length=1, max_length=12000)
     provider: str = Field(pattern="^[a-z0-9_]{1,40}$")
     model: str = Field(default="", max_length=200)
-    num_episodes: int | None = Field(default=None, ge=1, le=20)
+    num_episodes: int | None = Field(default=None, ge=1)
     scene_duration: int | None = Field(default=None, ge=4, le=10)
 
 

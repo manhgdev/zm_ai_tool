@@ -687,10 +687,13 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                 </label>
                 <label className="fsp-field">
                   <span className="fsp-label">{t('Số tập', 'Episodes')}</span>
-                  <select value={numEpisodes} onChange={(e) => setNumEpisodes(e.target.value)} aria-label={t('Số tập', 'Episodes')}>
-                    <option value="">{t('🤖 Tự chọn', '🤖 Auto')}</option>
-                    {[1,2,3,4,5,6,7,8,9,10].map((n) => <option key={n} value={String(n)}>{n} {t('tập', 'ep.')}</option>)}
-                  </select>
+                  <input
+                    type="number" min="1" step="1"
+                    value={numEpisodes}
+                    onChange={(e) => setNumEpisodes(e.target.value)}
+                    placeholder={t('Tự chọn', 'Auto')}
+                    aria-label={t('Số tập', 'Episodes')}
+                  />
                 </label>
                 <label className="fsp-field">
                   <span className="fsp-label">{t('Thời lượng cảnh', 'Scene duration')}</span>
