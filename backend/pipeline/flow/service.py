@@ -3542,12 +3542,23 @@ class FlowService:
         if ratio_tab is None:
             raise RuntimeError(f"FLOW_UI_CHANGED: aspect ratio {ratio_label} was not found")
         if not await _flow_control_is_selected(ratio_tab):
+            await ratio_tab.scroll_into_view_if_needed()
             await ratio_tab.click(force=True)
             await asyncio.sleep(0.5)
         if not await _flow_control_is_selected(ratio_tab):
             # Second retry — UI may lag on slow machines
             await ratio_tab.click(force=True)
             await asyncio.sleep(0.8)
+        if not await _flow_control_is_selected(ratio_tab):
+            # mat-button-toggle ancestor fallback
+            try:
+                host = await ratio_tab.evaluate_handle(
+                    "node => node.closest('mat-button-toggle, [role=\"radio\"], [role=\"tab\"]') || node.parentElement"
+                )
+                await host.as_element().click(force=True)  # type: ignore[union-attr]
+                await asyncio.sleep(0.8)
+            except Exception as _exc:
+                _log.debug("ratio ancestor click failed: %s", _exc)
         if not await _flow_control_is_selected(ratio_tab):
             raise RuntimeError(f"FLOW_SETTING_MISMATCH: aspect ratio {ratio_label} was not selected")
 
@@ -3662,11 +3673,23 @@ class FlowService:
                     _log.info("_prepare_ui_format: resolution %s control is hidden; using Flow model default", resolution_value)
                     return
                 if not await _flow_control_is_selected(resolution_tab):
+                    await resolution_tab.scroll_into_view_if_needed()
                     await resolution_tab.click(force=True)
                     await asyncio.sleep(0.5)
                 if not await _flow_control_is_selected(resolution_tab):
                     await resolution_tab.click(force=True)
                     await asyncio.sleep(0.8)
+                if not await _flow_control_is_selected(resolution_tab):
+                    # mat-button-toggle: visible_tab resolves to inner <button>,
+                    # but the clickable host is the parent. Try closest ancestor.
+                    try:
+                        host = await resolution_tab.evaluate_handle(
+                            "node => node.closest('mat-button-toggle, [role=\"radio\"], [role=\"tab\"]') || node.parentElement"
+                        )
+                        await host.as_element().click(force=True)  # type: ignore[union-attr]
+                        await asyncio.sleep(0.8)
+                    except Exception as _exc:
+                        _log.debug("resolution ancestor click failed: %s", _exc)
                 if not await _flow_control_is_selected(resolution_tab):
                     raise RuntimeError(f"FLOW_SETTING_MISMATCH: resolution {resolution_value} was not selected")
 
