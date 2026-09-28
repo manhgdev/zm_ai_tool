@@ -340,6 +340,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     concurrency: string;
     accountId: string;
     fresh: boolean;
+    headless: boolean;
     groups: Array<{
       kind: CreateKind;
       jobs: FlowJob[];
@@ -1357,6 +1358,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       accountId: resolvedAccountId,
       groups,
       fresh: initialJobs.length > 0 && initialJobs.every(isFreshCreateJob),
+      headless: settings.headless,
     });
   };
   const retryJob = (id: string) => {
@@ -1381,7 +1383,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       return group.jobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId: group.accountId, settings: retrySettings, fresh: retryTarget.fresh }),
+      body: JSON.stringify({ accountId: group.accountId, settings: retrySettings, fresh: retryTarget.fresh, headless: retryTarget.headless }),
       }));
     });
     void Promise.all(retryRequests)
@@ -3603,6 +3605,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 />
               </div>
               <footer>
+                <label className="flow-retry-headless-cb">
+                  <input type="checkbox" checked={!retryTarget.headless} onChange={() => setRetryTarget((current) => current ? { ...current, headless: !current.headless } : current)} />
+                  {t('Mở Chrome khi chạy', 'Open Chrome')}
+                </label>
                 <button type="button" onClick={() => setRetryTarget(null)}>{t("Quay lại", "Go back")}</button>
                 <button type="button" className="is-primary" onClick={confirmRetryJob} disabled={!retryTarget.jobs.length || !retryTarget.accountId}>{retryActionLabel(retryTarget.jobs)}</button>
               </footer>

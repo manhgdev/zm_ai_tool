@@ -1276,8 +1276,27 @@
 .flow-retry-dialog > header { padding: 12px 14px; }
 .flow-retry-dialog > header strong { display: block; font-size: 0.86rem; }
 .flow-retry-dialog > header small { display: block; margin-top: 2px; color: var(--muted-foreground); font-size: 0.65rem; font-weight: 600; }
-.flow-retry-dialog > footer { padding: 9px 14px; }
-.flow-retry-dialog > footer button.is-primary { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
+.flow-retry-dialog > footer { padding: 9px 14px; display: flex; align-items: center; gap: 8px; }
+.flow-retry-dialog > footer button.is-primary { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); margin-left: auto; }
+.flow-retry-headless-cb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.flow-retry-headless-cb input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary, #7c6fff);
+  cursor: pointer;
+  margin: 0;
+  flex-shrink: 0;
+}
 .flow-retry-fields label {
   display: grid;
   gap: 2px;
