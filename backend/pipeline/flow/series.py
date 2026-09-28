@@ -685,3 +685,59 @@ def approve_keyframe(series_id: str, episode_id: str, scene_id: str, source: str
     target = _asset_folder(series_id) / f"{scene_id}_keyframe{original.suffix.lower() or '.png'}"
     shutil.copy2(original, target)
     return update_scene(series_id, episode_id, scene_id, {"approvedKeyframe": str(target), "status": "ready_video", "error": ""})
+
+
+def merge_episode_videos(series_id: str, episode_id: str) -> Path:
+    """Concatenate all completed scene videos of an episode into one MP4.
+
+    Returns the output path on success; raises ValueError / RuntimeError otherwise.
+    """
+    import subprocess, tempfile
+
+    series = get_series(series_id)
+    if not series:
+        raise ValueError("Series not found")
+    ep_index, episode = _find_episode(series, episode_id)
+    if episode is None:
+        raise ValueError("Episode not found")
+
+    scenes = sorted(
+        [s for s in (episode.get("scenes") or []) if Path(str(s.get("videoOutput") or "")).is_file()],
+        key=lambda s: int(s.get("index") or 0),
+    )
+    if not scenes:
+        raise ValueError("No completed video scenes to merge")
+
+    slug = safe_output_part(series.get("slug") or series.get("title") or "series", "series")
+    ep_idx = int(episode.get("index") or (ep_index + 1 if ep_index is not None else 1))
+    out_dir = _asset_folder(series_id)
+    out_path = out_dir / f"{slug}_tap-{ep_idx:02d}_merged.mp4"
+
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as flist:
+        for scene in scenes:
+            flist.write(f"file '{Path(str(scene['videoOutput'])).as_posix()}'\n")
+        flist_path = flist.name
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "concat", "-safe", "0",
+                "-i", flist_path,
+                "-c", "copy",
+                str(out_path),
+            ],
+            check=True,
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg merge failed: {exc}") from exc
+    finally:
+        Path(flist_path).unlink(missing_ok=True)
+
+    if not out_path.is_file() or out_path.stat().st_size < 64:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError("Merged file is empty or missing")
+
+    return out_path

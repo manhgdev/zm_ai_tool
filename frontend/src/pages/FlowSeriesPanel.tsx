@@ -607,6 +607,18 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
       toast.success(t('Đã xóa tập.', 'Episode deleted.'))
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
   }
+  const [mergingEpisodeId, setMergingEpisodeId] = useState('')
+  const mergeEpisode = async (episode: Episode) => {
+    if (!selected) return
+    const hasVideos = episode.scenes.some((s) => s.videoOutput)
+    if (!hasVideos) { toast.error(t('Ch\u01b0a c� c\u1ea3nh video n�o \u0111\u1ec3 gh�p.', 'No completed video scenes to merge.')); return }
+    setMergingEpisodeId(episode.id)
+    try {
+      const result = await request<{ path: string }>(`/series/${selected.id}/episodes/${episode.id}/merge`, { method: 'POST' })
+      toast.success(t(`\u0110� gh�p th�nh: ${result.path}`, `Merged: ${result.path}`))
+    } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
+    finally { setMergingEpisodeId('') }
+  }
   const toggleEpisode = (episodeId: string) => {
     setCollapsedEpisodes((prev) => {
       const next = new Set(prev)
@@ -1201,6 +1213,11 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                                   }}
                                 >
                                   🎬 {t('Xem tập', 'Preview ep')} ({episode.scenes.filter(s => s.videoOutput).length})
+                                </button>
+                              )}
+                              {episode.scenes.some((s) => s.videoOutput) && (
+                                <button type="button" className="fsp-ep-tool-btn fsp-ep-merge" title={t('Ghép thành 1 video', 'Merge into 1 video')} onClick={() => void mergeEpisode(episode)} disabled={mergingEpisodeId === episode.id}>
+                                  {mergingEpisodeId === episode.id ? '⏳' : '📽'}
                                 </button>
                               )}
                               <button type="button" className="fsp-ep-tool-btn fsp-ep-del" title={t('Xóa tập', 'Delete episode')} onClick={() => void deleteEpisode(episode)}>

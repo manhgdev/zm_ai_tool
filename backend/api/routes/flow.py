@@ -361,6 +361,18 @@ def series_episode_delete(series_id: str, episode_id: str):
     return {"ok": True}
 
 
+@router.post("/series/{series_id}/episodes/{episode_id}/merge")
+def series_episode_merge(series_id: str, episode_id: str):
+    """Concatenate all completed scene videos of this episode into one MP4."""
+    try:
+        out_path = series.merge_episode_videos(series_id, episode_id)
+        return {"path": str(out_path)}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
 @router.post("/series/{series_id}/episodes/{episode_id}/scenes")
 def series_scene_create(series_id: str, episode_id: str, body: SceneIn):
     item = series.create_scene(series_id, episode_id, body.prompt, body.timecode)

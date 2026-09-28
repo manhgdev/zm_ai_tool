@@ -1243,3 +1243,13 @@
   justify-content: center;
   font-size: 15px;
 }
+.fsp-ep-merge {
+  background: color-mix(in srgb, var(--primary, #7c6fff) 8%, var(--background));
+  border-color: color-mix(in srgb, var(--primary, #7c6fff) 25%, var(--border));
+  color: var(--primary, #7c6fff);
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+  font-size: 14px;
+}
+.fsp-ep-merge:disabled { opacity: 0.5; cursor: wait; }
