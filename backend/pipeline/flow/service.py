@@ -4969,6 +4969,9 @@ class FlowService:
         account_id = str(overrides.get("accountId") or existing.get("accountId") or "").strip()
         settings = dict(existing.get("settings") or {})
         settings.update({key: value for key, value in dict(overrides.get("settings") or {}).items() if value not in (None, "")})
+        # headless is sent at the top level by the UI (not inside settings{})
+        if "headless" in overrides:
+            settings["headless"] = bool(overrides["headless"])
         kind = str(existing.get("kind") or "video")
         model = settings.get("model")
 

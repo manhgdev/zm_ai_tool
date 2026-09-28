@@ -42,6 +42,7 @@ class RetryIn(BaseModel):
     accountId: str | None = None
     settings: dict[str, Any] = {}
     fresh: bool = False
+    headless: bool = True
 
 
 class OutputFolderIn(BaseModel):
