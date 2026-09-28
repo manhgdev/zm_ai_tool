@@ -1261,6 +1261,7 @@
   gap: 4px;
   min-width: 0;
   justify-content: flex-end;
+  align-items: flex-start;
 }
 .fsp-headless-field > label:first-child {
   font-size: 0.68rem;
@@ -1280,7 +1281,7 @@
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
-  overflow: hidden;
+  width: fit-content;
 }
 .fsp-headless-cb-row span {
   font-size: 0.76rem;
@@ -1296,6 +1297,8 @@
   -webkit-appearance: none;
   position: relative;
   width: 32px;
+  min-width: 32px;
+  max-width: 32px;
   height: 18px;
   background: var(--border, #d1d5db);
   border-radius: 9px;
