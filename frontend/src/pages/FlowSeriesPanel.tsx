@@ -753,78 +753,6 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                   </div>
                 )}
               </div>
-
-              {/* ── Inline quick-settings bar ── */}
-              <div className="fsp-inline-settings">
-                {accounts.length > 0 && (
-                  <label className="fsp-inline-field">
-                    <span>{t('Tài khoản', 'Account')}</span>
-                    <select
-                      value={seriesSettings.accountId}
-                      onChange={(e) => saveSeriesSettings({ accountId: e.target.value })}
-                      aria-label={t('Tài khoản', 'Account')}
-                    >
-                      <option value="random">{t('🎲 Ngẫu nhiên', '🎲 Random')}</option>
-                      {accounts.map((acc) => (
-                        <option key={acc.id} value={acc.id}>
-                          {acc.label} · {acc.plan}{acc.status === 'online' ? ' ✓' : acc.status === 'reconnect' ? ' ↻' : ' ✗'}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                <label className="fsp-inline-field">
-                  <span>{t('Model video', 'Video model')}</span>
-                  <select
-                    value={seriesSettings.model}
-                    onChange={(e) => saveSeriesSettings({ model: e.target.value })}
-                    aria-label={t('Model video', 'Video model')}
-                  >
-                    {videoModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </label>
-                <label className="fsp-inline-field">
-                  <span>{t('Model ảnh', 'Image model')}</span>
-                  <select
-                    value={imageModel}
-                    onChange={(e) => {
-                      setImageModel(e.target.value)
-                      localStorage.setItem(SERIES_SETTINGS_KEY, JSON.stringify({ ...seriesSettings, imageModel: e.target.value }))
-                    }}
-                    aria-label={t('Model ảnh', 'Image model')}
-                  >
-                    {imageModelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </label>
-                <label className="fsp-inline-field">
-                  <span>{t('Chế độ', 'Mode')}</span>
-                  <select
-                    value={autoMode}
-                    onChange={(e) => setAutoMode(e.target.value as AutoMode)}
-                    aria-label={t('Chế độ chạy', 'Run mode')}
-                  >
-                    <option value="full">{t('Đầy đủ', 'Full')}</option>
-                    <option value="keyframes_only">{t('Chỉ ảnh', 'Images only')}</option>
-                    <option value="videos_only">{t('Chỉ video', 'Videos only')}</option>
-                  </select>
-                </label>
-                <label className="fsp-inline-field">
-                  <span>{t('Thời lượng', 'Duration')}</span>
-                  <select
-                    value={seriesSettings.duration}
-                    onChange={(e) => saveSeriesSettings({ duration: e.target.value })}
-                    aria-label={t('Thời lượng video', 'Video duration')}
-                  >
-                    {isOmniFlash && (
-                      <option value="auto">{t('⏱ Auto (timecode)', '⏱ Auto (timecode)')}</option>
-                    )}
-                    {seriesDurationOptions.map((d) => (
-                      <option key={d} value={d}>{d}s</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
               <div className="fsp-ws-actions">
                 <button
                   type="button"
@@ -832,7 +760,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                   onClick={() => setActiveTab('settings')}
                   title={t('Mở cài đặt nhanh cho model, tỷ lệ, thời lượng và luồng chạy', 'Open quick settings for model, ratio, duration and threads')}
                 >
-                  ⚙ {t('Thêm cài đặt', 'More settings')}
+                  ⚙ {t('Cài đặt nhanh', 'Quick settings')}
                 </button>
                 {totalScenes > 0 && (
                   <button
@@ -1005,7 +933,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                         value={seriesResolutionOptions.includes(seriesSettings.resolution) ? seriesSettings.resolution : seriesResolutionOptions[0]}
                         onChange={(e) => saveSeriesSettings({
                           resolution: e.target.value,
-                          quality: /360p/i.test(e.target.value) ? '360p' : (seriesSettings.quality || '720p'),
+                          quality: e.target.value,
                         })}
                         aria-label={t('Độ phân giải', 'Resolution')}
                         disabled={seriesResolutionOptions.length < 2}
