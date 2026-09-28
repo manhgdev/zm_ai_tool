@@ -47,14 +47,21 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   const [title, setTitle] = useState('')
   const [creating, setCreating] = useState(false)
   const [topic, setTopic] = useState('')
-  const [numEpisodes, setNumEpisodes] = useState('')
-  const [sceneDuration, setSceneDuration] = useState('')
+  const [numEpisodes, setNumEpisodes] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}').numEpisodes || '' } catch { return '' }
+  })
+  const [sceneDuration, setSceneDuration] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}').sceneDuration || '' } catch { return '' }
+  })
   const [draft, setDraft] = useState<{ text: string; bible: string } | null>(null)
   const [drafting, setDrafting] = useState(false)
   const [aiProviders, setAiProviders] = useState<ChatProviderOption[]>([])
   const [aiLoading, setAiLoading] = useState(true)
   const [aiConfig, setAiConfig] = useState<{ provider: string; model: string }>(() => {
-    try { return { provider: '', model: '', ...JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}') } } catch { return { provider: '', model: '' } }
+    try {
+      const s = JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}')
+      return { provider: '', model: '', ...s }
+    } catch { return { provider: '', model: '' } }
   })
   const [sceneDraft, setSceneDraft] = useState({ episodeId: '', title: '', prompt: '', timecode: '' })
   const [episodeTitle, setEpisodeTitle] = useState('')
@@ -178,8 +185,18 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
   }, [activeTab])
 
   useEffect(() => {
-    try { localStorage.setItem(SERIES_AI_KEY, JSON.stringify(aiConfig)) } catch {}
+    try {
+      const prev = JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}')
+      localStorage.setItem(SERIES_AI_KEY, JSON.stringify({ ...prev, ...aiConfig }))
+    } catch {}
   }, [aiConfig])
+
+  useEffect(() => {
+    try {
+      const prev = JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}')
+      localStorage.setItem(SERIES_AI_KEY, JSON.stringify({ ...prev, numEpisodes, sceneDuration }))
+    } catch {}
+  }, [numEpisodes, sceneDuration])
 
   useEffect(() => {
     let active = true
@@ -691,7 +708,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                     type="text" inputMode="numeric" pattern="[0-9]*"
                     value={numEpisodes}
                     onChange={(e) => setNumEpisodes(e.target.value.replace(/[^0-9]/g, ''))}
-                    placeholder={t('Tự chọn', 'Auto')}
+                    placeholder="auto"
                     aria-label={t('Số tập', 'Episodes')}
                   />
                 </label>
