@@ -1311,6 +1311,12 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                                             >
                                               {t('Tạo mới', 'Create new')}
                                             </button>
+                                            <label className="fsp-chrome-inline" title={headless ? t('Chrome ẩn', 'Chrome hidden') : t('Chrome hiện', 'Chrome visible')}>
+                                              <button type="button" role="switch" aria-checked={!headless} className={`fsp-headless-switch${headless ? '' : ' is-on'}`} onClick={toggleHeadless}>
+                                                <span className="fsp-headless-switch-track" aria-hidden="true" />
+                                              </button>
+                                              {t('Mở Chrome', 'Open Chrome')}
+                                            </label>
                                           </div>
                                         </div>
                                       )}

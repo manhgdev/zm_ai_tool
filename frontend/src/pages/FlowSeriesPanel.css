@@ -1276,28 +1276,50 @@
   height: 24px;
   border-radius: 12px;
   padding: 0;
-  border: 1px solid var(--border);
-  background: var(--surface, var(--background));
+  border: none;
+  background: #c0c0c8;
   cursor: pointer;
-  transition: background 0.2s, border-color 0.2s;
+  transition: background 0.2s;
   flex-shrink: 0;
 }
 .fsp-headless-switch.is-on {
   background: var(--primary, #7c6fff);
-  border-color: var(--primary, #7c6fff);
 }
 .fsp-headless-switch-track {
   position: absolute;
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--muted-foreground, #aaa);
-  left: 2px;
-  transition: transform 0.2s, background 0.2s;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  background: #fff;
+  left: 3px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 .fsp-headless-switch.is-on .fsp-headless-switch-track {
   transform: translateX(20px);
-  background: #fff;
 }
 .fsp-headless-switch:hover { opacity: 0.85; }
+
+/* inline Chrome toggle next to retry buttons */
+.fsp-chrome-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  user-select: none;
+}
+.fsp-chrome-inline .fsp-headless-switch {
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+}
+.fsp-chrome-inline .fsp-headless-switch-track {
+  width: 13px;
+  height: 13px;
+  left: 2px;
+}
+.fsp-chrome-inline .fsp-headless-switch.is-on .fsp-headless-switch-track {
+  transform: translateX(16px);
+}
