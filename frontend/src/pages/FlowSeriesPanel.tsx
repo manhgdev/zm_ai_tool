@@ -688,9 +688,9 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                 <label className="fsp-field">
                   <span className="fsp-label">{t('Số tập', 'Episodes')}</span>
                   <input
-                    type="number" min="1" step="1"
+                    type="text" inputMode="numeric" pattern="[0-9]*"
                     value={numEpisodes}
-                    onChange={(e) => setNumEpisodes(e.target.value)}
+                    onChange={(e) => setNumEpisodes(e.target.value.replace(/[^0-9]/g, ''))}
                     placeholder={t('Tự chọn', 'Auto')}
                     aria-label={t('Số tập', 'Episodes')}
                   />
