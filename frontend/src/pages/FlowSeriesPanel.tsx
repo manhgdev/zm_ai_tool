@@ -92,7 +92,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
       ratio: saved.ratio || '16:9',
       duration: saved.duration || (/omni.*flash/i.test(saved.model || 'Omni 1.1 Flash') ? 'auto' : '8'),
       resolution: /^\d{3,4}p$/i.test(String(saved.resolution || '')) ? saved.resolution : '360p',
-      quality: saved.quality || '360p',
+      quality: saved.quality || saved.resolution || '360p',
       concurrency: saved.concurrency || '3',
     }
   })
@@ -996,7 +996,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                     <div className="fsp-auto-field fsp-field-xs">
                       <label>{t('Tải về', 'Download')}</label>
                       <select
-                        value={seriesSettings.quality || '360p'}
+                        value={seriesSettings.quality || seriesSettings.resolution || '360p'}
                         onChange={(e) => saveSeriesSettings({ quality: e.target.value })}
                         aria-label={t('Chất lượng tải', 'Download quality')}
                       >
