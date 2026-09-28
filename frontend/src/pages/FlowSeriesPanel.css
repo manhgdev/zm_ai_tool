@@ -1254,83 +1254,56 @@
 }
 .fsp-ep-merge:disabled { opacity: 0.5; cursor: wait; }
 /* ── Headless (Mở Chrome) toggle ── */
-/* ── Mở Chrome toggle (settings grid) ── */
+/* ── Mở Chrome checkbox ── */
 .fsp-headless-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  justify-content: flex-end;   /* align bottom like sibling selects */
+  justify-content: flex-end;
 }
-.fsp-headless-field label {
+.fsp-headless-field > label:first-child {
   font-size: 0.68rem;
   font-weight: 700;
   color: var(--muted-foreground);
   text-transform: uppercase;
   letter-spacing: 0.03em;
   white-space: nowrap;
+  cursor: default;
 }
-/* The clickable row: label text + pill side by side */
-.fsp-headless-row {
+/* Clickable row: checkbox + text */
+.fsp-headless-cb-row {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  height: 28px;               /* match select height */
+  gap: 6px;
+  height: 28px;
   cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--ink, inherit);
   user-select: none;
 }
-.fsp-headless-switch {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  width: 34px;
-  height: 18px;
-  border-radius: 9px;
-  padding: 0;
-  border: none;
-  background: #b0b0bc;
+.fsp-headless-cb {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary, #7c6fff);
   cursor: pointer;
-  transition: background 0.2s;
   flex-shrink: 0;
+  margin: 0;
 }
-.fsp-headless-switch.is-on {
-  background: var(--primary, #7c6fff);
-}
-.fsp-headless-switch-track {
-  position: absolute;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  background: #fff;
-  left: 2px;
-  transition: transform 0.18s;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-}
-.fsp-headless-switch.is-on .fsp-headless-switch-track {
-  transform: translateX(16px);
-}
-.fsp-headless-switch:hover { opacity: 0.8; }
-
-/* inline Chrome toggle next to Retry / Create buttons */
+/* inline version next to Retry / Create buttons */
 .fsp-chrome-inline {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 0.72rem;
+  font-size: 0.76rem;
+  font-weight: 500;
   color: var(--muted-foreground);
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
 }
-.fsp-chrome-inline .fsp-headless-switch {
-  width: 30px;
-  height: 16px;
-  border-radius: 8px;
-}
-.fsp-chrome-inline .fsp-headless-switch-track {
-  width: 11px;
-  height: 11px;
-  left: 2px;
-}
-.fsp-chrome-inline .fsp-headless-switch.is-on .fsp-headless-switch-track {
-  transform: translateX(14px);
+.fsp-chrome-inline .fsp-headless-cb {
+  width: 13px;
+  height: 13px;
 }

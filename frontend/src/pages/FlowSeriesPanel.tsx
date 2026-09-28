@@ -1058,21 +1058,17 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                       </select>
                     </div>
                     <div className="fsp-headless-field">
-                      <label>{t('Mở Chrome', 'Open Chrome')}</label>
-                      <div className="fsp-headless-row" onClick={toggleHeadless} title={headless ? t('Chrome ẩn', 'Chrome hidden') : t('Chrome đang hiện', 'Chrome visible')}>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={!headless}
-                          className={`fsp-headless-switch${headless ? '' : ' is-on'}`}
-                          tabIndex={-1}
-                        >
-                          <span className="fsp-headless-switch-track" aria-hidden="true" />
-                        </button>
-                        <span style={{fontSize:'0.78rem',fontWeight:600,color:headless?'var(--muted-foreground)':'var(--primary,#7c6fff)',transition:'color .2s'}}>
-                          {headless ? t('Tắt', 'Off') : t('Bật', 'On')}
-                        </span>
-                      </div>
+                      <label htmlFor="fsp-headless-cb">{t('Mở Chrome', 'Open Chrome')}</label>
+                      <label className="fsp-headless-cb-row" htmlFor="fsp-headless-cb">
+                        <input
+                          id="fsp-headless-cb"
+                          type="checkbox"
+                          className="fsp-headless-cb"
+                          checked={!headless}
+                          onChange={toggleHeadless}
+                        />
+                        <span>{!headless ? t('Hiện Chrome', 'Chrome visible') : t('Chrome ẩn', 'Chrome hidden')}</span>
+                      </label>
                     </div>
                   </div>
 
@@ -1315,10 +1311,8 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                                             >
                                               {t('Tạo mới', 'Create new')}
                                             </button>
-                                            <label className="fsp-chrome-inline" title={headless ? t('Chrome ẩn', 'Chrome hidden') : t('Chrome hiện', 'Chrome visible')}>
-                                              <button type="button" role="switch" aria-checked={!headless} className={`fsp-headless-switch${headless ? '' : ' is-on'}`} onClick={toggleHeadless}>
-                                                <span className="fsp-headless-switch-track" aria-hidden="true" />
-                                              </button>
+                                            <label className="fsp-chrome-inline">
+                                              <input type="checkbox" className="fsp-headless-cb" checked={!headless} onChange={toggleHeadless} />
                                               {t('Mở Chrome', 'Open Chrome')}
                                             </label>
                                           </div>
