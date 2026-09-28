@@ -1298,10 +1298,11 @@
   flex-shrink: 0;
 }
 /* Full-width row inside the form, identical to flow-retry-include-done */
-.flow-retry-headless-row {
-  grid-column: 1 / -1 !important;
+.flow-retry-fields label.flow-retry-headless-row {
+  grid-column: 1 / -1;
   display: flex;
-  align-items: flex-start;
+  flex-direction: row;
+  align-items: center;
   gap: 8px;
   padding: 8px 10px;
   border: 1px solid var(--line);
@@ -1312,9 +1313,10 @@
   font-weight: 650;
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
 }
-.flow-retry-headless-row input[type="checkbox"] {
-  margin-top: 2px;
+.flow-retry-fields label.flow-retry-headless-row input[type="checkbox"] {
+  margin-top: 0;
   flex: 0 0 auto;
   accent-color: var(--primary, #7c6fff);
 }
