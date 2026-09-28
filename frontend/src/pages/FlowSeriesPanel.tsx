@@ -92,7 +92,13 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
       ratio: saved.ratio || '16:9',
       duration: saved.duration || (/omni.*flash/i.test(saved.model || 'Omni 1.1 Flash') ? 'auto' : '8'),
       resolution: /^\d{3,4}p$/i.test(String(saved.resolution || '')) ? saved.resolution : '360p',
-      quality: saved.quality || saved.resolution || '360p',
+      quality: (() => {
+        const q = saved.quality || saved.resolution || '360p'
+        const r = saved.resolution || '360p'
+        const qn = parseInt(q) || 360
+        const rn = parseInt(r) || 360
+        return qn < rn ? r : q
+      })(),
       concurrency: saved.concurrency || '3',
     }
   })
@@ -276,7 +282,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
             ratio: seriesSettings.ratio,
             ...(seriesSettings.duration && seriesSettings.duration !== 'auto' ? { duration: seriesSettings.duration } : {}),
             resolution: seriesSettings.resolution || '360p',
-            quality: seriesSettings.quality || (/360p/i.test(seriesSettings.resolution) ? '360p' : '720p'),
+            quality: seriesSettings.quality || seriesSettings.resolution || '360p',
             concurrency: seriesSettings.concurrency || '1',
           },
           imageModel,
@@ -333,7 +339,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
             ratio: seriesSettings.ratio,
             ...(seriesSettings.duration && seriesSettings.duration !== 'auto' ? { duration: seriesSettings.duration } : {}),
             resolution: seriesSettings.resolution || '360p',
-            quality: seriesSettings.quality || (/360p/i.test(seriesSettings.resolution) ? '360p' : '720p'),
+            quality: seriesSettings.quality || seriesSettings.resolution || '360p',
             count: 1,
           },
         }),
@@ -380,7 +386,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
               ratio: seriesSettings.ratio,
               ...(seriesSettings.duration && seriesSettings.duration !== 'auto' ? { duration: seriesSettings.duration } : {}),
               resolution: seriesSettings.resolution || '360p',
-              quality: seriesSettings.quality || (/360p/i.test(seriesSettings.resolution) ? '360p' : '720p'),
+              quality: seriesSettings.quality || seriesSettings.resolution || '360p',
               count: 1,
             },
           }),
