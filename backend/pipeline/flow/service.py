@@ -258,7 +258,7 @@ def _classify_visible_flow_error(text: str) -> str:
         return ""
     low = raw.lower()
     if re.search(
-        r"abnormal activity|hoạt động bất thường",
+        r"abnormal activity|hoạt động bất thường|hoạt động đáng ngờ|suspicious activity|unusual activity",
         low,
     ):
         return f"FLOW_AUTOMATION_BLOCKED: {raw}"
@@ -4026,6 +4026,7 @@ class FlowService:
         """Wait for media tiles after a current Flow Angular submit."""
         deadline = time.monotonic() + timeout_s if timeout_s > 0 else None
         next_project_check = 0.0
+        next_suspicious_check = 0.0
         store.patch_row("jobs", job_id, {
             "stage": "generating",
             "progress": max(20, int((store.get_row("jobs", job_id) or {}).get("progress") or 0)),
@@ -4059,6 +4060,20 @@ class FlowService:
                 fresh.append(item)
             if len(fresh) >= max(1, expected_count):
                 return fresh[:max(1, expected_count)]
+            # ── Page-level suspicious-activity / block check (every 10 s) ─────
+            if page is not None and time.monotonic() >= next_suspicious_check:
+                next_suspicious_check = time.monotonic() + 10
+                try:
+                    body_text = str(await page.evaluate("() => (document.body && document.body.innerText) || ''") or "")
+                    if re.search(
+                        r"ho\u1ea1t ?\u0111\u1ed9ng ?\u0111\u00e1ng ng\u1edd|suspicious activity|unusual activity|ho\u1ea1t ?\u0111\u1ed9ng ?b\u1ea5t ?th\u01b0\u1eddng|automation.?block",
+                        body_text, re.I,
+                    ):
+                        raise RuntimeError(f"FLOW_AUTOMATION_BLOCKED: {body_text[:200]}")
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
             flow_error = await self._claim_visible_flow_error(
                 page,
                 job or (store.get_row("jobs", job_id) or {"id": job_id}),
