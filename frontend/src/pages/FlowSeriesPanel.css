@@ -1271,25 +1271,56 @@
   white-space: nowrap;
   cursor: default;
 }
-/* Clickable row: checkbox + text */
+/* Toggle switch row */
 .fsp-headless-cb-row {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   height: 28px;
   cursor: pointer;
-  font-size: 0.78rem;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.fsp-headless-cb-row span {
+  font-size: 0.76rem;
   font-weight: 500;
   color: var(--ink, inherit);
-  user-select: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+/* Hide native checkbox – use toggle track */
 .fsp-headless-cb {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--primary, #7c6fff);
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 32px;
+  height: 18px;
+  background: var(--border, #d1d5db);
+  border-radius: 9px;
   cursor: pointer;
   flex-shrink: 0;
   margin: 0;
+  transition: background 0.2s;
+}
+.fsp-headless-cb::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.2);
+  transition: transform 0.2s;
+}
+.fsp-headless-cb:checked {
+  background: var(--primary, #7c6fff);
+}
+.fsp-headless-cb:checked::after {
+  transform: translateX(14px);
 }
 /* inline version next to Retry / Create buttons */
 .fsp-chrome-inline {

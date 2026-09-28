@@ -1067,14 +1067,8 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                     <div className="fsp-headless-field">
                       <label htmlFor="fsp-headless-cb">{t('Mở Chrome', 'Open Chrome')}</label>
                       <label className="fsp-headless-cb-row" htmlFor="fsp-headless-cb">
-                        <input
-                          id="fsp-headless-cb"
-                          type="checkbox"
-                          className="fsp-headless-cb"
-                          checked={!headless}
-                          onChange={toggleHeadless}
-                        />
-                        <span>{!headless ? t('Hiện Chrome', 'Chrome visible') : t('Chrome ẩn', 'Chrome hidden')}</span>
+                        <input id="fsp-headless-cb" type="checkbox" className="fsp-headless-cb" checked={!headless} onChange={toggleHeadless} />
+                        <span>{!headless ? t('Hiện', 'On') : t('Ẩn', 'Off')}</span>
                       </label>
                     </div>
                   </div>
