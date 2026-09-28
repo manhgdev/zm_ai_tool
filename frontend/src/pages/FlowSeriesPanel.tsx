@@ -163,9 +163,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
               ? selectedModel.defaultResolution
               : resolution[0])
         : (/^[1-9]\d{0,1}k$/i.test(current.resolution) ? '' : current.resolution)
-      const nextQuality = preferFast && (!current.quality || current.quality === '720p')
-        ? '360p'
-        : (current.quality || '720p')
+      const nextQuality = current.quality || '720p'
       if (
         selectedModel.name === current.model
         && ratio === current.ratio
