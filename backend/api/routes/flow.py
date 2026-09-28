@@ -88,6 +88,7 @@ class SeriesGenerationIn(BaseModel):
     accountId: str
     settings: dict[str, Any] = {}
     promptOverride: str = Field(default="", max_length=12000)
+    headless: bool = True
 
 
 class SeriesAnchorGenerationIn(BaseModel):
@@ -457,7 +458,7 @@ def series_scene_generate(series_id: str, episode_id: str, scene_id: str, body: 
                 else "text"
             ),
             "accountId": body.accountId,
-            "settings": {**body.settings, "outputDir": context["outputDir"]},
+            "settings": {**body.settings, "outputDir": context["outputDir"], "headless": body.headless},
             "sourceFiles": context.get("sourceFiles") or [],
             "seriesContext": context,
         }

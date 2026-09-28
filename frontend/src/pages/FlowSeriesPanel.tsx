@@ -341,6 +341,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
             quality: seriesSettings.quality || seriesSettings.resolution || '360p',
             count: 1,
           },
+          headless,
         }),
       })
       toast.success(isKeyframe ? t('Đã gửi job tạo keyframe.', 'Keyframe job queued.') : t('Đã gửi job tạo video.', 'Video job queued.'))
@@ -388,6 +389,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
               quality: seriesSettings.quality || seriesSettings.resolution || '360p',
               count: 1,
             },
+            headless,
           }),
         })
         toast.success(t('Đã đưa cảnh vào hàng đợi chạy lại.', 'Scene queued for retry.'))
@@ -1055,7 +1057,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                         <option value="videos_only">{t('Chỉ tạo Video', 'Videos only')}</option>
                       </select>
                     </div>
-                    <div className="fsp-auto-field">
+                    <div className="fsp-headless-field">
                       <label>{t('Mở Chrome', 'Open Chrome')}</label>
                       <button
                         type="button"
