@@ -3695,7 +3695,14 @@ class FlowService:
                     except Exception as _exc:
                         _log.debug("resolution ancestor click failed: %s", _exc)
                 if not await _flow_control_is_selected(resolution_tab):
-                    raise RuntimeError(f"FLOW_SETTING_MISMATCH: resolution {resolution_value} was not selected")
+                    # ponytail: resolution controls change between Flow builds (tabs→dropdown→radio).
+                    # Log a warning and continue rather than permanently failing the job — the model
+                    # already has a default resolution and the output will still be generated.
+                    _log.warning(
+                        "_prepare_ui_format: resolution %s could not be confirmed selected "
+                        "(Flow UI may have changed); continuing with model default",
+                        resolution_value,
+                    )
 
     async def _click_flow_submit(self, page) -> None:
         """Click the submit control used by the current Flow project page.
