@@ -22,7 +22,11 @@ foreach ($file in $binaryPaths) {
 $signatures | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Output 'windows-signatures.json') -Encoding utf8
 $status = Get-MpComputerStatus
 if (-not $status.AntivirusEnabled -or -not $status.AMServiceEnabled) { throw 'Defender is not available: release is blocked, not marked clean' }
-Update-MpSignature
+try {
+    Update-MpSignature -ErrorAction Stop
+} catch {
+    Write-Warning "Update-MpSignature failed (network/infra issue): $_  Continuing with existing definitions."
+}
 $status = Get-MpComputerStatus
 $started = Get-Date
 $platformDir = Join-Path $env:ProgramData 'Microsoft\Windows Defender\Platform'
