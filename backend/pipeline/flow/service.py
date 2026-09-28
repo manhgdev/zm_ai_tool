@@ -693,7 +693,7 @@ def _mode_tab_icon(kind: str) -> str:
 
 # Flow changed the generation settings controls from ``role=tab`` to
 # ``role=radio``.  Keep both selectors so existing and current builds work.
-_FLOW_CONTROL_SELECTOR = '[role="tab"], [role="radio"]'
+_FLOW_CONTROL_SELECTOR = '[role="tab"], [role="radio"], [role="option"], button'
 _DURATION_UNITS = r"(?:s|sec(?:ond)?s?|giây)"
 
 

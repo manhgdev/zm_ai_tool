@@ -286,6 +286,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
           imageModel,
           autoApprove: true,
           mode: autoMode,
+          headless,
         }),
       })
       setActiveRun({ runId: raw.runId, status: raw.status, total: raw.total || 0, done: 0, currentSceneId: '', currentStep: '', errors: [] })
@@ -608,6 +609,15 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
   }
   const [mergingEpisodeId, setMergingEpisodeId] = useState('')
+  const [headless, setHeadless] = useState(() => {
+    try { const v = localStorage.getItem('zm-series:headless'); return v === null ? true : v === 'true' } catch { return true }
+  })
+  const toggleHeadless = () => {
+    setHeadless((v) => {
+      try { localStorage.setItem('zm-series:headless', String(!v)) } catch {}
+      return !v
+    })
+  }
   const mergeEpisode = async (episode: Episode) => {
     if (!selected) return
     const hasVideos = episode.scenes.some((s) => s.videoOutput)
@@ -1044,6 +1054,19 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                         <option value="keyframes_only">{t('Chỉ tạo Keyframe', 'Keyframes only')}</option>
                         <option value="videos_only">{t('Chỉ tạo Video', 'Videos only')}</option>
                       </select>
+                    </div>
+                    <div className="fsp-auto-field">
+                      <label>{t('Mở Chrome', 'Open Chrome')}</label>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={!headless}
+                        className={`fsp-headless-switch${headless ? '' : ' is-on'}`}
+                        onClick={toggleHeadless}
+                        title={headless ? t('Chrome ẩn', 'Chrome hidden') : t('Chrome đang hiện', 'Chrome visible')}
+                      >
+                        <span className="fsp-headless-switch-track" aria-hidden="true" />
+                      </button>
                     </div>
                   </div>
 

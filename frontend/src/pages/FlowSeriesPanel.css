@@ -1253,3 +1253,17 @@
   font-size: 14px;
 }
 .fsp-ep-merge:disabled { opacity: 0.5; cursor: wait; }
+/* ── Headless (Open Chrome) toggle ── */
+.fsp-headless-switch {
+  position: relative; display: inline-flex; align-items: center;
+  width: 36px; height: 20px; border-radius: 10px; padding: 0; border: none;
+  background: var(--border, #ccc); cursor: pointer; transition: background .2s;
+  flex-shrink: 0;
+}
+.fsp-headless-switch.is-on { background: var(--primary, #7c6fff); }
+.fsp-headless-switch-track {
+  position: absolute; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; left: 3px; transition: transform .2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,.25);
+}
+.fsp-headless-switch.is-on .fsp-headless-switch-track { transform: translateX(16px); }

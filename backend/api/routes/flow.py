@@ -108,6 +108,7 @@ class SeriesRunIn(BaseModel):
     episodeId: str = Field(default="", max_length=120)   # empty = whole series
     autoApprove: bool = True
     mode: str = Field(default="full", pattern="^(full|keyframes_only|videos_only)$")
+    headless: bool = True
 
 
 @router.get("/accounts")
@@ -493,13 +494,14 @@ def series_anchor_generate(series_id: str, body: SeriesAnchorGenerationIn):
 def series_run_start(series_id: str, body: SeriesRunIn):
     """Start a Series automation run (keyframe → approve → video)."""
     try:
+        settings = dict(body.settings)
+        settings["headless"] = body.headless
         run_id = series_runner.start_run(
             series_id=series_id,
             episode_ids=[body.episodeId] if body.episodeId else None,
             account_id=body.accountId,
-            settings=body.settings,
+            settings=settings,
             image_model=body.imageModel,
-            # Always auto-approve — Series automation must not wait for manual review.
             auto_approve=True,
             mode=body.mode,
         )
