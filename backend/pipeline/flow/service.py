@@ -2896,6 +2896,8 @@ class FlowService:
                 refreshed = store.get_row("accounts", account_id) or {}
                 if not (refreshed.get("status") == "online" and refreshed.get("projectId")):
                     break
+                if job_id in self._cancelled or not store.get_row("jobs", job_id):
+                    return
                 verified_account = refreshed
                 store.patch_row("jobs", job_id, {
                     "status": "queued", "stage": "queued", "progress": 0,
@@ -2946,6 +2948,8 @@ class FlowService:
                     "auto-retry job %s (%d/%d) after transient failure: %s",
                     job_id, next_count, _JOB_AUTO_RETRY_MAX, finished.get("error"),
                 )
+                if job_id in self._cancelled or not store.get_row("jobs", job_id):
+                    return
                 patch: dict[str, Any] = {
                     "status": "processing",
                     "stage": "retrying",
@@ -2958,6 +2962,8 @@ class FlowService:
                     patch["generationRejectRetryCount"] = next_count
                 store.patch_row("jobs", job_id, patch)
                 time.sleep(3)
+                if job_id in self._cancelled or not store.get_row("jobs", job_id):
+                    return
                 store.patch_row("jobs", job_id, {
                     "status": "queued", "stage": "queued", "progress": 0,
                     "error": None, "outputs": [],
@@ -2983,7 +2989,7 @@ class FlowService:
             # terminal job state so the API/queue never leaves a zombie job or
             # an unhandled thread traceback (notably Windows profile races).
             current = store.get_row("jobs", job_id) or {}
-            if current.get("status") not in _TERMINAL:
+            if current.get("status") not in _TERMINAL and job_id not in self._cancelled:
                 if _session_needs_login(exc):
                     store.patch_row(
                         "jobs",

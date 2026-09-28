@@ -54,16 +54,12 @@ def _visible_window_args() -> list[str]:
     with _visible_window_guard:
         index = _visible_window_index
         _visible_window_index += 1
-    try:
-        import tkinter
-        root = tkinter.Tk()
-        root.withdraw()
-        width = root.winfo_screenwidth()
-        height = root.winfo_screenheight()
-        root.destroy()
-    except Exception:
-        width = 1440
-        height = 900
+    # Do not create Tk/AppKit from a Flow worker thread.  macOS aborts the
+    # process when Tk initializes Cocoa off the main thread (SIGABRT/-6).
+    # Playwright's viewport is already 1440x900, so use the same stable
+    # fallback for window geometry rather than touching a native UI toolkit.
+    width = 1440
+    height = 900
     x, y, _, _ = _visible_window_geometry(index, width, height)
     return [
         f"--window-position={x},{y}",
