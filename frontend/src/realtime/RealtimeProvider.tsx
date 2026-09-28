@@ -19,7 +19,46 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
   const connectRef = useRef<() => void>(() => undefined)
 
   const dispatch = useCallback((event: RealtimeEvent) => {
-    if (event.id) lastIdRef.current = event.id
+    if (event.id && (!lastIdRef.current || Number(event.id) > Number(lastIdRef.current))) {
+      lastIdRef.current = event.id
+    }
+    if (event.type === 'snapshot.required') {
+      // The server dropped intermediate events because the client queue was
+      // full. Reconnect to receive an authoritative snapshot immediately.
+      window.setTimeout(() => connectRef.current(), 0)
+      return
+    }
+    if (event.type === 'snapshot' && event.payload && typeof event.payload === 'object') {
+      // Let pages that understand authoritative snapshots replace their full
+      // state (including deletions) before the row-level compatibility fanout.
+      handlersRef.current.get(event.topic)?.forEach((handler) => handler(event))
+      const payload = event.payload as Record<string, unknown>
+      const rows: Array<{ item: unknown; type: string }> = []
+      const topic = event.topic
+      const add = (key: string, type: string) => {
+        const items = payload[key]
+        if (Array.isArray(items)) items.forEach((item) => rows.push({ item, type }))
+      }
+      if (topic === 'flow') {
+        add('jobs', 'flow.job.updated')
+        add('accounts', 'flow.account.updated')
+        add('logs', 'flow.log.appended')
+      } else if (topic === 'series') {
+        add('items', 'series.updated')
+      } else {
+        add('jobs', `${topic}.job.updated`)
+      }
+      rows.forEach(({ item, type }) => {
+        const row = item as Record<string, unknown>
+        handlersRef.current.get(topic)?.forEach((handler) => handler({
+          ...event,
+          type,
+          entityId: String(row?.id || row?.runId || ''),
+          payload: item,
+        }))
+      })
+      return
+    }
     handlersRef.current.get(event.topic)?.forEach((handler) => handler(event))
   }, [])
 

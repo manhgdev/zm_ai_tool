@@ -8,6 +8,7 @@ export type LicenseStatus = {
   expiresAt: string | null
   activationLimit: number
   message: string
+  transient?: boolean
 }
 
 const STATUS_CACHE_KEY = 'zm_ai_tool.license.status.v1'
@@ -26,6 +27,7 @@ export function readCachedStatus(): LicenseStatus | null {
 }
 
 function cacheStatus(status: LicenseStatus): LicenseStatus {
+  if (status.transient) return status
   try { sessionStorage.setItem(STATUS_CACHE_KEY, JSON.stringify({ at: Date.now(), status })) } catch {}
   return status
 }

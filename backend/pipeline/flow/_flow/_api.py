@@ -393,7 +393,7 @@ class FlowAPI:
         project_id: str       = "",
         user_tier: str        = "PAYGATE_TIER_ONE",
         poll_interval_s: float = 5.0,
-        default_timeout_s: int = 300,
+        default_timeout_s: int = 120,
     ):
         self._bm              = browser_manager
         self.project_id       = project_id
@@ -1614,7 +1614,7 @@ class FlowAPI:
 
         Args:
             job:       VideoJob returned by any generate_* method.
-            timeout_s: Max seconds to wait (0 = use default 300s).
+            timeout_s: Maximum seconds to wait before reporting a stalled generation.
             poll_s:    Poll interval in seconds.
             on_poll:   Optional callback(status: VideoStatus, elapsed: float).
 
@@ -1633,7 +1633,7 @@ class FlowAPI:
 
         while True:
             elapsed = time.monotonic() - t0
-            if elapsed > limit:
+            if limit > 0 and elapsed > limit:
                 raise GenerationTimeout(limit)
 
             status = await self.poll_video(job.media_name)

@@ -321,8 +321,12 @@ export default function App() {
       .catch((error) => {
         if (!cancelled) setLicenseStatus({
           ...EMPTY_LICENSE,
+          transient: true,
           message: error instanceof Error ? error.message : 'Không thể kiểm tra key',
         })
+        // A 502 is transient: retry shortly and never persist the error as
+        // an "not activated" license state.
+        if (!cancelled) window.setTimeout(refresh, 5_000)
       })
     void refresh()
     const timer = window.setInterval(refresh, 10 * 60 * 1000)

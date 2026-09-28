@@ -10,6 +10,7 @@ import os
 import asyncio
 import threading
 import sys
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -209,6 +210,34 @@ class BrowserManager:
         if self._owns_profile:
             self._owns_profile = False
             self._profile_lock.release()
+
+    def kill_now(self) -> None:
+        """Synchronously terminate Chrome processes owned by this profile.
+
+        Cancellation can arrive from the API thread while Playwright is
+        blocked in another event loop, so awaiting ``stop()`` is not enough.
+        The runtime profile is unique per job, making the command-line match
+        safe and preventing unrelated Chrome accounts from being killed.
+        """
+        profile = str(self.profile_dir.resolve())
+        try:
+            import psutil  # type: ignore
+            for proc in psutil.process_iter(["pid", "cmdline"]):
+                if proc.pid == os.getpid():
+                    continue
+                try:
+                    cmdline = " ".join(proc.info.get("cmdline") or [])
+                    if profile not in cmdline:
+                        continue
+                    proc.send_signal(signal.SIGTERM)
+                    try:
+                        proc.wait(timeout=0.5)
+                    except psutil.TimeoutExpired:
+                        proc.kill()
+                except (psutil.Error, OSError, PermissionError):
+                    continue
+        except ImportError:
+            return
 
     @property
     def context(self) -> BrowserContext:

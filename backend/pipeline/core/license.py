@@ -277,10 +277,14 @@ def license_status(*, force: bool = False) -> dict[str, Any]:
                 "expiresAt": None,
                 "activationLimit": 0,
                 "message": f"Không thể kiểm tra key: {exc}",
+                # Transient server/network failures must never become a
+                # cached "not activated" result.
+                "transient": True,
             }
-        with _cache_lock:
-            _cache = dict(result)
-            _cache_at = time.monotonic()
+        if not result.get("transient"):
+            with _cache_lock:
+                _cache = dict(result)
+                _cache_at = time.monotonic()
     return result
 
 

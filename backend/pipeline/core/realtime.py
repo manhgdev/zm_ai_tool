@@ -44,7 +44,9 @@ class RealtimeBus:
             if provider is None:
                 continue
             try:
-                result.append(self._event("snapshot", topic, f"snapshot:{topic}", provider()))
+                with self._lock:
+                    self._next_id += 1
+                    result.append(self._event("snapshot", topic, f"snapshot:{topic}", provider()))
             except Exception:
                 # A snapshot is a convenience for reconnect; a broken domain
                 # must not prevent the SSE connection from serving other topics.
@@ -123,7 +125,7 @@ class RealtimeBus:
 
     @staticmethod
     def sse(event: dict[str, Any]) -> str:
-        return f"id: {event['id']}\nevent: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        return f"retry: 3000\nid: {event['id']}\nevent: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 realtime = RealtimeBus()

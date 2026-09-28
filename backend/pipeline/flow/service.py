@@ -35,7 +35,10 @@ _MAX_CONCURRENT_JOBS_PER_ACCOUNT = 18
 # many times so the queue keeps finishing. Only mandatory stops (credits,
 # quota, cancel, content policy) require a manual hand.
 _JOB_AUTO_RETRY_MAX = 3
-_VIDEO_GENERATION_TIMEOUT_S = 600
+# A Flow generation can legitimately take longer than ten minutes; keep a
+# generous upper bound so a lost Flow page cannot leave a worker stuck forever.
+_IMAGE_GENERATION_TIMEOUT_S = 60
+_VIDEO_GENERATION_TIMEOUT_S = 120
 _PLAN_SYNC_TTL_S = 300
 _PROJECT_MIGRATION_RECOVERY_WINDOW_S = 600
 _FLOW_SUBMIT_DELAY_MIN_S = 0.1
@@ -895,7 +898,8 @@ class FlowService:
         self._account_next_start: dict[str, int] = {}
         self._connecting_accounts: set[str] = set()
         self._syncing_accounts: set[str] = set()  # guard concurrent credit syncs
-        self._visible_account_locks: dict[str, threading.Lock] = {}
+        self._project_recovery_locks: dict[str, threading.Lock] = {}
+        self._active_browsers: dict[str, Any] = {}
         self._running_jobs: set[str] = set()
         self._claimed_media_ids: set[str] = set()
         self._claimed_error_tiles: set[str] = set()
@@ -1204,33 +1208,33 @@ class FlowService:
             with self._account_condition:
                 self._cancelled.add(job_id)
                 self._account_condition.notify_all()
-            store.patch_row("jobs", job_id, {"status": "cancelled", "stage": "cancelled", "progress": 0, "updatedAt": time.time()})
-        # Delete artifacts first. Keep the row if Windows locks a file so the
-        # user can retry; never report success while output files remain.
-        for raw_output in job.get('outputs') or []:
-            output = Path(str(raw_output))
-            if output.is_file():
-                output.unlink()
         removed = store.delete_row("jobs", job_id)
         if removed:
-            # Output folders can now be shared by multiple prompts. Only remove
-            # artifacts belonging to this job, then remove the folder if empty.
-            for raw_output in job.get("outputs") or []:
+            # DELETE must not wait on a stuck Playwright/Chrome process.
+            threading.Thread(
+                target=self._kill_job_browser,
+                args=(job_id,),
+                daemon=True,
+                name="flow-delete-kill",
+            ).start()
+            def _cleanup_deleted_job() -> None:
+                for raw_output in job.get("outputs") or []:
+                    try:
+                        Path(str(raw_output)).unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 try:
-                    output = Path(str(raw_output))
-                    if output.is_file():
-                        output.unlink()
+                    folder = self._output_folder(job, create=False)
+                    remaining = {
+                        Path(str(row.get("outputFolder") or "")).resolve()
+                        for row in store.list_rows("jobs")
+                        if str(row.get("outputFolder") or "").strip()
+                    }
+                    if folder.resolve() not in remaining and folder.is_dir():
+                        shutil.rmtree(folder, ignore_errors=True)
                 except OSError:
                     pass
-            try:
-                folder = self._output_folder(job, create=False)
-                shared = any(self._output_folder(j, create=False).resolve() == folder.resolve() for j in store.list_rows('jobs'))
-                if not shared and folder.is_dir():
-                    shutil.rmtree(folder, ignore_errors=True)
-                elif folder.is_dir():
-                    folder.rmdir()
-            except OSError:
-                pass
+            threading.Thread(target=_cleanup_deleted_job, daemon=True, name="flow-delete-cleanup").start()
         return removed
 
     def cancel_all(self) -> int:
@@ -1238,6 +1242,7 @@ class FlowService:
         with self._account_condition:
             self._cancelled.update(ids)
             self._account_condition.notify_all()
+        threading.Thread(target=self._kill_job_browsers, args=(ids,), daemon=True, name="flow-bulk-kill").start()
         count = store.cancel_active_jobs(ids, time.time())
         return count
 
@@ -1272,6 +1277,7 @@ class FlowService:
             # Mark cancelled without waiting on the worker condition — set updates
             # are enough for in-flight checks; notify is best-effort below.
             self._cancelled.update(ids)
+            threading.Thread(target=self._kill_job_browsers, args=(ids,), daemon=True, name="flow-delete-all-kill").start()
             # Wipe DB first so F5 / GET see an empty queue even if notify is delayed.
             removed = store.delete_rows("jobs", ids)
             acquired = self._account_condition.acquire(timeout=0.5)
@@ -1348,6 +1354,7 @@ class FlowService:
         ids = {str(job["id"]) for job in matched}
         output_paths = [Path(str(raw)) for job in matched for raw in job.get("outputs") or []]
         self._cancelled.update(ids)
+        threading.Thread(target=self._kill_job_browsers, args=(ids,), daemon=True, name="flow-folder-kill").start()
         removed = store.delete_rows("jobs", ids)
         acquired = self._account_condition.acquire(timeout=0.5)
         if acquired:
@@ -2383,38 +2390,53 @@ class FlowService:
             if "FLOW_PROJECT_NOT_FOUND" not in str(exc):
                 raise
         old_id = str(account.get("projectId") or client.project_id or "")
-        self._log(
+        account_id = str(account.get("id") or "")
+        with self._guard:
+            recovery_lock = self._project_recovery_locks.setdefault(account_id, threading.Lock())
+        recovery_lock.acquire()
+        try:
+            # Another worker may have repaired this account while this worker
+            # was waiting. Reuse its project instead of creating a second one.
+            persisted = store.get_row("accounts", account_id) or {}
+            persisted_id = str(persisted.get("projectId") or "")
+            if persisted_id and persisted_id != old_id:
+                self._bind_flow_project(api, client, persisted_id)
+                await client._ensure_project_page(page)
+                return {**account, **persisted}
+            self._log(
             "warning",
             "project_missing_creating_replacement",
             job_id=job_id,
             account_id=str(account.get("id") or ""),
             details={"oldProjectId": old_id, "url": str(page.url or "")},
-        )
-        new_id = await self._create_flow_project_ui(page, avoid_project_id=old_id)
-        if not new_id:
-            raise RuntimeError(
-                f"FLOW_PROJECT_NOT_FOUND: Could not create a replacement project "
-                f"(old id: {old_id or 'none'}; current url: {page.url})"
             )
-        patch: dict[str, Any] = {
-            "projectId": new_id,
-            "previousProjectId": old_id,
-            "projectChangedAt": time.time(),
-            "status": "online",
-            "error": None,
-            "updatedAt": time.time(),
-        }
-        store.patch_row("accounts", str(account["id"]), patch)
-        self._bind_flow_project(api, client, new_id)
-        self._log(
-            "success",
-            "project_replaced",
-            job_id=job_id,
-            account_id=str(account.get("id") or ""),
-            details={"oldProjectId": old_id, "projectId": new_id},
-        )
-        await client._ensure_project_page(page)
-        return {**account, **patch}
+            new_id = await self._create_flow_project_ui(page, avoid_project_id=old_id)
+            if not new_id:
+                raise RuntimeError(
+                    f"FLOW_PROJECT_NOT_FOUND: Could not create a replacement project "
+                    f"(old id: {old_id or 'none'}; current url: {page.url})"
+                )
+            patch: dict[str, Any] = {
+                "projectId": new_id,
+                "previousProjectId": old_id,
+                "projectChangedAt": time.time(),
+                "status": "online",
+                "error": None,
+                "updatedAt": time.time(),
+            }
+            store.patch_row("accounts", str(account["id"]), patch)
+            self._bind_flow_project(api, client, new_id)
+            self._log(
+                "success",
+                "project_replaced",
+                job_id=job_id,
+                account_id=str(account.get("id") or ""),
+                details={"oldProjectId": old_id, "projectId": new_id},
+            )
+            await client._ensure_project_page(page)
+            return {**account, **patch}
+        finally:
+            recovery_lock.release()
 
     async def _try_headless_reconnect(self, account_id: str, project_id: str) -> bool:
         """Attempt a quick headless session to verify the saved cookie is still valid.
@@ -2777,16 +2799,6 @@ class FlowService:
             })
             self._account_next_start[account_id] += 1
         self._account_active[account_id] = self._account_active.get(account_id, 0) + 1
-        # A visible Chrome is a per-account diagnostic surface. Multiple jobs
-        # for the same account must never launch competing windows/profiles;
-        # other accounts remain free to run in parallel.
-        visible_account_lock: threading.Lock | None = None
-        if not _flow_headless(job.get("settings") or {}):
-            with self._guard:
-                visible_account_lock = self._visible_account_locks.setdefault(
-                    account_id, threading.Lock()
-                )
-            visible_account_lock.acquire()
         # Retry only failures that happen before a generation is submitted.
         # Once Flow accepts a job, retrying can create a duplicate and charge
         # credits twice; media recovery owns all post-submit timeouts. A
@@ -3019,8 +3031,8 @@ class FlowService:
                         details={"stage": "worker" if profile_ready else "profile"},
                     )
         finally:
-            if visible_account_lock is not None:
-                visible_account_lock.release()
+            with self._guard:
+                self._active_browsers.pop(job_id, None)
             with self._account_condition:
                 self._account_active[account_id] = max(0, self._account_active.get(account_id, 1) - 1)
                 self._running_jobs.discard(job_id)
@@ -3875,12 +3887,12 @@ class FlowService:
                 break
         return found
 
-    async def _recover_submitted_media(self, api, page, job, timeout_s=900):
+    async def _recover_submitted_media(self, api, page, job, timeout_s=_IMAGE_GENERATION_TIMEOUT_S):
         """Poll the original project and persist ownership before downloading."""
         count = len(job.get("mediaIds") or []) or max(1, min(4, int((job.get("settings") or {}).get("count", 1))))
-        deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + timeout_s if timeout_s > 0 else None
         empty_checks = 0
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             self._check_cancel(job["id"])
             items = await self._find_existing_project_media(api, page, job, job["kind"], count)
             if len(items) >= count:
@@ -3997,19 +4009,19 @@ class FlowService:
         kind: str,
         expected_count: int,
         job_id: str,
-        timeout_s: int = 900,
+        timeout_s: int = _IMAGE_GENERATION_TIMEOUT_S,
         api=None,
         job: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Wait for media tiles after a current Flow Angular submit."""
-        deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + timeout_s if timeout_s > 0 else None
         next_project_check = 0.0
         store.patch_row("jobs", job_id, {
             "stage": "generating",
             "progress": max(20, int((store.get_row("jobs", job_id) or {}).get("progress") or 0)),
             "updatedAt": time.time(),
         })
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             self._check_cancel(job_id)
             items = await self._project_media_elements(page)
             if api is not None and job is not None and time.monotonic() >= next_project_check:
@@ -4053,14 +4065,14 @@ class FlowService:
                     "updatedAt": time.time(),
                 })
                 raise RuntimeError(_classify_visible_flow_error(flow_error))
-            elapsed = timeout_s - max(0.0, deadline - time.monotonic())
+            elapsed = time.monotonic() - (deadline - timeout_s) if deadline is not None else 0.0
             current_progress = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
             store.patch_row("jobs", job_id, {
                 "stage": "generating",
                 # Keep progress moving while Flow renders. Reserve 90–100 for
                 # download and final file validation so long renders do not
                 # look frozen at 70–75% or trigger a duplicate retry.
-                "progress": max(current_progress, min(88, 20 + int(elapsed / max(1, timeout_s) * 68))),
+                "progress": max(current_progress, min(88, 20 + int(elapsed / max(1, timeout_s) * 68))) if timeout_s > 0 else max(current_progress, 70),
                 "updatedAt": time.time(),
             })
             await asyncio.sleep(1)
@@ -4174,7 +4186,7 @@ class FlowService:
         _up_job, status = await api.upscale_and_wait(
             media_id,
             workflow_id,
-            timeout_s=300,
+            timeout_s=_VIDEO_GENERATION_TIMEOUT_S,
             resolution=VIDEO_RES_1080P,
             aspect_ratio=aspect,
             on_poll=lambda _s, elapsed: store.patch_row(
@@ -4207,12 +4219,12 @@ class FlowService:
         timeout_s: int = _VIDEO_GENERATION_TIMEOUT_S,
     ) -> list[str]:
         """Wait for this job's new Flow video tiles, then download via the quality menu."""
-        deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + timeout_s if timeout_s > 0 else None
         expected_count = max(1, min(4, int(count or 1)))
         started_at = time.monotonic()
         known = set(baseline_thumbs or [])
         tile_indexes: list[int] = []
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             self._check_cancel(job_id)
             flow_error = await self._claim_visible_flow_error(page, job, expected_count)
             if flow_error:
@@ -4354,6 +4366,7 @@ class FlowService:
             job = {**job, **reset}
         browser = None
         try:
+            self._check_cancel(job_id)
             self._log("info", "job_started", job_id=job_id, account_id=account["id"], details={"kind": job["kind"]})
             if account.get("status") != "online" or not account.get("projectId"):
                 raise RuntimeError("FLOW_LOGIN_REQUIRED: connect the Google Flow account first")
@@ -4369,9 +4382,12 @@ class FlowService:
             )
             self._log("info", "browser_mode", job_id=job_id, account_id=account["id"], details={"headless": headless})
             browser = BrowserManager(headless=headless, profile_dir=profile_dir or store.profile_dir(account["id"]))
+            self._check_cancel(job_id)
+            with self._guard:
+                self._active_browsers[job_id] = browser
             await browser.start()
             self._log("info", "browser_ready", job_id=job_id, account_id=account["id"])
-            api = FlowAPI(browser, project_id=account["projectId"], default_timeout_s=600)
+            api = FlowAPI(browser, project_id=account["projectId"], default_timeout_s=_VIDEO_GENERATION_TIMEOUT_S)
             # Seed Bearer captured at login — cloned headless profiles often cannot
             # mint ya29 themselves even when cookies are valid.
             seed = str(account.get("accessToken") or "")
@@ -4442,7 +4458,11 @@ class FlowService:
                 )
                 media_ids = list(job.get("mediaIds") or [])
                 if not media_ids:
-                    recovery_timeout = _VIDEO_GENERATION_TIMEOUT_S if job["kind"] == "video" else 900
+                    recovery_timeout = (
+                        _VIDEO_GENERATION_TIMEOUT_S
+                        if job["kind"] == "video"
+                        else _IMAGE_GENERATION_TIMEOUT_S
+                    )
                     media_ids = await self._recover_submitted_media(api, page, job, timeout_s=recovery_timeout)
                     job = {**job, "mediaIds": media_ids}
                 outputs = []
@@ -4485,7 +4505,7 @@ class FlowService:
                                 remote_job = VideoJob.__new__(VideoJob)
                                 remote_job.media_name = media_id
                                 remote_job.project_id = account["projectId"]
-                                status = await api.wait_for_video(remote_job, timeout_s=900)
+                                status = await api.wait_for_video(remote_job, timeout_s=_VIDEO_GENERATION_TIMEOUT_S)
                                 output = self._output_path(job, index, "mp4")
                                 await api.download(status.fife_url, output)
                                 outputs.append(str(output))
@@ -4589,7 +4609,7 @@ class FlowService:
                                 self._check_cancel(job_id)
                                 status = await api.wait_for_video(
                                     remote[0],
-                                    timeout_s=900,
+                                    timeout_s=_VIDEO_GENERATION_TIMEOUT_S,
                                     on_poll=lambda _s, elapsed: store.patch_row(
                                         "jobs", job_id,
                                         # 90% is reserved for downloading; a
@@ -4864,10 +4884,29 @@ class FlowService:
         if job_id in self._cancelled:
             raise asyncio.CancelledError
 
+    def _kill_job_browser(self, job_id: str) -> None:
+        with self._guard:
+            browser = self._active_browsers.get(str(job_id))
+        if browser is not None:
+            browser.kill_now()
+
+    def _kill_job_browsers(self, job_ids: set[str]) -> None:
+        """Issue all browser kills concurrently so bulk delete stays fast."""
+        if not job_ids:
+            return
+        with ThreadPoolExecutor(max_workers=min(8, len(job_ids))) as pool:
+            list(pool.map(self._kill_job_browser, job_ids))
+
     def cancel(self, job_id: str) -> dict[str, Any] | None:
         with self._account_condition:
             self._cancelled.add(job_id)
             self._account_condition.notify_all()
+        threading.Thread(
+            target=self._kill_job_browser,
+            args=(job_id,),
+            daemon=True,
+            name="flow-cancel-kill",
+        ).start()
         job = store.patch_row("jobs", job_id, {"status": "cancelled", "stage": "cancelled", "progress": 0, "updatedAt": time.time()})
         if job:
             self._log("warning", "job_cancel_requested", job_id=job_id, account_id=str(job.get("accountId") or ""))

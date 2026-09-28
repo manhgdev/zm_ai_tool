@@ -2620,7 +2620,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           label={t("Độ phân giải", "Resolution")}
                           value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
                           onChange={(resolution) =>
-                            setSettings((current) => ({ ...current, resolution }))
+                            setSettings((current) => ({
+                              ...current,
+                              resolution,
+                              // Selecting Flow's 360p generation tier also
+                              // selects the matching download tier. Changing
+                              // download quality remains independent.
+                              ...(resolution.toLowerCase() === "360p" ? { quality: "360p" } : {}),
+                            }))
                           }
                           options={resolutionOptions}
                           optionLabels={{
@@ -3551,7 +3558,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <FlowSelect
                     label={t("Độ phân giải", "Resolution")}
                     value={retryResolutionOptions.includes(retryTarget.resolution) ? retryTarget.resolution : retryResolutionOptions[0]}
-                    onChange={(resolution) => setRetryTarget((current) => current ? { ...current, resolution } : current)}
+                          onChange={(resolution) => setRetryTarget((current) => current ? {
+                            ...current,
+                            resolution,
+                            ...(resolution.toLowerCase() === "360p" ? { quality: "360p" } : {}),
+                          } : current)}
                     options={retryResolutionOptions}
                   />
                 )}

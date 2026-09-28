@@ -257,10 +257,13 @@ class FlowUI:
                     await page.keyboard.press("Meta+a")
                     await page.keyboard.press("Control+a")
                     await page.keyboard.press("Backspace")
+                # Insert the whole prompt in one operation. Character-by-
+                # character typing makes long prompts painfully slow and can
+                # trigger Flow's autocomplete between keystrokes.
                 try:
-                    await el.press_sequentially(text, delay=5)
-                except Exception:
                     await page.keyboard.insert_text(text)
+                except Exception:
+                    await el.fill(text)
                 await asyncio.sleep(0.15)
                 content = (await el.inner_text()) or (await el.input_value() if hasattr(el, "input_value") else "") or ""
                 if text[:12] in content:
@@ -645,7 +648,7 @@ class FlowUI:
             await asyncio.sleep(0.2)
             await page.keyboard.press("Meta+a")
             await page.keyboard.press("Control+a")
-            await page.keyboard.type(prompt, delay=15)
+            await page.keyboard.insert_text(prompt)
             await asyncio.sleep(0.2)
             return True
         return False
