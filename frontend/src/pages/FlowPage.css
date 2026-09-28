@@ -1297,6 +1297,19 @@
   margin: 0;
   flex-shrink: 0;
 }
+/* Container: both option checkboxes side by side, wrap on narrow */
+.flow-retry-check-row {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* Each checkbox label inside the row */
+.flow-retry-check-row > *,
+.flow-retry-check-row label {
+  flex: 1 1 auto;
+  min-width: 180px;
+}
 /* Full-width row inside the form, identical to flow-retry-include-done */
 .flow-retry-fields label.flow-retry-headless-row {
   grid-column: 1 / -1;

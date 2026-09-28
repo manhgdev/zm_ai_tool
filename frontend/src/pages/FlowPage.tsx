@@ -3454,7 +3454,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 <button type="button" onClick={() => setRetryTarget(null)} aria-label={t("Đóng", "Close")}>×</button>
               </header>
               <div className="flow-retry-fields">
-                {retryTarget.showIncludeDone && (
+                <div className="flow-retry-check-row">
+                  {retryTarget.showIncludeDone && (
                   <label className="flow-retry-include-done">
                     <input
                       type="checkbox"
@@ -3498,11 +3499,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       )}
                     </span>
                   </label>
-                )}
-                <label className="flow-retry-headless-cb flow-retry-headless-row">
+                  )}
+                  <label className="flow-retry-headless-cb flow-retry-headless-row">
                   <input type="checkbox" checked={!retryTarget.headless} onChange={() => setRetryTarget((current) => current ? { ...current, headless: !current.headless } : current)} />
                   {t('Mở Chrome khi chạy', 'Open Chrome')}
                 </label>
+                </div>
                 {retryTarget.groups.length > 1 && (
                   <div className="flow-retry-kind-groups">
                     <p className="flow-retry-kind-help">{t("Mỗi loại media giữ cấu hình riêng. Chỉnh Model và tài khoản theo từng nhóm.", "Each media type keeps its own settings. Choose the model and account per group.")}</p>
