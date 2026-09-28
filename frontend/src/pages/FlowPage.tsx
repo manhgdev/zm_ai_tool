@@ -3499,6 +3499,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     </span>
                   </label>
                 )}
+                <label className="flow-retry-headless-cb flow-retry-headless-row">
+                  <input type="checkbox" checked={!retryTarget.headless} onChange={() => setRetryTarget((current) => current ? { ...current, headless: !current.headless } : current)} />
+                  {t('Mở Chrome khi chạy', 'Open Chrome')}
+                </label>
                 {retryTarget.groups.length > 1 && (
                   <div className="flow-retry-kind-groups">
                     <p className="flow-retry-kind-help">{t("Mỗi loại media giữ cấu hình riêng. Chỉnh Model và tài khoản theo từng nhóm.", "Each media type keeps its own settings. Choose the model and account per group.")}</p>
@@ -3603,11 +3607,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   onChange={(concurrency) => setRetryTarget((current) => current ? { ...current, concurrency } : current)}
                   options={Array.from({ length: 18 }, (_, index) => String(index + 1))}
                 />
-                <label className="flow-retry-headless-cb flow-retry-headless-row">
-                  <input type="checkbox" checked={!retryTarget.headless} onChange={() => setRetryTarget((current) => current ? { ...current, headless: !current.headless } : current)} />
-                  {t('Mở Chrome khi chạy', 'Open Chrome')}
-                </label>
-              </div>
+                            </div>
               <footer>
                 <button type="button" onClick={() => setRetryTarget(null)}>{t("Quay lại", "Go back")}</button>
                 <button type="button" className="is-primary" onClick={confirmRetryJob} disabled={!retryTarget.jobs.length || !retryTarget.accountId}>{retryActionLabel(retryTarget.jobs)}</button>
