@@ -127,6 +127,16 @@ class SeriesRunner:
                 status = str(scene.get("status") or "draft")
                 if status in _SKIP_STATUSES:
                     continue
+                # Also skip if the output file already exists on disk —
+                # guards against re-running scenes whose status wasn't
+                # updated to "complete" but whose video is ready.
+                if mode in ("full", "videos_only"):
+                    video_path = str(scene.get("videoOutput") or "")
+                    if video_path and Path(video_path).is_file():
+                        continue
+                elif mode == "keyframes_only":
+                    if scene.get("approvedKeyframe"):
+                        continue
                 scenes_to_run.append((dict(episode), dict(scene)))
 
         run_id = _id()
