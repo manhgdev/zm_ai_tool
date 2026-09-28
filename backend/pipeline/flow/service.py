@@ -3406,8 +3406,11 @@ class FlowService:
             )
             for index in range(await matches.count()):
                 candidate = matches.nth(index)
-                if await candidate.is_visible():
-                    return candidate
+                try:
+                    if await candidate.is_visible(timeout=0):
+                        return candidate
+                except Exception:
+                    pass
             return None
 
         async def visible_duration_tab(label: re.Pattern[str]):
@@ -3508,17 +3511,34 @@ class FlowService:
                 ):
                     trigger = candidate
                     break
-            # 2. Fallback: bất kỳ pill aria-haspopup visible
+            # 2. Fallback: aria-haspopup (menu / dialog / listbox)
             if trigger is None:
-                pills = page.locator('button[aria-haspopup="menu"]')
-                for index in range(await pills.count() - 1, -1, -1):
-                    candidate = pills.nth(index)
-                    if await candidate.is_visible():
-                        trigger = candidate
+                for haspopup in ("menu", "dialog", "listbox", "true"):
+                    pills = page.locator(f'button[aria-haspopup="{haspopup}"]')
+                    for index in range(await pills.count() - 1, -1, -1):
+                        candidate = pills.nth(index)
+                        try:
+                            if await candidate.is_visible(timeout=0):
+                                trigger = candidate
+                                break
+                        except Exception:
+                            pass
+                    if trigger is not None:
                         break
+            # 3. Fallback: settings-trigger-button class
+            if trigger is None:
+                stb = page.locator(".settings-trigger-button, .settings-summary")
+                for index in range(await stb.count() - 1, -1, -1):
+                    candidate = stb.nth(index)
+                    try:
+                        if await candidate.is_visible(timeout=0):
+                            trigger = candidate
+                            break
+                    except Exception:
+                        pass
             if trigger is not None:
                 await trigger.click()
-            await asyncio.sleep(0.75)
+            await asyncio.sleep(1.2)
         if ratio_tab is None:
             raise RuntimeError(f"FLOW_UI_CHANGED: aspect ratio {ratio_label} was not found")
         if not await _flow_control_is_selected(ratio_tab):
