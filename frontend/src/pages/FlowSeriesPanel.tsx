@@ -18,9 +18,10 @@ import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
 export type { SeriesArtifact, FlowSeriesSceneContext }
 
 
-export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, accounts = [] }: {
+export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenSrtImage, accounts = [] }: {
   onOpenScene: (context: FlowSeriesSceneContext) => void
   onGenerateAnchor: (seriesId: string, prompt: string) => Promise<string>
+  onOpenSrtImage?: (mediaFolder: string) => void
   accounts?: FlowAccount[]
 }) {
   const { locale } = useLocale()
@@ -628,6 +629,12 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
     try {
       const result = await request<{ path: string }>(`/series/${selected.id}/episodes/${episode.id}/merge`, { method: 'POST' })
       toast.success(t(`\u0110ã ghép thành: ${result.path}`, `Merged: ${result.path}`))
+      // Open subtitle-image with the merged video folder
+      if (onOpenSrtImage && result.path) {
+        const sep = result.path.includes('/') ? '/' : '\\'
+        const folder = result.path.substring(0, result.path.lastIndexOf(sep))
+        onOpenSrtImage(folder || result.path)
+      }
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
     finally { setMergingEpisodeId('') }
   }

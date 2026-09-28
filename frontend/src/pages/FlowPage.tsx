@@ -2245,6 +2245,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         )}
         {utilityView === "series" && (
           <FlowSeriesPanel
+            onOpenSrtImage={onOpenSrtImage}
             accounts={accounts.map((acc) => ({
               id: acc.id, label: acc.label, status: acc.status, plan: acc.plan,
               capabilityCatalog: acc.capabilityCatalog, capabilityStatus: acc.capabilityStatus,
