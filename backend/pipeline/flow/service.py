@@ -3663,7 +3663,10 @@ class FlowService:
                     return
                 if not await _flow_control_is_selected(resolution_tab):
                     await resolution_tab.click(force=True)
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.5)
+                if not await _flow_control_is_selected(resolution_tab):
+                    await resolution_tab.click(force=True)
+                    await asyncio.sleep(0.8)
                 if not await _flow_control_is_selected(resolution_tab):
                     raise RuntimeError(f"FLOW_SETTING_MISMATCH: resolution {resolution_value} was not selected")
 
