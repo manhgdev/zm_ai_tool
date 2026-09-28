@@ -3603,12 +3603,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   onChange={(concurrency) => setRetryTarget((current) => current ? { ...current, concurrency } : current)}
                   options={Array.from({ length: 18 }, (_, index) => String(index + 1))}
                 />
-              </div>
-              <footer>
-                <label className="flow-retry-headless-cb">
+                <label className="flow-retry-headless-cb flow-retry-headless-row">
                   <input type="checkbox" checked={!retryTarget.headless} onChange={() => setRetryTarget((current) => current ? { ...current, headless: !current.headless } : current)} />
                   {t('Mở Chrome khi chạy', 'Open Chrome')}
                 </label>
+              </div>
+              <footer>
                 <button type="button" onClick={() => setRetryTarget(null)}>{t("Quay lại", "Go back")}</button>
                 <button type="button" className="is-primary" onClick={confirmRetryJob} disabled={!retryTarget.jobs.length || !retryTarget.accountId}>{retryActionLabel(retryTarget.jobs)}</button>
               </footer>
