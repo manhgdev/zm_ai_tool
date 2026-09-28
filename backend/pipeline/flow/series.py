@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from pipeline.core.output_paths import downloads_folder, safe_output_part
+from pipeline.core.output_paths import downloads_folder, safe_output_part, safe_unicode_folder
 from pipeline.core.config import PUBLIC_DATA
 from . import store
 
@@ -49,7 +49,7 @@ def _normalize(item: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(item)
     normalized.setdefault("description", "")
     normalized.setdefault("bible", "")
-    normalized.setdefault("slug", safe_output_part(str(normalized.get("title") or "series"), "series"))
+    normalized.setdefault("slug", safe_unicode_folder(str(normalized.get("title") or "series"), "series"))
     normalized.setdefault("anchorAssets", [])
     normalized.setdefault("assets", [])
     normalized.setdefault("episodes", [])
@@ -104,7 +104,7 @@ def create_series(title: str, bible: str = "", description: str = "") -> dict[st
     item = {
         "id": _id("series"),
         "title": clean_title[:160],
-        "slug": safe_output_part(clean_title, "series"),
+        "slug": safe_unicode_folder(clean_title, "series"),
         "description": str(description or "")[:2000],
         "bible": str(bible or "")[:12000],
         "anchorAssets": [],
@@ -148,7 +148,7 @@ def delete_series(series_id: str) -> bool:
     removed = store.delete_row("series", series_id)
     if removed:
         shutil.rmtree(_series_folder(series_id), ignore_errors=True)
-        slug = safe_output_part(str(series.get("slug") or series.get("title") or "series"), "series")
+        slug = safe_unicode_folder(str(series.get("slug") or series.get("title") or "series"), "series")
         # Remove the current dedicated Series root plus legacy pre-3.8 paths.
         # Never touch ordinary Flow jobs or output belonging to another Series.
         for root in (downloads_folder("flow"), PUBLIC_DATA / "flow"):
@@ -566,7 +566,7 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
     prompt = "\n\n".join(part for part in prompt_parts if part)
     if not prompt:
         raise ValueError("Scene prompt is required")
-    slug = safe_output_part(series.get("slug") or series.get("title") or "series", "series")
+    slug = safe_unicode_folder(series.get("slug") or series.get("title") or "series", "series")
     output_dir = f"{slug}/tap-{int(episode.get('index') or 1):02d}"
     context = {
         "seriesId": series_id,
@@ -574,7 +574,7 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
         "sceneId": scene_id,
         "artifact": artifact,
         "seriesTitle": series.get("title") or "",
-        "seriesSlug": series.get("slug") or safe_output_part(str(series.get("title") or "series"), "series"),
+        "seriesSlug": series.get("slug") or safe_unicode_folder(str(series.get("title") or "series"), "series"),
         "episodeIndex": int(episode.get("index") or 1),
         "sceneIndex": int(scene.get("index") or 1),
         "outputDir": output_dir,
@@ -708,7 +708,7 @@ def merge_episode_videos(series_id: str, episode_id: str) -> Path:
     if not scenes:
         raise ValueError("No completed video scenes to merge")
 
-    slug = safe_output_part(series.get("slug") or series.get("title") or "series", "series")
+    slug = safe_unicode_folder(series.get("slug") or series.get("title") or "series", "series")
     ep_idx = int(episode.get("index") or (ep_index + 1 if ep_index is not None else 1))
     out_dir = _asset_folder(series_id)
     out_path = out_dir / f"{slug}_tap-{ep_idx:02d}_merged.mp4"

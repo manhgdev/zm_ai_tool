@@ -35,6 +35,21 @@ def safe_output_part(value: object, fallback: str = "output", *, max_length: int
     return (safe or fallback)[:max_length]
 
 
+def safe_unicode_folder(value: object, fallback: str = "output", *, max_length: int = 120) -> str:
+    """Filesystem-safe folder name that preserves Unicode letters/digits (e.g. Vietnamese).
+
+    Only strips characters that are truly unsafe on macOS/Linux/Windows:
+    control chars, and the set  / \\ : * ? " < > |
+    Runs of unsafe chars are collapsed to a single hyphen.
+    """
+    text = str(value or fallback).strip()
+    # Strip filesystem-unsafe chars; keep Unicode letters, digits, spaces, dots, hyphens, underscores
+    safe = re.sub(r'[^\w\s.\-]', '-', text, flags=re.UNICODE)
+    # Collapse whitespace/hyphens runs → single hyphen
+    safe = re.sub(r'[\s\-]+', '-', safe).strip('-.')
+    return (safe or fallback)[:max_length]
+
+
 def nested_output_folder(
     root: Path,
     group: object,
