@@ -8,11 +8,89 @@ from __future__ import annotations
 
 import os
 import asyncio
+import subprocess
 import threading
 import sys
 import signal
 from pathlib import Path
 from typing import Any
+
+
+def _capture_active_window() -> Any:
+    """Return an opaque token representing the current foreground window.
+
+    macOS   -> {name, bundle} dict via System Events
+    Windows -> HWND integer via ctypes user32
+    Other   -> None (no-op)
+    """
+    # ponytail: stdlib-only on both platforms; no extra dependency.
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["osascript", "-e",
+                 "tell application \"System Events\"\n"
+                 "  set p to first process whose frontmost is true\n"
+                 "  return (name of p) & \"||\" & (bundle identifier of p)\n"
+                 "end tell"],
+                capture_output=True, text=True, timeout=3,
+            )
+            raw = result.stdout.strip()
+            if "||" in raw:
+                pname, bundle = raw.split("||", 1)
+                return {"name": pname.strip(), "bundle": bundle.strip()}
+            return None
+        except Exception:
+            return None
+    elif sys.platform == "win32":
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            return int(hwnd) if hwnd else None
+        except Exception:
+            return None
+    return None
+
+
+def _restore_active_window(token: Any) -> None:
+    """Bring the previously captured window back to the foreground (best-effort)."""
+    if not token:
+        return
+    if sys.platform == "darwin":
+        name = token.get("name", "") if isinstance(token, dict) else ""
+        bundle = token.get("bundle", "") if isinstance(token, dict) else str(token)
+        # Primary: set frontmost directly via System Events — works for Electron
+        # and any app that does not implement the AppleScript activate handler.
+        restored = False
+        if name:
+            try:
+                subprocess.run(
+                    ["osascript", "-e",
+                     f"tell application \"System Events\"\n"
+                     f"  set frontmost of first process whose name is \"{name}\" to true\n"
+                     f"end tell"],
+                    capture_output=True, timeout=5,
+                )
+                restored = True
+            except Exception:
+                pass
+        # Fallback: classic activate by bundle id
+        if not restored and bundle:
+            try:
+                subprocess.run(
+                    ["osascript", "-e", f'tell application id "{bundle}" to activate'],
+                    capture_output=True, timeout=5,
+                )
+            except Exception:
+                pass
+    elif sys.platform == "win32":
+        try:
+            import ctypes
+            hwnd = token
+            # SW_RESTORE = 9: unminimise if needed, then bring to front.
+            ctypes.windll.user32.ShowWindow(hwnd, 9)
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
 
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 
@@ -100,6 +178,8 @@ class BrowserManager:
         self._zoom_applied = False
         self._profile_lock = profile_lock(self.profile_dir)
         self._owns_profile = False
+        # ponytail: captured only for visible windows; restored in stop().
+        self._prior_app: Any = None
 
     async def start(self) -> "BrowserManager":
         executable = chrome_executable()
@@ -111,6 +191,7 @@ class BrowserManager:
         self._owns_profile = True
         visible_launch_owned = False
         if not self.headless:
+            self._prior_app = _capture_active_window()
             while not _visible_launch_guard.acquire(blocking=False):
                 await asyncio.sleep(0.05)
             visible_launch_owned = True
@@ -206,6 +287,9 @@ class BrowserManager:
         if self._owns_profile:
             self._owns_profile = False
             self._profile_lock.release()
+        if not self.headless and self._prior_app:
+            _restore_active_window(self._prior_app)
+            self._prior_app = None
 
     def kill_now(self) -> None:
         """Synchronously terminate Chrome processes owned by this profile.
