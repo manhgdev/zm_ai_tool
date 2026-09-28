@@ -1059,16 +1059,20 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                     </div>
                     <div className="fsp-headless-field">
                       <label>{t('Mở Chrome', 'Open Chrome')}</label>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={!headless}
-                        className={`fsp-headless-switch${headless ? '' : ' is-on'}`}
-                        onClick={toggleHeadless}
-                        title={headless ? t('Chrome ẩn', 'Chrome hidden') : t('Chrome đang hiện', 'Chrome visible')}
-                      >
-                        <span className="fsp-headless-switch-track" aria-hidden="true" />
-                      </button>
+                      <div className="fsp-headless-row" onClick={toggleHeadless} title={headless ? t('Chrome ẩn', 'Chrome hidden') : t('Chrome đang hiện', 'Chrome visible')}>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={!headless}
+                          className={`fsp-headless-switch${headless ? '' : ' is-on'}`}
+                          tabIndex={-1}
+                        >
+                          <span className="fsp-headless-switch-track" aria-hidden="true" />
+                        </button>
+                        <span style={{fontSize:'0.78rem',fontWeight:600,color:headless?'var(--muted-foreground)':'var(--primary,#7c6fff)',transition:'color .2s'}}>
+                          {headless ? t('Tắt', 'Off') : t('Bật', 'On')}
+                        </span>
+                      </div>
                     </div>
                   </div>
 

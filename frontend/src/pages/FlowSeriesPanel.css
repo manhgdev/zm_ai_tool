@@ -1254,11 +1254,13 @@
 }
 .fsp-ep-merge:disabled { opacity: 0.5; cursor: wait; }
 /* ── Headless (Mở Chrome) toggle ── */
+/* ── Mở Chrome toggle (settings grid) ── */
 .fsp-headless-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  justify-content: flex-end;   /* align bottom like sibling selects */
 }
 .fsp-headless-field label {
   font-size: 0.68rem;
@@ -1268,16 +1270,25 @@
   letter-spacing: 0.03em;
   white-space: nowrap;
 }
+/* The clickable row: label text + pill side by side */
+.fsp-headless-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;               /* match select height */
+  cursor: pointer;
+  user-select: none;
+}
 .fsp-headless-switch {
   position: relative;
   display: inline-flex;
   align-items: center;
-  width: 44px;
-  height: 24px;
-  border-radius: 12px;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
   padding: 0;
   border: none;
-  background: #c0c0c8;
+  background: #b0b0bc;
   cursor: pointer;
   transition: background 0.2s;
   flex-shrink: 0;
@@ -1287,20 +1298,20 @@
 }
 .fsp-headless-switch-track {
   position: absolute;
-  width: 18px;
-  height: 18px;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   background: #fff;
-  left: 3px;
-  transition: transform 0.2s;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  left: 2px;
+  transition: transform 0.18s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 .fsp-headless-switch.is-on .fsp-headless-switch-track {
-  transform: translateX(20px);
+  transform: translateX(16px);
 }
-.fsp-headless-switch:hover { opacity: 0.85; }
+.fsp-headless-switch:hover { opacity: 0.8; }
 
-/* inline Chrome toggle next to retry buttons */
+/* inline Chrome toggle next to Retry / Create buttons */
 .fsp-chrome-inline {
   display: inline-flex;
   align-items: center;
@@ -1311,15 +1322,15 @@
   user-select: none;
 }
 .fsp-chrome-inline .fsp-headless-switch {
-  width: 34px;
-  height: 18px;
-  border-radius: 9px;
+  width: 30px;
+  height: 16px;
+  border-radius: 8px;
 }
 .fsp-chrome-inline .fsp-headless-switch-track {
-  width: 13px;
-  height: 13px;
+  width: 11px;
+  height: 11px;
   left: 2px;
 }
 .fsp-chrome-inline .fsp-headless-switch.is-on .fsp-headless-switch-track {
-  transform: translateX(16px);
+  transform: translateX(14px);
 }
