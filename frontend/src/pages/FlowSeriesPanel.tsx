@@ -628,7 +628,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
     setMergingEpisodeId(episode.id)
     try {
       const result = await request<{ path: string }>(`/series/${selected.id}/episodes/${episode.id}/merge`, { method: 'POST' })
-      toast.success(t(`\u0110„ ghÈp th‡nh: ${result.path}`, `Merged: ${result.path}`))
+      toast.success(t(`ƒê√£ gh√©p th√†nh: ${result.path}`, `Merged: ${result.path}`))
       // Open subtitle-image with the merged video folder
       if (onOpenSrtImage && result.path) {
         const sep = result.path.includes('/') ? '/' : '\\'
