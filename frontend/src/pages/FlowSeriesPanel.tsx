@@ -1168,7 +1168,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                                 return (
                                   <div key={scene.id} className="fsp-scene">
                                     {/* Thumbnail / Video Preview */}
-                                    {thumb ? (
+                                    {(thumb || scene.videoOutput) ? (
                                       <div
                                         className="fsp-scene-thumb"
                                         title={scene.videoOutput ? t('Xem video cảnh', 'Preview scene video') : t('Xem ảnh', 'Preview image')}
@@ -1176,12 +1176,14 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, account
                                           e.stopPropagation()
                                           if (scene.videoOutput) {
                                             setSeriesPreview({ url: toUrl(scene.videoOutput, scene.videoJobId), title: scene.title || `Cảnh ${scene.index}`, kind: 'video' })
-                                          } else {
+                                          } else if (thumb) {
                                             setSeriesPreview({ url: toUrl(thumb), title: scene.title || `Cảnh ${scene.index}`, kind: 'image' })
                                           }
                                         }}
                                       >
-                                        <img src={toUrl(thumb)} alt={scene.title} loading="lazy" />
+                                        {thumb
+                                          ? <img src={toUrl(thumb)} alt={scene.title} loading="lazy" />
+                                          : <video src={toUrl(scene.videoOutput, scene.videoJobId)} preload="metadata" muted playsInline />}
                                         {scene.videoOutput && <span className="fsp-scene-has-video">▶</span>}
                                       </div>
                                     ) : (

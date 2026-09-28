@@ -488,7 +488,16 @@
   object-fit: cover;
   transition: transform 220ms ease;
 }
-.fsp-scene-thumb:hover img { transform: scale(1.07); }
+.fsp-scene-thumb:hover img,
+.fsp-scene-thumb:hover video { transform: scale(1.07); }
+.fsp-scene-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 220ms ease;
+  display: block;
+  pointer-events: none;
+}
 .fsp-scene-thumb-empty {
   display: flex;
   align-items: center;
@@ -873,8 +882,8 @@
 }
 
 .fsp-auto-grid {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   gap: 8px 10px;
   align-items: flex-end;
 }
@@ -883,19 +892,15 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 120px;
-  flex: 1.1 1 130px;
+  min-width: 0;
 }
 
 .fsp-auto-field.fsp-field-wide {
-  flex: 1.5 1 160px;
-  min-width: 140px;
+  grid-column: span 2;
 }
 
 .fsp-auto-field.fsp-field-xs {
-  flex: 0 0 74px;
-  min-width: 66px;
-  max-width: 80px;
+  min-width: 80px;
 }
 
 .fsp-auto-field.fsp-field-xs select {
