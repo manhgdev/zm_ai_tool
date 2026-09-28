@@ -3523,7 +3523,11 @@ class FlowService:
             raise RuntimeError(f"FLOW_UI_CHANGED: aspect ratio {ratio_label} was not found")
         if not await _flow_control_is_selected(ratio_tab):
             await ratio_tab.click(force=True)
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
+        if not await _flow_control_is_selected(ratio_tab):
+            # Second retry — UI may lag on slow machines
+            await ratio_tab.click(force=True)
+            await asyncio.sleep(0.8)
         if not await _flow_control_is_selected(ratio_tab):
             raise RuntimeError(f"FLOW_SETTING_MISMATCH: aspect ratio {ratio_label} was not selected")
 
