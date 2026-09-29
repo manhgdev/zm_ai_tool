@@ -30,6 +30,7 @@ _client: Any = None
 _client_err: str | None = None
 _load_state = "cold"  # cold | loading | ready | error
 _warm_gate = threading.Lock()
+_inference_lock = threading.Lock()
 _reference_lock = threading.Lock()
 _reference_cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
 _clone_lock = threading.Lock()
@@ -962,7 +963,7 @@ def _register_clone(client: Any, clone_id: str, path: Path) -> None:
         _clone_cache[clone_id] = fingerprint
 
 
-def synthesize(
+def _synthesize_once(
     text: str,
     voice: str,
     out_wav: Path,
@@ -1108,6 +1109,30 @@ def synthesize(
         _write_wav_pcm16(out_wav, arr, 48000)
     if on_progress:
         on_progress(1.0)
+
+
+def synthesize(
+    text: str,
+    voice: str,
+    out_wav: Path,
+    *,
+    style: str = "tu_nhien",
+    cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[float], None] | None = None,
+) -> None:
+    """Synthesize without concurrently mutating one in-process VieNeu client."""
+    kwargs = {
+        "style": style,
+        "cancel_check": cancel_check,
+        "on_progress": on_progress,
+    }
+    if getattr(sys, "frozen", False):
+        _synthesize_once(text, voice, out_wav, **kwargs)
+        return
+    # PyTorch MPS' shader cache and the VieNeu client are not thread-safe.
+    # Studio/Dub/Review may all reach this shared client concurrently.
+    with _inference_lock:
+        _synthesize_once(text, voice, out_wav, **kwargs)
 
 
 def _write_wav_pcm16(path: Path, samples: Any, sr: int) -> None:

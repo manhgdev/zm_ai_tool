@@ -5,12 +5,15 @@ import builtins
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 from pipeline.tts.engines import vieneu
+from pipeline.core import accel
 
 
 class FrozenTtsPathTest(unittest.TestCase):
@@ -102,6 +105,50 @@ class FrozenTtsPathTest(unittest.TestCase):
         self.assertIsNone(vieneu._client)
         self.assertEqual(vieneu._load_state, "cold")
         shutdown.assert_called_once()
+
+    def test_non_frozen_synthesis_serializes_shared_client(self):
+        active = 0
+        max_active = 0
+        guard = threading.Lock()
+
+        class Client:
+            def infer(self, _text, **_kwargs):
+                nonlocal active, max_active
+                with guard:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.05)
+                with guard:
+                    active -= 1
+                return [0.0]
+
+            def save(self, _audio, path):
+                Path(path).write_bytes(b"RIFF")
+
+        errors: list[BaseException] = []
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.object(sys, "frozen", False, create=True),
+            mock.patch.object(vieneu, "get_client", return_value=Client()),
+        ):
+            def run(index: int) -> None:
+                try:
+                    vieneu.synthesize("xin chào", "vn:Phạm Tuyên", Path(td) / f"{index}.wav")
+                except BaseException as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=run, args=(index,)) for index in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(max_active, 1)
+
+    def test_mps_tts_uses_one_shared_client_worker(self):
+        with mock.patch.object(accel, "preferred_torch_device", return_value="mps"):
+            self.assertEqual(accel._tts_vram_hard_cap(), 1)
 
 
 if __name__ == "__main__":

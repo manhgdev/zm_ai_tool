@@ -68,6 +68,15 @@ type Props = {
   onOpenSetup?: () => void
 }
 
+type TtsRealtimeProgress = {
+  pct?: number
+  message?: string
+  error?: string
+  done?: boolean
+  resultJobId?: string
+  text?: string
+}
+
 export default function TtsStudio({
   voices,
   onBack,
@@ -161,19 +170,36 @@ export default function TtsStudio({
   const [jobId, setJobId] = useState<string | null>(() => initialActiveJob?.id || null)
   const activeJobIdRef = useRef<string | null>(null)
   const cancelledJobIdsRef = useRef(new Set<string>())
+  const ttsProgressRef = useRef(new Map<string, TtsRealtimeProgress>())
+  const ttsWaitersRef = useRef(new Map<string, (progress: TtsRealtimeProgress) => void>())
   const onTtsRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
     const activeId = activeJobIdRef.current
-    if (!activeId) return
     const raw = event.type === 'snapshot'
-      ? (event.payload as { jobs?: Record<string, unknown> } | null)?.jobs?.[activeId]
-      : event.entityId === activeId ? event.payload : null
+      ? activeId ? (event.payload as { jobs?: Record<string, unknown> } | null)?.jobs?.[activeId] : null
+      : event.entityId ? event.payload : null
     if (!raw || typeof raw !== 'object') return
-    const progress = raw as { pct?: number; message?: string; error?: string }
-    if (Number(progress.pct) > 0) setBusyProgress(Number(progress.pct))
+    const progress = raw as TtsRealtimeProgress
+    const progressId = event.entityId || activeId
+    if (progressId) ttsProgressRef.current.set(progressId, progress)
+    if (Number(progress.pct) > 0 && (!activeId || progressId === activeId)) setBusyProgress(Number(progress.pct))
     if (progress.message) setBusyCustomMessage(progress.message)
     if (progress.error) setError(progress.error)
+    if (progressId && (progress.done || progress.error)) ttsWaitersRef.current.get(progressId)?.(progress)
   }, [])
-  const ttsRealtimeStatus = useRealtimeEvents('tts', onTtsRealtime)
+  useRealtimeEvents('tts', onTtsRealtime)
+  const waitForTtsJob = useCallback((jobId: string, timeoutMs = 10 * 60 * 1000) => new Promise<TtsRealtimeProgress>((resolve, reject) => {
+    const existing = ttsProgressRef.current.get(jobId)
+    if (existing?.done || existing?.error) { resolve(existing); return }
+    const timer = window.setTimeout(() => {
+      ttsWaitersRef.current.delete(jobId)
+      reject(new Error(t('TTS không gửi được sự kiện hoàn tất qua SSE trong thời gian cho phép.', 'TTS did not receive a completion event through SSE within the allowed time.')))
+    }, timeoutMs)
+    ttsWaitersRef.current.set(jobId, (progress) => {
+      window.clearTimeout(timer)
+      ttsWaitersRef.current.delete(jobId)
+      resolve(progress)
+    })
+  }), [locale])
   const [duration, setDuration] = useState<number>(() => initialActiveJob?.duration || 0)
   const [playbackTime, setPlaybackTime] = useState(0)
   const [playbackDuration, setPlaybackDuration] = useState(0)
@@ -753,25 +779,9 @@ export default function TtsStudio({
       const jobIdFromRes = (res as { id?: string; job_id?: string }).id || (res as { id?: string; job_id?: string }).job_id || requestJobId
       let resolvedJobId = jobIdFromRes
 
-      // Poll /progress đến khi done=true
-      for (let i = 0; i < 1200; i++) {
-        if (cancelledJobIdsRef.current.has(requestJobId)) return
-        await new Promise((r) => window.setTimeout(r, ttsRealtimeStatus === 'connected' ? 1500 : 300))
-        let p
-        try {
-          p = await api.ttsStudioJobProgress(jobIdFromRes)
-        } catch {
-          /* ignore transient errors */
-          continue
-        }
-        if (p.error) throw new Error(p.error)
-        if (p.resultJobId) resolvedJobId = p.resultJobId
-        if (p.pct > 0) {
-          setBusyProgress(p.pct)
-          if (p.message) setBusyCustomMessage(p.message)
-        }
-        if (p.done) break
-      }
+      const p = await waitForTtsJob(jobIdFromRes)
+      if (p.error) throw new Error(p.error)
+      if (p.resultJobId) resolvedJobId = p.resultJobId
       if (cancelledJobIdsRef.current.has(requestJobId)) return
 
       setBusyProgress(100)
@@ -838,17 +848,9 @@ export default function TtsStudio({
       })
       const jid = (res as { id?: string; job_id?: string }).id || requestJobId
       let resolvedJobId = jid
-      for (let i = 0; i < 200; i++) {
-        await new Promise((r) => window.setTimeout(r, 300))
-        let p
-        try {
-          p = await api.ttsStudioJobProgress(jid)
-        } catch { /* ignore */ }
-        if (!p) continue
-        if (p.error) throw new Error(p.error)
-        if (p.resultJobId) resolvedJobId = p.resultJobId
-        if (p.done) break
-      }
+      const p = await waitForTtsJob(jid)
+      if (p.error) throw new Error(p.error)
+      if (p.resultJobId) resolvedJobId = p.resultJobId
       applyJobUrls({
         id: resolvedJobId,
         duration: (res as { duration?: number }).duration || 0,
@@ -908,25 +910,15 @@ export default function TtsStudio({
       const jid = started.id || started.job_id
       activeJobIdRef.current = jid
       cancelledJobIdsRef.current.delete(jid)
-      for (;;) {
-        if (cancelledJobIdsRef.current.has(jid)) {
-          throw new Error('cancelled')
-        }
-        const p = await api.ttsStudioJobProgress(jid)
-        setBusyProgress(Math.max(2, Math.min(99, Number(p.pct) || 2)))
-        if (p.message) setBusyCustomMessage(p.message)
-        if (p.error) throw new Error(p.error)
-        if (p.done || (p.pct >= 99 && !p.running)) {
-          const text = String(p.text || '').trim()
-          if (!text) throw new Error(t('Không nhận dạng được lời thoại', 'Could not transcribe speech'))
-          setTranscribeResult(text)
-          setBusyProgress(100)
-          setBusyCustomMessage(t('Đã chép lời xong!', 'Transcription complete!'))
-          toast.success(t('Đã chép lời xong!', 'Transcription complete!'))
-          break
-        }
-        await new Promise((r) => window.setTimeout(r, 800))
-      }
+      if (cancelledJobIdsRef.current.has(jid)) throw new Error('cancelled')
+      const p = await waitForTtsJob(jid)
+      if (p.error) throw new Error(p.error)
+      const text = String(p.text || '').trim()
+      if (!text) throw new Error(t('Không nhận dạng được lời thoại', 'Could not transcribe speech'))
+      setTranscribeResult(text)
+      setBusyProgress(100)
+      setBusyCustomMessage(t('Đã chép lời xong!', 'Transcription complete!'))
+      toast.success(t('Đã chép lời xong!', 'Transcription complete!'))
     } catch (e) {
       if (e instanceof Error && (e.message === 'cancelled' || e.message === 'Đã hủy')) {
         setError('Đã hủy')
@@ -1187,17 +1179,9 @@ export default function TtsStudio({
       })
       const jid = (res as { id?: string; job_id?: string }).id || previewJobId
       let resolvedJobId = jid
-      for (let i = 0; i < 200; i++) {
-        await new Promise((r) => window.setTimeout(r, 300))
-        let p
-        try {
-          p = await api.ttsStudioJobProgress(jid)
-        } catch { /* ignore */ }
-        if (!p) continue
-        if (p.error) throw new Error(p.error)
-        if (p.resultJobId) resolvedJobId = p.resultJobId
-        if (p.done) break
-      }
+      const p = await waitForTtsJob(jid)
+      if (p.error) throw new Error(p.error)
+      if (p.resultJobId) resolvedJobId = p.resultJobId
       const audioUrl = (res as { audioUrl?: string }).audioUrl || `/api/tts/studio/jobs/${resolvedJobId}/audio.wav`
       playVoicePreview(v.id, audioUrl)
 
