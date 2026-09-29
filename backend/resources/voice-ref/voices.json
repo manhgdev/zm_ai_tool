@@ -293,5 +293,19 @@
     "favorite": false,
     "tags": [],
     "source": "ZMTTS"
+  },
+  {
+    "id": "zmt:tieng-trung--zf-001",
+    "name": "zf_001",
+    "label": "zf_001",
+    "type": "zmAI",
+    "engine": "vieneu",
+    "mode": "reference",
+    "language": "zh",
+    "ref_file": "zmt-d0385cc493386510.wav",
+    "hidden": false,
+    "favorite": false,
+    "tags": [],
+    "source": "ZMTTS"
   }
 ]

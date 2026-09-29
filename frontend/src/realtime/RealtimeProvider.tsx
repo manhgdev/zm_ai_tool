@@ -91,6 +91,10 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
         try { dispatch(JSON.parse(data) as RealtimeEvent) } catch { /* ignore malformed event */ }
       })
     })
+    source.addEventListener('tts.job.updated', (message) => {
+      const data = (message as MessageEvent).data
+      try { dispatch(JSON.parse(data) as RealtimeEvent) } catch { /* ignore malformed event */ }
+    })
   }, [dispatch])
   connectRef.current = connect
 

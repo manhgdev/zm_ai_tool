@@ -136,6 +136,23 @@ _running: dict[str, bool] = {}
 _job_progress: dict[str, dict[str, Any]] = {}
 
 
+def _publish_job_progress(job_id: str) -> None:
+    """Best-effort realtime update; polling remains the transport fallback."""
+    try:
+        from pipeline.core.realtime import realtime
+
+        realtime.publish("tts", "tts.job.updated", job_id, get_job_progress(job_id))
+    except Exception:
+        pass
+
+
+def list_job_progress() -> dict[str, dict[str, Any]]:
+    """Current TTS jobs for SSE reconnect snapshots."""
+    with _jobs_lock:
+        job_ids = tuple(_job_progress)
+    return {job_id: get_job_progress(job_id) for job_id in job_ids}
+
+
 def set_job_progress(job_id: str, current: int, total: int, message: str = "") -> None:
     """Cập nhật tiến độ phần trăm và số lượng thực tế cho job đang xử lý."""
     if not job_id:
@@ -150,6 +167,7 @@ def set_job_progress(job_id: str, current: int, total: int, message: str = "") -
             "pct": pct,
             "message": message or f"Đang xử lý {current_safe}/{total_safe} ({pct}%)",
         }
+    _publish_job_progress(job_id)
 
 
 def set_job_progress_pct(
@@ -181,6 +199,7 @@ def set_job_progress_pct(
             "pct": pct_safe,
             "message": message or str(prev.get("message") or f"Đang xử lý ({pct_safe}%)"),
         }
+    _publish_job_progress(job_id)
 
 
 def get_job_progress(job_id: str) -> dict[str, Any]:
@@ -212,6 +231,7 @@ def set_job_error(job_id: str, error: Exception | str, *, message: str = "Tạo 
             "error": str(error) or message,
         }
         _running.pop(job_id, None)
+    _publish_job_progress(job_id)
 
 
 def set_job_complete(
@@ -237,6 +257,7 @@ def set_job_complete(
             payload["text"] = text
         _job_progress[job_id] = payload
         _running.pop(job_id, None)
+    _publish_job_progress(job_id)
 
 
 def mark_cancel(job_id: str) -> None:

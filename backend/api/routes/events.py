@@ -23,6 +23,7 @@ def _register_snapshots() -> None:
     from pipeline.srt_image import list_jobs as list_srt_image_jobs
     from pipeline.download.ytdlp_jobs import list_jobs as list_download_jobs
     from pipeline.flow import series as flow_series
+    from pipeline.tts.studio import list_job_progress as list_tts_job_progress
 
     realtime.register_snapshot("flow", lambda: {
         "jobs": flow_service.service.jobs(),
@@ -36,6 +37,7 @@ def _register_snapshots() -> None:
     realtime.register_snapshot("srt-image", lambda: {"jobs": list_srt_image_jobs()})
     realtime.register_snapshot("download", lambda: {"jobs": list_download_jobs()})
     realtime.register_snapshot("series", lambda: {"items": flow_series.list_series()})
+    realtime.register_snapshot("tts", lambda: {"jobs": list_tts_job_progress()})
     _register_snapshots.done = True
 
 

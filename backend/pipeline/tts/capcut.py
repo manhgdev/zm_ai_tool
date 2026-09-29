@@ -359,7 +359,12 @@ def _post_json(path: str, body: dict[str, Any], device: dict[str, Any], *, babi:
 
 def _normalize_tts_text(text: str) -> str:
     """Normalize text forms that CapCut rejects as TTSInvalidText."""
-    value = " ".join((text or "").split()).strip()
+    value = " ".join((text or "").replace("\ufffd", "").split()).strip()
+    # OCR/subtitle extraction may put a space between every Chinese character;
+    # CapCut's minor-language router can reject that form. Chinese text does
+    # not need word separators, so collapse only spaces between adjacent CJK
+    # characters while preserving spaces around Latin words and numbers.
+    value = re.sub(r"(?<=[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])\s+(?=[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])", "", value)
     laugh = re.fullmatch(r"(?i)(ha){2,}[.!?…]*", value)
     if laugh:
         count = len(laugh.group(0).rstrip(".!?…")) // 2

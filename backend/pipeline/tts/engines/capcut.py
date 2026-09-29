@@ -50,6 +50,7 @@ def list_voices(lang: str | None = None) -> list[dict[str, str]]:
                 "name": f"CapCut · {name}",
                 "engine": "capcut",
                 "type": "capcut",
+                "language": (v.get("lang") or v.get("lan") or "").lower().split("-", 1)[0],
             }
         )
     return out

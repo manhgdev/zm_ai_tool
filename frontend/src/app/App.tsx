@@ -912,8 +912,8 @@ export default function App() {
           sideOpen={ttsSideOpen}
           onBack={goBackTab}
           onSideOpenChange={setTtsSideOpen}
-          onRefreshVoices={() => {
-            void api.voices('all').then(setVoices).catch(() => {})
+          onRefreshVoices={(lang) => {
+            void api.voices(lang || 'all').then(setVoices).catch(() => {})
           }}
           isDesktopApp={isDesktopApp}
           onOpenSetup={() => {

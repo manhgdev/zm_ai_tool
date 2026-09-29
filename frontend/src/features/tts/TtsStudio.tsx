@@ -7,6 +7,7 @@ import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { studioApi } from '@/features/studio/studio.api'
 import { toast } from 'sonner'
+import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
 import {
   type TtsEngine,
   type TtsOutputFormat,
@@ -160,6 +161,19 @@ export default function TtsStudio({
   const [jobId, setJobId] = useState<string | null>(() => initialActiveJob?.id || null)
   const activeJobIdRef = useRef<string | null>(null)
   const cancelledJobIdsRef = useRef(new Set<string>())
+  const onTtsRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    const activeId = activeJobIdRef.current
+    if (!activeId) return
+    const raw = event.type === 'snapshot'
+      ? (event.payload as { jobs?: Record<string, unknown> } | null)?.jobs?.[activeId]
+      : event.entityId === activeId ? event.payload : null
+    if (!raw || typeof raw !== 'object') return
+    const progress = raw as { pct?: number; message?: string; error?: string }
+    if (Number(progress.pct) > 0) setBusyProgress(Number(progress.pct))
+    if (progress.message) setBusyCustomMessage(progress.message)
+    if (progress.error) setError(progress.error)
+  }, [])
+  const ttsRealtimeStatus = useRealtimeEvents('tts', onTtsRealtime)
   const [duration, setDuration] = useState<number>(() => initialActiveJob?.duration || 0)
   const [playbackTime, setPlaybackTime] = useState(0)
   const [playbackDuration, setPlaybackDuration] = useState(0)
@@ -332,7 +346,7 @@ export default function TtsStudio({
     const langFilter = lang && lang !== 'auto' ? lang.split('-')[0] : ''
     return engineVoices.filter((v) => {
       const metadata = voiceMetadata(v)
-      const matchesLang = !langFilter || !v.language || v.language.split('-')[0] === langFilter
+      const matchesLang = !langFilter || v.language?.split(/[-_]/)[0].toLowerCase() === langFilter.toLowerCase()
       const matchesTag = !activeVoiceTag || metadata.tags.some((tag) => tag.label === activeVoiceTag)
       const matchesQuery = !query || [v.name, metadata.description, ...metadata.tags.map((tag) => tag.label)]
         .join(' ')
@@ -742,7 +756,7 @@ export default function TtsStudio({
       // Poll /progress đến khi done=true
       for (let i = 0; i < 1200; i++) {
         if (cancelledJobIdsRef.current.has(requestJobId)) return
-        await new Promise((r) => window.setTimeout(r, 300))
+        await new Promise((r) => window.setTimeout(r, ttsRealtimeStatus === 'connected' ? 1500 : 300))
         let p
         try {
           p = await api.ttsStudioJobProgress(jobIdFromRes)

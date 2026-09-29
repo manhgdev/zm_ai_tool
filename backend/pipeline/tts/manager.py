@@ -152,21 +152,33 @@ def _parse_say_voices() -> list[tuple[str, str, str]]:
 
 
 def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
+    from .voice_store import normalize_voice_language
+
+    requested_language = normalize_voice_language(lang)
     voices: list[dict[str, Any]] = []
     # VieNeu first for Vietnamese local
     voices.extend(vieneu_engine.list_voices(lang))
     voices.extend(_cc_voice_options(lang))
     voices.extend(_el_voice_options())
     voices.extend(system_engine.list_voices(lang))
+    if requested_language:
+        voices = [
+            voice
+            for voice in voices
+            if normalize_voice_language(voice.get("language")) == requested_language
+        ]
     # Auto includes the online ZMTTS catalog too; do not truncate it before
     # the selector can show the voices that are available on demand.
     return voices[:500]
 
 
 def resolve_voice(voice: str, lang: str = "vi") -> str:
-    if vieneu_engine.parse_voice(voice):
-        return voice
+    # Keep an explicitly selected CapCut voice on the CapCut path. A local
+    # reference registry may contain legacy IDs, so checking VieNeu first can
+    # otherwise misroute the voice and unexpectedly require ElevenLabs keys.
     if _cc_parse(voice):
+        return voice
+    if vieneu_engine.parse_voice(voice):
         return voice
     el = _el_voice_id(voice)
     if el:
@@ -193,10 +205,10 @@ def resolve_voice(voice: str, lang: str = "vi") -> str:
 
 def tts_cache_key(text: str, voice: str, lang: str, match: str) -> str:
     code = _el_lang_code(lang, text)
-    if vieneu_engine.parse_voice(voice):
-        ver, model = VIENEU_TTS_VER, "vieneu-v3turbo"
-    elif voice.startswith(PREFIX_CAPCUT):
+    if voice.startswith(PREFIX_CAPCUT):
         ver, model = CC_TTS_VER, "capcut"
+    elif vieneu_engine.parse_voice(voice):
+        ver, model = VIENEU_TTS_VER, "vieneu-v3turbo"
     else:
         ver, model = EL_TTS_VER, EL_MODEL
     ref_token = vieneu_engine.reference_cache_token(voice)
