@@ -14,6 +14,7 @@ import ProjectSidebar from '@/features/project/ProjectSidebar'
 import PipelineStepper from '@/features/project/PipelineStepper'
 import SegmentList from '@/features/project/SegmentList'
 import ConfigModal from '@/features/configuration/ConfigModal'
+import { DEFAULT_CAPCUT_VOICE } from '@/features/tts/ttsSettings'
 
 // Hai màn nặng nhất (editor + TTS studio) tải theo nhu cầu — bundle chính
 // không còn vượt cảnh báo 600KB của vite.
@@ -94,7 +95,7 @@ export default function App() {
   const tabPrev = useRef<AppMode[]>([])
   const [hw, setHw] = useState<HardwareInfo>({ label: 'CPU', accel: 'cpu' })
   const [voices, setVoices] = useState<{ id: string; name: string; previewUrl?: string }[]>([
-    { id: 'el:pNInz6obpgDQGcFmaJgB', name: 'ElevenLabs · Adam' },
+    { id: DEFAULT_CAPCUT_VOICE, name: 'CapCut · Cô Gái Hoạt Ngôn' },
     { id: 'system', name: 'Giọng hệ thống (theo ngôn ngữ đích)' },
   ])
   const [settings, setSettings] = useState(loadSettings)

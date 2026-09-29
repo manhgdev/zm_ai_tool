@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
 from unittest.mock import patch
-from pipeline.flow.service import FlowService
+from pipeline.flow.service import FlowService, _COOLDOWN_BOT_S, _COOLDOWN_QUOTA_S
 
 
 class TestFlowRandomAccountAndFallback(unittest.TestCase):
@@ -212,6 +212,13 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
                 self.assertIsNotNone(picked)
                 self.assertEqual(picked["id"], "acc_ultra")
 
+    def test_quota_suspension_is_detected_for_queued_jobs(self):
+        import time
+        account = dict(self.mock_accounts[1], suspendedUntil=time.time() + 7200,
+                       suspendReason="FLOW_QUOTA_EXHAUSTED: Bạn đã đạt đến hạn mức sử dụng")
+        with patch("pipeline.flow.store.get_row", return_value=account):
+            self.assertTrue(self.service._account_quota_suspended("acc_pro"))
+
     def test_pick_eligible_account_reincludes_after_suspension_expires(self):
         import time
         accounts_expired_suspension = [
@@ -236,8 +243,7 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
             self.service.suspend_account("acc_pro", "FLOW_AUTOMATION_BLOCKED: abnormal activity")
             mock_patch.assert_called_once()
             patched = mock_patch.call_args[0][2]
-            # Severe cooldown is 12h = 43200s
-            self.assertAlmostEqual(patched["suspendedUntil"], now + 43200, delta=5)
+            self.assertAlmostEqual(patched["suspendedUntil"], now + _COOLDOWN_BOT_S, delta=5)
             self.assertIn("AUTOMATION_BLOCKED", patched["suspendReason"])
 
     def test_suspend_account_standard_duration(self):
@@ -249,8 +255,7 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
             self.service.suspend_account("acc_pro", "FLOW_QUOTA_EXHAUSTED: daily limit reached")
             mock_patch.assert_called_once()
             patched = mock_patch.call_args[0][2]
-            # Standard cooldown is 2h = 7200s
-            self.assertAlmostEqual(patched["suspendedUntil"], now + 7200, delta=5)
+            self.assertAlmostEqual(patched["suspendedUntil"], now + _COOLDOWN_QUOTA_S, delta=5)
             self.assertIn("QUOTA_EXHAUSTED", patched["suspendReason"])
 
     def test_clear_account_suspension(self):

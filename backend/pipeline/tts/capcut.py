@@ -12,7 +12,7 @@ import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlencode
 
 import httpx
@@ -427,10 +427,12 @@ def _find_audio_url(obj: Any) -> str | None:
     return None
 
 
-def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, rate: str = "1.0", timeout_s: float = 60.0) -> Path:
+def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, rate: str = "1.0", timeout_s: float = 60.0, cancel_check: Callable[[], bool] | None = None) -> Path:
     """Create CapCut TTS task, poll, download mp3. Shark → xoay device_id rồi thử lại."""
     last_err: BaseException | None = None
     for attempt in range(3):
+        if cancel_check and cancel_check():
+            raise RuntimeError('OPENVOICE_CANCELLED')
         device = load_device()
         try:
             tid, token = tts_create(text, voice, resource_id, rate, device)
@@ -438,6 +440,8 @@ def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, ra
             last: dict[str, Any] = {}
             url: str | None = None
             while time.time() < deadline:
+                if cancel_check and cancel_check():
+                    raise RuntimeError('OPENVOICE_CANCELLED')
                 last = tts_query(tid, token, device)
                 tasks = ((last.get("data") or {}).get("tasks")) or []
                 task = tasks[0] if tasks else {}
@@ -466,6 +470,8 @@ def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, ra
                 out_mp3.write_bytes(r.content)
             return out_mp3
         except Exception as e:
+            if cancel_check and cancel_check():
+                raise RuntimeError('OPENVOICE_CANCELLED') from e
             last_err = e
             # CapCut can reject a laugh intermittently; retry once with a minimal
             # valid utterance instead of failing the whole dubbing job.

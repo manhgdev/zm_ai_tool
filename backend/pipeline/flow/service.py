@@ -1473,6 +1473,17 @@ class FlowService:
         account = store.get_row("accounts", account_id) or {}
         return account.get("status") in {"reconnect", "connecting"}
 
+    def _account_quota_suspended(self, account_id: str) -> bool:
+        """Return true while Flow has told us this account reached its quota."""
+        account = store.get_row("accounts", account_id) or {}
+        suspended_until = account.get("suspendedUntil")
+        try:
+            return bool(suspended_until and float(suspended_until) > time.time()) and bool(
+                re.search(r"FLOW_QUOTA_EXHAUSTED|quota|hạn mức|usage limit|generation limit|daily limit|monthly limit", str(account.get("suspendReason") or ""), re.I)
+            )
+        except (TypeError, ValueError):
+            return False
+
     def _wake_account_waiters(self, account_id: str) -> None:
         """Unblock queued jobs waiting on shared account reconnect."""
         _ = account_id
@@ -2632,6 +2643,16 @@ class FlowService:
             account = store.get_row("accounts", account_id) or {}
             if not account:
                 raise ValueError("Prompts and a valid Flow account are required")
+            if self._account_quota_suspended(account_id):
+                if allow_fallback:
+                    alt = self._pick_eligible_account(kind=kind, model=model, exclude_ids=[account_id])
+                    if alt:
+                        account_id = str(alt.get("id"))
+                        account = alt
+                    else:
+                        raise ValueError("FLOW_QUOTA_EXHAUSTED: Tài khoản Flow đã đạt hạn mức sử dụng và không còn tài khoản thay thế.")
+                else:
+                    raise ValueError("FLOW_QUOTA_EXHAUSTED: Tài khoản Flow đã đạt hạn mức sử dụng; hãy chọn tài khoản khác hoặc chờ hạn mức reset.")
             if account.get("plan") == "Free" and kind == "image" and model == "Nano Banana Pro":
                 alt = self._pick_eligible_account(kind=kind, model=model, exclude_ids=[account_id])
                 if alt:
@@ -2777,7 +2798,20 @@ class FlowService:
                 order != self._account_next_start[account_id]
                 or self._account_active.get(account_id, 0) >= concurrency
                 or self._account_session_blocked(account_id)
+                or self._account_quota_suspended(account_id)
             ):
+                if self._account_quota_suspended(account_id):
+                    store.patch_row("jobs", job_id, {
+                        "status": "failed",
+                        "stage": "failed",
+                        "error": "FLOW_QUOTA_EXHAUSTED: Tài khoản Flow đã đạt hạn mức sử dụng; job không được chạy lại trên tài khoản này.",
+                        "updatedAt": time.time(),
+                    })
+                    if order == self._account_next_start[account_id]:
+                        self._account_next_start[account_id] += 1
+                        self._account_condition.notify_all()
+                    self._running_jobs.discard(job_id)
+                    return
                 if job_id in self._cancelled:
                     if order == self._account_next_start[account_id]:
                         self._account_next_start[account_id] += 1

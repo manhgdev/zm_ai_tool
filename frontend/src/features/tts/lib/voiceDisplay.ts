@@ -76,10 +76,7 @@ export function voiceMetadata(v: Voice): { description: string; tags: VoiceTag[]
           `Giọng từ ${source}.`)
   const tags: VoiceTag[] = [{ label: source, kind: 'source' }]
   const editableTags = canonicalVoiceTags(v.tags)
-  if (editableTags.length) {
-    tags.push(...editableTags.map((label) => ({ label, kind: 'editable' as const })))
-    return { description, tags }
-  }
+  tags.push(...editableTags.map((label) => ({ label, kind: 'editable' as const })))
   const add = (raw: string | undefined, kind: VoiceTag['kind'], map = true) => {
     const value = raw?.trim()
     if (!value) return

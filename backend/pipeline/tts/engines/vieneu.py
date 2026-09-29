@@ -712,7 +712,9 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
                 "type": "zmAI",
                 "available": ref_path.is_file(),
                 "tags": voice_store.normalize_voice_tags(item.get("tags")),
-                "language": voice_store.normalize_voice_language(item.get("language")),
+                # Current bundled zmAI references are Vietnamese; keep an
+                # explicit label even when legacy metadata omitted language.
+                "language": voice_store.normalize_voice_language(item.get("language")) or "vi",
                 "favorite": bool(item.get("favorite")),
                 "previewUrl": _preview_api_url(voice_id) if ref_path.is_file() else None,
             }
@@ -1160,6 +1162,9 @@ def clone_voice(
 ) -> dict[str, Any]:
     """Register cloned voice. PyTorch path preferred for denoise; ONNX may fail."""
     _ = transcript  # reserved for future ref_text APIs
+    from ...core.media import ffprobe_duration
+    if not ref_path.is_file() or ffprobe_duration(ref_path) <= 0:
+        raise ValueError('OPENVOICE_INVALID_AUDIO')
     voice_store.ensure_vieneu_dirs()
     display = name.strip() or "clone"
     existing = {str(x.get("id") or "") for x in voice_store.load_cloned()}
@@ -1173,33 +1178,9 @@ def clone_voice(
             shutil.copy2(ref_path, dest)
         else:
             _normalize_clone_reference(ref_path, dest)
-    # Frozen desktop uses a short-lived runtime subprocess for each synthesis.
-    # It deliberately returns no in-process VieNeu client; the subprocess
-    # receives this reference at synthesis time and calls add_voice itself.
-    # Do NOT call get_client()/probe() here — that would warm CUDA just to
-    # register a WAV path, and any parent-process torch leak can kill the app.
-    if not getattr(sys, "frozen", False):
-        client = get_client()
-        if client is not None:
-            try:
-                client.add_voice(safe, str(dest), denoise=bool(denoise), save=False)
-            except Exception as e1:
-                try:
-                    client.add_voice(safe, str(dest), denoise=False, save=False)
-                except Exception as e2:
-                    backend, device = _resolve_backend()
-                    raise RuntimeError(
-                        "Không thể đăng ký giọng clone với VieNeu "
-                        f"({backend}/{device}). Chi tiết: {e2 or e1}"
-                    ) from e2
-            # Không ghi SDK presets vào voices.json — sẽ xóa hết danh sách clone.
-            try:
-                client.save_voices(str(voice_store.SDK_VOICES_JSON))
-            except Exception:
-                pass
+    # Register only the reference here. _register_clone initializes VieNeu on
+    # the first VI/EN synthesis; OpenVoice does not need a VieNeu client.
     clean_tags = voice_store.normalize_voice_tags(tags, strict=True)
-    stat = dest.stat()
-    _clone_cache[safe] = (stat.st_mtime_ns, stat.st_size)
     voice_store.add_cloned(safe, display, f"cloned/{safe}.wav", tags=clean_tags)
     return {
         "id": f"{PREFIX_VIENEU}clone:{safe}",

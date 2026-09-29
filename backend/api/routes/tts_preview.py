@@ -92,7 +92,10 @@ def api_preview_tts(project_id: str, seg_id: str, body: PreviewTtsIn):
     lang = body.lang or settings.get("targetLang") or "vi"
     speed = min(2.0, max(0.5, float(body.speed)))
     root = ensure_layout(project_id)
-    key = tts_cache_key(text, body.voice or "system", lang, f"none|speed={speed:g}")
+    try:
+        key = tts_cache_key(text, body.voice or "system", lang, f"none|speed={speed:g}")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     name = f"{key}.wav"
     wav = root / "tts" / name
     try:
@@ -111,7 +114,8 @@ def api_preview_tts(project_id: str, seg_id: str, body: PreviewTtsIn):
 def _tts_segment_safe(text: str, voice: str, wav: Path, lang: str, speed: float) -> float:
     """Gọi tts_segment — trong frozen app chạy qua subprocess .venv-runtime để có torch."""
     import sys
-    if not getattr(sys, "frozen", False):
+    from pipeline.tts.manager import clone_route
+    if clone_route(voice, lang) or not getattr(sys, "frozen", False):
         return tts_segment(text, voice, wav, None, "none", lang=lang, speed=speed)
     # ponytail: frozen app — torch/model chỉ có trong .venv-runtime, không trong bundle
     import json as _json
@@ -228,4 +232,3 @@ def api_tts(project_id: str, name: str):
             "ETag": f'"{st.st_mtime_ns:x}-{st.st_size:x}"',
         },
     )
-

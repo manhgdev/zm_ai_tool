@@ -47,7 +47,7 @@ export const SECTION_LABELS: Record<string, string> = {
 }
 
 export const TTS_URL_SECTIONS = new Set([
-  'overview', 'history', 'voice', 'clone', 'transcribe',
+  'overview', 'history', 'voice', 'clone', 'transcribe', 'settings',
 ])
 
 export function sectionFromUrl(): string {

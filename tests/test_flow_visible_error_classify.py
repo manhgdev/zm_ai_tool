@@ -24,6 +24,10 @@ class FlowVisibleErrorClassifyTest(unittest.TestCase):
         msg = _classify_visible_flow_error("Bạn đã hết lượt tạo hôm nay")
         self.assertTrue(msg.startswith("FLOW_QUOTA_EXHAUSTED:"))
 
+    def test_usage_limit_quota_copy(self) -> None:
+        msg = _classify_visible_flow_error("Bạn đã đạt đến hạn mức sử dụng")
+        self.assertTrue(msg.startswith("FLOW_QUOTA_EXHAUSTED:"))
+
     def test_generic(self) -> None:
         msg = _classify_visible_flow_error("Something went wrong")
         self.assertTrue(msg.startswith("FLOW_GENERATION_REJECTED:"))

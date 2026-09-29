@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 
 from api.deps import (
@@ -87,14 +87,14 @@ def api_voices(lang: str = "vi"):
 
 @router.get("/api/tts/voices/{voice_id}/preview")
 def api_tts_voice_preview(voice_id: str):
+    if str(voice_id).startswith("zmt:"):
+        # ZMTTS catalog entries are already WAV files. Stream the original
+        # audio for preview; only synthesis needs a local normalized reference.
+        from pipeline.tts import zmtss_catalog
+        item = zmtss_catalog.get(voice_id)
+        if item:
+            return RedirectResponse(zmtss_catalog.remote_url(item), status_code=307)
     path = vieneu_engine.preview_path(voice_id)
-    if not path and str(voice_id).startswith("zmt:"):
-        # First preview of an online ZMTTS voice: materialize the demo WAV locally.
-        try:
-            vieneu_engine._ensure_remote_reference(voice_id)
-            path = vieneu_engine.preview_path(voice_id)
-        except Exception as exc:
-            raise HTTPException(404, str(exc) or "Không tải được audio mẫu") from exc
     if not path:
         raise HTTPException(404, "Giọng này không có audio mẫu")
     suffix = path.suffix.lower()
@@ -188,4 +188,3 @@ def api_tts_vieneu_model(body: VieNeuModelIn):
         "models": vieneu_engine.model_catalog(selected=mode),
         "loadState": getattr(vieneu_engine, "_load_state", "loading"),
     }
-

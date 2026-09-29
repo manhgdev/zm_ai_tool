@@ -18,7 +18,7 @@ from ..export.srt import SRT_STYLES, cues_from_parts, parse_srt, style_params, w
 from . import audio_utils
 from .engines.vieneu import parse_voice as parse_vieneu_voice
 from .engines.vieneu import reference_cache_token, reset_client as reset_vieneu_client
-from .manager import list_voices, tts_segment
+from .manager import list_voices, tts_segment, clone_cache_token, clone_route
 from .text_split import split_sentences
 from .voice_store import TTS_OUTPUT, TTS_TEMP, ensure_vieneu_dirs
 
@@ -74,6 +74,9 @@ def _job_fingerprint(
             "1" if trim_silence else "0",
         ]
     )
+    token = clone_cache_token(voice, lang)
+    if token:
+        raw += '|' + token
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
 
 
@@ -485,7 +488,9 @@ def synth_text_job(
                     return
                 with frac_lock:
                     chunk_frac[i] = max(chunk_frac[i], min(1.0, float(frac)))
-                _publish_frac(f"Đang tạo câu {i + 1}/{total_chunks}…")
+                route = clone_route(voice, lang)
+                stage = ('OPENVOICE_SOURCE' if frac < 0.5 else 'OPENVOICE_EMBEDDING' if frac < 0.7 else 'OPENVOICE_CONVERSION') if route else ''
+                _publish_frac(f"{stage} · {i + 1}/{total_chunks}" if stage else f"Đang tạo câu {i + 1}/{total_chunks}…")
 
             tts_segment(
                 chunk, voice, part, None, "none",
@@ -538,6 +543,7 @@ def synth_text_job(
             "lang": lang,
             "duration": dur,
             "engine": _engine_of(voice),
+            "cloneRoute": clone_route(voice, lang),
             "createdAt": datetime.now().isoformat(timespec="seconds"),
             "audioFile": "audio.wav",
             "srtFile": "subs.srt",
@@ -569,7 +575,7 @@ def synth_text_job(
             "cached": False,
         }
     except Exception:
-        if _is_cancelled(job_id) and parse_vieneu_voice(voice):
+        if _is_cancelled(job_id) and parse_vieneu_voice(voice) and not clone_route(voice, lang):
             reset_vieneu_client()
         if job_dir.is_dir() and not (job_dir / "audio.wav").is_file():
             shutil.rmtree(job_dir, ignore_errors=True)
@@ -695,7 +701,9 @@ def synth_srt_job(
                     return
                 with frac_lock:
                     cue_frac[i] = max(cue_frac[i], min(1.0, float(frac)))
-                _publish_frac(f"Đang tạo đoạn SRT {i + 1}/{total_cues}…")
+                route = clone_route(voice, lang)
+                stage = ('OPENVOICE_SOURCE' if frac < 0.5 else 'OPENVOICE_EMBEDDING' if frac < 0.7 else 'OPENVOICE_CONVERSION') if route else ''
+                _publish_frac(f"{stage} · {i + 1}/{total_cues}" if stage else f"Đang tạo đoạn SRT {i + 1}/{total_cues}…")
 
             tts_segment(
                 text, voice, part, target, use_match,
@@ -813,6 +821,7 @@ def synth_srt_job(
             "lang": lang,
             "duration": dur,
             "engine": _engine_of(voice),
+            "cloneRoute": clone_route(voice, lang),
             "createdAt": datetime.now().isoformat(timespec="seconds"),
             "audioFile": "audio.wav",
             "srtFile": "subs.srt",
@@ -845,7 +854,7 @@ def synth_srt_job(
             "cached": False,
         }
     except Exception:
-        if _is_cancelled(job_id) and parse_vieneu_voice(voice):
+        if _is_cancelled(job_id) and parse_vieneu_voice(voice) and not clone_route(voice, lang):
             reset_vieneu_client()
         if job_dir.is_dir() and not (job_dir / "audio.wav").is_file():
             shutil.rmtree(job_dir, ignore_errors=True)

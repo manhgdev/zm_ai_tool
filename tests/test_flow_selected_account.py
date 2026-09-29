@@ -9,6 +9,30 @@ from pipeline.flow.service import FlowService
 
 
 class TestFlowSelectedAccount(unittest.TestCase):
+    def test_selected_quota_account_is_rejected_before_enqueue(self):
+        import time
+        service = FlowService()
+        account = {
+            "id": "acc_selected",
+            "label": "Selected",
+            "plan": "Pro",
+            "status": "online",
+            "projectId": "project",
+            "credits": 10,
+            "suspendedUntil": time.time() + 7200,
+            "suspendReason": "FLOW_QUOTA_EXHAUSTED: Bạn đã đạt đến hạn mức sử dụng",
+        }
+        with patch("pipeline.flow.store.get_row", return_value=account), \
+             patch("pipeline.flow.store.list_rows", return_value=[]):
+            with self.assertRaises(ValueError) as ctx:
+                service.enqueue({
+                    "prompts": ["scene"],
+                    "kind": "video",
+                    "accountId": "acc_selected",
+                    "settings": {"model": "Veo 3.1 - Fast"},
+                })
+        self.assertIn("FLOW_QUOTA_EXHAUSTED", str(ctx.exception))
+
     def test_concrete_account_disables_fallback_by_default(self):
         service = FlowService()
         account = {

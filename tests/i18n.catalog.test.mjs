@@ -47,6 +47,27 @@ test('download completion automatically applies update once without a second but
   assert.match(source, /if \(updateDialog\?\.kind !== 'downloading' && updateDialog\?\.kind !== 'cancelling'\) return/)
 })
 
+test('OpenVoice controls and errors have Vietnamese and English labels', () => {
+  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
+  const messages = readFileSync(new URL('../frontend/src/app/i18n.tsx', import.meta.url), 'utf8')
+  const voiceFilter = source.slice(source.indexOf('const engineVoices = useMemo'), source.indexOf('const voiceFilterTags'))
+  assert.match(voiceFilter, /v\.language\?\.split/)
+  assert.doesNotMatch(voiceFilter, /mode === 'reference'/)
+  assert.match(source, /t\('Cài OpenVoice', 'Install OpenVoice'\)/)
+  assert.match(source, /t\('Cài đặt TTS', 'TTS settings'\)/)
+  assert.match(source, /t\('Clone giọng đa ngôn ngữ', 'Multilingual voice cloning'\)/)
+  assert.match(source, /t\('Chỉ áp dụng cho giọng clone: CapCut\/ElevenLabs đọc nội dung nguồn, OpenVoice đổi sang giọng clone đã chọn\. Giọng cloud trực tiếp không qua OpenVoice\.', 'Clone voices only:/)
+  const sidebar = source.split('</aside>')[0]
+  assert.match(sidebar, /go\('settings'\)/)
+  assert.doesNotMatch(sidebar, /tts-openvoice-card/)
+  const routes = readFileSync(new URL('../frontend/src/features/tts/lib/ttsStudioHelpers.tsx', import.meta.url), 'utf8')
+  assert.match(routes, /TTS_URL_SECTIONS = new Set\(\[[\s\S]*?'settings'/)
+  assert.match(source, /t\('Xác nhận ngôn ngữ nội dung', 'Confirm input language'\)/)
+  for (const key of ['TTS_LANGUAGE_REQUIRED', 'TTS_SOURCE_UNAVAILABLE', 'OPENVOICE_NOT_INSTALLED', 'OPENVOICE_WORKER_FAILED', 'OPENVOICE_TIMEOUT']) {
+    assert.match(messages, new RegExp(`${key}: \\[\\s*'[^']+',\\s*'[^']+'\\s*\\]`))
+  }
+})
+
 test('installation progress has a single detailed surface, without dependency dumps', () => {
   const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
   const status = readFileSync(new URL('../frontend/src/features/configuration/runtimeStatus.ts', import.meta.url), 'utf8')
@@ -114,4 +135,3 @@ test('static English catalog entries are non-empty', () => {
     assert.ok(value.trim(), key)
   }
 })
-

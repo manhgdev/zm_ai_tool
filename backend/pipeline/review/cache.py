@@ -26,6 +26,7 @@ STAGES = (
 
 # regenerate invalidates from this stage onward
 INVALIDATE_FROM = {
+    'cloneCacheToken': 'tts',
     "durationSec": "script",
     "reviewPlanVersion": "script",
     "reviewModel": "story_graph",

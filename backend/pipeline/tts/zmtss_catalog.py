@@ -118,7 +118,9 @@ def download_reference(item: dict[str, Any], destination: Path) -> None:
     # deleting or replacing another request's in-progress files.
     token = uuid.uuid4().hex
     source = destination.with_name(f".{destination.name}.{token}.download")
-    pending = destination.with_name(f".{destination.name}.{token}.tmp")
+    # Keep the final extension so ffmpeg can infer the WAV muxer. A suffix of
+    # only `.tmp` makes ffmpeg reject the output before normalization starts.
+    pending = destination.with_name(f".{destination.stem}.{token}.tmp{destination.suffix}")
     try:
         request = urllib.request.Request(remote_url(item), headers={"User-Agent": "zmAI-TTS/1"})
         with urllib.request.urlopen(request, timeout=30) as response, source.open("wb") as handle:

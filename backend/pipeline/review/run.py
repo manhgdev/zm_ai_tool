@@ -126,6 +126,12 @@ def run_review_job(job: dict[str, Any]) -> dict[str, Any]:
     settings["recognitionEngine"] = recognition_engine
     lang = str(settings.get("language") or "vi")
     voice = str(settings.get("voice") or "system")
+    from pipeline.tts.manager import clone_cache_token
+    token = clone_cache_token(voice, lang)
+    if token:
+        settings['cloneCacheToken'] = token
+    else:
+        settings.pop('cloneCacheToken', None)
     _note(job_id, f"Nguồn: {src}", stage="metadata", progress=0.04)
     _note(job_id, f"Cài đặt: nhận dạng={recognition_engine} gốc={source_lang} thoại={lang} mode={mode} voice={voice} caption={settings.get('captionMode') or 'off'}")
     check_cancel(job_id)
@@ -1031,7 +1037,8 @@ def _finalize_key(settings: dict[str, Any]) -> str:
         "quality",
     )
     settings_key = "|".join(f"{key}={_norm_setting(settings.get(key))}" for key in keys)
-    return f"finalizeVersion={REVIEW_FINALIZE_VERSION}|{settings_key}"
+    token = settings.get('cloneCacheToken')
+    return f"finalizeVersion={REVIEW_FINALIZE_VERSION}|{settings_key}" + (f'|clone={token}' if token else '')
 
 
 def _media_artifact_ok(path: Path) -> bool:
@@ -1454,7 +1461,8 @@ def _tts_parallel(
     def one(job: dict[str, Any]) -> tuple[dict[str, Any], float]:
         set_job_context(job_id)
         check_cancel(job_id)
-        dur = tts_segment(job["text"], voice, job["wav"], None, "none", lang=lang)
+        dur = tts_segment(job["text"], voice, job["wav"], None, "none", lang=lang,
+                          cancel_check=lambda: check_cancel(job_id))
         return job, float(dur or 0) or 2.5
 
     def prog(cur: int, total: int, w_now: int) -> None:
