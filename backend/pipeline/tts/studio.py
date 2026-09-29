@@ -56,7 +56,7 @@ def _job_fingerprint(
 
     raw = "|".join(
         [
-            "v11",  # v11: do not normalize manually entered text in the engine layer
+            "v9",  # zmAI/clone: infer()+no ref_codes (babble guard; read only typed text)
             (text or "").strip(),
             (srt_text or "").strip(),
             (voice or "").strip(),

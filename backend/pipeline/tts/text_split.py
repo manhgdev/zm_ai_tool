@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 
 # Kết thúc câu: . ! ? … rồi space + chữ (kể cả sau năm 2025.)
 # Không tách số thập phân / nghìn: 100.000  12.6  12,6%
@@ -15,27 +14,6 @@ _SENT_END = re.compile(
     r"(?=\s+[\"'“”‘’]?[\wÀ-ỹ]|\s*$)",
 )
 
-_CJK = r"\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
-
-
-def normalize_tts_text(text: str) -> str:
-    """Repair harmless ASR spacing artifacts before sending text to a TTS engine.
-
-    This does not correct words that speech recognition got wrong; it only
-    removes replacement characters and spaces inserted between CJK characters
-    or inside short Latin-letter/number identifiers (``A 7`` → ``A7``).
-    """
-    value = "".join(
-        char for char in str(text or "").replace("�", "")
-        if char in "\n\r\t" or unicodedata.category(char) not in {"Cc", "Cf"}
-    )
-    lines = []
-    for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = re.sub(rf"(?<=[{_CJK}])\s+(?=[{_CJK}])", "", line)
-        line = re.sub(r"(?<![A-Za-z])([A-Za-z])\s+(?=\d)", r"\1", line)
-        lines.append(re.sub(r"[ \t]+", " ", line).strip())
-    return "\n".join(lines).strip()
-
 
 def split_sentences(text: str, max_chars: int = 280, *, by_sentence: bool = True) -> list[str]:
     """Tách text thành phần TTS.
@@ -47,24 +25,27 @@ def split_sentences(text: str, max_chars: int = 280, *, by_sentence: bool = True
     raw = (text or "").strip()
     if not raw:
         return ["."]
-    preserve_lines = "\n" in raw.replace("\r\n", "\n")
 
     paragraphs = re.split(r"\n\s*\n+", raw.replace("\r\n", "\n"))
     sentences: list[str] = []
 
     for para in paragraphs:
-        lines = [re.sub(r"[ \t]+", " ", line).strip() for line in para.splitlines()]
-        for line in filter(None, lines):
-            if not by_sentence:
-                sentences.append(line)
-                continue
-            # 1) Tách ! ? …
-            # 2) Tách . không bị kẹp giữa 2 chữ số
-            parts = re.split(
-                r"(?<=[!?\…])\s+|(?<=\.)(?!\d)\s+(?=[\"'“”‘’]?[^\s\d])",
-                line,
-            )
-            sentences.extend(p.strip() for p in parts if p.strip())
+        para = re.sub(r"[ \t\n]+", " ", para).strip()
+        if not para:
+            continue
+        if not by_sentence:
+            sentences.append(para)
+            continue
+        # 1) Tách ! ? …
+        # 2) Tách . không bị kẹp giữa 2 chữ số
+        parts = re.split(
+            r"(?<=[!?\…])\s+|(?<=\.)(?!\d)\s+(?=[\"'“”‘’]?[^\s\d])",
+            para,
+        )
+        for p in parts:
+            p = p.strip()
+            if p:
+                sentences.append(p)
 
     if not sentences:
         return [raw]
@@ -83,7 +64,7 @@ def split_sentences(text: str, max_chars: int = 280, *, by_sentence: bool = True
 
     # Gộp mẩu cực ngắn (< 24 ký tự) vào câu trước nếu còn chỗ
     # (không gộp qua ranh giới đoạn — chỉ trong cùng lần tách câu)
-    if not by_sentence or preserve_lines:
+    if not by_sentence:
         return out or ["."]
 
     merged: list[str] = []
