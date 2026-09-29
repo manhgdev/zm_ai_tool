@@ -56,7 +56,7 @@ def _job_fingerprint(
 
     raw = "|".join(
         [
-            "v10",  # v10: normalize CJK ASR spacing and replacement characters before TTS
+            "v11",  # v11: do not normalize manually entered text in the engine layer
             (text or "").strip(),
             (srt_text or "").strip(),
             (voice or "").strip(),

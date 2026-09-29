@@ -22,5 +22,9 @@ def test_normalize_removes_non_printing_controls() -> None:
     assert normalize_tts_text("Xin\u0000chào\u200b bạn �") == "Xinchào bạn"
 
 
+def test_normalize_preserves_transcript_lines() -> None:
+    assert normalize_tts_text("Câu một\nCâu hai") == "Câu một\nCâu hai"
+
+
 def test_split_sentences_keeps_transcript_lines_separate() -> None:
     assert split_sentences("Câu một\nCâu hai", by_sentence=True) == ["Câu một", "Câu hai"]

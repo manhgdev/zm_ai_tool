@@ -29,10 +29,12 @@ def normalize_tts_text(text: str) -> str:
         char for char in str(text or "").replace("�", "")
         if char in "\n\r\t" or unicodedata.category(char) not in {"Cc", "Cf"}
     )
-    value = re.sub(rf"(?<=[{_CJK}])\s+(?=[{_CJK}])", "", value)
-    value = re.sub(r"(?<![A-Za-z])([A-Za-z])\s+(?=\d)", r"\1", value)
-    value = re.sub(r"[ \t\n\r]+", " ", value)
-    return value.strip()
+    lines = []
+    for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = re.sub(rf"(?<=[{_CJK}])\s+(?=[{_CJK}])", "", line)
+        line = re.sub(r"(?<![A-Za-z])([A-Za-z])\s+(?=\d)", r"\1", line)
+        lines.append(re.sub(r"[ \t]+", " ", line).strip())
+    return "\n".join(lines).strip()
 
 
 def split_sentences(text: str, max_chars: int = 280, *, by_sentence: bool = True) -> list[str]:
