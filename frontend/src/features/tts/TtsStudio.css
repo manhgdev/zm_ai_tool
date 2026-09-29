@@ -53,12 +53,14 @@ html.dark .tts-studio {
 .tts-settings-status.is-error { color: #b91c1c; }
 html.dark .tts-settings-status.is-ready { color: #bbf7d0; }
 html.dark .tts-settings-status.is-error { color: #fca5a5; }
-.tts-settings-routes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 0 26px 26px; padding: 20px; background: var(--tts-bg); border-radius: 10px; }
-.tts-settings-routes > div { display: flex; flex-direction: column; gap: 7px; }
-.tts-settings-routes > div + div { border-left: 1px solid var(--tts-line); padding-left: 20px; }
-.tts-settings-routes span { font-size: 0.75rem; color: var(--tts-muted); }
-.tts-settings-routes strong { font-size: 0.88rem; font-weight: 600; }
-.tts-settings-routes small { font-size: 0.74rem; color: var(--tts-muted); line-height: 1.5; }
+.tts-settings-routes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 26px 26px; }
+.tts-settings-route { position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 16px; border: 1px solid var(--tts-line); border-radius: 12px; background: var(--tts-bg); overflow: hidden; }
+.tts-settings-route::before { content: ''; width: 28px; height: 3px; border-radius: 99px; background: var(--tts-blue); }
+.tts-settings-route.route-cloud::before { background: #0ea5e9; }
+.tts-settings-route.route-clone::before { background: var(--tts-purple); }
+.tts-settings-route span { font-size: 0.72rem; font-weight: 600; color: var(--tts-muted); }
+.tts-settings-route strong { font-size: 0.84rem; font-weight: 700; line-height: 1.35; }
+.tts-settings-route small { min-height: 2.8em; font-size: 0.72rem; color: var(--tts-muted); line-height: 1.5; }
 .tts-settings-footer { padding: 20px 26px; border-top: 1px solid var(--tts-line); display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
 .tts-settings-footer p { margin: 0; flex: 1 1 220px; font-size: 0.77rem; line-height: 1.6; color: var(--tts-muted); }
 .tts-settings-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -66,8 +68,7 @@ html.dark .tts-settings-status.is-error { color: #fca5a5; }
 .tts-settings-actions button:focus-visible { outline: 2px solid var(--tts-blue); outline-offset: 3px; }
 @media (max-width: 600px) {
   .tts-settings-engine-head, .tts-settings-footer { padding: 18px; }
-  .tts-settings-routes { grid-template-columns: 1fr; margin: 0 18px 18px; padding: 16px; }
-  .tts-settings-routes > div + div { border-left: 0; border-top: 1px solid var(--tts-line); padding: 16px 0 0; }
+  .tts-settings-routes { grid-template-columns: 1fr; margin: 0 18px 18px; }
   .tts-settings-actions { width: 100%; }
   .tts-settings-actions .tts-btn { flex: 1 1 auto; }
 }

@@ -1745,9 +1745,9 @@ export default function TtsStudio({
                 </span>
               </div>
               <div className="tts-settings-routes">
-                <div><span>{t('Tiếng Việt & tiếng Anh', 'Vietnamese & English')}</span><strong>VieNeu v3 Turbo</strong><small>{t('Giữ bộ máy hiện tại', 'Uses the existing engine')}</small></div>
-                <div><span>{t('Giọng cloud trực tiếp', 'Direct cloud voices')}</span><strong>CapCut / ElevenLabs → Audio</strong><small>{t('Tạo cloud xong trả thẳng audio, không qua OpenVoice.', 'Cloud synthesis returns the audio directly without OpenVoice.')}</small></div>
-                <div><span>{t('Clone ngôn ngữ khác', 'Clones in other languages')}</span><strong>Cloud → OpenVoice → Clone</strong><small>{t('Chỉ khi chọn giọng clone: cloud tạo audio nguồn, OpenVoice chuyển sang giọng clone đã chọn.', 'Only for a clone voice: cloud creates source audio, then OpenVoice converts it to the selected clone.')}</small></div>
+                <div className="tts-settings-route route-local"><span>{t('Tiếng Việt & tiếng Anh', 'Vietnamese & English')}</span><strong>VieNeu v3 Turbo</strong><small>{t('Giữ bộ máy hiện tại', 'Uses the existing engine')}</small></div>
+                <div className="tts-settings-route route-cloud"><span>{t('Giọng cloud trực tiếp', 'Direct cloud voices')}</span><strong>CapCut / ElevenLabs → Audio</strong><small>{t('Tạo cloud xong trả thẳng audio, không qua OpenVoice.', 'Cloud synthesis returns the audio directly without OpenVoice.')}</small></div>
+                <div className="tts-settings-route route-clone"><span>{t('Clone ngôn ngữ khác', 'Clones in other languages')}</span><strong>Cloud → OpenVoice → Clone</strong><small>{t('Chỉ khi chọn giọng clone: cloud tạo audio nguồn, OpenVoice chuyển sang giọng clone đã chọn.', 'Only for a clone voice: cloud creates source audio, then OpenVoice converts it to the selected clone.')}</small></div>
               </div>
               <div className="tts-settings-footer">
                 <p>{t('Cài riêng, không thay đổi VieNeu. Không tải sẵn giọng mẫu.', 'Installed separately without changing VieNeu. No voice samples downloaded.')}</p>
