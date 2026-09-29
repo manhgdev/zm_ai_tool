@@ -1746,7 +1746,8 @@ export default function TtsStudio({
               </div>
               <div className="tts-settings-routes">
                 <div><span>{t('Tiếng Việt & tiếng Anh', 'Vietnamese & English')}</span><strong>VieNeu v3 Turbo</strong><small>{t('Giữ bộ máy hiện tại', 'Uses the existing engine')}</small></div>
-                <div><span>{t('Clone ngôn ngữ khác', 'Clones in other languages')}</span><strong>Cloud tạo nguồn → OpenVoice chuyển giọng</strong><small>{t('Chỉ áp dụng cho giọng clone: CapCut/ElevenLabs đọc nội dung nguồn, OpenVoice đổi sang giọng clone đã chọn. Giọng cloud trực tiếp không qua OpenVoice.', 'Clone voices only: CapCut/ElevenLabs generate the source audio, then OpenVoice converts it to the selected clone. Direct cloud voices do not use OpenVoice.')}</small></div>
+                <div><span>{t('Giọng cloud trực tiếp', 'Direct cloud voices')}</span><strong>CapCut / ElevenLabs → Audio</strong><small>{t('Tạo cloud xong trả thẳng audio, không qua OpenVoice.', 'Cloud synthesis returns the audio directly without OpenVoice.')}</small></div>
+                <div><span>{t('Clone ngôn ngữ khác', 'Clones in other languages')}</span><strong>Cloud → OpenVoice → Clone</strong><small>{t('Chỉ khi chọn giọng clone: cloud tạo audio nguồn, OpenVoice chuyển sang giọng clone đã chọn.', 'Only for a clone voice: cloud creates source audio, then OpenVoice converts it to the selected clone.')}</small></div>
               </div>
               <div className="tts-settings-footer">
                 <p>{t('Cài riêng, không thay đổi VieNeu. Không tải sẵn giọng mẫu.', 'Installed separately without changing VieNeu. No voice samples downloaded.')}</p>

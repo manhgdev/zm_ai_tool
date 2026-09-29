@@ -56,7 +56,8 @@ test('OpenVoice controls and errors have Vietnamese and English labels', () => {
   assert.match(source, /t\('Cài OpenVoice', 'Install OpenVoice'\)/)
   assert.match(source, /t\('Cài đặt TTS', 'TTS settings'\)/)
   assert.match(source, /t\('Clone giọng đa ngôn ngữ', 'Multilingual voice cloning'\)/)
-  assert.match(source, /t\('Chỉ áp dụng cho giọng clone: CapCut\/ElevenLabs đọc nội dung nguồn, OpenVoice đổi sang giọng clone đã chọn\. Giọng cloud trực tiếp không qua OpenVoice\.', 'Clone voices only:/)
+  assert.match(source, /t\('Tạo cloud xong trả thẳng audio, không qua OpenVoice\.', 'Cloud synthesis returns the audio directly without OpenVoice\.'/)
+  assert.match(source, /t\('Chỉ khi chọn giọng clone: cloud tạo audio nguồn, OpenVoice chuyển sang giọng clone đã chọn\.'/)
   const sidebar = source.split('</aside>')[0]
   assert.match(sidebar, /go\('settings'\)/)
   assert.doesNotMatch(sidebar, /tts-openvoice-card/)
