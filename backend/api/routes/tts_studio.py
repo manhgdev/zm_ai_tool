@@ -69,6 +69,7 @@ from pipeline.export.mux import (
     separate_no_vocals,
 )
 from pipeline.tts import engines_status
+from pipeline.tts.text_split import normalize_tts_text
 
 router = APIRouter()
 
@@ -218,10 +219,10 @@ async def api_tts_studio_transcribe(
     def _join_text(rows: list) -> str:
         parts: list[str] = []
         for seg in rows or []:
-            piece = str(seg.get("source") or seg.get("text") or "").strip()
+            piece = normalize_tts_text(str(seg.get("source") or seg.get("text") or ""))
             if piece:
                 parts.append(piece)
-        return " ".join(parts).strip()
+        return "\n".join(parts).strip()
 
     def _run() -> None:
         from pipeline.tts.studio import _jobs_lock, _running

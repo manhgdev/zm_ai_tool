@@ -56,7 +56,7 @@ def _job_fingerprint(
 
     raw = "|".join(
         [
-            "v9",  # zmAI/clone: infer()+no ref_codes (babble guard; read only typed text)
+            "v10",  # v10: normalize CJK ASR spacing and replacement characters before TTS
             (text or "").strip(),
             (srt_text or "").strip(),
             (voice or "").strip(),

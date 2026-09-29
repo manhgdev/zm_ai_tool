@@ -24,6 +24,7 @@ from .eleven import (
 )
 from . import capcut as capcut_client
 from .schemas import PREFIX_CAPCUT, PREFIX_ELEVEN, PREFIX_VIENEU, VIENEU_TTS_VER
+from .text_split import normalize_tts_text
 
 CC_TTS_VER = "cc6-final-trim-leading-silence"
 _VOICES_JSON = Path(__file__).resolve().parent / "voices_capcut.json"
@@ -261,6 +262,7 @@ def tts_segment(
 
     Long text: VieNeu handles chunking via max_chars; studio layer may pre-split.
     """
+    text = normalize_tts_text(text)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     has_file = out_wav.exists() and out_wav.stat().st_size > 128
     if not has_file:

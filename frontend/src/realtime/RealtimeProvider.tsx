@@ -85,16 +85,13 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
     source.onmessage = (message) => {
       try { dispatch(JSON.parse(message.data) as RealtimeEvent) } catch { /* ignore malformed event */ }
     }
-    ;['connected', 'snapshot', 'snapshot.required', 'flow.job.updated', 'flow.job.created', 'flow.job.deleted', 'flow.account.updated', 'flow.account.created', 'flow.account.deleted', 'flow.log.appended', 'flow.log.deleted', 'drawing.job.created', 'drawing.job.updated', 'drawing.job.deleted', 'automation.job.created', 'automation.job.updated', 'automation.job.deleted', 'srt-export.job.created', 'srt-export.job.updated', 'srt-export.job.deleted', 'cleaner.job.created', 'cleaner.job.updated', 'cleaner.job.deleted', 'srt-image.job.created', 'srt-image.job.updated', 'srt-image.job.deleted', 'download.job.created', 'download.job.updated', 'download.job.deleted', 'series.created', 'series.updated', 'series.deleted'].forEach((eventType) => {
+    const listen = (eventType: string) => {
       source.addEventListener(eventType, (message) => {
         const data = (message as MessageEvent).data
         try { dispatch(JSON.parse(data) as RealtimeEvent) } catch { /* ignore malformed event */ }
       })
-    })
-    source.addEventListener('tts.job.updated', (message) => {
-      const data = (message as MessageEvent).data
-      try { dispatch(JSON.parse(data) as RealtimeEvent) } catch { /* ignore malformed event */ }
-    })
+    }
+    ;['connected', 'snapshot', 'snapshot.required', 'tts.job.updated', 'flow.job.updated', 'flow.job.created', 'flow.job.deleted', 'flow.account.updated', 'flow.account.created', 'flow.account.deleted', 'flow.log.appended', 'flow.log.deleted', 'drawing.job.created', 'drawing.job.updated', 'drawing.job.deleted', 'automation.job.created', 'automation.job.updated', 'automation.job.deleted', 'srt-export.job.created', 'srt-export.job.updated', 'srt-export.job.deleted', 'cleaner.job.created', 'cleaner.job.updated', 'cleaner.job.deleted', 'srt-image.job.created', 'srt-image.job.updated', 'srt-image.job.deleted', 'download.job.created', 'download.job.updated', 'download.job.deleted', 'series.created', 'series.updated', 'series.deleted'].forEach(listen)
   }, [dispatch])
   connectRef.current = connect
 
