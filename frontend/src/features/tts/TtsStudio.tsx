@@ -49,7 +49,7 @@ import {
 import {
   SliderNumber, WAVE_BARS,
   FULL_DASHBOARD, COMING_SOON, SECTION_LABELS, sectionFromUrl,
-  FAVORITE_LS_KEY, OUTPUT_DIR_LS_KEY, TTS_TEXT_LS_KEY,
+  FAVORITE_LS_KEY, OUTPUT_DIR_LS_KEY, TTS_TEXT_LS_KEY, TTS_TRANSCRIBE_RESULT_LS_KEY,
   TTS_SRT_LS_KEY, TTS_INPUT_MODE_LS_KEY, TTS_ACTIVE_JOB_LS_KEY,
   TTS_URL_SECTIONS,
 } from './lib/ttsStudioHelpers'
@@ -218,7 +218,13 @@ export default function TtsStudio({
   const [transcribeFile, setTranscribeFile] = useState<File | null>(null)
   const [transcribeLang, setTranscribeLang] = useState('auto')
   const [transcribeEngine, setTranscribeEngine] = useState<TranscribeEngine>('whisper')
-  const [transcribeResult, setTranscribeResult] = useState('')
+  const [transcribeResult, setTranscribeResult] = useState(() => {
+    try {
+      return localStorage.getItem(TTS_TRANSCRIBE_RESULT_LS_KEY) || ''
+    } catch {
+      return ''
+    }
+  })
   const [cloneTags, setCloneTags] = useState<VoiceTagLabel[]>([])
   const [previewSample, setPreviewSample] = useState('')
   const [srtRaw, setSrtRaw] = useState(() => {
@@ -245,6 +251,15 @@ export default function TtsStudio({
       /* ignore */
     }
   }, [text])
+
+  useEffect(() => {
+    try {
+      if (transcribeResult) localStorage.setItem(TTS_TRANSCRIBE_RESULT_LS_KEY, transcribeResult)
+      else localStorage.removeItem(TTS_TRANSCRIBE_RESULT_LS_KEY)
+    } catch {
+      /* ignore */
+    }
+  }, [transcribeResult])
 
   useEffect(() => {
     try {

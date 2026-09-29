@@ -59,6 +59,7 @@ export function sectionFromUrl(): string {
 export const FAVORITE_LS_KEY = 'zm-ai-tool:tts-voice-favorites'
 export const OUTPUT_DIR_LS_KEY = 'zm-ai-tool:tts-output-dir.v1'
 export const TTS_TEXT_LS_KEY = 'zm-ai-tool:tts-text:v1'
+export const TTS_TRANSCRIBE_RESULT_LS_KEY = 'zm-ai-tool:tts-transcribe-result:v1'
 export const TTS_SRT_LS_KEY = 'zm-ai-tool:tts-srt:v1'
 export const TTS_INPUT_MODE_LS_KEY = 'zm-ai-tool:tts-input-mode:v1'
 export const TTS_ACTIVE_JOB_LS_KEY = 'zm-ai-tool:tts-active-job:v1'
