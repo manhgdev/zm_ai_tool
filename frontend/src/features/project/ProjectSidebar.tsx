@@ -5,6 +5,8 @@ import { localize, useLocale } from '@/app/i18n'
 import { normalizeTranslatorForEngine, translatorOptions } from '@/app/appSettings'
 
 type AnalysisRegion = { x: number; y: number; w: number; h: number }
+type LiveTranslationModel = { id: string; label: string; free: boolean }
+const CLOUD_TRANSLATORS = new Set(['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral'])
 
 const DEFAULT_ANALYSIS_REGION: AnalysisRegion = { x: 0.05, y: 0.55, w: 0.9, h: 0.28 }
 const DEFAULT_BLUR_BAND_REGION: AnalysisRegion = { x: 0.08, y: 0.72, w: 0.84, h: 0.16 }
@@ -138,6 +140,10 @@ export default function Sidebar({
   const [confirmClear, setConfirmClear] = useState(false)
   const [clearParts, setClearParts] = useState<string[]>(() => [...ALL_CACHE_PARTS])
   const [subtitleSources, setSubtitleSources] = useState<{ name: string; label: string }[]>([])
+  const [translationModels, setTranslationModels] = useState<LiveTranslationModel[]>([])
+  const [translationModelsLoading, setTranslationModelsLoading] = useState(false)
+  const [translationModel, setTranslationModel] = useState('')
+  const [ollamaLocalModels, setOllamaLocalModels] = useState<string[]>([])
   const [previewDraft, setPreviewDraft] = useState(
     String(settings.previewSec > 0 ? settings.previewSec : 20),
   )
@@ -149,6 +155,50 @@ export default function Sidebar({
     }
     void api.subtitles(projectId).then((r) => setSubtitleSources(r.items)).catch(() => setSubtitleSources([]))
   }, [projectId])
+
+  useEffect(() => {
+    if (!CLOUD_TRANSLATORS.has(settings.translator)) {
+      setTranslationModels([])
+      return
+    }
+    let cancelled = false
+    setTranslationModelsLoading(true)
+    void api.getConfig().then((cfg) => {
+      if (!cancelled) setTranslationModel(cfg.cloud?.[settings.translator as keyof typeof cfg.cloud]?.model || '')
+    }).catch(() => { if (!cancelled) setTranslationModel('') })
+    fetch(`/api/chat/models?provider=${encodeURIComponent(settings.translator)}&includePaid=true`)
+      .then((response) => response.ok ? response.json() as Promise<{ models?: unknown }> : Promise.reject(new Error('model discovery failed')))
+      .then((data) => {
+        const rows = Array.isArray(data.models) ? data.models.flatMap((item) => {
+          if (!item || typeof item !== 'object') return []
+          const row = item as Record<string, unknown>
+          const id = String(row.id || '').trim()
+          const capabilities = Array.isArray(row.capabilities) ? row.capabilities.map(String) : []
+          if (capabilities.length && !capabilities.includes('text')) return []
+          return id ? [{ id, label: String(row.label || id), free: row.free === true }] : []
+        }) : []
+        if (!cancelled) setTranslationModels(rows)
+      })
+      .catch(() => { if (!cancelled) setTranslationModels([]) })
+      .finally(() => { if (!cancelled) setTranslationModelsLoading(false) })
+    return () => { cancelled = true }
+  }, [settings.translator])
+
+  useEffect(() => {
+    if (settings.translator !== 'ollama' || settings.ollamaMode !== 'local') {
+      setOllamaLocalModels([])
+      return
+    }
+    let cancelled = false
+    fetch('/api/chat/models?provider=ollama&refresh=true')
+      .then((response) => response.ok ? response.json() as Promise<{ models?: Array<{ id?: string }> }> : Promise.reject(new Error('ollama discovery failed')))
+      .then((data) => {
+        const models = (data.models || []).map((item) => String(item.id || '').trim()).filter(Boolean)
+        if (!cancelled) setOllamaLocalModels(models)
+      })
+      .catch(() => { if (!cancelled) setOllamaLocalModels([]) })
+    return () => { cancelled = true }
+  }, [settings.ollamaMode, settings.translator])
 
   useEffect(() => {
     setInputSize({ width: 0, height: 0 })
@@ -328,6 +378,12 @@ export default function Sidebar({
   }
   const selectEngine = (engine: ProjectSettings['engine']) => {
     onSettings({ ...settings, engine, translator: normalizeTranslatorForEngine(engine, settings.translator) })
+  }
+
+  const selectTranslationModel = (model: string) => {
+    if (busy || !CLOUD_TRANSLATORS.has(settings.translator) || !model) return
+    setTranslationModel(model)
+    void api.saveConfig({ cloud: { [settings.translator]: { model } } }).catch(() => undefined)
   }
 
   /** Commit ô Preview → settings; trả về số giây đã chốt (dùng khi bấm Preview ngay). */
@@ -547,6 +603,37 @@ export default function Sidebar({
             {translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
           </select>
         </Field>
+        {CLOUD_TRANSLATORS.has(settings.translator) && (
+          <Field
+            className="translation-model-field"
+            label={t('Model dịch', 'Translation model')}
+            hint={translationModelsLoading
+              ? t('Đang tải danh sách model thật…', 'Loading live model list…')
+              : undefined}
+          >
+            <select
+              value={translationModel}
+              disabled={busy || translationModelsLoading || !translationModels.length}
+              onChange={(e) => selectTranslationModel(e.target.value)}
+            >
+              {!translationModels.length && <option value="">{t('Chưa tải được model', 'No model list loaded')}</option>}
+              {translationModels.some((model) => model.free) && (
+                <optgroup label={t('Model free dùng được', 'Free models available')}>
+                  {translationModels.filter((model) => model.free).map((model) => (
+                    <option key={model.id} value={model.id}>{model.label || model.id}</option>
+                  ))}
+                </optgroup>
+              )}
+              {translationModels.some((model) => !model.free) && (
+                <optgroup label={t('Model cần credit', 'Models requiring credit')}>
+                  {translationModels.filter((model) => !model.free).map((model) => (
+                    <option key={model.id} value={model.id}>{model.label || model.id} — {t('cần credit', 'credit required')}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </Field>
+        )}
       </div>
 
       {settings.engine === 'subtitle' && (
@@ -590,15 +677,14 @@ export default function Sidebar({
               </div>
             </Field>
           ) : (
-            <Field label="Mức model local">
+            <Field label="Model">
               <select
-                value={settings.ollamaLocalTier}
+                value={ollamaLocalModels.includes(settings.ollamaModel) ? settings.ollamaModel : ''}
                 disabled={busy}
-                onChange={(e) => set('ollamaLocalTier', e.target.value as ProjectSettings['ollamaLocalTier'])}
+                onChange={(e) => set('ollamaModel', e.target.value)}
               >
-                <option value="fast">Nhanh</option>
-                <option value="balanced">Cân bằng</option>
-                <option value="quality">Chất lượng</option>
+                {!ollamaLocalModels.length && <option value="">{t('Chưa tìm thấy model Ollama', 'No Ollama model found')}</option>}
+                {ollamaLocalModels.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
             </Field>
           )}

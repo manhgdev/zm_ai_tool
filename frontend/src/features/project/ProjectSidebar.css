@@ -227,6 +227,10 @@
   gap: 8px;
 }
 
+.field-row > .translation-model-field {
+  grid-column: 1 / -1;
+}
+
 .field select {
   width: 100%;
   border: 1px solid var(--line);

@@ -55,6 +55,12 @@ PROVIDERS: dict[str, dict[str, str]] = {
         "model": "nvidia/riva-translate-4b-instruct-v2",
         "label": "NVIDIA NIM",
     },
+    "mistral": {
+        "env": "MISTRAL_API_KEY",
+        "base": "https://api.mistral.ai/v1",
+        "model": "mistral-small-latest",
+        "label": "Mistral",
+    },
 }
 
 

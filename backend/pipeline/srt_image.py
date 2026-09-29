@@ -21,7 +21,7 @@ from typing import Any
 from pipeline.core.config import DATA, PUBLIC_DATA
 from pipeline.core.output_paths import downloads_folder
 from pipeline.core.jobs import kill_process_tree
-from pipeline.core.media import _ff_bin, _has_ffmpeg_filter, h264_encoder_args, h264_hardware_encoder
+from pipeline.core.media import _ff_bin, _has_audio_stream, _has_ffmpeg_filter, h264_encoder_args, h264_hardware_encoder
 from pipeline.drawing.jobs import (
     cancel as cancel_drawing_job,
     create_job as create_drawing_job,
@@ -35,7 +35,7 @@ ROOT = DATA / "srt_image"
 ROOT.mkdir(parents=True, exist_ok=True)
 CACHE_ROOT = ROOT / "render-cache"
 CACHE_INDEX = CACHE_ROOT / "index.json"
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 DEFAULT_OUTPUT_RESOLUTION = "auto"
 _LOCK = threading.Lock()
 _CACHE_LOCK = threading.Lock()
@@ -633,6 +633,7 @@ def _prepare_video_segments(
     job_id: str, media: list[Path], durations: list[float], work: Path,
     width: int, height: int, fps: int, crf: int, use_gpu: bool, zoom: str = "off",
     delogo_prefix: str = "", gpu_encoder: str | None = None,
+    preserve_audio: bool = False,
 ) -> list[Path]:
     # Parse delogo params 1 lần để check per-file
     dl_params: tuple[int, int, int, int] | None = None
@@ -688,7 +689,15 @@ def _prepare_video_segments(
         output = work / f"segment_{idx:05d}.mp4"
         cmd = [_ff_bin("ffmpeg"), "-y"]
         cmd += ["-stream_loop", "-1"] if is_video(source) else ["-loop", "1"]
-        cmd += ["-i", str(source), "-t", f"{duration:.3f}", "-vf", vf, "-an"]
+        cmd += ["-i", str(source)]
+        if preserve_audio and not (is_video(source) and _has_audio_stream(source)):
+            cmd += ["-f", "lavfi", "-t", f"{duration:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+        cmd += ["-t", f"{duration:.3f}", "-vf", vf]
+        if preserve_audio:
+            cmd += ["-map", "0:v:0", "-map", "0:a:0" if is_video(source) and _has_audio_stream(source) else "1:a:0",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
+        else:
+            cmd += ["-an"]
         cmd += _encoder_args(use_gpu, crf, intermediate=True)
         cmd += ["-movflags", "+faststart", str(output)]
         _run_stage(job_id, cmd)
@@ -717,17 +726,33 @@ def create_job(
     output_target: Path | None = None,
 ) -> dict:
     job_id = uuid.uuid4().hex[:10]
-    output = output_target or downloads_folder("subtitle-image") / f"{Path(name).stem or 'ghep-anh-srt'}.mp4"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    job = {
-        "id": job_id, "name": name, "status": "queued", "progress": 0,
-        "error": "", "outputSize": 0, "output": str(output), "work": str(work),
-        "logs": [f"[{time.strftime('%H:%M:%S')}] Đã tạo job: {name}"],
-        "images": [str(p) for p in images], "audio": str(audio) if audio else "",
-        "timeline": str(timeline) if timeline else "", "srt": str(srt) if srt else "", "watermark": str(watermark) if watermark else "",
-        "options": options,
-    }
+    requested_output = output_target or downloads_folder("media-compose") / f"{Path(name).stem or 'ghep-anh-srt'}.mp4"
+    requested_output.parent.mkdir(parents=True, exist_ok=True)
     with _LOCK:
+        reserved = {
+            Path(str(item.get("output") or "")).resolve()
+            for item in _JOBS.values()
+            if item.get("output")
+        }
+        output = requested_output
+        if output.exists() or output.resolve() in reserved:
+            for index in range(1, 100000):
+                candidate = requested_output.with_name(
+                    f"{requested_output.stem}{index}{requested_output.suffix}"
+                )
+                if not candidate.exists() and candidate.resolve() not in reserved:
+                    output = candidate
+                    break
+            else:
+                raise RuntimeError("Không còn tên output khả dụng từ output1 đến output99999")
+        job = {
+            "id": job_id, "name": output.name, "status": "queued", "progress": 0,
+            "error": "", "outputSize": 0, "output": str(output), "work": str(work),
+            "logs": [f"[{time.strftime('%H:%M:%S')}] Đã tạo job: {name}"],
+            "images": [str(p) for p in images], "audio": str(audio) if audio else "",
+            "timeline": str(timeline) if timeline else "", "srt": str(srt) if srt else "", "watermark": str(watermark) if watermark else "",
+            "options": options,
+        }
         _JOBS[job_id] = job
     _publish("srt-image.job.created", job_id, job)
     return dict(job)
@@ -1458,6 +1483,9 @@ def run(job_id: str) -> None:
         media, durations = _prepare_media_inputs(
             job_id, media, durations, work, bool(opts.get("allowMissingMedia")),
         )
+        preserve_source_audio = not bool(job["audio"]) and any(
+            is_video(path) and _has_audio_stream(path) for path in media
+        )
         speed = max(25, min(400, float(opts.get("speed", 100)))) / 100
         preview = max(0, min(120, float(opts.get("previewSeconds", 0))))
         media, durations = preview_media_window(media, durations, preview, speed)
@@ -1502,13 +1530,15 @@ def run(job_id: str) -> None:
         all_raw_still = all(not is_video(p) for p in media)
         is_drawing = bool(opts.get("drawing", {}).get("enabled")) if isinstance(opts.get("drawing"), dict) else False
         need_segments = (
+            preserve_source_audio
+            or
             zoom_mode != "off"
             or (not all_raw_still and not is_drawing)
         )
         sources = (
             _prepare_video_segments(
                 job_id, media, durations, work, width, height, fps, crf, use_gpu, zoom_mode,
-                delogo_prefix, gpu_encoder,
+                delogo_prefix, gpu_encoder, preserve_source_audio,
             )
             if need_segments else media
         )
@@ -1672,6 +1702,9 @@ def run(job_id: str) -> None:
         cmd += _encoder_args(use_gpu, crf)
         if audio_index is not None:
             cmd += ["-map", f"{audio_index}:a:0", "-af", f"volume={volume:.3f},atempo={speed:.6f}",
+                    "-c:a", "aac", "-b:a", "192k", "-shortest"]
+        elif preserve_source_audio:
+            cmd += ["-map", "0:a:0", "-af", f"volume={volume:.3f},atempo={speed:.6f}",
                     "-c:a", "aac", "-b:a", "192k", "-shortest"]
         if preview:
             cmd += ["-t", str(preview)]

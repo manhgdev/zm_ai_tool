@@ -1900,7 +1900,7 @@ class FlowService:
         job = store.get_row("jobs", job_id)
         if not job or job.get("status") in {"done", "cancelled"} or job_id in self._cancelled:
             return False
-        if not job.get("allowAccountFallback", True):
+        if not job.get("allowAccountFallback", bool(job.get("randomAccount"))):
             return False
 
         kind = str(job.get("kind") or "image")
@@ -2612,7 +2612,11 @@ class FlowService:
         model = settings.get("model")
 
         is_random = account_id in {"random", "auto", ""}
-        allow_fallback = bool(payload.get("allowAccountFallback", True))
+        # A concrete account selection is intentional: do not silently move
+        # the job to another account unless the caller explicitly opts in.
+        # Random/auto selection keeps the historical account distribution and
+        # fallback behavior by default.
+        allow_fallback = bool(payload.get("allowAccountFallback", is_random))
 
         if is_random:
             chosen = self._pick_eligible_account(kind=kind, model=model)
@@ -2809,7 +2813,9 @@ class FlowService:
         # RESULT_NOT_FOUND is the exception: Flow has no pending/completed
         # media, so submit a fresh generation automatically.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|AUTOMATION_BLOCKED|FLOW_SETTING_MISMATCH|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED|FLOW_DOWNLOAD_QUALITY_UNAVAILABLE|FLOW_RESULT_NOT_FOUND",
+            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|AUTOMATION_BLOCKED|FLOW_SETTING_MISMATCH|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED|FLOW_DOWNLOAD_QUALITY_UNAVAILABLE|FLOW_RESULT_NOT_FOUND"
+            r"|Target page, context or browser has been closed"
+            r"|browser has been closed",
             re.I,
         )
         profile_ready = False
@@ -2911,14 +2917,10 @@ class FlowService:
                 try:
                     runtime_profile2 = self._clone_runtime_profile(account_id, job_id)
                     profile_ready = True
-                    # A visible browser is a diagnostic surface, not a new
-                    # window for every recovery attempt. Keep retries hidden
-                    # so one account cannot spawn a Chrome storm.
-                    asyncio.run(self._run(
-                        job_id,
-                        profile_dir=runtime_profile2,
-                        headless_override=True,
-                    ))
+                    # Respect the job's explicit browser-mode choice on every
+                    # attempt. Retries are sequential, so a headed job reuses
+                    # the same user expectation without creating a window storm.
+                    asyncio.run(self._run(job_id, profile_dir=runtime_profile2))
                 finally:
                     if runtime_profile2 is not None:
                         shutil.rmtree(runtime_profile2, ignore_errors=True)
@@ -2977,11 +2979,7 @@ class FlowService:
                 try:
                     runtime_profile2 = self._clone_runtime_profile(account_id, job_id)
                     profile_ready = True
-                    asyncio.run(self._run(
-                        job_id,
-                        profile_dir=runtime_profile2,
-                        headless_override=True,
-                    ))
+                    asyncio.run(self._run(job_id, profile_dir=runtime_profile2))
                 finally:
                     if runtime_profile2 is not None:
                         shutil.rmtree(runtime_profile2, ignore_errors=True)
@@ -3051,7 +3049,7 @@ class FlowService:
             current_job = store.get_row("jobs", job_id) or {}
             if current_job.get("status") in {"failed", "action_required"}:
                 err_msg = str(current_job.get("error") or "Unknown error")
-                if current_job.get("allowAccountFallback", True):
+                if current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
                     self._try_fallback_account(job_id, account_id, err_msg)
                 elif re.search(r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED", err_msg, re.I):
                     self.suspend_account(account_id, err_msg)
@@ -3404,6 +3402,8 @@ class FlowService:
         than the older Landscape/Portrait/Square labels used by flow-py.
         """
         async def visible_tab(label: str | re.Pattern[str]):
+            if page.is_closed():
+                raise RuntimeError("Target page, context or browser has been closed")
             pattern = label if hasattr(label, "search") else re.compile(re.escape(label))
             matches = page.locator(_FLOW_CONTROL_SELECTOR).filter(
                 has_text=pattern
@@ -3411,10 +3411,51 @@ class FlowService:
             for index in range(await matches.count()):
                 candidate = matches.nth(index)
                 try:
-                    if await candidate.is_visible(timeout=0):
+                    try:
+                        visible = await candidate.is_visible(timeout=0)
+                    except TypeError:
+                        # Keep lightweight test doubles and older Playwright
+                        # wrappers compatible with the zero-wait probe.
+                        visible = await candidate.is_visible()
+                    if visible:
                         return candidate
                 except Exception:
                     pass
+            return None
+
+        async def visible_ratio_tab(label: str):
+            """Find a ratio control across Flow's text and icon-based UIs.
+
+            Some Flow builds render the square/portrait controls with only a
+            Material icon (for example ``crop_1_1``) and expose the numeric
+            ratio through ``aria-label`` or ``data-value``.  A text-only
+            locator then waits for 30 seconds even though the control exists.
+            """
+            candidate = await visible_tab(label)
+            if candidate is not None:
+                return candidate
+            icon = f"crop_{label.replace(':', '_')}"
+            controls = page.locator(_FLOW_CONTROL_SELECTOR)
+            for index in range(await controls.count()):
+                control = controls.nth(index)
+                try:
+                    try:
+                        visible = await control.is_visible(timeout=0)
+                    except TypeError:
+                        visible = await control.is_visible()
+                    if not visible:
+                        continue
+                    values = [
+                        await control.inner_text(),
+                        await control.get_attribute("aria-label"),
+                        await control.get_attribute("data-value"),
+                        await control.get_attribute("title"),
+                    ]
+                    haystack = " ".join(str(value or "") for value in values)
+                    if re.search(rf"(?<!\\d){re.escape(label)}(?!\\d)", haystack) or icon in haystack:
+                        return control
+                except Exception:
+                    continue
             return None
 
         async def visible_duration_tab(label: re.Pattern[str]):
@@ -3433,8 +3474,28 @@ class FlowService:
                     if await candidate.is_visible():
                         try:
                             text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip())
+                            css_class = str(await candidate.get_attribute("class") or "").lower()
+                            aria_label = str(await candidate.get_attribute("aria-label") or "").lower()
+                            trigger_ancestor = bool(await candidate.evaluate("""node => Boolean(
+                                node.closest('.settings-trigger-button, .settings-summary')
+                            )"""))
                         except Exception:
                             text = ""
+                            css_class = ""
+                            aria_label = ""
+                            trigger_ancestor = False
+                        # The bottom-bar summary also contains the requested
+                        # duration (e.g. ``Video · 720p · 6 giây``), but it is
+                        # only the settings-panel trigger, not the 6s option.
+                        # Never treat that summary as a duration control.
+                        if (
+                            "settings-trigger" in css_class
+                            or "settings-summary" in css_class
+                            or trigger_ancestor
+                            or "điều kiện kích hoạt" in aria_label
+                            or "settings" in aria_label and "duration" not in aria_label
+                        ):
+                            continue
                         candidates.append((len(text) or 10_000, candidate))
             # has_text also matches a parent group containing all four pills.
             # Prefer the smallest matching node so the click lands on the
@@ -3469,6 +3530,27 @@ class FlowService:
                     continue
             return result
 
+        async def summary_confirms_duration(value: str) -> bool:
+            """Accept Flow's bottom-bar summary as the selected state.
+
+            Some builds render duration controls as a closed overlay and expose
+            only the committed value on the settings trigger. In that state
+            there is no aria-checked node to inspect, but the summary is the
+            value that will be submitted and must not be replaced by 8s.
+            """
+            pattern = _duration_pattern(value)
+            summaries = page.locator(".settings-trigger-button, .settings-summary")
+            for index in range(await summaries.count()):
+                summary = summaries.nth(index)
+                try:
+                    if await summary.is_visible() and pattern.search(
+                        re.sub(r"\s+", " ", (await summary.inner_text()).strip())
+                    ):
+                        return True
+                except Exception:
+                    continue
+            return False
+
         ratio_label = str(ratio or "").strip()
         if not re.fullmatch(r"\d{1,2}:\d{1,2}", ratio_label):
             raise RuntimeError(f"FLOW_SETTING_MISMATCH: invalid aspect ratio {ratio_label!r}")
@@ -3485,14 +3567,18 @@ class FlowService:
                         return
         ratio_tab = None
         for attempt in range(4):
-            ratio_tab = await visible_tab(ratio_label)
+            if page.is_closed():
+                raise RuntimeError("Target page, context or browser has been closed")
+            ratio_tab = await visible_ratio_tab(ratio_label)
             if ratio_tab is not None:
                 break
             # Model selection can leave a transient menu open or close the
             # settings popover. Focus textarea (so pill opens settings not media picker),
             # then reopen via pill click.
             if attempt:
-                await page.keyboard.press("Escape")
+                keyboard = getattr(page, "keyboard", None)
+                if keyboard is not None:
+                    await keyboard.press("Escape")
                 await asyncio.sleep(0.2)
             # Focus textarea trước khi click pill
             try:
@@ -3574,6 +3660,21 @@ class FlowService:
             duration_label = f"{duration_value}s"
             duration_tab = await visible_duration_tab(_duration_pattern(duration_value))
             if duration_tab is None:
+                # Selecting the aspect ratio can close the settings popover.
+                # Reopen it before concluding that the duration control is
+                # unavailable; the bottom-bar summary is not a control.
+                trigger_candidates = page.locator(".settings-trigger-button, .settings-summary").filter(
+                    has_text=re.compile(r"\b(?:Video|Omni|Veo)\b", re.I)
+                )
+                trigger = trigger_candidates.nth(await trigger_candidates.count() - 1)
+                if await trigger.count() and await trigger.is_visible():
+                    await trigger.click()
+                    await asyncio.sleep(0.5)
+                    duration_tab = await visible_duration_tab(_duration_pattern(duration_value))
+            if duration_tab is None:
+                if await summary_confirms_duration(duration_value):
+                    _log.info("_prepare_ui_format: duration %ss confirmed by settings summary", duration_value)
+                    return
                 # An explicit duration is a contract. Silently accepting the
                 # model default turns a requested 6s Omni job into 8s output.
                 # Callers that omit the model are legacy/internal probes; they
@@ -3636,6 +3737,9 @@ class FlowService:
                         break
                     await asyncio.sleep(0.2)
                 if duration_tab is not None and not await _flow_control_is_selected(duration_tab):
+                    if await summary_confirms_duration(duration_value):
+                        _log.info("_prepare_ui_format: duration %ss confirmed by settings summary", duration_value)
+                        return
                     if not duration_model:
                         _log.info("_prepare_ui_format: duration %s not confirmed; using Flow model default", duration_label)
                         return
@@ -5003,6 +5107,10 @@ class FlowService:
         account_id = str(overrides.get("accountId") or existing.get("accountId") or "").strip()
         settings = dict(existing.get("settings") or {})
         settings.update({key: value for key, value in dict(overrides.get("settings") or {}).items() if value not in (None, "")})
+        mode = str(existing.get("mode") or "text")
+        requested_mode = str(overrides.get("mode") or "").strip()
+        if requested_mode in {"text", "edit", "reference", "frame"}:
+            mode = requested_mode
         # headless is sent at the top level by the UI (not inside settings{})
         if "headless" in overrides:
             settings["headless"] = bool(overrides["headless"])
@@ -5058,6 +5166,7 @@ class FlowService:
                 "status": "queued", "stage": "queued", "progress": 0,
                 "queueOrder": order, "error": None, "outputs": [], "updatedAt": time.time(),
                 "accountId": account_id, "settings": settings,
+                "mode": mode,
                 "generationRejectRetryCount": 0,
                 "autoRetryCount": 0,
                 "forceNew": force_new,

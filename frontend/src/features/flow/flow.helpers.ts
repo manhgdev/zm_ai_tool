@@ -241,10 +241,12 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
   return rows.map((raw) => {
     const s = raw.settings && typeof raw.settings === "object" ? raw.settings as Record<string, unknown> : {};
     const savedModel = String(s.model || (raw.kind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"));
+    const savedMode = String(raw.mode || "");
     return {
       id: String(raw.id),
       index: Number(raw.inputIndex || 0),
       kind: raw.kind === "image" ? "image" : "video",
+      mode: savedMode === "frame" || savedMode === "edit" || savedMode === "reference" ? savedMode : "text",
       prompt: String(raw.prompt || ""),
       inputType: ["txt", "csv", "json"].includes(raw.inputType as string) ? raw.inputType as "txt" | "csv" | "json" : "prompt",
       createdAt: Number(raw.createdAt || Date.now() / 1000),

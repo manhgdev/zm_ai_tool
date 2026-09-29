@@ -21,7 +21,7 @@ class ReviewIn(BaseModel):
     reviewMode: Literal["llm", "cloud", "translate"] = "llm"
     reviewModel: str = "auto"
     reviewCloudModel: str = "gemini-2.5-flash"
-    reviewProvider: Literal["gemini", "grok", "openai"] = "gemini"
+    reviewProvider: Literal["gemini", "grok", "openai", "deepseek", "openrouter", "groq", "nvidia", "mistral"] = "gemini"
     recognitionEngine: Literal["whisper", "capcut"] = "whisper"
     sourceLang: str = "auto"
     language: str = "vi"

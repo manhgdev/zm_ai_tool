@@ -40,6 +40,7 @@ class GenerateIn(BaseModel):
 
 class RetryIn(BaseModel):
     accountId: str | None = None
+    mode: str | None = Field(default=None, pattern="^(text|edit|reference|frame)$")
     settings: dict[str, Any] = {}
     fresh: bool = False
     headless: bool = True
@@ -62,6 +63,68 @@ class EpisodeIn(BaseModel):
     state: str = Field(default="", max_length=5000)
 
 
+class MergeIn(BaseModel):
+    """Ghép video settings — mirrors full Automation compose settings."""
+    # Output
+    resolution: str = "auto"
+    targetPlatform: str = "auto"
+    fps: int = 30
+    crf: int = 20
+    encoder: str = "auto"
+    speed: float = 100.0
+    volume: float = 100.0
+    previewSeconds: float = 0.0
+    removeMetadata: bool = False
+    # Transitions & motion
+    effect: str = "none"
+    transitionDuration: float = 0.28
+    zoom: str = "off"
+    # Subtitle
+    subtitleEnabled: bool = False
+    subtitleFontFamily: str = "system"
+    subtitleSize: float = 8.0
+    subtitleOffset: float = 0.0
+    subtitleMargin: float = 34.0
+    subtitleBackground: str = "solid"
+    subtitleColor: str = "#ffffff"
+    subtitleBgColor: str = "#000000"
+    subtitleOpacity: float = 55.0
+    # Drawing
+    drawingEnabled: bool = False
+    drawingMode: str = "hand"
+    drawingTool: str = "pen"
+    drawingHandId: str = "pen"
+    drawingDetail: int = 72
+    drawingThickness: int = 2
+    drawingStrokeOrder: str = "natural"
+    # Delogo
+    delogoEnabled: bool = False
+    delogoAuto: bool = True
+    delogoX: float = 80.0
+    delogoY: float = 82.0
+    delogoW: float = 18.0
+    delogoH: float = 12.0
+    # Logo / watermark
+    logoEnabled: bool = False
+    logoSource: str = "text"
+    logoText: str = "ZM AI TOOL"
+    logoIcon: str = "★"
+    logoFontSize: int = 32
+    logoColor: str = "#ffffff"
+    logoSize: float = 8.0
+    logoOpacity: float = 85.0
+    logoX: float = 88.0
+    logoY: float = 88.0
+    logoMotion: str = "fixed"
+    logoScope: str = "full"
+    logoStart: float = 0.0
+    logoEnd: float = 10.0
+    logoVisibleSec: float = 4.0
+    logoHiddenSec: float = 2.0
+    logoFadeSec: float = 0.5
+    logoSafeMargin: float = 4.0
+
+
 class SceneIn(BaseModel):
     title: str = Field(default="", max_length=160)
     prompt: str = Field(default="", max_length=12000)
@@ -81,7 +144,19 @@ class SeriesDraftIn(BaseModel):
     provider: str = Field(pattern="^[a-z0-9_]{1,40}$")
     model: str = Field(default="", max_length=200)
     num_episodes: int | None = Field(default=None, ge=1)
+    episode_duration: int | None = Field(default=None, ge=1)
     scene_duration: int | None = Field(default=None, ge=4, le=10)
+    scene_continuity: bool = False
+
+
+class SeriesExtendIn(BaseModel):
+    """Request body for extending an existing series with AI-generated episodes."""
+    provider: str = Field(pattern="^[a-z0-9_]{1,40}$")
+    model: str = Field(default="", max_length=200)
+    num_episodes: int = Field(default=1, ge=1, le=20)
+    episode_duration: int | None = Field(default=None, ge=1)
+    scene_duration: int | None = Field(default=None, ge=4, le=10)
+    scene_continuity: bool = False
 
 
 class SeriesGenerationIn(BaseModel):
@@ -274,12 +349,68 @@ def series_draft(body: SeriesDraftIn):
     try:
         return draft_series(
             provider=body.provider, model=body.model, topic=body.topic,
-            num_episodes=body.num_episodes, scene_duration=body.scene_duration,
+            num_episodes=body.num_episodes, episode_duration=body.episode_duration,
+            scene_duration=body.scene_duration,
+            scene_continuity=body.scene_continuity,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/series/{series_id}/draft-more")
+def series_draft_more(series_id: str, body: SeriesExtendIn):
+    """Ask AI to write more episodes that continue an existing series.
+
+    Returns {"text"} for the user to review before calling append-episodes.
+    """
+    from pipeline.flow.series_ai import draft_more_episodes
+
+    item = series.get_series(series_id)
+    if not item:
+        raise HTTPException(404, "Series not found")
+
+    bible = str(item.get("bible") or "")
+    episodes = list(item.get("episodes") or [])
+    next_ep_index = max((int(ep.get("index") or 0) for ep in episodes), default=0) + 1
+
+    # Derive last scene prompt so AI can continue from that exact END STATE.
+    last_scene_prompt = ""
+    if episodes:
+        last_ep = episodes[-1]
+        scenes = list(last_ep.get("scenes") or [])
+        if scenes:
+            last_scene_prompt = str(scenes[-1].get("prompt") or "")
+
+    try:
+        text = draft_more_episodes(
+            provider=body.provider, model=body.model,
+            bible=bible, last_scene_prompt=last_scene_prompt,
+            next_episode_index=next_ep_index,
+            num_episodes=body.num_episodes,
+            episode_duration=body.episode_duration,
+            scene_duration=body.scene_duration,
+            scene_continuity=body.scene_continuity,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    if not text:
+        raise HTTPException(409, "SERIES_AI_EMPTY_RESPONSE")
+    return {"text": text}
+
+
+@router.post("/series/{series_id}/append-episodes")
+def series_append_episodes(series_id: str, body: ScriptIn):
+    """Append AI-drafted episodes (plain TXT, no SERIES/BIBLE header) to an existing series."""
+    result = series.append_episodes_from_script(series_id, body.text)
+    if not result.get("ok"):
+        raise HTTPException(422, detail=result.get("errors") or [])
+    return result
+
 
 
 @router.get("/series/{series_id}")
@@ -326,6 +457,17 @@ def series_asset_file(series_id: str, asset_id: str):
     return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/png")
 
 
+@router.get("/series/{series_id}/media/{filename}")
+def series_media_file(series_id: str, filename: str):
+    """Serve generated Series scene media stored in the private Flow folder."""
+    if Path(filename).name != filename:
+        raise HTTPException(400, "Invalid Series media name")
+    path = series._asset_folder(series_id) / filename
+    if not path.is_file():
+        raise HTTPException(404, "Series media not found")
+    return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+
+
 @router.delete("/series/{series_id}/assets/{asset_id}")
 def series_asset_delete(series_id: str, asset_id: str):
     if not series.delete_asset(series_id, asset_id):
@@ -365,15 +507,65 @@ def series_episode_delete(series_id: str, episode_id: str):
 
 
 @router.post("/series/{series_id}/episodes/{episode_id}/merge")
-def series_episode_merge(series_id: str, episode_id: str):
+def series_episode_merge(series_id: str, episode_id: str, body: MergeIn = MergeIn()):
     """Concatenate all completed scene videos of this episode into one MP4."""
     try:
-        out_path = series.merge_episode_videos(series_id, episode_id)
+        out_path = series.merge_episode_videos(series_id, episode_id, options=body.model_dump())
         return {"path": str(out_path)}
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
+
+
+@router.post("/series/{series_id}/episodes/{episode_id}/open-folder")
+def series_episode_open_folder(series_id: str, episode_id: str):
+    """Build if needed, then reveal this episode's merged video file."""
+    try:
+        target = series.episode_merge_path(series_id, episode_id)
+        if not target.is_file():
+            target = series.merge_episode_videos(series_id, episode_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(target)])
+    elif sys.platform == "win32":
+        subprocess.Popen(["explorer", "/select,", str(target)])
+    else:
+        subprocess.Popen(["xdg-open", str(target.parent)])
+    return {"ok": True, "path": str(target), "exists": True}
+
+
+@router.post("/series/{series_id}/merge")
+def series_merge(series_id: str, body: MergeIn = MergeIn()):
+    """Concatenate all already-merged episode MP4 files into one Series MP4."""
+    try:
+        return {"path": str(series.merge_series_videos(series_id, options=body.model_dump()))}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@router.post("/series/{series_id}/merge/open-folder")
+def series_merge_open_folder(series_id: str):
+    """Reveal the series merged MP4 in Finder / Explorer."""
+    try:
+        target = series.series_merge_path(series_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if sys.platform == "darwin":
+        if target.is_file():
+            subprocess.Popen(["open", "-R", str(target)])
+        else:
+            subprocess.Popen(["open", str(target.parent)])
+    elif sys.platform == "win32":
+        subprocess.Popen(["explorer", "/select,", str(target)] if target.is_file() else ["explorer", str(target.parent)])
+    else:
+        subprocess.Popen(["xdg-open", str(target.parent)])
+    return {"ok": True, "path": str(target)}
 
 
 @router.post("/series/{series_id}/episodes/{episode_id}/scenes")
@@ -459,7 +651,11 @@ def series_scene_generate(series_id: str, episode_id: str, scene_id: str, body: 
                 else "text"
             ),
             "accountId": body.accountId,
-            "settings": {**body.settings, "outputDir": context["outputDir"], "headless": body.headless},
+            "settings": {
+                **body.settings,
+                "outputDir": context["outputDir"],
+                "headless": body.settings.get("headless", body.headless),
+            },
             "sourceFiles": context.get("sourceFiles") or [],
             "seriesContext": context,
         }
@@ -579,6 +775,22 @@ def jobs_retry(job_id: str, body: RetryIn | None = None):
     if not job:
         raise HTTPException(404, "Flow job not found")
     return job
+
+
+@router.get("/jobs/{job_id}")
+def jobs_get(job_id: str):
+    job = store.get_row("jobs", job_id)
+    if not job:
+        raise HTTPException(404, "Flow job not found")
+    item = dict(job)
+    settings = item.get("settings")
+    if isinstance(settings, dict) and str(settings.get("outputDir") or "").strip():
+        try:
+            item["displayOutputFolder"] = str(service._display_output_folder(item))
+            item["outputFolder"] = str(service._output_folder(item, create=False))
+        except OSError:
+            pass
+    return item
 
 
 @router.delete("/jobs/{job_id}")

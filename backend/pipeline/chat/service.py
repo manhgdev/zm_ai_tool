@@ -147,13 +147,19 @@ class ChatService:
             "label": str(item.get("label") or item.get("id") or ""),
             "provider": provider,
             "free": bool(item.get("free")),
-            "capabilities": list(item.get("capabilities") or ["text"]),
+            "capabilities": list(item.get("capabilities") or []),
             "available": bool(item.get("available", True)),
             "reason": str(item.get("reason") or ""),
         }
         return result
 
-    def provider_models(self, provider_id: str, *, refresh: bool = False) -> list[dict]:
+    def provider_models(
+        self,
+        provider_id: str,
+        *,
+        refresh: bool = False,
+        include_paid: bool = False,
+    ) -> list[dict]:
         pid = str(provider_id or "").strip().lower()
         if pid == "chatgpt_web":
             account = self.primary_account()
@@ -170,15 +176,17 @@ class ChatService:
             ]
         if pid in LOCAL_PROVIDER_IDS:
             now = time.monotonic()
-            cached = self._model_cache.get(pid)
+            cache_key = f"{pid}:{'all' if include_paid else 'free'}"
+            cached = self._model_cache.get(cache_key)
             if cached and not refresh and now - cached[0] < self._model_cache_ttl:
                 return cached[1]
             models = [self._public_model(item, provider=pid) | {"free": True, "available": True, "reason": "Local Ollama model"}
                       for item in self._local_provider(pid).model_records(timeout=2.0)]
-            self._model_cache[pid] = (now, models)
+            self._model_cache[cache_key] = (now, models)
             return models
         now = time.monotonic()
-        cached = self._model_cache.get(pid)
+        cache_key = f"{pid}:{'all' if include_paid else 'free'}"
+        cached = self._model_cache.get(cache_key)
         if cached and not refresh and now - cached[0] < self._model_cache_ttl:
             return cached[1]
         try:
@@ -186,35 +194,37 @@ class ChatService:
             # blocking the whole Chat tab while still allowing a normal API
             # round trip on slower networks.
             records = self._api_provider(pid).model_records(timeout=8.0)
-            free = [self._public_model(item, provider=pid) for item in records if item.get("free")]
+            models = [self._public_model(item, provider=pid) for item in records]
+            if not include_paid:
+                models = [item for item in models if item.get("free")]
             verified = _VERIFIED_CHAT_MODELS.get(pid)
-            if verified is not None:
-                free = [item for item in free if item["id"] in verified]
+            if verified is not None and not include_paid:
+                models = [item for item in models if item["id"] in verified]
             unavailable = _UNAVAILABLE_CHAT_MODELS.get(pid, ())
             if unavailable:
-                free = [item for item in free if item["id"] not in unavailable]
+                models = [item for item in models if item["id"] not in unavailable]
             # OpenRouter documents a dynamic free router even when /models is
             # temporarily unavailable or does not list it in the response.
-            if pid == "openrouter" and not any(item["id"] == self.DEFAULT_API_MODEL for item in free):
-                free.insert(0, {"id": self.DEFAULT_API_MODEL, "label": "Free Models Router", "provider": pid, "free": True, "capabilities": ["text"], "available": True, "reason": "OpenRouter free router"})
+            if pid == "openrouter" and not any(item["id"] == self.DEFAULT_API_MODEL for item in models):
+                models.insert(0, {"id": self.DEFAULT_API_MODEL, "label": "Free Models Router", "provider": pid, "free": True, "capabilities": ["text"], "available": True, "reason": "OpenRouter free router"})
             # Some provider catalogues omit pricing/metadata even though the
             # authenticated key can use the models. Keep the provider visible
             # with a documented default instead of rendering it disabled.
-            if pid in self.PROVIDER_FALLBACK_MODELS and not free:
-                free = [{"id": model, "label": model, "provider": pid, "free": True, "capabilities": ["text"], "available": True, "reason": f"{pid} configured model fallback"} for model in self.PROVIDER_FALLBACK_MODELS[pid]]
-            self._model_cache[pid] = (now, free)
-            return free
+            if pid in self.PROVIDER_FALLBACK_MODELS and not models:
+                models = [{"id": model, "label": model, "provider": pid, "free": True, "capabilities": ["text"], "available": True, "reason": f"{pid} configured model fallback"} for model in self.PROVIDER_FALLBACK_MODELS[pid]]
+            self._model_cache[cache_key] = (now, models)
+            return models
         except ProviderError as exc:
             # The free router is a documented OpenRouter model id. Preserve a
             # cached/selectable router during a transient /models outage, but
             # never mask authentication or quota responses.
             if pid == "openrouter" and exc.code == "CHAT_PROVIDER_MODELS_UNAVAILABLE":
                 router = [{"id": self.DEFAULT_API_MODEL, "label": "Free Models Router", "provider": pid, "free": True, "capabilities": ["text"], "available": True, "reason": "OpenRouter free router"}]
-                self._model_cache[pid] = (now, router)
+                self._model_cache[cache_key] = (now, router)
                 return router
             if pid in self.PROVIDER_FALLBACK_MODELS and exc.code == "CHAT_PROVIDER_MODELS_UNAVAILABLE":
                 fallback = [{"id": model, "label": model, "provider": pid, "free": True, "capabilities": ["text"], "available": True, "reason": f"{pid} configured model fallback"} for model in self.PROVIDER_FALLBACK_MODELS[pid]]
-                self._model_cache[pid] = (now, fallback)
+                self._model_cache[cache_key] = (now, fallback)
                 return fallback
             raise
         except Exception as exc:

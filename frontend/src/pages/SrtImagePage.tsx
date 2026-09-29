@@ -13,7 +13,8 @@ import {
   SETTINGS_KEY, JOB_KEY, HELP, cachedSettings,
 } from './srtImage.types'
 
-
+// ponytail: 6-char hex suffix via crypto — no extra dep needed
+const randomOutputName = () => `output-${crypto.randomUUID().replace(/-/g, '').slice(0, 6)}.mp4`
 
 export default function SrtImagePage({ onBack, initialMediaFolder = '', initialCompose = null }: { onBack: () => void; initialMediaFolder?: string; initialCompose?: { audioPath?: string; timelinePath?: string; srtPath?: string; outputDir?: string; settings?: Record<string, unknown> } | null }) {
   const { locale } = useLocale()
@@ -146,7 +147,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   }, [initialCompose])
 
   useEffect(() => {
-    void fetch('/api/system/resolve-output-folder?tab=subtitle-image', { method: 'POST' })
+    void fetch('/api/system/resolve-output-folder?tab=media-compose', { method: 'POST' })
       .then(async (response) => response.ok ? response.json() as Promise<{ path?: string }> : null)
       .then((result) => {
         const path = String(result?.path || '').replace(/[\\/]+$/, '')
@@ -159,7 +160,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   // F5 instead of leaving the user with an empty page while FFmpeg continues.
   useEffect(() => {
     let cancelled = false
-    void fetch('/api/srt-image/jobs').then(async (response) => {
+    void fetch('/api/media-compose/jobs').then(async (response) => {
       if (!response.ok) return [] as Job[]
       return await response.json() as Job[]
     }).then((jobs) => {
@@ -181,7 +182,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   useEffect(() => {
     if (!job || !['queued', 'processing', 'paused'].includes(job.status) || realtimeStatus === 'connected') return
     const timer = window.setInterval(async () => {
-      const response = await fetch(`/api/srt-image/jobs/${job.id}`)
+      const response = await fetch(`/api/media-compose/jobs/${job.id}`)
       if (response.ok) setJob(await response.json())
     }, 10000)
     return () => window.clearInterval(timer)
@@ -202,6 +203,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
       if (!path || !['media', 'audio', 'timeline', 'srt'].includes(String(kind))) return
       if (kind === 'media') {
         setMediaFolder(path)
+        setOutputName(randomOutputName())
         toast.success(localize(locale, 'Đã nhận thư mục media.', 'Media folder received.'))
       } else if (kind === 'audio') {
         setDroppedAudio(null)
@@ -293,7 +295,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
           hiddenSec: logoHiddenSec, fadeSec: logoFadeSec, safeMargin: logoSafeMargin,
         },
       }))
-      const response = await fetch('/api/srt-image/jobs', { method: 'POST', body: form })
+      const response = await fetch('/api/media-compose/jobs', { method: 'POST', body: form })
       if (response.status === 409) {
         const detail = (await response.clone().json().catch(() => null))?.detail
         if (detail?.code === 'missing_media') {
@@ -328,7 +330,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
     cancelLock.current = true
     setCancelling(true)
     try {
-      const response = await fetch(`/api/srt-image/jobs/${job.id}/cancel`, { method: 'POST' })
+      const response = await fetch(`/api/media-compose/jobs/${job.id}/cancel`, { method: 'POST' })
       if (!response.ok) throw new Error(await response.text())
       toast.success(t('Đã gửi yêu cầu hủy render.', 'Render cancellation requested.'))
     } catch (error) {
@@ -342,7 +344,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   async function togglePause() {
     if (!job?.id) return
     const paused = job.status !== 'paused'
-    const response = await fetch(`/api/srt-image/jobs/${job.id}/pause?paused=${paused}`, { method: 'POST' })
+    const response = await fetch(`/api/media-compose/jobs/${job.id}/pause?paused=${paused}`, { method: 'POST' })
     if (response.ok) {
       setJob({ ...job, status: paused ? 'paused' : 'processing' })
       toast.info(paused ? t('Đã tạm dừng render.', 'Render paused.') : t('Đang tiếp tục render.', 'Render resumed.'))
@@ -354,7 +356,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
     if (outputPath) params.set('selected_output', outputPath)
     else if (job?.id) params.set('job_id', job.id)
     const query = params.size ? `?${params}` : ''
-    const response = await fetch(`/api/srt-image/open-folder${query}`, { method: 'POST' })
+    const response = await fetch(`/api/media-compose/open-folder${query}`, { method: 'POST' })
     if (!response.ok) {
       const err = await response.text()
       setJob(job ? { ...job, error: err } : job)
@@ -369,6 +371,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
       const result = await response.json()
       if (result.ok && result.path) {
         setMediaFolder(String(result.path))
+        setOutputName(randomOutputName())
         toast.success(t('Đã chọn thư mục media.', 'Media folder selected.'))
       }
     } catch (error) {
@@ -495,6 +498,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
         return
       }
       setMediaFolder(filePath)
+      setOutputName(randomOutputName())
       toast.success(t('Đã nhận thư mục media.', 'Media folder received.'))
       return
     }
@@ -973,7 +977,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
             {job?.status === 'done' && job.id && (<>
               <button
                 className="siv-btn-sm"
-                onClick={() => fetch(`/api/srt-image/jobs/${job.id}/open`, { method: 'POST' })}
+                onClick={() => fetch(`/api/media-compose/jobs/${job.id}/open`, { method: 'POST' })}
                 title="Mở bằng app mặc định"
                 style={{ marginLeft: 'auto', fontSize: '0.72rem', padding: '2px 8px' }}
               >▶ Mở video</button>
@@ -993,7 +997,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
               <div className="siv-output-frame">
                 <video
                   key={job.id}
-                  src={`/api/srt-image/jobs/${job.id}/file`}
+                  src={`/api/media-compose/jobs/${job.id}/file`}
                   controls
                   autoPlay
                   preload="auto"
@@ -1263,7 +1267,7 @@ const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, text
   const [mediaAp, setMediaAp] = useState<{ w: number; h: number } | null>(null)
   useEffect(() => {
     if (resolution !== 'auto' || !mediaFolder) { setMediaAp(null); return }
-    fetch(`/api/srt-image/media-size?folder=${encodeURIComponent(mediaFolder)}`)
+    fetch(`/api/media-compose/media-size?folder=${encodeURIComponent(mediaFolder)}`)
       .then(r => r.ok ? r.json() : null)
       .then(d => setMediaAp(d))
       .catch(() => setMediaAp(null))
@@ -1398,7 +1402,7 @@ const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, text
                 <>
                   <img
                     key={`${mediaFolder}:${thumbIdx}`}
-                    src={`/api/srt-image/media-thumb?folder=${encodeURIComponent(mediaFolder)}&index=${thumbIdx}`}
+                    src={`/api/media-compose/media-thumb?folder=${encodeURIComponent(mediaFolder)}&index=${thumbIdx}`}
                     alt=""
                     style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: mediaPreviewError ? 0 : 0.85 }}
                     onLoad={(e) => {
@@ -1452,7 +1456,7 @@ const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, text
                   }}
                 >
                   {logo.source === 'image' && logo.imagePath
-                    ? <img src={`/api/srt-image/logo-preview?path=${encodeURIComponent(logo.imagePath)}`} alt="" />
+                    ? <img src={`/api/media-compose/logo-preview?path=${encodeURIComponent(logo.imagePath)}`} alt="" />
                     : logo.source === 'icon' ? logo.icon : logo.text}
                 </div>
               )}

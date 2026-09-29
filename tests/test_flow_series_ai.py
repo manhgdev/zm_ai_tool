@@ -8,10 +8,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from pipeline.flow.series import import_script, scene_seconds
-from pipeline.flow.series_ai import _clean_text, split_bible
+from pipeline.flow.series_ai import _clean_text, _prompt, split_bible
 
 
 class SeriesAiDraftTest(unittest.TestCase):
+    def test_prompt_includes_requested_episode_duration(self):
+        prompt = _prompt("Một cuộc phiêu lưu", num_episodes=2, episode_duration=120, scene_duration=6)
+        self.assertIn("approximately 120 seconds", prompt)
+        self.assertIn("exactly 6 seconds", prompt)
+        self.assertIn("do not cap the episode at 8 scenes", prompt)
+
     def test_bible_split_leaves_importable_script(self):
         raw = """```txt
 # SERIES: Tom đi cắm trại

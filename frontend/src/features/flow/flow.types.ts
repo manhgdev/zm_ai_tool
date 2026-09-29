@@ -13,6 +13,7 @@ export type FlowJob = {
   id: string;
   index: number;
   kind: CreateKind;
+  mode: ImageMode | VideoMode;
   prompt: string;
   inputType: PromptInputType;
   createdAt: number;

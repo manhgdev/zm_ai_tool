@@ -149,7 +149,7 @@ def translate_segments(
         return list(texts)
 
     # Cloud provider is an explicit user choice: retry/rotate only inside it.
-    if eng in ("openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia"):
+    if eng in ("openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia", "mistral"):
         raw = translate_cloud(
             texts,
             target_lang,

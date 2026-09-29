@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from pipeline.core.output_paths import downloads_folder, safe_output_part, safe_unicode_folder
+from pipeline.core.output_paths import app_output_root, downloads_folder, safe_output_part, safe_unicode_folder
 from pipeline.core.config import PUBLIC_DATA
 from . import store
 
@@ -332,6 +332,38 @@ def create_from_script(text: str, bible: str = "") -> dict[str, Any]:
     return {"ok": True, "series": saved}
 
 
+def append_episodes_from_script(series_id: str, text: str) -> dict[str, Any]:
+    """Parse only # TẬP blocks from *text* and append them to an existing series.
+
+    Episodes are re-indexed to continue from the current last episode, so the
+    caller never needs to renumber them.  The series bible and title are
+    intentionally not overwritten — only the episodes list grows.
+    """
+    series = get_series(series_id)
+    if not series:
+        return {"ok": False, "errors": [{"line": 0, "text": "", "message": "Series not found"}]}
+    # Re-use the same parser — it tolerates a missing # SERIES header.
+    parsed = import_script(text)
+    if not parsed.get("ok"):
+        return parsed
+    new_episodes: list[dict[str, Any]] = parsed["episodes"]
+    if not new_episodes:
+        return {"ok": False, "errors": [{"line": 0, "text": "", "message": "No episodes found in script"}]}
+    existing = [dict(ep) for ep in series.get("episodes") or []]
+    next_index = max((int(ep.get("index") or 0) for ep in existing), default=0) + 1
+    for offset, ep in enumerate(new_episodes):
+        ep = dict(ep)
+        ep["index"] = next_index + offset
+        ep["id"] = _id("episode")
+        for pos, sc in enumerate(ep.get("scenes") or [], 1):
+            sc["id"] = _id("scene")
+            sc["index"] = pos
+        existing.append(ep)
+    saved = update_series(series_id, {"episodes": existing})
+    return {"ok": True, "series": saved}
+
+
+
 def add_asset(series_id: str, filename: str, content: bytes, *, label: str = "", locked: bool = True) -> dict[str, Any]:
     series = get_series(series_id)
     if not series:
@@ -508,7 +540,7 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
     scene_number = int(scene.get("index") or 1)
     previous = _previous_scene(series, episode_id, scene_id)
     previous_end: Path | None = None
-    if previous and bool(scene.get("continuityEnabled", True)):
+    if previous:
         previous_end = ensure_scene_end_frame(series_id, previous, episode_id=episode_id)
         if previous_end is None:
             series = get_series(series_id) or series
@@ -517,7 +549,6 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
             previous_end = candidate if candidate.is_file() else None
     continuation = (
         artifact == "video"
-        and bool(scene.get("continuityEnabled", True))
         and previous is not None
         and previous_end is not None
         and previous_end.is_file()
@@ -586,7 +617,7 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
             # Must start from prior final frame — never a freshly drifted keyframe.
             context["sourceFiles"] = [str(previous_end)]
             return context
-        if previous and bool(scene.get("continuityEnabled", True)) and previous_end is None:
+        if previous and previous_end is None:
             raise ValueError(
                 "SERIES_CONTINUITY_MISSING_END_FRAME: hoàn thành video cảnh trước (có end frame) "
                 "trước khi nối cảnh này / finish the previous scene video first"
@@ -597,6 +628,10 @@ def generation_context(series_id: str, episode_id: str, scene_id: str, artifact:
             return context
         # First shot fallback: locked character anchors as start stills.
         anchors = _locked_anchor_paths(series)
+        if not anchors:
+            raise ValueError(
+                "SERIES_FRAME_REQUIRED: video Series cần keyframe hoặc ảnh neo làm khung hình bắt đầu"
+            )
         context["sourceFiles"] = anchors[:1]
         return context
     # Keyframe: previous end frame (continuity) + locked character anchors.
@@ -662,6 +697,24 @@ def mark_job_complete(job: dict[str, Any], outputs: list[str]) -> None:
         end_frame = _asset_folder(series_id) / f"{scene_id}_end.png"
         end_frame_value = str(end_frame) if extract_video_end_frame(video, end_frame) else ""
         update_scene(series_id, episode_id, scene_id, {"status": "complete", "videoOutput": str(video), "endFrame": end_frame_value, "error": ""})
+        # Completion can arrive through SeriesRunner, a manual scene action, or
+        # a retry in the shared Flow queue. Merge at this common boundary so
+        # every path produces the episode file as soon as its last scene lands.
+        current = get_series(series_id)
+        _episode_index, episode = _find_episode(current or {}, episode_id)
+        scenes = list((episode or {}).get("scenes") or [])
+        if scenes and all(
+            str(scene.get("status") or "") == "complete"
+            and Path(str(scene.get("videoOutput") or "")).is_file()
+            for scene in scenes
+        ):
+            try:
+                merged = merge_episode_videos(series_id, episode_id)
+                update_episode(series_id, episode_id, {"mergedVideo": str(merged)})
+            except (ValueError, RuntimeError):
+                # The video job remains complete. The runner or Open button can
+                # retry merging without regenerating any Flow media.
+                pass
 
 
 def mark_job_error(job: dict[str, Any], error: str) -> None:
@@ -687,7 +740,85 @@ def approve_keyframe(series_id: str, episode_id: str, scene_id: str, source: str
     return update_scene(series_id, episode_id, scene_id, {"approvedKeyframe": str(target), "status": "ready_video", "error": ""})
 
 
-def merge_episode_videos(series_id: str, episode_id: str) -> Path:
+def _series_merged_folder(slug: str) -> Path:
+    """Shared ~/Downloads/ZM_AI_TOOL/flow/series/<slug>/video/merged/ folder."""
+    folder = app_output_root() / "flow" / "series" / safe_output_part(slug, "series") / "video" / "merged"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def episode_merge_path(series_id: str, episode_id: str) -> Path:
+    series = get_series(series_id)
+    if not series:
+        raise ValueError("Series not found")
+    ep_index, episode = _find_episode(series, episode_id)
+    if episode is None:
+        raise ValueError("Episode not found")
+    slug = safe_unicode_folder(series.get("slug") or series.get("title") or "series", "series")
+    ep_idx = int(episode.get("index") or (ep_index + 1 if ep_index is not None else 1))
+    # Use episode title if available, else series title — both look nicer in Finder.
+    ep_title = str(episode.get("title") or series.get("title") or slug).strip()
+    safe_title = safe_output_part(ep_title, slug)
+    filename = f"{safe_title} (tập {ep_idx:02d}).mp4"
+    return _series_merged_folder(slug) / filename
+
+
+def _ffmpeg_merge_options(options: dict) -> list[str]:
+    """Return ffmpeg output args for a series concat from MergeSettings dict.
+
+    Uses stream-copy when no re-encode is needed (effect none, speed/volume unchanged).
+    """
+    effect = str(options.get("effect") or "none")
+    speed = float(options.get("speed") or 100)
+    volume = float(options.get("volume") or 100)
+    need_reencode = effect != "none" or speed != 100 or volume != 100
+    if not need_reencode:
+        # ponytail: fast path — no re-encode needed
+        return ["-c", "copy"]
+    crf = max(14, min(32, int(options.get("crf") or 20)))
+    fps = max(1, min(120, int(options.get("fps") or 30)))
+    encoder = str(options.get("encoder") or "auto").lower()
+    resolution = str(options.get("resolution") or "auto")
+    zoom = str(options.get("zoom") or "off")
+    vf_parts: list[str] = []
+    if resolution != "auto":
+        w, _, h = resolution.partition("x")
+        if w and h:
+            vf_parts.append(f"scale={w}:{h}:flags=lanczos")
+    if zoom not in ("off", "none"):
+        # simple linear zoom — ponytail ceiling: no xfade between clips
+        vf_parts.append("zoompan=z='min(1.04,1+on*0.00015)':d=1:s=hd1080")
+    if speed != 100:
+        factor = round(speed / 100, 4)
+        vf_parts.append(f"setpts={1/factor:.4f}*PTS")
+    af_parts: list[str] = []
+    if speed != 100:
+        af_parts.append(f"atempo={round(speed / 100, 4)}")
+    if volume != 100:
+        af_parts.append(f"volume={round(volume / 100, 4)}")
+    cmd: list[str] = []
+    if vf_parts:
+        cmd += ["-vf", ",".join(vf_parts)]
+    if af_parts:
+        cmd += ["-af", ",".join(af_parts)]
+    # libx264 fallback — GPU encoder lookup is in srt_image; ponytail: skip here to avoid import
+    if encoder == "gpu":
+        try:
+            from pipeline.core.media import h264_hardware_encoder
+            gpu_enc = h264_hardware_encoder()
+            if gpu_enc:
+                cmd += ["-c:v", gpu_enc, "-crf", str(crf)]
+            else:
+                cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", str(crf)]
+        except Exception:
+            cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", str(crf)]
+    else:
+        cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", str(crf)]
+    cmd += ["-r", str(fps)]
+    return cmd
+
+
+def merge_episode_videos(series_id: str, episode_id: str, *, options: dict | None = None) -> Path:
     """Concatenate all completed scene videos of an episode into one MP4.
 
     Returns the output path on success; raises ValueError / RuntimeError otherwise.
@@ -697,7 +828,7 @@ def merge_episode_videos(series_id: str, episode_id: str) -> Path:
     series = get_series(series_id)
     if not series:
         raise ValueError("Series not found")
-    ep_index, episode = _find_episode(series, episode_id)
+    _ep_index, episode = _find_episode(series, episode_id)
     if episode is None:
         raise ValueError("Episode not found")
 
@@ -708,23 +839,21 @@ def merge_episode_videos(series_id: str, episode_id: str) -> Path:
     if not scenes:
         raise ValueError("No completed video scenes to merge")
 
-    slug = safe_unicode_folder(series.get("slug") or series.get("title") or "series", "series")
-    ep_idx = int(episode.get("index") or (ep_index + 1 if ep_index is not None else 1))
-    out_dir = _asset_folder(series_id)
-    out_path = out_dir / f"{slug}_tap-{ep_idx:02d}_merged.mp4"
+    out_path = episode_merge_path(series_id, episode_id)
 
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as flist:
         for scene in scenes:
             flist.write(f"file '{Path(str(scene['videoOutput'])).as_posix()}'\n")
         flist_path = flist.name
 
+    output_args = _ffmpeg_merge_options(options or {})
     try:
         subprocess.run(
             [
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                 "-f", "concat", "-safe", "0",
                 "-i", flist_path,
-                "-c", "copy",
+                *output_args,
                 str(out_path),
             ],
             check=True,
@@ -741,3 +870,65 @@ def merge_episode_videos(series_id: str, episode_id: str) -> Path:
         raise RuntimeError("Merged file is empty or missing")
 
     return out_path
+
+
+def series_merge_path(series_id: str) -> Path:
+    series = get_series(series_id)
+    if not series:
+        raise ValueError("Series not found")
+    slug = safe_unicode_folder(series.get("slug") or series.get("title") or "series", "series")
+    series_title = str(series.get("title") or slug).strip()
+    safe_title = safe_output_part(series_title, slug)
+    filename = f"{safe_title} (series).mp4"
+    return _series_merged_folder(slug) / filename
+
+
+def merge_series_videos(series_id: str, *, options: dict | None = None) -> Path:
+    """Concatenate completed episode videos in episode order.
+
+    Episodes that have not been merged yet are merged automatically before
+    combining — user only needs to press 'Ghép series' once.
+    """
+    import subprocess, tempfile
+
+    series = get_series(series_id)
+    if not series:
+        raise ValueError("Series not found")
+    episode_paths = []
+    for episode in sorted(series.get("episodes") or [], key=lambda item: int(item.get("index") or 0)):
+        ep_id = str(episode.get("id") or "")
+        path = episode_merge_path(series_id, ep_id)
+        if not path.is_file():
+            # Auto-merge this episode if it has completed scene videos.
+            has_videos = any(
+                Path(str(s.get("videoOutput") or "")).is_file()
+                for s in (episode.get("scenes") or [])
+            )
+            if not has_videos:
+                raise ValueError(
+                    f"Episode {episode.get('index') or '?'} has no completed videos to merge"
+                )
+            path = merge_episode_videos(series_id, ep_id, options=options)
+        episode_paths.append(path)
+    if not episode_paths:
+        raise ValueError("No episodes to combine")
+    output = series_merge_path(series_id)
+    output_args = _ffmpeg_merge_options(options or {})
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as listing:
+        for path in episode_paths:
+            listing.write(f"file '{path.as_posix()}'\n")
+        listing_path = Path(listing.name)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing_path), *output_args, str(output)],
+            check=True, timeout=600,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        output.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg series merge failed: {exc}") from exc
+    finally:
+        listing_path.unlink(missing_ok=True)
+    if not output.is_file() or output.stat().st_size < 64:
+        output.unlink(missing_ok=True)
+        raise RuntimeError("Merged Series file is empty or missing")
+    return output

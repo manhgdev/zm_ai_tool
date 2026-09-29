@@ -26,6 +26,11 @@ def story_workers(model: str | None) -> int:
     name = str(model or "").lower()
     if name.startswith("cloud:gemini:"):
         return GEMINI_STORY_WORKERS
+    # Groq free/developer limits are shared across concurrent Review blocks;
+    # serialize these short calls so one transient 429/transport failure does
+    # not abort the entire story graph.
+    if name.startswith("cloud:groq:"):
+        return 1
     if name.startswith("cloud:"):
         return CLOUD_STORY_WORKERS
     match = re.search(r"(\d+(?:\.\d+)?)b\b", name)

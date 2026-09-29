@@ -3,7 +3,7 @@ export type ScriptStyle = 'chuan' | 'reviewer' | 'storytelling' | 'cinematic'
 export type Narration = 'default' | 'mild' | 'more'
 export type PausePace = 'fast' | 'balanced' | 'slow'
 export type ReviewMode = 'llm' | 'cloud' | 'translate'
-export type ReviewCloudProvider = 'gemini' | 'grok' | 'openai'
+export type ReviewCloudProvider = 'gemini' | 'grok' | 'openai' | 'deepseek' | 'openrouter' | 'groq' | 'nvidia' | 'mistral'
 export type ReviewRecognitionEngine = 'whisper' | 'capcut'
 
 export type CaptionMode = 'off' | 'cover' | 'below' | 'above'

@@ -299,7 +299,7 @@ export type TimelineLayer = {
   keyframes?: Array<{ at: number; x?: number; y?: number; scaleX?: number; scaleY?: number; rotation?: number; opacity?: number }>
 }
 
-export type CloudProviderId = 'openai' | 'gemini' | 'deepseek' | 'openrouter' | 'grok' | 'groq' | 'nvidia'
+export type CloudProviderId = 'openai' | 'gemini' | 'deepseek' | 'openrouter' | 'grok' | 'groq' | 'nvidia' | 'mistral'
 
 export type CloudProviderConfig = {
   apiKey: string

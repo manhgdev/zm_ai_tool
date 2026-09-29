@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { localize, useLocale } from '@/app/i18n'
 import { applyEngineProfile, normalizeTranslatorForEngine, snapshotEngineProfile, translatorOptions } from '@/app/appSettings'
 import type { ProjectSettings } from '@/features/project/project.types'
@@ -20,6 +21,7 @@ const LANGUAGES = [
 export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
+  const [ollamaLocalModels, setOllamaLocalModels] = useState<string[]>([])
   const set = <K extends keyof ProjectSettings>(key: K, value: ProjectSettings[K]) =>
     onChange({ ...settings, [key]: value })
   const captionMode = !settings.burnSubs || settings.targetLang === 'none'
@@ -31,6 +33,22 @@ export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
   const fontSizeOptions = settings.subtitleFontSize === 0 || fontSizes.includes(settings.subtitleFontSize)
     ? fontSizes
     : [...fontSizes, settings.subtitleFontSize].sort((a, b) => a - b)
+
+  useEffect(() => {
+    if (settings.translator !== 'ollama' || settings.ollamaMode !== 'local') {
+      setOllamaLocalModels([])
+      return
+    }
+    let cancelled = false
+    fetch('/api/chat/models?provider=ollama&refresh=true')
+      .then((response) => response.ok ? response.json() as Promise<{ models?: Array<{ id?: string }> }> : Promise.reject(new Error('ollama discovery failed')))
+      .then((data) => {
+        const models = (data.models || []).map((item) => String(item.id || '').trim()).filter(Boolean)
+        if (!cancelled) setOllamaLocalModels(models)
+      })
+      .catch(() => { if (!cancelled) setOllamaLocalModels([]) })
+    return () => { cancelled = true }
+  }, [settings.ollamaMode, settings.translator])
 
   function selectEngine(engine: ProjectSettings['engine']) {
     const next = applyEngineProfile(snapshotEngineProfile(settings), engine)
@@ -201,11 +219,10 @@ export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
             </label>
           ) : (
             <label>
-              <span>{t('Mức model local', 'Local model tier')}</span>
-              <select value={settings.ollamaLocalTier} onChange={(e) => set('ollamaLocalTier', e.target.value as ProjectSettings['ollamaLocalTier'])}>
-                <option value="fast">{t('Nhanh', 'Fast')}</option>
-                <option value="balanced">{t('Cân bằng', 'Balanced')}</option>
-                <option value="quality">{t('Chất lượng', 'Quality')}</option>
+              <span>{t('Model', 'Model')}</span>
+              <select value={ollamaLocalModels.includes(settings.ollamaModel) ? settings.ollamaModel : ''} onChange={(e) => set('ollamaModel', e.target.value)}>
+                {!ollamaLocalModels.length && <option value="">{t('Chưa tìm thấy model Ollama', 'No Ollama model found')}</option>}
+                {ollamaLocalModels.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
             </label>
           )}

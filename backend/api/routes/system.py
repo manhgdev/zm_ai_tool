@@ -2271,7 +2271,7 @@ def api_pick_save_video(filename: str = "ghep-anh-video-srt.mp4"):
         from pipeline.core.output_paths import downloads_folder
 
         initial = f"{Path(filename).stem or 'ghep-anh-video-srt'}.mp4"
-        initial_dir = downloads_folder("subtitle-image")
+        initial_dir = downloads_folder("media-compose")
         if os.name == "nt":
             path = _windows_native_dialog(
                 """

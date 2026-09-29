@@ -68,7 +68,7 @@ def _export_media_paths() -> list[Path]:
         downloads_folder("download-video"),
         downloads_folder("tts"),
         downloads_folder("subtitle-export"),
-        downloads_folder("subtitle-image"),
+        downloads_folder("media-compose"),
         downloads_folder("drawing"),
         downloads_folder("cleaner"),
         downloads_folder("batch"),

@@ -135,7 +135,10 @@
 .fsp-create-row .fsp-field { flex: 1 1 130px; min-width: 110px; }
 .fsp-create-row .fsp-field:first-child { flex: 1.5 1 160px; }
 .fsp-create-row .fsp-field:nth-child(2) { flex: 1.5 1 160px; }
-.fsp-create-go { min-height: 36px; padding: 0 18px; }
+.fsp-create-row .fsp-field:nth-child(3) { flex: 0 0 70px; min-width: 60px; max-width: 80px; }
+.fsp-create-go { min-height: 36px; padding: 0 18px; align-self: flex-end; }
+/* Switch field inside create-row — reuses .fsp-headless-cb for the actual toggle */
+.fsp-field-switch { flex: 0 0 auto !important; min-width: 0 !important; align-items: center; gap: 6px; cursor: pointer; }
 .fsp-create-hint { margin: 0; font-size: 12px; color: var(--muted-foreground); }
 .fsp-draft-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .fsp-draft-head > div:first-child { display: grid; gap: 2px; }
@@ -258,9 +261,17 @@
 .fsp-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted-foreground); }
 
 /* ── Assets tab ── */
-.fsp-assets-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
-.fsp-assets-hint { margin: 0; flex: 1; font-size: 12px; color: var(--muted-foreground); line-height: 1.5; }
-.fsp-anchor-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-bottom: 14px; padding: 12px; border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--primary) 4%, var(--surface)); }
+/* Bible + Description side by side */
+.fsp-bible-row { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 16px; }
+.fsp-bible-field textarea { min-height: 110px; }
+.fsp-desc-field textarea { min-height: 110px; }
+/* Section headers */
+.fsp-anchor-section { margin-bottom: 18px; }
+.fsp-anchor-section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.fsp-section-title { font-size: 13px; font-weight: 700; white-space: nowrap; }
+.fsp-section-hint { font-size: 12px; color: var(--muted-foreground); flex: 1 1 160px; line-height: 1.4; }
+/* Generate card */
+.fsp-anchor-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; padding: 12px; border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--primary) 4%, var(--surface)); }
 .fsp-anchor-create textarea { min-height: 66px; }
 
 .fsp-asset-empty {
@@ -370,11 +381,27 @@
    EPISODES TAB
    ══════════════════════════════════════════════════════════════════ */
 .fsp-episodes-add {
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
 }
+.fsp-episodes-add input { flex: 1 1 180px; min-width: 120px; }
+.fsp-btn-extend { margin-left: auto; white-space: nowrap; }
+.fsp-btn-extend.is-active { background: var(--primary); color: var(--primary-foreground); }
+.fsp-extend-panel {
+  background: var(--surface, var(--card));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+  display: grid;
+  gap: 12px;
+}
+.fsp-extend-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.fsp-extend-hint { font-size: 12px; color: var(--muted-foreground); flex: 1 1 180px; line-height: 1.4; }
+.fsp-extend-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
 .fsp-empty-episodes {
   display: flex;
@@ -884,6 +911,95 @@
   white-space: nowrap;
 }
 
+.fsp-merge-settings {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.fsp-merge-settings > summary {
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--muted-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  user-select: none;
+  background: var(--surface, var(--background));
+  border-bottom: 1px solid var(--border);
+}
+.fsp-merge-settings > summary:hover { color: var(--foreground); }
+.fsp-merge-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.fsp-merge-grid {
+  padding: 10px 12px 12px;
+}
+.fsp-merge-group {
+  border-top: 1px solid var(--border);
+}
+.fsp-merge-group > summary {
+  padding: 6px 12px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--muted-foreground);
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  user-select: none;
+  background: color-mix(in srgb, var(--surface, var(--background)) 80%, transparent);
+}
+.fsp-merge-group > summary:hover { color: var(--foreground); }
+.fsp-merge-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.73rem;
+  color: var(--foreground);
+  cursor: pointer;
+  padding: 2px 0;
+}
+.fsp-merge-check input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.fsp-merge-field-full {
+  grid-column: 1 / -1;
+}
+/* Shared number/text/color inputs inside merge grid */
+.fsp-merge-grid .fsp-auto-field input[type="number"],
+.fsp-merge-grid .fsp-auto-field input[type="text"],
+.fsp-merge-grid .fsp-auto-field input:not([type="checkbox"]):not([type="color"]):not([type="radio"]) {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface, var(--background));
+  color: var(--ink, inherit);
+  font-size: 0.74rem;
+  font-weight: 600;
+  width: 100%;
+}
+.fsp-merge-grid .fsp-auto-field input[type="color"] {
+  height: 28px;
+  width: 100%;
+  padding: 1px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface, var(--background));
+  cursor: pointer;
+}
+.fsp-merge-grid .fsp-auto-field input:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
+
+
 .fsp-auto-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -1017,6 +1133,14 @@
 }
 .fsp-btn-preview-ep:hover:not(:disabled) {
   background: color-mix(in srgb, #a855f7 22%, transparent) !important;
+}
+.fsp-btn-merge-series {
+  background: color-mix(in srgb, #f59e0b 12%, transparent) !important;
+  color: #f59e0b !important;
+  border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent) !important;
+}
+.fsp-btn-merge-series:hover:not(:disabled) {
+  background: color-mix(in srgb, #f59e0b 22%, transparent) !important;
 }
 
 /* ══════════════════════════════════════════════════════════════════

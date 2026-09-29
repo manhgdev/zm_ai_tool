@@ -116,7 +116,7 @@ def run_review_job(job: dict[str, Any]) -> dict[str, Any]:
         review_mode = "llm"
     settings["reviewMode"] = review_mode
     review_provider = str(settings.get("reviewProvider") or "gemini").strip().lower()
-    if review_provider not in {"gemini", "grok", "openai"}:
+    if review_provider not in {"gemini", "grok", "openai", "deepseek", "openrouter", "groq", "nvidia", "mistral"}:
         review_provider = "gemini"
     settings["reviewProvider"] = review_provider
     source_lang = str(settings.get("sourceLang") or "auto")

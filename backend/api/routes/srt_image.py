@@ -37,7 +37,7 @@ def _resolve_output_target(raw: str) -> Path | None:
     if not value:
         return None
     selected = Path(value).expanduser()
-    target = selected if selected.is_absolute() else downloads_folder("subtitle-image") / selected
+    target = selected if selected.is_absolute() else downloads_folder("media-compose") / selected
     target = target.resolve()
     if target.suffix.lower() != ".mp4":
         raise HTTPException(400, "File xuất phải có đuôi .mp4")
@@ -78,7 +78,7 @@ def _media_size(folder: str) -> dict | None:
         return None
 
 
-@router.get("/api/srt-image/media-size")
+@router.get("/api/media-compose/media-size")
 def media_size(folder: str = ""):
     """Kích thước file đầu tiên trong media folder — để preview đúng tỉ lệ."""
     result = _media_size(folder)
@@ -87,7 +87,7 @@ def media_size(folder: str = ""):
     return result
 
 
-@router.get("/api/srt-image/media-thumb")
+@router.get("/api/media-compose/media-thumb")
 def media_thumb(folder: str = "", index: int = 0):
     """Trả ảnh thứ index trong folder — dùng cho preview delogo."""
     p = Path(folder)
@@ -118,7 +118,7 @@ def media_thumb(folder: str = "", index: int = 0):
     raise HTTPException(500, "Không trích được frame")
 
 
-@router.get("/api/srt-image/logo-preview")
+@router.get("/api/media-compose/logo-preview")
 def logo_preview(path: str = ""):
     target = Path(path).expanduser().resolve()
     if not target.is_file() or target.suffix.lower() not in {".png", ".jpg", ".jpeg", ".jfif", ".webp", ".bmp"}:
@@ -126,12 +126,12 @@ def logo_preview(path: str = ""):
     return FileResponse(target)
 
 
-@router.get("/api/srt-image/jobs")
+@router.get("/api/media-compose/jobs")
 def jobs():
     return list_jobs()
 
 
-@router.post("/api/srt-image/jobs")
+@router.post("/api/media-compose/jobs")
 async def create(
     images: list[UploadFile] | None = File(None),
     media_folder: str = Form(""),
@@ -230,7 +230,7 @@ async def create(
     return job
 
 
-@router.get("/api/srt-image/jobs/{job_id}")
+@router.get("/api/media-compose/jobs/{job_id}")
 def status(job_id: str):
     job = get_job(job_id)
     if not job:
@@ -238,21 +238,21 @@ def status(job_id: str):
     return job
 
 
-@router.post("/api/srt-image/jobs/{job_id}/cancel")
+@router.post("/api/media-compose/jobs/{job_id}/cancel")
 def stop(job_id: str):
     if not cancel(job_id):
         raise HTTPException(404, "Job không tồn tại")
     return {"ok": True}
 
 
-@router.post("/api/srt-image/jobs/{job_id}/pause")
+@router.post("/api/media-compose/jobs/{job_id}/pause")
 def set_paused(job_id: str, paused: bool = True):
     if not pause(job_id, paused):
         raise HTTPException(409, "Không thể đổi trạng thái tiến trình")
     return {"ok": True, "paused": paused}
 
 
-@router.post("/api/srt-image/open-folder")
+@router.post("/api/media-compose/open-folder")
 def open_folder(job_id: str = "", selected_output: str = ""):
     job = get_job(job_id) if job_id else None
     output = (
@@ -270,7 +270,7 @@ def open_folder(job_id: str = "", selected_output: str = ""):
     return {"ok": True}
 
 
-@router.post("/api/srt-image/jobs/{job_id}/open")
+@router.post("/api/media-compose/jobs/{job_id}/open")
 def open_video(job_id: str):
     path = output_path(job_id)
     if not path:
@@ -286,7 +286,7 @@ def open_video(job_id: str):
     return {"ok": True, "path": str(path)}
 
 
-@router.get("/api/srt-image/jobs/{job_id}/file")
+@router.get("/api/media-compose/jobs/{job_id}/file")
 def file(job_id: str):
     path = output_path(job_id)
     if not path:

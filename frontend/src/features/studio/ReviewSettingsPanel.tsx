@@ -251,6 +251,8 @@ export function ReviewRightPanel({
   const [packOpen, setPackOpen] = useState(false)
   const [packEdit, setPackEdit] = useState<Pack | null>(null)
   const [ollamaModels, setOllamaModels] = useState<string[]>([])
+  const [cloudModels, setCloudModels] = useState<{ id: string; label: string; free: boolean }[]>([])
+  const [cloudModelsLoading, setCloudModelsLoading] = useState(false)
 
   useEffect(() => {
     if (settings.reviewMode !== 'llm') return
@@ -258,6 +260,34 @@ export function ReviewRightPanel({
       .then((data) => setOllamaModels(data.ollamaModels || []))
       .catch(() => setOllamaModels([]))
   }, [settings.reviewMode])
+
+  useEffect(() => {
+    if (settings.reviewMode !== 'cloud') return
+    let cancelled = false
+    setCloudModelsLoading(true)
+    fetch(`/api/chat/models?provider=${encodeURIComponent(settings.reviewProvider)}&includePaid=true`)
+      .then((response) => response.ok ? response.json() as Promise<{ models?: unknown }> : Promise.reject(new Error('model discovery failed')))
+      .then((data) => {
+        const rows = Array.isArray(data.models) ? data.models.flatMap((item) => {
+          if (!item || typeof item !== 'object') return []
+          const row = item as Record<string, unknown>
+          const id = String(row.id || '').trim()
+          const capabilities = Array.isArray(row.capabilities) ? row.capabilities.map(String) : []
+          if (capabilities.length && !capabilities.includes('text')) return []
+          return id ? [{ id, label: String(row.label || id), free: row.free === true }] : []
+        }) : []
+        if (!cancelled) setCloudModels(rows)
+      })
+      .catch(() => { if (!cancelled) setCloudModels([]) })
+      .finally(() => { if (!cancelled) setCloudModelsLoading(false) })
+    return () => { cancelled = true }
+  }, [settings.reviewMode, settings.reviewProvider])
+
+  useEffect(() => {
+    if (settings.reviewMode !== 'cloud' || !cloudModels.length) return
+    if (cloudModels.some((model) => model.id === settings.reviewCloudModel)) return
+    onChange({ reviewCloudModel: (cloudModels.find((model) => model.free) || cloudModels[0]).id })
+  }, [cloudModels, onChange, settings.reviewCloudModel, settings.reviewMode])
 
   function openPacks() {
     setPackEdit(packs.find((p) => p.id === settings.genre) || packs[0])
@@ -361,18 +391,36 @@ export function ReviewRightPanel({
               <span className="rv-lab">{t('Cloud AI', 'Cloud AI')}</span>
               <select value={settings.reviewProvider} onChange={(e) => {
                 const provider = e.target.value as ReviewCloudProvider
-                onChange({ reviewProvider: provider, reviewCloudModel: provider === 'gemini' ? 'gemini-2.5-flash' : provider === 'grok' ? 'grok-3-mini' : 'gpt-4o-mini' })
+                onChange({ reviewProvider: provider, reviewCloudModel: '' })
               }}>
                 <option value="gemini">Gemini</option>
                 <option value="grok">Grok</option>
                 <option value="openai">OpenAI</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="groq">Groq</option>
+                <option value="nvidia">NVIDIA NIM</option>
+                <option value="mistral">Mistral</option>
               </select>
             </label>
             <label className="rv-field">
               <span className="rv-lab">Model</span>
-              <input value={settings.reviewCloudModel} onChange={(e) => onChange({ reviewCloudModel: e.target.value })} placeholder={t('Ví dụ: gemini-2.5-flash', 'e.g. gemini-2.5-flash')} />
+              <select value={settings.reviewCloudModel} disabled={cloudModelsLoading || !cloudModels.length} onChange={(e) => onChange({ reviewCloudModel: e.target.value })}>
+                {!cloudModels.length && <option value="">{t('Chưa tải được model', 'No model list loaded')}</option>}
+                {cloudModels.some((model) => model.free) && <optgroup label={t('Model free dùng được', 'Free models available')}>
+                  {cloudModels.filter((model) => model.free).map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                </optgroup>}
+                {cloudModels.some((model) => !model.free) && <optgroup label={t('Model cần credit', 'Models requiring credit')}>
+                  {cloudModels.filter((model) => !model.free).map((model) => <option key={model.id} value={model.id}>{model.label} — {t('cần credit', 'credit required')}</option>)}
+                </optgroup>}
+              </select>
             </label>
           </div>
+          <p className="rv-hint">{cloudModelsLoading
+            ? t('Đang tải model live…', 'Loading live models…')
+            : settings.reviewCloudModel && cloudModels.some((model) => model.id === settings.reviewCloudModel && !model.free)
+              ? t('Model đang chọn cần credit.', 'The selected model requires credit.')
+              : t('Model free được hiển thị ở nhóm đầu.', 'Free models are shown in the first group.')}</p>
           <p className="rv-hint">{t(
             'Model được chọn riêng cho project Review này. API key và Base URL vẫn lấy từ Cấu hình → Cloud; key không được lưu trong job.',
             'The model is selected for this Review project. The API key and base URL still come from Settings → Cloud; keys are never stored in the job.',

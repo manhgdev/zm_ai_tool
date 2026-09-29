@@ -4,11 +4,13 @@ import { localize, useLocale } from '@/app/i18n'
 import './FlowSeriesPanel.css'
 import {
   type SeriesArtifact, type FlowSeriesSceneContext, type SeriesGenSettings,
+  type MergeSettings,
   type FlowSeriesAccount as FlowAccount, type SeriesRun, type AutoMode,
   type Scene, type Episode, type Asset, type Series,
   VIDEO_MODELS, IMAGE_MODELS,
   SERIES_SETTINGS_KEY, SERIES_SELECTED_ID_KEY, SERIES_TAB_KEY,
   SERIES_AUTO_MODE_KEY, SERIES_AUTO_APPROVE_KEY, SERIES_COLLAPSED_EPISODES_KEY, SERIES_AI_KEY,
+  SERIES_MERGE_SETTINGS_KEY, DEFAULT_MERGE_SETTINGS,
   normalizeSeries, seriesRequest as request, sceneStatusMeta,
   readSeriesSettings, toUrl, countSeriesScript,
 } from '@/features/flow/flowSeries.helpers'
@@ -18,10 +20,11 @@ import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
 export type { SeriesArtifact, FlowSeriesSceneContext }
 
 
-export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenSrtImage, accounts = [] }: {
+export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenSrtImage, onOpenQueue, accounts = [] }: {
   onOpenScene: (context: FlowSeriesSceneContext) => void
   onGenerateAnchor: (seriesId: string, prompt: string) => Promise<string>
   onOpenSrtImage?: (mediaFolder: string) => void
+  onOpenQueue?: () => void
   accounts?: FlowAccount[]
 }) {
   const { locale } = useLocale()
@@ -51,9 +54,19 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
   const [numEpisodes, setNumEpisodes] = useState(() => {
     try { return JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}').numEpisodes || '' } catch { return '' }
   })
+  const [episodeDuration, setEpisodeDuration] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}').episodeDuration || '' } catch { return '' }
+  })
   const [sceneDuration, setSceneDuration] = useState(() => {
     try { return JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}').sceneDuration || '' } catch { return '' }
   })
+  const [sceneContinuity, setSceneContinuity] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}').sceneContinuity === true } catch { return false }
+  })
+  const [extendDraft, setExtendDraft] = useState<{ text: string } | null>(null)
+  const [extendDrafting, setExtendDrafting] = useState(false)
+  const [extendNumEpisodes, setExtendNumEpisodes] = useState('1')
+  const [extendOpen, setExtendOpen] = useState(false)
   const [draft, setDraft] = useState<{ text: string; bible: string } | null>(null)
   const [drafting, setDrafting] = useState(false)
   const [aiProviders, setAiProviders] = useState<ChatProviderOption[]>([])
@@ -103,6 +116,19 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
       concurrency: saved.concurrency || '3',
     }
   })
+  const [mergeSettings, setMergeSettings] = useState<MergeSettings>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SERIES_MERGE_SETTINGS_KEY) || '{}')
+      return { ...DEFAULT_MERGE_SETTINGS, ...saved }
+    } catch { return { ...DEFAULT_MERGE_SETTINGS } }
+  })
+  const saveMergeSettings = (patch: Partial<MergeSettings>) => {
+    setMergeSettings((prev) => {
+      const next = { ...prev, ...patch }
+      try { localStorage.setItem(SERIES_MERGE_SETTINGS_KEY, JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
 
   // ── Automation run state ──
   const [activeRun, setActiveRun] = useState<SeriesRun | null>(null)
@@ -137,8 +163,10 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
     ? selectedVideoCapability.durations
     : ['4', '6', '8', '10']
 
-  const seriesResolutionOptions = (selectedVideoCapability?.resolutions || [])
-    .filter((value) => /^\d{3,4}p$/i.test(value))
+  const seriesResolutionOptions = (() => {
+    const options = (selectedVideoCapability?.resolutions || []).filter((value) => /^\d{3,4}p$/i.test(value))
+    return options.length ? options : ['360p', '720p', '1080p']
+  })()
 
   useEffect(() => {
     if (!videoSection?.models.length) return
@@ -199,9 +227,9 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
   useEffect(() => {
     try {
       const prev = JSON.parse(localStorage.getItem(SERIES_AI_KEY) || '{}')
-      localStorage.setItem(SERIES_AI_KEY, JSON.stringify({ ...prev, numEpisodes, sceneDuration }))
+      localStorage.setItem(SERIES_AI_KEY, JSON.stringify({ ...prev, numEpisodes, episodeDuration, sceneDuration, sceneContinuity }))
     } catch {}
-  }, [numEpisodes, sceneDuration])
+  }, [numEpisodes, episodeDuration, sceneDuration, sceneContinuity])
 
   useEffect(() => {
     let active = true
@@ -293,6 +321,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
       setActiveRun({ runId: raw.runId, status: raw.status, total: raw.total || 0, done: 0, currentSceneId: '', currentStep: '', errors: [] })
       toast.success(t(`Đã đẩy ${raw.enqueued || raw.total || ''} cảnh vào Hàng đợi Flow.`, `Enqueued ${raw.enqueued || raw.total || ''} scenes into Flow Queue.`))
       void refresh(selected.id)
+      onOpenQueue?.()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error))
     }
@@ -481,16 +510,19 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
     if (!topic.trim() || !aiConfig.provider) return
     setDrafting(true)
     try {
-      const result = await request<{ text: string; bible: string }>('/series/draft', {
+      const result = await request<{ text: string; bible: string; anchor_prompt?: string }>('/series/draft', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           topic,
           provider: aiConfig.provider,
           model: aiConfig.model,
           ...(numEpisodes ? { num_episodes: Number(numEpisodes) } : {}),
+          ...(episodeDuration ? { episode_duration: Number(episodeDuration) } : {}),
           ...(sceneDuration ? { scene_duration: Number(sceneDuration) } : {}),
+          ...(sceneContinuity ? { scene_continuity: true } : {}),
         }),
       })
+      if (result.anchor_prompt?.trim()) setAnchorPrompt(result.anchor_prompt.trim())
       setDraft(result)
     } catch (error) {
       toast.error(t(`AI không viết được series: ${error instanceof Error ? error.message : String(error)}`, `AI could not write the series: ${error instanceof Error ? error.message : String(error)}`))
@@ -507,6 +539,40 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
     } catch (error) {
       const detail = (error as Error & { status?: number }).status === 422
         ? t('Kịch bản chưa đúng định dạng — kiểm tra dòng # SERIES, # TẬP và các cảnh 001_[…].', 'The script format is invalid — check the # SERIES, # TẬP and 001_[…] scene lines.')
+        : error instanceof Error ? error.message : String(error)
+      toast.error(detail)
+    }
+  }
+  const draftMoreEpisodes = async () => {
+    if (!selected || !aiConfig.provider) return
+    setExtendDrafting(true)
+    try {
+      const result = await request<{ text: string }>(`/series/${selected.id}/draft-more`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: aiConfig.provider,
+          model: aiConfig.model,
+          num_episodes: Number(extendNumEpisodes) || 1,
+          ...(episodeDuration ? { episode_duration: Number(episodeDuration) } : {}),
+          ...(sceneDuration ? { scene_duration: Number(sceneDuration) } : {}),
+          ...(sceneContinuity ? { scene_continuity: true } : {}),
+        }),
+      })
+      setExtendDraft(result)
+    } catch (error) {
+      toast.error(t(`AI không viết được tập mới: ${error instanceof Error ? error.message : String(error)}`, `AI could not draft new episodes: ${error instanceof Error ? error.message : String(error)}`))
+    } finally { setExtendDrafting(false) }
+  }
+  const appendEpisodes = async () => {
+    if (!selected || !extendDraft?.text.trim()) return
+    try {
+      await request(`/series/${selected.id}/append-episodes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: extendDraft.text, bible: '' }) })
+      setExtendDraft(null); setExtendOpen(false)
+      await refresh(selected.id)
+      toast.success(t('Đã thêm tập mới vào Series.', 'New episodes added to the series.'))
+    } catch (error) {
+      const detail = (error as Error & { status?: number }).status === 422
+        ? t('Kịch bản chưa đúng định dạng — sửa trực tiếp trong ô văn bản.', 'The script format is invalid — edit the text directly.')
         : error instanceof Error ? error.message : String(error)
       toast.error(detail)
     }
@@ -541,13 +607,15 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
   useEffect(() => {
     if (!anchorJobId || !selected) return
     const timer = window.setInterval(() => {
-      void request<{ status: string }>(`/jobs/${anchorJobId}`).then((job) => {
+      void request<{ status: string; error?: string }>(`/jobs/${anchorJobId}`).then((job) => {
         if (!['done', 'failed', 'cancelled'].includes(job.status)) return
         setAnchorJobId('')
         void refresh(selected.id)
-        toast[job.status === 'done' ? 'success' : 'error'](job.status === 'done'
-          ? t('Ảnh neo đã sẵn sàng.', 'Anchor image is ready.')
-          : t('Không thể tạo ảnh neo.', 'Could not generate the anchor image.'))
+        if (job.status === 'done') {
+          toast.success(t('Ảnh neo đã sẵn sàng.', 'Anchor image is ready.'))
+        } else {
+          toast.error(job.error || t('Không thể tạo ảnh neo.', 'Could not generate the anchor image.'))
+        }
       }).catch(() => undefined)
     }, 2500)
     return () => window.clearInterval(timer)
@@ -624,19 +692,53 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
   const mergeEpisode = async (episode: Episode) => {
     if (!selected) return
     const hasVideos = episode.scenes.some((s) => s.videoOutput)
-    if (!hasVideos) { toast.error(t('Ch\u01b0a c� c\u1ea3nh video n�o \u0111\u1ec3 gh�p.', 'No completed video scenes to merge.')); return }
+    if (!hasVideos) { toast.error(t('Ch\u01b0a c\u00f3 c\u1ea3nh video n\u00e0o \u0111\u1ec3 gh\u00e9p.', 'No completed video scenes to merge.')); return }
     setMergingEpisodeId(episode.id)
     try {
-      const result = await request<{ path: string }>(`/series/${selected.id}/episodes/${episode.id}/merge`, { method: 'POST' })
-      toast.success(t(`Đã ghép thành: ${result.path}`, `Merged: ${result.path}`))
-      // Open subtitle-image with the merged video folder
-      if (onOpenSrtImage && result.path) {
-        const sep = result.path.includes('/') ? '/' : '\\'
-        const folder = result.path.substring(0, result.path.lastIndexOf(sep))
-        onOpenSrtImage(folder || result.path)
+      const result = await request<{ path: string }>(`/series/${selected.id}/episodes/${episode.id}/merge`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mergeSettings),
+      })
+      toast.success(t(`\u0110\u00e3 gh\u00e9p th\u00e0nh: ${result.path}`, `Merged: ${result.path}`))
+      // Open SrtImagePage with tap-NN/ scene-video folder, not the merged/ output
+      if (onOpenSrtImage) {
+        const firstVideo = episode.scenes.find((s) => s.videoOutput)?.videoOutput ?? ''
+        if (firstVideo) {
+          const sep = firstVideo.includes('/') ? '/' : '\\'
+          const tapFolder = firstVideo.substring(0, firstVideo.lastIndexOf(sep))
+          if (tapFolder) { onOpenSrtImage(tapFolder); return }
+        }
+        if (result.path) {
+          const sep2 = result.path.includes('/') ? '/' : '\\'
+          onOpenSrtImage(result.path.substring(0, result.path.lastIndexOf(sep2)) || result.path)
+        }
       }
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
     finally { setMergingEpisodeId('') }
+  }
+  const openEpisodeFolder = async (episode: Episode) => {
+    if (!selected) return
+    try {
+      await request(`/series/${selected.id}/episodes/${episode.id}/open-folder`, { method: 'POST' })
+    } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
+  }
+  const [mergingSeries, setMergingSeries] = useState(false)
+  const mergeSeries = async () => {
+    if (!selected) return
+    const hasAnyVideo = selected.episodes.some((ep) => ep.scenes.some((s) => s.videoOutput))
+    if (!hasAnyVideo) { toast.error(t('Ch\u01b0a c\u00f3 t\u1eadp n\u00e0o c\u00f3 video \u0111\u1ec3 gh\u00e9p.', 'No episodes have videos to merge.')); return }
+    setMergingSeries(true)
+    try {
+      const result = await request<{ path: string }>(`/series/${selected.id}/merge`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mergeSettings),
+      })
+      const fileName = result.path.split(/[\/\\]/).pop() ?? result.path
+      toast.success(t(`\u0110\u00e3 gh\u00e9p series: ${fileName}`, `Series merged: ${fileName}`))
+      // Reveal merged series MP4 in Finder \u2014 no SrtImagePage navigation needed
+      await request(`/series/${selected.id}/merge/open-folder`, { method: 'POST' }).catch(() => null)
+    } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
+    finally { setMergingSeries(false) }
   }
   const toggleEpisode = (episodeId: string) => {
     setCollapsedEpisodes((prev) => {
@@ -748,6 +850,30 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                   />
                 </label>
                 <label className="fsp-field">
+                  <span className="fsp-label">{t('Thời lượng tập (s)', 'Episode duration (s)')}</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    list="fsp-ep-dur-list"
+                    value={episodeDuration}
+                    onChange={(e) => setEpisodeDuration(e.target.value.replace(/[^0-9]/g, ''))}
+                    placeholder={t('auto', 'auto')}
+                    aria-label={t('Thời lượng tập', 'Episode duration')}
+                  />
+                  <datalist id="fsp-ep-dur-list">
+                    <option value="30" />
+                    <option value="60" />
+                    <option value="90" />
+                    <option value="120" />
+                    <option value="180" />
+                    <option value="300" />
+                    <option value="600" />
+                    <option value="900" />
+                    <option value="1200" />
+                  </datalist>
+                </label>
+                <label className="fsp-field">
                   <span className="fsp-label">{t('Thời lượng cảnh', 'Scene duration')}</span>
                   <select value={sceneDuration} onChange={(e) => setSceneDuration(e.target.value)} aria-label={t('Thời lượng cảnh', 'Scene duration')}>
                     <option value="">{t('🤖 Tự chọn', '🤖 Auto')}</option>
@@ -757,10 +883,34 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                     <option value="10">10s</option>
                   </select>
                 </label>
-                <button type="button" className="fsp-btn fsp-btn-primary fsp-create-go" onClick={() => void draftWithAi()} disabled={!topic.trim() || !aiConfig.provider || drafting}>
+                <label className="fsp-field fsp-field-switch" title={t('Tập sau bắt tiếp cảnh cuối tập trước', 'Each episode continues from the last scene of the previous one')}>
+                  <span className="fsp-label">{t('Nối cảnh', 'Linked scenes')}</span>
+                  <label className="fsp-headless-cb-row" htmlFor="series-scene-continuity">
+                    <input
+                      id="series-scene-continuity"
+                      type="checkbox"
+                      className="fsp-headless-cb"
+                      checked={sceneContinuity}
+                      onChange={(e) => setSceneContinuity(e.target.checked)}
+                    />
+                    <span>{sceneContinuity ? t('Bật', 'On') : t('Tắt', 'Off')}</span>
+                  </label>
+                </label>
+                <button
+                  type="button"
+                  className="fsp-btn fsp-btn-primary fsp-create-go"
+                  onClick={() => void draftWithAi()}
+                  disabled={!topic.trim() || (!aiConfig.provider && !aiLoading) || drafting}
+                  title={
+                    !topic.trim() ? t('Nhập chủ đề trước', 'Enter a topic first')
+                    : !aiConfig.provider && !aiLoading ? t('Chọn AI Provider trong Cài đặt', 'Select an AI Provider in Settings')
+                    : undefined
+                  }
+                >
                   {drafting ? t('AI đang viết…', 'AI is writing…') : draft ? t('↻ Viết lại', '↻ Rewrite') : t('✨ Tạo series', '✨ Create series')}
                 </button>
               </div>
+
               {!aiLoading && !aiProviders.some(chatProviderUsable) && (
                 <p className="fsp-create-hint">{t('Thêm API key trong Cài đặt → AI Provider, hoặc đăng nhập ChatGPT ở tab Chat.', 'Add an API key in Settings → AI Provider, or sign in to ChatGPT in the Chat tab.')}</p>
               )}
@@ -851,6 +1001,17 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                     title={t('Tạo toàn bộ series theo Cài đặt tạo', 'Run the whole series with the generation settings')}
                   >
                     ▶ {t('Tạo toàn bộ', 'Run entire series')}
+                  </button>
+                )}
+                {videoScenes > 0 && (
+                  <button
+                    type="button"
+                    className="fsp-btn fsp-btn-merge-series"
+                    disabled={mergingSeries}
+                    title={t('Gh\u00e9p t\u1ea5t c\u1ea3 t\u1eadp th\u00e0nh 1 video series', 'Merge all episodes into 1 series video')}
+                    onClick={() => void mergeSeries()}
+                  >
+                    {mergingSeries ? '\u23f3' : '\ud83d\udcfd'} {t('Gh\u00e9p series', 'Merge series')}
                   </button>
                 )}
                 {videoScenes > 0 && (
@@ -1059,9 +1220,9 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                         onChange={(e) => setAutoMode(e.target.value as AutoMode)}
                         aria-label={t('Quy trình', 'Pipeline')}
                       >
-                        <option value="full">{t('Keyframe + Video', 'Keyframe + Video')}</option>
+                        <option value="full">{t('Khung hình + Video', 'Frames + Video')}</option>
                         <option value="keyframes_only">{t('Chỉ tạo Keyframe', 'Keyframes only')}</option>
-                        <option value="videos_only">{t('Chỉ tạo Video', 'Videos only')}</option>
+                        <option value="videos_only">{t('Chỉ tạo Video từ khung hình', 'Videos from frames only')}</option>
                       </select>
                     </div>
                     <div className="fsp-headless-field">
@@ -1072,6 +1233,264 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                       </label>
                     </div>
                   </div>
+                  <details className="fsp-merge-settings" open>
+                    <summary>{t('Cài đặt ghép video', 'Merge video settings')}</summary>
+                    <div className="fsp-merge-body">
+                      {/* ── Main output row ── */}
+                      <div className="fsp-auto-grid fsp-merge-grid">
+                        <div className="fsp-auto-field fsp-field-wide">
+                          <label>{t('Chất lượng xuất', 'Output quality')}</label>
+                          <select value={mergeSettings.resolution} onChange={(e) => saveMergeSettings({ resolution: e.target.value })}>
+                            <option value="auto">{t('Auto theo media · 1080p', 'Auto from media · 1080p')}</option>
+                            <option value="1920x1080">{t('1080p ngang', '1080p landscape')}</option>
+                            <option value="1080x1920">{t('1080p dọc', '1080p portrait')}</option>
+                            <option value="1080x1080">{t('1080p vuông', '1080p square')}</option>
+                            <option value="1280x720">{t('720p ngang', '720p landscape')}</option>
+                          </select>
+                        </div>
+                        <div className="fsp-auto-field fsp-field-xs">
+                          <label>{t('FPS xuất video', 'Output FPS')}</label>
+                          <input type="number" min={1} max={120} value={mergeSettings.fps} onChange={(e) => saveMergeSettings({ fps: Number(e.target.value) || 30 })} />
+                        </div>
+                        <div className="fsp-auto-field fsp-field-xs">
+                          <label>{t('Chất lượng nén (CRF)', 'Compression quality (CRF)')}</label>
+                          <select value={mergeSettings.crf} onChange={(e) => saveMergeSettings({ crf: Number(e.target.value) || 20 })}>
+                            <option value={18}>{t('Cao · file lớn', 'High · larger file')}</option>
+                            <option value={20}>{t('Cân bằng', 'Balanced')}</option>
+                            <option value={23}>{t('Nhanh · file nhỏ', 'Fast · smaller file')}</option>
+                          </select>
+                        </div>
+                        <div className="fsp-auto-field fsp-field-xs">
+                          <label>{t('Bộ mã hóa', 'Encoder')}</label>
+                          <select value={mergeSettings.encoder} onChange={(e) => saveMergeSettings({ encoder: e.target.value as MergeSettings['encoder'] })}>
+                            <option value="auto">{t('Tự động', 'Automatic')}</option>
+                            <option value="gpu">GPU</option>
+                            <option value="cpu">CPU</option>
+                          </select>
+                        </div>
+                        <div className="fsp-auto-field fsp-field-xs">
+                          <label>{t('Tốc độ (%)', 'Speed (%)')}</label>
+                          <input type="number" min={25} max={400} value={mergeSettings.speed} onChange={(e) => saveMergeSettings({ speed: Number(e.target.value) || 100 })} />
+                        </div>
+                        <div className="fsp-auto-field fsp-field-xs">
+                          <label>{t('Âm lượng (%)', 'Volume (%)')}</label>
+                          <input type="number" min={0} max={300} value={mergeSettings.volume} onChange={(e) => saveMergeSettings({ volume: Number(e.target.value) || 100 })} />
+                        </div>
+                        <div className="fsp-auto-field fsp-field-xs">
+                          <label>{t('Preview (giây)', 'Preview (seconds)')}</label>
+                          <input type="number" min={0} max={120} value={mergeSettings.previewSeconds} onChange={(e) => saveMergeSettings({ previewSeconds: Number(e.target.value) || 0 })} />
+                        </div>
+                        <label className="fsp-merge-check">
+                          <input type="checkbox" checked={mergeSettings.removeMetadata} onChange={(e) => saveMergeSettings({ removeMetadata: e.target.checked })} />
+                          <span>{t('Xóa metadata file xuất', 'Remove output metadata')}</span>
+                        </label>
+                      </div>
+
+                      {/* ── Transitions & motion ── */}
+                      <details className="fsp-merge-group" open>
+                        <summary>{t('Chuyển cảnh & chuyển động', 'Transitions & motion')}</summary>
+                        <div className="fsp-auto-grid fsp-merge-grid">
+                          <div className="fsp-auto-field">
+                            <label>{t('Nền tảng khung hình', 'Frame platform')}</label>
+                            <select value={mergeSettings.targetPlatform} onChange={(e) => saveMergeSettings({ targetPlatform: e.target.value })}>
+                              <option value="auto">{t('Tự động', 'Automatic')}</option>
+                              <option value="youtube">YouTube</option>
+                              <option value="shorts">Shorts / Reels</option>
+                              <option value="tiktok">TikTok</option>
+                            </select>
+                          </div>
+                          <div className="fsp-auto-field">
+                            <label>{t('Hiệu ứng chuyển cảnh', 'Transition effect')}</label>
+                            <select value={mergeSettings.effect} onChange={(e) => saveMergeSettings({ effect: e.target.value })}>
+                              <option value="none">{t('Tắt', 'Off')}</option>
+                              <option value="random">{t('Ngẫu nhiên', 'Random')}</option>
+                              <option value="fade">Fade</option>
+                              <option value="dissolve">Dissolve</option>
+                            </select>
+                          </div>
+                          <div className="fsp-auto-field fsp-field-xs">
+                            <label>{t('Thời lượng chuyển cảnh (giây)', 'Transition duration (seconds)')}</label>
+                            <input type="number" min={0} max={5} step={0.05} value={mergeSettings.transitionDuration} onChange={(e) => saveMergeSettings({ transitionDuration: Number(e.target.value) || 0 })} />
+                          </div>
+                          <div className="fsp-auto-field fsp-field-xs">
+                            <label>Zoom</label>
+                            <select value={mergeSettings.zoom} onChange={(e) => saveMergeSettings({ zoom: e.target.value })}>
+                              <option value="off">{t('Tắt', 'Off')}</option>
+                              <option value="random">{t('Ngẫu nhiên', 'Random')}</option>
+                              <option value="zoomIn">Zoom in</option>
+                              <option value="zoomOut">Zoom out</option>
+                              <option value="left">{t('Trái → phải', 'Left → right')}</option>
+                              <option value="right">{t('Phải → trái', 'Right → left')}</option>
+                              <option value="up">{t('Dưới → trên', 'Bottom → top')}</option>
+                              <option value="down">{t('Trên → dưới', 'Top → bottom')}</option>
+                            </select>
+                          </div>
+                        </div>
+                      </details>
+
+                      {/* ── Subtitle ── */}
+                      <details className="fsp-merge-group" open>
+                        <summary>{t('Phụ đề SRT', 'SRT subtitles')}</summary>
+                        <div className="fsp-auto-grid fsp-merge-grid">
+                          <label className="fsp-merge-check fsp-merge-field-full">
+                            <input type="checkbox" checked={mergeSettings.subtitleEnabled} onChange={(e) => saveMergeSettings({ subtitleEnabled: e.target.checked })} />
+                            <span>{t('Chèn phụ đề SRT', 'Burn SRT subtitles')}</span>
+                          </label>
+                          <div className="fsp-auto-field">
+                            <label>{t('Phông chữ', 'Font')}</label>
+                            <select value={mergeSettings.subtitleFontFamily} onChange={(e) => saveMergeSettings({ subtitleFontFamily: e.target.value })}>
+                              <option value="system">{t('Hệ thống', 'System')}</option>
+                              <option value="Arial">Arial</option>
+                              <option value="Roboto">Roboto</option>
+                              <option value="Montserrat">Montserrat</option>
+                            </select>
+                          </div>
+                          <div className="fsp-auto-field fsp-field-xs">
+                            <label>{t('Cỡ chữ', 'Font size')}</label>
+                            <input type="number" min={6} max={120} value={mergeSettings.subtitleSize} onChange={(e) => saveMergeSettings({ subtitleSize: Number(e.target.value) || 8 })} />
+                          </div>
+                          <div className="fsp-auto-field fsp-field-xs">
+                            <label>{t('Lề dưới', 'Bottom margin')}</label>
+                            <input type="number" min={0} max={1000} value={mergeSettings.subtitleMargin} onChange={(e) => saveMergeSettings({ subtitleMargin: Number(e.target.value) || 0 })} />
+                          </div>
+                          <div className="fsp-auto-field fsp-field-xs">
+                            <label>{t('Lệch thời gian (giây)', 'Time offset (seconds)')}</label>
+                            <input type="number" min={-3600} max={3600} step={0.1} value={mergeSettings.subtitleOffset} onChange={(e) => saveMergeSettings({ subtitleOffset: Number(e.target.value) || 0 })} />
+                          </div>
+                          <div className="fsp-auto-field fsp-field-xs">
+                            <label>{t('Nền phụ đề', 'Subtitle background')}</label>
+                            <select value={mergeSettings.subtitleBackground} onChange={(e) => saveMergeSettings({ subtitleBackground: e.target.value })}>
+                              <option value="solid">{t('Nền đặc', 'Solid')}</option>
+                              <option value="blur">{t('Mờ nền', 'Blur')}</option>
+                              <option value="none">{t('Không nền', 'None')}</option>
+                            </select>
+                          </div>
+                          <div className="fsp-auto-field fsp-field-xs">
+                            <label>{t('Độ mờ nền (%)', 'Background opacity (%)')}</label>
+                            <input type="number" min={0} max={100} value={mergeSettings.subtitleOpacity} onChange={(e) => saveMergeSettings({ subtitleOpacity: Number(e.target.value) || 0 })} />
+                          </div>
+                          <div className="fsp-auto-field fsp-field-xs">
+                            <label>{t('Màu chữ', 'Text color')}</label>
+                            <input type="color" value={mergeSettings.subtitleColor} onChange={(e) => saveMergeSettings({ subtitleColor: e.target.value })} />
+                          </div>
+                          <div className="fsp-auto-field fsp-field-xs">
+                            <label>{t('Màu nền', 'Background color')}</label>
+                            <input type="color" value={mergeSettings.subtitleBgColor} onChange={(e) => saveMergeSettings({ subtitleBgColor: e.target.value })} />
+                          </div>
+                        </div>
+                      </details>
+
+                      {/* ── Drawing & Delogo ── */}
+                      <details className="fsp-merge-group">
+                        <summary>{t('Vẽ ảnh & xóa logo gốc', 'Drawing & remove original logo')}</summary>
+                        <div className="fsp-auto-grid fsp-merge-grid">
+                          <label className="fsp-merge-check fsp-merge-field-full">
+                            <input type="checkbox" checked={mergeSettings.drawingEnabled} onChange={(e) => saveMergeSettings({ drawingEnabled: e.target.checked })} />
+                            <span>{t('Vẽ ảnh tĩnh thành video', 'Turn still images into drawing videos')}</span>
+                          </label>
+                          {mergeSettings.drawingEnabled && <>
+                            <div className="fsp-auto-field">
+                              <label>{t('Kiểu vẽ', 'Drawing style')}</label>
+                              <select value={mergeSettings.drawingMode} onChange={(e) => saveMergeSettings({ drawingMode: e.target.value })}>
+                                <option value="hand">{t('Tay + bút', 'Hand + pen')}</option>
+                                <option value="drawing">{t('Vẽ nét', 'Strokes')}</option>
+                              </select>
+                            </div>
+                            <div className="fsp-auto-field">
+                              <label>{t('Dụng cụ', 'Tool')}</label>
+                              <select value={mergeSettings.drawingTool} onChange={(e) => saveMergeSettings({ drawingTool: e.target.value })}>
+                                <option value="pencil">{t('Chì', 'Pencil')}</option>
+                                <option value="pen">{t('Bút', 'Pen')}</option>
+                                <option value="marker">Marker</option>
+                                <option value="brush">{t('Cọ', 'Brush')}</option>
+                              </select>
+                            </div>
+                            <div className="fsp-auto-field fsp-field-xs">
+                              <label>{t('Độ chi tiết (%)', 'Detail (%)')}</label>
+                              <input type="number" min={10} max={100} value={mergeSettings.drawingDetail} onChange={(e) => saveMergeSettings({ drawingDetail: Number(e.target.value) || 72 })} />
+                            </div>
+                            <div className="fsp-auto-field fsp-field-xs">
+                              <label>{t('Độ dày nét', 'Stroke thickness')}</label>
+                              <input type="number" min={1} max={8} value={mergeSettings.drawingThickness} onChange={(e) => saveMergeSettings({ drawingThickness: Number(e.target.value) || 2 })} />
+                            </div>
+                            <div className="fsp-auto-field fsp-merge-field-full">
+                              <label>{t('Đường đi nét', 'Stroke route')}</label>
+                              <select value={mergeSettings.drawingStrokeOrder} onChange={(e) => saveMergeSettings({ drawingStrokeOrder: e.target.value })}>
+                                <option value="natural">{t('Tự nhiên theo đối tượng', 'Natural by object')}</option>
+                                <option value="outline">{t('Theo viền thật', 'True outlines')}</option>
+                                <option value="region">{t('Từng vùng hoàn chỉnh', 'Complete one region')}</option>
+                                <option value="reading">{t('Theo chữ · trái sang phải', 'Text · left to right')}</option>
+                                <option value="center">{t('Từ tâm lan ra', 'Centre outward')}</option>
+                              </select>
+                            </div>
+                          </>}
+                          <label className="fsp-merge-check">
+                            <input type="checkbox" checked={mergeSettings.delogoEnabled} onChange={(e) => saveMergeSettings({ delogoEnabled: e.target.checked })} />
+                            <span>{t('Xóa logo gốc', 'Remove original logo')}</span>
+                          </label>
+                          {mergeSettings.delogoEnabled && <>
+                            <label className="fsp-merge-check">
+                              <input type="checkbox" checked={mergeSettings.delogoAuto} onChange={(e) => saveMergeSettings({ delogoAuto: e.target.checked })} />
+                              <span>{t('Tự định vị logo', 'Auto position logo')}</span>
+                            </label>
+                            {!mergeSettings.delogoAuto && <>
+                              <div className="fsp-auto-field fsp-field-xs"><label>X (%)</label><input type="number" min={0} max={100} value={mergeSettings.delogoX} onChange={(e) => saveMergeSettings({ delogoX: Number(e.target.value) || 0 })} /></div>
+                              <div className="fsp-auto-field fsp-field-xs"><label>Y (%)</label><input type="number" min={0} max={100} value={mergeSettings.delogoY} onChange={(e) => saveMergeSettings({ delogoY: Number(e.target.value) || 0 })} /></div>
+                              <div className="fsp-auto-field fsp-field-xs"><label>{t('Rộng (%)', 'Width (%)')}</label><input type="number" min={1} max={100} value={mergeSettings.delogoW} onChange={(e) => saveMergeSettings({ delogoW: Number(e.target.value) || 1 })} /></div>
+                              <div className="fsp-auto-field fsp-field-xs"><label>{t('Cao (%)', 'Height (%)')}</label><input type="number" min={1} max={100} value={mergeSettings.delogoH} onChange={(e) => saveMergeSettings({ delogoH: Number(e.target.value) || 1 })} /></div>
+                            </>}
+                          </>}
+                        </div>
+                      </details>
+
+                      {/* ── Logo / watermark ── */}
+                      <details className="fsp-merge-group">
+                        <summary>{t('Logo / watermark', 'Logo / watermark')}</summary>
+                        <div className="fsp-auto-grid fsp-merge-grid">
+                          <label className="fsp-merge-check fsp-merge-field-full">
+                            <input type="checkbox" checked={mergeSettings.logoEnabled} onChange={(e) => saveMergeSettings({ logoEnabled: e.target.checked })} />
+                            <span>{t('Chèn logo vào video', 'Add logo to video')}</span>
+                          </label>
+                          {mergeSettings.logoEnabled && <>
+                            <div className="fsp-auto-field">
+                              <label>{t('Nguồn logo', 'Logo source')}</label>
+                              <select value={mergeSettings.logoSource} onChange={(e) => saveMergeSettings({ logoSource: e.target.value as MergeSettings['logoSource'] })}>
+                                <option value="text">{t('Chữ', 'Text')}</option>
+                                <option value="icon">Icon</option>
+                              </select>
+                            </div>
+                            {mergeSettings.logoSource === 'text'
+                              ? <div className="fsp-auto-field fsp-field-wide"><label>{t('Nội dung', 'Content')}</label><input value={mergeSettings.logoText} onChange={(e) => saveMergeSettings({ logoText: e.target.value })} /></div>
+                              : <div className="fsp-auto-field fsp-field-xs"><label>Icon</label><select value={mergeSettings.logoIcon} onChange={(e) => saveMergeSettings({ logoIcon: e.target.value })}><option>★</option><option>▶</option><option>●</option><option>◆</option></select></div>
+                            }
+                            <div className="fsp-auto-field fsp-field-xs"><label>{t('Độ mờ (%)', 'Opacity (%)')}</label><input type="number" min={5} max={100} value={mergeSettings.logoOpacity} onChange={(e) => saveMergeSettings({ logoOpacity: Number(e.target.value) || 5 })} /></div>
+                            <div className="fsp-auto-field fsp-field-xs"><label>X (%)</label><input type="number" min={0} max={100} value={mergeSettings.logoX} onChange={(e) => saveMergeSettings({ logoX: Number(e.target.value) || 0 })} /></div>
+                            <div className="fsp-auto-field fsp-field-xs"><label>Y (%)</label><input type="number" min={0} max={100} value={mergeSettings.logoY} onChange={(e) => saveMergeSettings({ logoY: Number(e.target.value) || 0 })} /></div>
+                            <div className="fsp-auto-field fsp-field-xs"><label>{t('Chuyển động', 'Motion')}</label><select value={mergeSettings.logoMotion} onChange={(e) => saveMergeSettings({ logoMotion: e.target.value })}><option value="fixed">{t('Cố định', 'Static')}</option><option value="random">{t('Ngẫu nhiên', 'Random')}</option></select></div>
+                            <div className="fsp-auto-field fsp-field-xs"><label>{t('Phạm vi', 'Scope')}</label><select value={mergeSettings.logoScope} onChange={(e) => saveMergeSettings({ logoScope: e.target.value })}><option value="full">{t('Toàn video', 'Entire video')}</option><option value="range">{t('Theo đoạn', 'Selected range')}</option></select></div>
+                            {mergeSettings.logoSource === 'text' && <>
+                              <div className="fsp-auto-field fsp-field-xs"><label>{t('Cỡ chữ', 'Font size')}</label><input type="number" min={6} max={160} value={mergeSettings.logoFontSize} onChange={(e) => saveMergeSettings({ logoFontSize: Number(e.target.value) || 32 })} /></div>
+                              <div className="fsp-auto-field fsp-field-xs"><label>{t('Màu chữ', 'Text color')}</label><input type="color" value={mergeSettings.logoColor} onChange={(e) => saveMergeSettings({ logoColor: e.target.value })} /></div>
+                            </>}
+                            {mergeSettings.logoSource !== 'text' && <div className="fsp-auto-field fsp-field-xs"><label>{t('Kích thước (%)', 'Size (%)')}</label><input type="number" min={2} max={30} value={mergeSettings.logoSize} onChange={(e) => saveMergeSettings({ logoSize: Number(e.target.value) || 8 })} /></div>}
+                            {mergeSettings.logoMotion === 'random' && <>
+                              <div className="fsp-auto-field fsp-field-xs"><label>{t('Hiện (giây)', 'Visible (seconds)')}</label><input type="number" min={0.5} step={0.1} value={mergeSettings.logoVisibleSec} onChange={(e) => saveMergeSettings({ logoVisibleSec: Number(e.target.value) || 0.5 })} /></div>
+                              <div className="fsp-auto-field fsp-field-xs"><label>{t('Ẩn (giây)', 'Hidden (seconds)')}</label><input type="number" min={0} step={0.1} value={mergeSettings.logoHiddenSec} onChange={(e) => saveMergeSettings({ logoHiddenSec: Number(e.target.value) || 0 })} /></div>
+                              <div className="fsp-auto-field fsp-field-xs"><label>Fade (s)</label><input type="number" min={0} step={0.1} value={mergeSettings.logoFadeSec} onChange={(e) => saveMergeSettings({ logoFadeSec: Number(e.target.value) || 0 })} /></div>
+                              <div className="fsp-auto-field fsp-field-xs"><label>{t('Lề an toàn (%)', 'Safe margin (%)')}</label><input type="number" min={0} max={20} value={mergeSettings.logoSafeMargin} onChange={(e) => saveMergeSettings({ logoSafeMargin: Number(e.target.value) || 0 })} /></div>
+                            </>}
+                            {mergeSettings.logoScope === 'range' && <>
+                              <div className="fsp-auto-field fsp-field-xs"><label>{t('Hiện từ (giây)', 'Show from (seconds)')}</label><input type="number" min={0} value={mergeSettings.logoStart} onChange={(e) => saveMergeSettings({ logoStart: Number(e.target.value) || 0 })} /></div>
+                              <div className="fsp-auto-field fsp-field-xs"><label>{t('Đến (giây)', 'Until (seconds)')}</label><input type="number" min={0} value={mergeSettings.logoEnd} onChange={(e) => saveMergeSettings({ logoEnd: Number(e.target.value) || 0 })} /></div>
+                            </>}
+                          </>}
+                        </div>
+                      </details>
+                    </div>
+                  </details>
+                  <p className="fsp-auto-hint">
+                    {t('Series luôn tạo video từ khung hình: keyframe đã duyệt, ảnh neo hoặc khung cuối cảnh trước.', 'Series video always starts from a frame: an approved keyframe, an anchor image, or the previous scene end frame.')}
+                  </p>
 
                 </div>
               </div>
@@ -1080,94 +1499,126 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
             {/* ── Tab: Anchor images ── */}
             {activeTab === 'assets' && (
               <div className="fsp-tab-content fsp-assets">
-                <div className="fsp-bible">
-                  <label className="fsp-field">
-                    <span className="fsp-label">{t('Series Bible', 'Series Bible')}</span>
+
+                {/* ── Bible + Description compact row ── */}
+                <div className="fsp-bible-row">
+                  <label className="fsp-field fsp-bible-field">
+                    <span className="fsp-label">📖 {t('Series Bible', 'Series Bible')}</span>
                     <textarea
                       value={selected.bible}
                       onChange={(e) => setSelected({ ...selected, bible: e.target.value })}
                       placeholder={t('Nhân vật, skin, đạo cụ, phong cách không được thay đổi…', 'Character, skin, props, and style that must not change…')}
-                      rows={6}
+                      rows={5}
                     />
                   </label>
-                  <label className="fsp-field">
-                    <span className="fsp-label">{t('Mô tả', 'Description')}</span>
+                  <label className="fsp-field fsp-desc-field">
+                    <span className="fsp-label">📝 {t('Mô tả', 'Description')}</span>
                     <textarea
                       value={selected.description}
                       onChange={(e) => setSelected({ ...selected, description: e.target.value })}
-                      rows={3}
+                      rows={5}
                     />
                   </label>
                 </div>
-                <div className="fsp-assets-head">
-                  <p className="fsp-assets-hint">{t('Tối đa 3 ảnh theo thứ tự: nhân vật → đạo cụ/bối cảnh → bổ sung. Ảnh khóa luôn được dùng.', 'Up to 3 images in order: character → prop/background → extra. Locked images are always used.')}</p>
-                  <p className="fsp-assets-hint">{t('Phim xuyên suốt: khóa ảnh nhân vật (vd. Tom, Jerry) và bật Nối cảnh. Cảnh đầu tạo keyframe từ ảnh khóa; mỗi video sau bắt đầu từ khung cuối của video trước (Khung hình — Veo và Omni Flash).', 'Film continuity: lock character images (e.g. Tom, Jerry) and keep Continue on. The first scene gets a keyframe from the locked images; every later video starts from the previous video\'s last frame (Frames — Veo and Omni Flash).')}</p>
-                  <button type="button" className="fsp-btn fsp-btn-secondary" onClick={() => assetInput.current?.click()}>
-                    + {t('Thêm ảnh', 'Add image')}
-                  </button>
-                  <input ref={assetInput} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => void uploadAsset(e.target.files?.[0])} />
-                </div>
-                <div className="fsp-anchor-create">
-                  <textarea value={anchorPrompt} onChange={(e) => setAnchorPrompt(e.target.value)} rows={3} placeholder={t('Prompt tạo ảnh neo: mô tả nhân vật, trang phục, đạo cụ và phong cách cần giữ cố định…', 'Anchor image prompt: describe the character, wardrobe, props, and style to keep consistent…')} />
-                  <button type="button" className="fsp-btn fsp-btn-primary" onClick={() => void generateAnchor()} disabled={!anchorPrompt.trim() || Boolean(anchorJobId)}>
-                    {anchorJobId ? t('Đang tạo ảnh neo…', 'Generating anchor image…') : t('Tạo ảnh neo', 'Generate anchor image')}
-                  </button>
-                </div>
-                {selected.assets.length === 0 ? (
-                  <div className="fsp-asset-empty">
-                    <span>🖼️</span>
-                    <p>{t('Chưa có ảnh neo. Bạn vẫn có thể tạo keyframe bằng prompt.', 'No anchor image yet. You can still create a keyframe from the prompt.')}</p>
+
+                {/* ── Generate anchor image ── */}
+                <div className="fsp-anchor-section">
+                  <div className="fsp-anchor-section-head">
+                    <span className="fsp-section-title">🎨 {t('Tạo ảnh khoá nhân vật', 'Generate character lock image')}</span>
+                    <span className="fsp-section-hint">{t('Ảnh neo giữ nhân vật nhất quán xuyên suốt toàn bộ tập', 'Anchor images keep characters consistent across all episodes')}</span>
+                    {selected.bible.trim() && (
+                      <button
+                        type="button"
+                        className="fsp-btn fsp-btn-sm"
+                        onClick={() => setAnchorPrompt(selected.bible.trim())}
+                        title={t('Sử dụng Bible làm điểm bắt đầu cho prompt ảnh', 'Use Bible as starting point for image prompt')}
+                      >
+                        ← {t('Lấy từ Bible', 'From Bible')}
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  <div className="fsp-asset-grid">
-                    {selected.assets.map((asset) => {
-                      const isAnchor = selected.anchorAssets.includes(asset.id)
-                      const anchorIdx = selected.anchorAssets.indexOf(asset.id)
-                      return (
-                        <article key={asset.id} className={`fsp-asset-card${isAnchor ? ' is-anchor' : ''}${asset.locked ? ' is-locked' : ''}`}>
-                          <div className="fsp-asset-img-wrap" onClick={() => setSeriesPreview({ url: `/api/flow/series/${selected.id}/assets/${asset.id}`, title: asset.label || asset.name, kind: "image" })}>
-                            <img loading="lazy" src={`/api/flow/series/${selected.id}/assets/${asset.id}`} alt={asset.label || asset.name} />
-                            {isAnchor && <span className="fsp-anchor-badge">#{anchorIdx + 1}</span>}
-                            {asset.locked && <span className="fsp-lock-badge">🔒</span>}
-                            <div className="fsp-asset-overlay">
-                              <span>{t('Xem', 'Preview')}</span>
+                  <div className="fsp-anchor-create">
+                    <textarea
+                      value={anchorPrompt}
+                      onChange={(e) => setAnchorPrompt(e.target.value)}
+                      rows={3}
+                      placeholder={t('Mô tả nhân vật, trang phục, đạo cụ và phong cách cần giữ cố định…', 'Describe the character, wardrobe, props, and art style to keep consistent…')}
+                    />
+                    <button type="button" className="fsp-btn fsp-btn-primary" onClick={() => void generateAnchor()} disabled={!anchorPrompt.trim() || Boolean(anchorJobId)}>
+                      {anchorJobId ? t('Đang tạo…', 'Generating…') : t('✨ Tạo ảnh', '✨ Generate')}
+                    </button>
+                  </div>
+                </div>
+
+                {/* ── Asset list ── */}
+                <div className="fsp-anchor-section">
+                  <div className="fsp-anchor-section-head">
+                    <span className="fsp-section-title">🖼️ {t('Ảnh tham chiếu', 'Reference images')}</span>
+                    <span className="fsp-section-hint">{t('Tối đa 3 ảnh neo · Ảnh khóa luôn được dùng', 'Up to 3 anchor images · Locked images are always used')}</span>
+                    <button type="button" className="fsp-btn fsp-btn-secondary fsp-btn-sm" onClick={() => assetInput.current?.click()}>
+                      + {t('Thêm ảnh', 'Add image')}
+                    </button>
+                    <input ref={assetInput} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => void uploadAsset(e.target.files?.[0])} />
+                  </div>
+                  {selected.assets.length === 0 ? (
+                    <div className="fsp-asset-empty">
+                      <span>🖼️</span>
+                      <p>{t('Chưa có ảnh. Tạo ảnh khoá nhân vật phía trên hoặc thêm ảnh thủ công.', 'No images yet. Generate a character lock image above or add one manually.')}</p>
+                    </div>
+                  ) : (
+                    <div className="fsp-asset-grid">
+                      {selected.assets.map((asset) => {
+                        const isAnchor = selected.anchorAssets.includes(asset.id)
+                        const anchorIdx = selected.anchorAssets.indexOf(asset.id)
+                        return (
+                          <article key={asset.id} className={`fsp-asset-card${isAnchor ? ' is-anchor' : ''}${asset.locked ? ' is-locked' : ''}`}>
+                            <div className="fsp-asset-img-wrap" onClick={() => setSeriesPreview({ url: `/api/flow/series/${selected.id}/assets/${asset.id}`, title: asset.label || asset.name, kind: "image" })}>
+                              <img loading="lazy" src={`/api/flow/series/${selected.id}/assets/${asset.id}`} alt={asset.label || asset.name} />
+                              {isAnchor && <span className="fsp-anchor-badge">#{anchorIdx + 1}</span>}
+                              {asset.locked && <span className="fsp-lock-badge">🔒</span>}
+                              <div className="fsp-asset-overlay">
+                                <span>{t('Xem', 'Preview')}</span>
+                              </div>
                             </div>
-                          </div>
-                          <div className="fsp-asset-info">
-                            <span className="fsp-asset-name">{asset.label || asset.name}</span>
-                          </div>
-                          <div className="fsp-asset-actions">
-                            <label className="fsp-asset-check">
-                              <input type="checkbox" checked={isAnchor} onChange={() => void toggleAnchor(asset.id)} />
-                              <span>{t('Neo', 'Anchor')}</span>
-                            </label>
-                            <button
-                              type="button"
-                              className={`fsp-btn fsp-btn-sm${asset.locked ? ' fsp-btn-lock-active' : ''}`}
-                              onClick={() => void toggleAssetLock(asset)}
-                            >
-                              {asset.locked ? t('Bỏ khóa', 'Unlock') : t('Khóa', 'Lock')}
-                            </button>
-                            <button
-                              type="button"
-                              className="fsp-btn fsp-btn-sm fsp-btn-danger"
-                              onClick={() => void deleteAsset(asset.id)}
-                            >
-                              {t('Xóa', 'Delete')}
-                            </button>
-                          </div>
-                        </article>
-                      )
-                    })}
-                  </div>
-                )}
+                            <div className="fsp-asset-info">
+                              <span className="fsp-asset-name">{asset.label || asset.name}</span>
+                            </div>
+                            <div className="fsp-asset-actions">
+                              <label className="fsp-asset-check">
+                                <input type="checkbox" checked={isAnchor} onChange={() => void toggleAnchor(asset.id)} />
+                                <span>{t('Neo', 'Anchor')}</span>
+                              </label>
+                              <button
+                                type="button"
+                                className={`fsp-btn fsp-btn-sm${asset.locked ? ' fsp-btn-lock-active' : ''}`}
+                                onClick={() => void toggleAssetLock(asset)}
+                              >
+                                {asset.locked ? t('Bỏ khóa', 'Unlock') : t('Khóa', 'Lock')}
+                              </button>
+                              <button
+                                type="button"
+                                className="fsp-btn fsp-btn-sm fsp-btn-danger"
+                                onClick={() => void deleteAsset(asset.id)}
+                              >
+                                {t('Xóa', 'Delete')}
+                              </button>
+                            </div>
+                          </article>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
               </div>
             )}
+
 
             {/* ── Tab: Episodes & Scenes ── */}
             {activeTab === 'episodes' && (
               <div className="fsp-tab-content fsp-episodes">
                 <div className="fsp-episodes-add">
+
                   <input
                     value={episodeTitle}
                     onChange={(e) => setEpisodeTitle(e.target.value)}
@@ -1177,7 +1628,74 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                   <button type="button" className="fsp-btn fsp-btn-secondary" onClick={() => void addEpisode()}>
                     + {t('Thêm tập', 'Add episode')}
                   </button>
+                  <button
+                    type="button"
+                    className={`fsp-btn fsp-btn-extend${extendOpen ? ' is-active' : ''}`}
+                    onClick={() => { setExtendOpen(!extendOpen); setExtendDraft(null) }}
+                    disabled={!aiConfig.provider}
+                    title={aiConfig.provider ? undefined : t('Thêm API key trong Cài đặt → AI Provider', 'Add an API key in Settings → AI Provider')}
+                  >
+                    ✨ {t('Thêm tập bằng AI', 'Add episodes with AI')}
+                  </button>
                 </div>
+
+                {extendOpen && (
+                  <div className="fsp-extend-panel">
+                    <div className="fsp-extend-row">
+                      <label className="fsp-field">
+                        <span className="fsp-label">{t('Số tập thêm', 'Episodes to add')}</span>
+                        <input
+                          type="text" inputMode="numeric" pattern="[0-9]*"
+                          value={extendNumEpisodes}
+                          onChange={(e) => setExtendNumEpisodes(e.target.value.replace(/[^0-9]/g, '') || '1')}
+                          style={{ width: 60 }}
+                        />
+                      </label>
+                      <span className="fsp-extend-hint">
+                        {t('AI sẽ đọc Bible + cảnh cuối để viết tiếp nội dung liên tục', 'AI reads the Bible and last scene to continue the story seamlessly')}
+                      </span>
+                      <button
+                        type="button"
+                        className="fsp-btn fsp-btn-primary"
+                        onClick={() => void draftMoreEpisodes()}
+                        disabled={extendDrafting}
+                      >
+                        {extendDrafting ? t('AI đang viết…', 'AI is writing…') : extendDraft ? t('↻ Viết lại', '↻ Rewrite') : t('✨ Tạo nháp', '✨ Draft')}
+                      </button>
+                      <button type="button" className="fsp-btn" onClick={() => { setExtendOpen(false); setExtendDraft(null) }}>
+                        {t('Đóng', 'Close')}
+                      </button>
+                    </div>
+                    {extendDraft && (
+                      <>
+                        <label className="fsp-field">
+                          <span className="fsp-label">{t('Kịch bản tập mới (sửa trực tiếp)', 'New episode script (edit directly)')}</span>
+                          <textarea
+                            className="fsp-draft-script"
+                            value={extendDraft.text}
+                            onChange={(e) => setExtendDraft({ text: e.target.value })}
+                            rows={14}
+                            spellCheck={false}
+                          />
+                        </label>
+                        <div className="fsp-extend-actions">
+                          <button type="button" className="fsp-btn" onClick={() => setExtendDraft(null)}>
+                            {t('Bỏ nháp', 'Discard draft')}
+                          </button>
+                          <button
+                            type="button"
+                            className="fsp-btn fsp-btn-primary"
+                            onClick={() => void appendEpisodes()}
+                            disabled={!extendDraft.text.trim()}
+                          >
+                            {t('Thêm vào Series', 'Add to series')}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
 
                 {selected.episodes.length === 0 ? (
                   <div className="fsp-empty-episodes">
@@ -1212,6 +1730,9 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                               )}
                             </div>
                             <div className="fsp-episode-tools" onClick={(e) => e.stopPropagation()}>
+                              <button type="button" className="fsp-ep-tool-btn" title={t('Mở cài đặt nhanh', 'Open quick settings')} onClick={() => setActiveTab('settings')}>
+                                ⚙
+                              </button>
                               <button
                                 type="button"
                                 className="fsp-ep-tool-btn fsp-ep-run"
@@ -1246,6 +1767,11 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                                   {mergingEpisodeId === episode.id ? '⏳' : '📽'}
                                 </button>
                               )}
+                              {episode.scenes.some((s) => s.videoOutput) && (
+                                <button type="button" className="fsp-ep-tool-btn" title={t('Mở video ghép của tập', 'Reveal this episode merged video')} onClick={() => void openEpisodeFolder(episode)}>
+                                  📂
+                                </button>
+                              )}
                               <button type="button" className="fsp-ep-tool-btn fsp-ep-del" title={t('Xóa tập', 'Delete episode')} onClick={() => void deleteEpisode(episode)}>
                                 ×
                               </button>
@@ -1269,12 +1795,12 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                                           if (scene.videoOutput) {
                                             setSeriesPreview({ url: toUrl(scene.videoOutput, scene.videoJobId), title: scene.title || `Cảnh ${scene.index}`, kind: 'video' })
                                           } else if (thumb) {
-                                            setSeriesPreview({ url: toUrl(thumb), title: scene.title || `Cảnh ${scene.index}`, kind: 'image' })
+                                            setSeriesPreview({ url: toUrl(thumb, undefined, selected.id), title: scene.title || `Cảnh ${scene.index}`, kind: 'image' })
                                           }
                                         }}
                                       >
                                         {thumb
-                                          ? <img src={toUrl(thumb)} alt={scene.title} loading="lazy" />
+                                          ? <img src={toUrl(thumb, undefined, selected.id)} alt={scene.title} loading="lazy" />
                                           : <video src={toUrl(scene.videoOutput, scene.videoJobId)} preload="metadata" muted playsInline />}
                                         {scene.videoOutput && <span className="fsp-scene-has-video">▶</span>}
                                       </div>

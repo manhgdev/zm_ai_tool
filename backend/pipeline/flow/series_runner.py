@@ -6,7 +6,6 @@ episode order, maintaining character and continuity across scenes.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 import uuid
@@ -145,11 +144,16 @@ class SeriesRunner:
             self._runs[run_id] = run
 
         if mode == "keyframes_only":
-            # Keyframes can run in parallel; video continuity cannot.
+            # A Series episode needs only its first keyframe. Later scenes use
+            # the preceding video's extracted end frame for continuity.
             artifact = "keyframe"
             for episode, scene in scenes_to_run:
+                episode_id = str(episode.get("id") or "")
+                if series_mod._previous_scene(s, episode_id, str(scene.get("id") or "")) is not None:
+                    run.mark_done()
+                    continue
                 try:
-                    ctx = series_mod.generation_context(series_id, str(episode["id"]), str(scene["id"]), artifact)
+                    ctx = series_mod.generation_context(series_id, episode_id, str(scene["id"]), artifact)
                 except Exception:
                     continue
                 job_settings = {
@@ -209,10 +213,13 @@ class SeriesRunner:
 
             # A continued shot starts from the previous clip's real end frame,
             # so a separately drawn keyframe would never be used.
-            continues = (
-                bool(scene.get("continuityEnabled", True))
-                and series_mod._previous_scene(series_mod.get_series(series_id) or {}, episode_id, scene_id) is not None
+            # Every scene after the first one in an episode continues from the
+            # previous clip's end frame. Only the first scene may create a new
+            # keyframe/anchor image.
+            previous_scene = series_mod._previous_scene(
+                series_mod.get_series(series_id) or {}, episode_id, scene_id,
             )
+            continues = previous_scene is not None
 
             if mode != "videos_only":
                 # Check fresh keyframe status
@@ -290,9 +297,7 @@ class SeriesRunner:
                                         if str(sc.get("id")) == scene_id:
                                             scene_cur = dict(sc)
                     if not (scene_cur and scene_cur.get("approvedKeyframe")):
-                        # Omni Flash may still run text-to-video when nothing is locked.
-                        if not re.search(r"omni|flash", str(settings.get("model") or ""), re.I):
-                            raise RuntimeError("No approved keyframe - add an anchor asset or generate a keyframe first")
+                        raise RuntimeError("Series video requires an approved keyframe or anchor frame")
 
                 # If video already completed, finish
                 if scene_cur and scene_cur.get("videoOutput") and Path(str(scene_cur.get("videoOutput"))).is_file() and scene_cur.get("status") == "complete":
@@ -307,7 +312,9 @@ class SeriesRunner:
                 if seconds:
                     vid_settings["duration"] = str(seconds)
                 source_files = list(ctx.get("sourceFiles") or [])
-                video_mode = "frame" if source_files else "text"
+                if not source_files:
+                    raise RuntimeError("Series video requires a frame source")
+                video_mode = "frame"
                 time.sleep(15)
                 for _vid_attempt in range(3):
                     jobs = service.enqueue({
@@ -355,16 +362,29 @@ class SeriesRunner:
         auto_approve: bool,
         mode: str,
     ) -> None:
+        from . import series as series_mod
+
         try:
             # A scene's actual final frame is the first reference for the next
             # keyframe, so a full run must finish each video before proceeding.
-            for episode, scene in scenes:
+            for index, (episode, scene) in enumerate(scenes):
                 if run.should_stop() or run.errors:
                     break
                 self._process_scene(
                     run, series_id, episode, scene, account_id, settings,
                     image_model, auto_approve, mode=mode, count_progress=True,
                 )
+                if run.should_stop() or run.errors:
+                    break
+
+                episode_id = str(episode.get("id") or "")
+                next_episode_id = str(scenes[index + 1][0].get("id") or "") if index + 1 < len(scenes) else ""
+                if episode_id and episode_id != next_episode_id:
+                    try:
+                        series_mod.merge_episode_videos(series_id, episode_id)
+                    except (ValueError, RuntimeError) as exc:
+                        run.add_error(episode_id, str(exc))
+                        break
 
             if run.should_stop():
                 run.finish("cancelled")

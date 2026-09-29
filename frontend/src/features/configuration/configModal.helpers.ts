@@ -1,6 +1,6 @@
 import type { CloudProviderId, SystemChecks } from '@/features/project/project.types'
 
-export const PROVIDERS: CloudProviderId[] = ['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia']
+export const PROVIDERS: CloudProviderId[] = ['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral']
 
 export type InstallKind = 'ai_runtime' | 'ai_runtime_ocr' | 'ai_runtime_vieneu' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
 
@@ -44,6 +44,7 @@ export function emptyCloud(): CloudDraft {
     grok:       { apiKey: '', baseUrl: 'https://api.x.ai/v1', model: 'grok-3-mini', apiKeySet: false, label: 'Grok' },
     groq:       { apiKey: '', baseUrl: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-20b', apiKeySet: false, label: 'Groq' },
     nvidia:     { apiKey: '', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'nvidia/riva-translate-4b-instruct-v2', apiKeySet: false, label: 'NVIDIA NIM' },
+    mistral:    { apiKey: '', baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', apiKeySet: false, label: 'Mistral' },
   }
 }
 
@@ -114,9 +115,13 @@ export const PROVIDER_PRESET_MODELS: Record<CloudProviderId, ModelPreset[]> = {
     { id: 'llama-3.1-8b-instant', labelVi: 'llama-3.1-8b-instant (Siêu tốc)', labelEn: 'llama-3.1-8b-instant (Instant speed)' },
     { id: 'mixtral-8x7b-32768', labelVi: 'mixtral-8x7b-32768 (Context dài)', labelEn: 'mixtral-8x7b-32768 (Long context)' },
   ],
-  nvidia: [
+    nvidia: [
     { id: 'nvidia/riva-translate-4b-instruct-v2', labelVi: 'nvidia/riva-translate-4b-instruct-v2 (Mặc định — chuyên dịch)', labelEn: 'nvidia/riva-translate-4b-instruct-v2 (Default — translation specialized)' },
     { id: 'meta/llama-3.3-70b-instruct', labelVi: 'meta/llama-3.3-70b-instruct (Mạnh mẽ)', labelEn: 'meta/llama-3.3-70b-instruct (Powerful)' },
     { id: 'mistralai/mixtral-8x7b-instruct-v0.1', labelVi: 'mistralai/mixtral-8x7b-instruct-v0.1 (Mixtral)', labelEn: 'mistralai/mixtral-8x7b-instruct-v0.1 (Mixtral)' },
+  ],
+  mistral: [
+    { id: 'mistral-small-latest', labelVi: 'mistral-small-latest (Nhanh, phù hợp dịch)', labelEn: 'mistral-small-latest (Fast, good for translation)' },
+    { id: 'mistral-large-latest', labelVi: 'mistral-large-latest (Chất lượng cao)', labelEn: 'mistral-large-latest (High quality)' },
   ],
 }

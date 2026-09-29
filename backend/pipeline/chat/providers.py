@@ -19,7 +19,7 @@ class ProviderError(RuntimeError):
         return self.message.replace(secret, "[REDACTED]") if secret else self.message
 
 
-API_PROVIDER_IDS = ("openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia")
+API_PROVIDER_IDS = ("openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia", "mistral")
 LOCAL_PROVIDER_IDS = ("ollama",)
 PROVIDER_LABELS = {
     "openai": "OpenAI API",
@@ -29,6 +29,7 @@ PROVIDER_LABELS = {
     "grok": "Grok (xAI)",
     "groq": "Groq",
     "nvidia": "NVIDIA NIM",
+    "mistral": "Mistral",
     "chatgpt_web": "ChatGPT Codex",
     "ollama": "Ollama (local)",
 }
@@ -88,8 +89,10 @@ def _as_model_id(raw: Any) -> str:
 
 
 def _zero_price(value: Any) -> bool:
+    if value is None or str(value).strip() == "":
+        return False
     try:
-        normalized = str(value or "0").strip().replace("$", "").replace(",", "")
+        normalized = str(value).strip().replace("$", "").replace(",", "")
         return float(normalized) == 0
     except (TypeError, ValueError):
         return False
@@ -141,9 +144,17 @@ def _is_free(provider: str, model_id: str, raw: dict[str, Any]) -> tuple[bool, s
 
 
 def _capabilities(raw: dict[str, Any]) -> list[str]:
-    values: list[str] = ["text"]
+    values: list[str] = []
     architecture = raw.get("architecture") if isinstance(raw.get("architecture"), dict) else {}
     modalities = architecture.get("input_modalities") or raw.get("input_modalities") or []
+    output_modalities = raw.get("output_modalities") or []
+    if isinstance(output_modalities, str):
+        output_modalities = [output_modalities]
+    # A model that only emits audio/image/etc. is not a text-chat model even
+    # when its API is OpenAI-compatible (for example Groq TTS models).
+    output_names = {str(value).lower() for value in output_modalities if isinstance(output_modalities, list)}
+    if not output_names or "text" in output_names:
+        values.append("text")
     if isinstance(modalities, str):
         modalities = [modalities]
     for value in modalities if isinstance(modalities, list) else []:

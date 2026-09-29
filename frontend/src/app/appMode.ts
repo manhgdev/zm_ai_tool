@@ -15,7 +15,7 @@ export const APP_MODE_PATHS: Record<AppMode, string> = {
   download: '/download-video',
   tts: '/text-to-speech',
   cleaner: '/video-cleaner',
-  'srt-image': '/subtitle-image',
+  'srt-image': '/media-compose',
   'srt-export': '/subtitle-export',
   drawing: '/drawing',
   film: '/film',

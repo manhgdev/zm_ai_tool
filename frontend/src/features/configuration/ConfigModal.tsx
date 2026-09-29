@@ -26,6 +26,13 @@ interface ElKeySlot {
   edited?: boolean
 }
 
+type DiscoveredModel = {
+  id: string
+  label?: string
+  free?: boolean
+  capabilities?: string[]
+}
+
 type Props = {
   open: boolean
   onClose: () => void
@@ -77,6 +84,8 @@ export default function ConfigModal({
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
   const [tab, setTab] = useState<CloudTab>('openai')
+  const [discoveredModels, setDiscoveredModels] = useState<Partial<Record<CloudProviderId, DiscoveredModel[]>>>({})
+  const [modelsLoading, setModelsLoading] = useState(false)
   const [checks, setChecks] = useState<SystemChecks | null>(null)
   const [checksLoading, setChecksLoading] = useState(false)
   const [checksErr, setChecksErr] = useState('')
@@ -102,6 +111,33 @@ export default function ConfigModal({
   const [outputRoot, setOutputRoot] = useState('')
   const [outputRootDefault, setOutputRootDefault] = useState('')
   const [outputRootSaving, setOutputRootSaving] = useState(false)
+
+  useEffect(() => {
+    if (!open || section !== 'cloud') return
+    let cancelled = false
+    setModelsLoading(true)
+    fetch(`/api/chat/models?provider=${encodeURIComponent(tab)}&includePaid=true&refresh=true`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('model discovery failed')
+        const data = await response.json() as { models?: unknown }
+        const rows = Array.isArray(data.models) ? data.models.flatMap((item) => {
+          if (!item || typeof item !== 'object') return []
+          const row = item as Record<string, unknown>
+          const id = String(row.id || '').trim()
+          const capabilities = Array.isArray(row.capabilities) ? row.capabilities.map(String) : []
+          if (capabilities.length && !capabilities.includes('text')) return []
+          return id ? [{ id, label: String(row.label || id), free: row.free === true, capabilities }] : []
+        }) : []
+        if (!cancelled) setDiscoveredModels((current) => ({ ...current, [tab]: rows }))
+      })
+      .catch(() => {
+        if (!cancelled) setDiscoveredModels((current) => ({ ...current, [tab]: [] }))
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [open, section, tab])
 
   const checkForUpdate = async () => {
     setUpdateChecking(true)
@@ -1142,7 +1178,11 @@ export default function ConfigModal({
                   <span>Model</span>
                   {(() => {
                     const presets = PROVIDER_PRESET_MODELS[tab] || []
-                    const isPreset = presets.some((m) => m.id === cur.model)
+                    const liveModels = discoveredModels[tab] || []
+                    const modelOptions: DiscoveredModel[] = liveModels.length
+                      ? liveModels
+                      : presets.map((m) => ({ id: m.id, label: localize(locale, m.labelVi, m.labelEn) }))
+                    const isPreset = modelOptions.some((m) => m.id === cur.model)
                     const isCustom = (!isPreset && !cur.model) || !!customModelTabs[tab]
                     return (
                       <>
@@ -1159,10 +1199,21 @@ export default function ConfigModal({
                             }
                           }}
                         >
-                          {presets.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {localize(locale, m.labelVi, m.labelEn)}
-                            </option>
+                          {liveModels.length ? (
+                            <>
+                              <optgroup label={t('Model free dùng được', 'Free models available')}>
+                                {modelOptions.filter((m) => m.free !== false).map((m) => (
+                                  <option key={m.id} value={m.id}>{m.label || m.id}</option>
+                                ))}
+                              </optgroup>
+                              <optgroup label={t('Model cần credit', 'Models requiring credit')}>
+                                {modelOptions.filter((m) => m.free === false).map((m) => (
+                                  <option key={m.id} value={m.id}>{m.label || m.id} — {t('cần credit', 'credit required')}</option>
+                                ))}
+                              </optgroup>
+                            </>
+                          ) : modelOptions.map((m) => (
+                            <option key={m.id} value={m.id}>{m.label || m.id}</option>
                           ))}
                           {!isPreset && cur.model ? (
                             <option value={cur.model}>
@@ -1187,6 +1238,10 @@ export default function ConfigModal({
                     )
                   })()}
                 </label>
+                {modelsLoading && <p className="cfg-hint">{t('Đang tải model thật…', 'Loading live models…')}</p>}
+                {!modelsLoading && discoveredModels[tab]?.length ? (
+                  <p className="cfg-hint">{t('Danh sách lấy trực tiếp từ provider; model không free được ghi “cần credit”.', 'Live provider catalogue; non-free models are marked “credit required”.')}</p>
+                ) : null}
               </section>
             </div>
             <p className="cfg-hint">
@@ -1357,16 +1412,16 @@ export default function ConfigModal({
               const sep = outputRootDefault.includes('\\') ? '\\' : '/'
               const p = (sub: string) => outputRootDefault.replace(/[\\/]+$/, '') + sep + sub.replace(/\//g, sep)
               const rows: [string, string][] = [
-                ['Clone',         p('clone')],
-                ['Review',        p('review')],
-                ['Flow/Video',    p('flow' + sep + 'video')],
-                ['Flow/Ảnh',      p('flow' + sep + 'image')],
+                ['Video Clone',   p('clone')],
+                ['Film Review',   p('review')],
+                ['Flow / Video',  p('flow' + sep + 'video')],
+                ['Flow / Ảnh',    p('flow' + sep + 'image')],
                 ['TTS',           p('text-to-speech')],
-                [t('Tải video','Download'), p('download-video')],
-                [t('Phụ đề xuất','Subs export'), p('subtitles' + sep + 'export')],
-                [t('Phụ đề ảnh','Subs image'),  p('subtitles' + sep + 'image-video')],
-                ['Drawing',       p('drawing')],
-                ['Cleaner',       p('cleaner')],
+                [t('Tải video','Download video'), p('download-video')],
+                [t('Xuất SRT','SRT export'), p('subtitles' + sep + 'export')],
+                [t('SRT Image / ghép media','SRT Image / media compose'), p('subtitles' + sep + 'image-video')],
+                [t('Vẽ tay','Drawing'),       p('drawing')],
+                [t('Làm sạch video','Video cleaner'),       p('cleaner')],
                 ['Batch',         p('batch')],
                 ['Automation',    p('automation')],
               ]

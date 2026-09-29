@@ -124,10 +124,10 @@ def account_health(account_id: str):
 
 
 @router.get("/models")
-def models(accountId: str = "", provider: str = "", refresh: bool = False):
+def models(accountId: str = "", provider: str = "", refresh: bool = False, includePaid: bool = False):
     if provider:
         try:
-            return {"models": service.provider_models(provider, refresh=refresh)}
+            return {"models": service.provider_models(provider, refresh=refresh, include_paid=includePaid)}
         except ProviderError as exc:
             secret = str(load_app_config().get("cloud", {}).get(provider, {}).get("apiKey") or "")
             return {"models": [], "errorCode": exc.code, "reason": exc.safe_message(secret)}

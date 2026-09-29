@@ -168,6 +168,8 @@ def _openai_compatible_chat(
         failed_keys = 0
         nvidia_attempt = 0
         rate_attempt = 0
+        transient_attempt = 0
+        transport_attempt = 0
         first_429: int | None = None
         while True:
             # ponytail: multi-key skips shared NVIDIA pacing so a 429 on one key
@@ -187,6 +189,7 @@ def _openai_compatible_chat(
                         "model": model,
                         "temperature": 0,
                         "max_tokens": max_output_tokens,
+                        **({"reasoning_effort": "low"} if provider == "groq" else {}),
                         "messages": [
                             {
                                 "role": "system",
@@ -197,6 +200,10 @@ def _openai_compatible_chat(
                     },
                 )
             except httpx.HTTPError:
+                if transport_attempt < 2:
+                    time.sleep(2 ** transport_attempt)
+                    transport_attempt += 1
+                    continue
                 raise _cloud_error(provider, "NETWORK_UNAVAILABLE") from None
             if r.status_code == 429:
                 if first_429 is None:
@@ -221,11 +228,19 @@ def _openai_compatible_chat(
                     _cool_down_nvidia(max(5.0, retry_s))
                     nvidia_attempt += 1
                     continue
+                if rate_attempt < 3:
+                    time.sleep(_short_429_pause(r, rate_attempt))
+                    rate_attempt += 1
+                    continue
                 break
             if r.status_code in _KEY_FAILOVER and failed_keys < len(keys) - 1:
                 first_429 = None
                 key_index = (key_index + 1) % len(keys)
                 failed_keys += 1
+                continue
+            if r.status_code in {500, 502, 503, 504} and transient_attempt < 2:
+                time.sleep(2 ** (transient_attempt + 1))
+                transient_attempt += 1
                 continue
             break
         if r.status_code >= 400:
@@ -472,7 +487,8 @@ def translate_cloud(
                         max_output_tokens=256,
                         provider=pid,
                     )
-                line = (line or "").strip().splitlines()[0].strip()
+                line = (line or "").strip()
+                line = line.splitlines()[0].strip() if line else ""
                 if not line:
                     raise _cloud_error(pid, "INVALID_RESPONSE")
                 parsed.append(line)
@@ -504,7 +520,8 @@ def translate_cloud(
                             max_output_tokens=256,
                             provider=pid,
                         )
-                    line = (line or "").strip().splitlines()[0].strip()
+                    line = (line or "").strip()
+                    line = line.splitlines()[0].strip() if line else ""
                     if not line:
                         raise _cloud_error(pid, "INVALID_RESPONSE")
                     parsed.append(line)

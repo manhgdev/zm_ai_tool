@@ -331,6 +331,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     pool: FlowJob[];
     includeDone: boolean;
     showIncludeDone: boolean;
+    mode: ImageMode | VideoMode;
     model: string;
     ratio: string;
     duration: string;
@@ -343,6 +344,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     headless: boolean;
     groups: Array<{
       kind: CreateKind;
+      mode: ImageMode | VideoMode;
       jobs: FlowJob[];
       model: string;
       ratio: string;
@@ -1168,6 +1170,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         id: `_opt_${nowSec}_${i}`,
         index: i + 1,
         kind: createKind,
+        mode: createKind === "image" ? imageMode : videoMode,
         prompt: p,
         inputType: "prompt" as const,
         createdAt: nowSec,
@@ -1317,21 +1320,24 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     // Batch "Chạy lại tất cả": mặc định chỉ lỗi/hủy; bật checkbox mới kèm job hoàn thành.
     // Nếu pool toàn done (Tạo mới) hoặc single job → giữ nguyên danh sách.
     const initialJobs = showIncludeDone ? retryOnlyJobs : retryJobs;
+    const selectedJob = initialJobs[0] || job;
     const onlineAccounts = accounts.filter((account) => account.status === "online");
     const resolvedAccountId =
-      (onlineAccounts.some((account) => account.id === job.accountId) ? job.accountId : "")
-      || accounts.find((account) => account.id === job.accountId)?.id
-      || accounts.find((account) => account.label === job.account)?.id
+      (onlineAccounts.some((account) => account.id === selectedJob.accountId) ? selectedJob.accountId : "")
+      || accounts.find((account) => account.id === selectedJob.accountId)?.id
+      || accounts.find((account) => account.label === selectedJob.account)?.id
       || onlineAccounts[0]?.id
       || accounts[0]?.id
       || "";
-    const groups = [...new Set(initialJobs.map((item) => item.kind))].map((kind) => {
-      const groupJobs = initialJobs.filter((item) => item.kind === kind);
+    const groups = [...new Set(initialJobs.map((item) => `${item.kind}:${item.mode}`))].map((groupKey) => {
+      const [kind, mode] = groupKey.split(":") as [CreateKind, ImageMode | VideoMode];
+      const groupJobs = initialJobs.filter((item) => item.kind === kind && item.mode === mode);
       const first = groupJobs[0];
       const groupAccountId = onlineAccounts.some((account) => account.id === first.accountId)
         ? (first.accountId || resolvedAccountId) : resolvedAccountId;
       return {
         kind,
+        mode,
         jobs: groupJobs,
         model: first.settings.model,
         ratio: first.settings.ratio,
@@ -1343,18 +1349,19 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       };
     });
     setRetryTarget({
-      job: initialJobs[0] || job,
+      job: selectedJob,
       jobs: initialJobs,
       pool: retryJobs,
       includeDone: !showIncludeDone && doneJobs.length > 0 && retryOnlyJobs.length === 0,
       showIncludeDone,
-      model: job.settings.model,
-      ratio: job.settings.ratio,
-      duration: job.settings.duration || "",
-      resolution: job.settings.resolution || "",
-      quality: job.settings.quality || "",
-      count: Math.max(1, Math.min(4, Number((job.settings as { count?: number }).count) || 1)),
-      concurrency: String(job.settings.concurrency || settings.concurrency),
+      mode: selectedJob.mode,
+      model: selectedJob.settings.model,
+      ratio: selectedJob.settings.ratio,
+      duration: selectedJob.settings.duration || "",
+      resolution: selectedJob.settings.resolution || "",
+      quality: selectedJob.settings.quality || "",
+      count: Math.max(1, Math.min(4, Number((selectedJob.settings as { count?: number }).count) || 1)),
+      concurrency: String(selectedJob.settings.concurrency || settings.concurrency),
       accountId: resolvedAccountId,
       groups,
       fresh: initialJobs.length > 0 && initialJobs.every(isFreshCreateJob),
@@ -1369,7 +1376,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     if (!retryTarget) return;
     const { jobs: retryJobs, concurrency } = retryTarget;
     const groups = retryTarget.groups.length === 1
-      ? [{ ...retryTarget.groups[0], model: retryTarget.model, ratio: retryTarget.ratio, duration: retryTarget.duration, resolution: retryTarget.resolution, quality: retryTarget.quality, count: retryTarget.count, accountId: retryTarget.accountId }]
+      ? [{ ...retryTarget.groups[0], mode: retryTarget.mode, model: retryTarget.model, ratio: retryTarget.ratio, duration: retryTarget.duration, resolution: retryTarget.resolution, quality: retryTarget.quality, count: retryTarget.count, accountId: retryTarget.accountId }]
       : retryTarget.groups;
     if (groups.some((group) => !group.accountId || (group.accountId !== "random" && !accounts.some((account) => account.id === group.accountId)))) {
       toast.error(t("Chọn tài khoản Flow còn online để chạy lại.", "Pick an online Flow account to retry."));
@@ -1383,7 +1390,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       return group.jobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId: group.accountId, settings: retrySettings, fresh: retryTarget.fresh, headless: retryTarget.headless }),
+      body: JSON.stringify({ accountId: group.accountId, mode: group.mode, settings: retrySettings, fresh: retryTarget.fresh, headless: retryTarget.headless }),
       }));
     });
     void Promise.all(retryRequests)
@@ -2244,6 +2251,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         {utilityView === "series" && (
           <FlowSeriesPanel
             onOpenSrtImage={onOpenSrtImage}
+            onOpenQueue={() => {
+              setUtilityView(null);
+              setTab("queue");
+              writeFlowRoutePanel("queue");
+            }}
             accounts={accounts.map((acc) => ({
               id: acc.id, label: acc.label, status: acc.status, plan: acc.plan,
               capabilityCatalog: acc.capabilityCatalog, capabilityStatus: acc.capabilityStatus,
@@ -3473,13 +3485,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             includeDone,
                             jobs: nextJobs,
                             job: nextJobs[0] || current.job,
-                            groups: [...new Set(nextJobs.map((item) => item.kind))].map((kind) => {
-                              const existing = current.groups.find((group) => group.kind === kind);
-                              if (existing) return { ...existing, jobs: nextJobs.filter((item) => item.kind === kind) };
-                              const first = nextJobs.find((item) => item.kind === kind) as FlowJob;
+                            groups: [...new Set(nextJobs.map((item) => `${item.kind}:${item.mode}`))].map((groupKey) => {
+                              const [kind, mode] = groupKey.split(":") as [CreateKind, ImageMode | VideoMode];
+                              const existing = current.groups.find((group) => group.kind === kind && group.mode === mode);
+                              if (existing) return { ...existing, jobs: nextJobs.filter((item) => item.kind === kind && item.mode === mode) };
+                              const first = nextJobs.find((item) => item.kind === kind && item.mode === mode) as FlowJob;
                               return {
                                 kind,
-                                jobs: nextJobs.filter((item) => item.kind === kind),
+                                mode,
+                                jobs: nextJobs.filter((item) => item.kind === kind && item.mode === mode),
                                 model: first.settings.model,
                                 ratio: first.settings.ratio,
                                 duration: first.settings.duration || "",
@@ -3516,9 +3530,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       const capability = capabilities.find((item) => item.name === group.model);
                       const ratios = capability?.ratios.length ? capability.ratios : group.kind === "video" ? ["16:9", "9:16"] : ["1:1", "16:9", "9:16", "4:3", "3:4"];
                       return (
-                        <div className="flow-retry-kind-card" key={group.kind}>
+                        <div className="flow-retry-kind-card" key={`${group.kind}:${group.mode}`}>
                           <strong>{group.kind === "video" ? t("Video", "Video") : t("Ảnh", "Image")} · {group.jobs.length} {t("job", "jobs")}</strong>
                           <div className="flow-retry-kind-grid">
+                            <FlowSelect label={t("Chế độ", "Mode")} value={group.mode} options={group.kind === "video" ? ["text", "frame"] : ["text", "edit", "reference"]} onChange={(mode) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, mode: mode as ImageMode | VideoMode } : item) } : current)} optionLabels={{ text: t("Văn bản", "Text"), frame: t("Khung hình", "Frames"), edit: t("Chỉnh sửa", "Edit"), reference: t("Tham chiếu", "Reference") }} disabled={group.jobs.some((item) => Boolean(item.seriesContext))} />
                             <FlowSelect label={t("Model", "Model")} value={group.model} options={models} onChange={(model) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, model } : item) } : current)} />
                             <FlowSelect label={t("Tỷ lệ", "Ratio")} value={group.ratio} options={ratios} onChange={(ratio) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, ratio } : item) } : current)} />
                             <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={["random", ...accounts.filter((account) => account.status === "online").map((account) => account.id)]} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={{ random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"), ...Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}${account.suspendedUntil && account.suspendedUntil > Date.now() / 1000 ? ` · ⚠️ ${t("Tạm cách ly", "Suspended")}` : ""}`])) }} />
@@ -3528,6 +3543,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     })}
                   </div>
                 )}
+                <FlowSelect
+                  label={t("Chế độ", "Mode")}
+                  value={retryTarget.mode}
+                  onChange={(mode) => setRetryTarget((current) => current ? { ...current, mode: mode as ImageMode | VideoMode } : current)}
+                  options={retryTarget.job.kind === "video" ? ["text", "frame"] : ["text", "edit", "reference"]}
+                  optionLabels={{ text: t("Văn bản", "Text"), frame: t("Khung hình", "Frames"), edit: t("Chỉnh sửa", "Edit"), reference: t("Tham chiếu", "Reference") }}
+                  disabled={Boolean(retryTarget.job.seriesContext)}
+                />
                 <FlowSelect
                   label={t("Model", "Model")}
                   value={retryTarget.model}
