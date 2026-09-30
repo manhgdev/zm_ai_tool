@@ -2,7 +2,9 @@ import { memo, useEffect, useRef, useState } from 'react'
 import type { ProjectSettings, Segment, SpeakerProfile } from '@/features/project/project.types'
 import { api } from '@/features/project/project.api'
 import { localize, useLocale } from '@/app/i18n'
+import { canReviewTranslatedDraft } from '@/app/appSettings'
 import { IconPlay, IconRefresh } from '@/shared/components/Icons'
+import { TranslationReviewField } from './TranslationReview'
 import './SegmentCard.css'
 
 type Props = {
@@ -12,6 +14,8 @@ type Props = {
   targetLang: string
   sourceLang?: string
   translator?: ProjectSettings['translator']
+  settings: ProjectSettings
+  projectBusy?: boolean
   videoUrl: string | null
   projectId: string | null
   onChange: (seg: Segment) => void
@@ -46,6 +50,8 @@ function SegmentCard({
   targetLang,
   sourceLang = 'auto',
   translator = 'google',
+  settings,
+  projectBusy = false,
   videoUrl,
   projectId,
   onChange,
@@ -63,6 +69,7 @@ function SegmentCard({
   const draftSourceRef = useRef(sourceSafe)
   const draftTranslationRef = useRef(translationSafe)
   const segmentRef = useRef(segment)
+  const reviewButtonRef = useRef<HTMLButtonElement>(null)
   const onChangeRef = useRef(onChange)
   const textTimer = useRef<number | null>(null)
   segmentRef.current = segment
@@ -107,9 +114,11 @@ function SegmentCard({
       ...cur,
       source: src,
       translation: tr,
+      sourceSubtitle: src,
+      dubSubtitle: tr,
       // text đổi → TTS cũ lệch
       ...(tr !== (cur.translation ?? '')
-        ? { audioUrl: undefined, audioFile: undefined, audioDuration: undefined }
+        ? { audioUrl: undefined, audioFile: undefined, audioDuration: undefined, captionLayout: undefined }
         : {}),
     })
   }
@@ -311,11 +320,17 @@ function SegmentCard({
               disabled={
                 reBusy || busy || !projectId || !draftSource.trim() || targetLang === 'none'
               }
-              aria-label="Dịch lại"
-              title="Tạo lại bản dịch đoạn này"
+              aria-label={t('Dịch lại', 'Retranslate')}
+              title={t('Dịch lại từ chữ nguồn', 'Translate again from the source text')}
             >
               {reBusy ? '…' : <IconRefresh size={12} />}
             </button>
+            {canReviewTranslatedDraft(settings.translator) && settings.translationReviewMode !== 'off' && (
+              <button type="button" className="ai-review-shortcut" disabled={projectBusy || busy || reBusy}
+                aria-label={t('AI sửa câu này, giữ nguyên ý', 'Polish this sentence with AI; preserve meaning')}
+                title={t('AI sửa câu này, giữ nguyên ý', 'Polish this sentence with AI; preserve meaning')}
+                onClick={() => reviewButtonRef.current?.click()}>AI</button>
+            )}
           </div>
           {err && <span className="play-err">{err}</span>}
         </div>
@@ -330,15 +345,21 @@ function SegmentCard({
           />
         </label>
 
-        <label className="cell">
-          <span>Bản dịch</span>
-          <textarea
-            value={draftTranslation}
-            rows={2}
-            onChange={(e) => scheduleText({ translation: e.target.value })}
-            onBlur={() => flushText()}
-          />
-        </label>
+        <div className="cell">
+          <TranslationReviewField projectId={projectId}
+            segment={{ id: segment.id, source: draftSource, translation: draftTranslation }}
+            settings={settings} disabled={projectBusy || busy || reBusy} actionButtonRef={reviewButtonRef} hideAction
+            onApply={(translation) => {
+              draftTranslationRef.current = translation
+              setDraftTranslation(translation)
+              flushText({ translation })
+            }}>
+            <textarea value={draftTranslation} rows={2}
+              aria-label={t('Bản dịch', 'Translation')}
+              onChange={(e) => scheduleText({ translation: e.target.value })}
+              onBlur={() => flushText()} />
+          </TranslationReviewField>
+        </div>
 
         {isOverlay ? (
           <div className="cell voice-cell voice-toggle-cell">

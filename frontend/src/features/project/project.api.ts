@@ -842,4 +842,30 @@ export const api = {
       },
       60_000,
     ),
+
+  reviewTranslation: (
+    projectId: string,
+    segId: string,
+    body?: {
+      text?: string
+      translation?: string
+      sourceLang?: string
+      targetLang?: string
+      translator?: ProjectSettings['translationReviewTranslator']
+      ollamaMode?: ProjectSettings['ollamaMode']
+      ollamaModel?: string
+      ollamaLocalTier?: ProjectSettings['ollamaLocalTier']
+    },
+    signal?: AbortSignal,
+  ) =>
+    fetchJson<{ translation: string }>(
+      `${base}/projects/${projectId}/segments/${segId}/review-translation`,
+      {
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      },
+      300_000,
+    ),
 }

@@ -40,6 +40,8 @@ def normalize_project_tracks(meta: dict[str, Any]) -> dict[str, Any]:
         settings.setdefault("subtitleExportTrack", "dub")
         settings.setdefault("colorAdjust", {})
         settings.setdefault("lutAssetId", "")
+        settings.setdefault("translationReviewMode", "manual")
+        settings.setdefault("translationReviewTranslator", "ollama")
         settings.setdefault("blurBandMode", "auto")
         if settings.get("blurBandMode") is None:
             settings["blurBandMode"] = "auto"

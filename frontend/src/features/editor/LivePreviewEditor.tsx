@@ -708,6 +708,11 @@ export default function LivePreviewEditor({
 
   /** Mọi sửa 1 segment / overlay → undo được (Ctrl+Z). */
   function editSegment(next: Segment, opts?: { textField?: string; skipHistory?: boolean }) {
+    const previous = segments.find((segment) => segment.id === next.id)
+    if (previous && next.source !== previous.source) next = { ...next, sourceSubtitle: next.source }
+    if (previous && next.translation !== previous.translation) {
+      next = { ...next, dubSubtitle: next.translation, audioUrl: undefined, audioFile: undefined, audioDuration: undefined, captionLayout: null }
+    }
     if (!historyQuietRef.current && !opts?.skipHistory) {
       if (opts?.textField) {
         const key = `${next.id}:${opts.textField}`
@@ -6076,6 +6081,7 @@ export default function LivePreviewEditor({
                       id="properties"
                     >
                       <EditorPropertiesPanel
+                        projectId={projectId}
                         effectivePropTab={effectivePropTab}
                         setPropTab={setPropTab}
                         setTool={setTool}

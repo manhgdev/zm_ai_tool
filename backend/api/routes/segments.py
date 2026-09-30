@@ -215,6 +215,7 @@ def api_update_segment(project_id: str, seg_id: str, body: SegmentIn):
                     merged["layout"] = s["layout"]
                 if incoming.get("dub") is None and "dub" in s:
                     merged["dub"] = s["dub"]
+                _sync_changed_segment_text(merged, s)
                 segs[i] = merged
                 meta["segments"] = segs
                 meta.pop("timelineBaseline", None)
@@ -258,6 +259,7 @@ def api_replace_segments(project_id: str, body: list[SegmentIn]):
                         continue
                     if k not in dumped and prev.get(k) is not None:
                         dumped[k] = prev[k]
+            _sync_changed_segment_text(dumped, prev or {})
             out.append(dumped)
         meta["segments"] = out
         # Edits đổi timeline — baseline bake cũ không còn đúng
@@ -265,6 +267,19 @@ def api_replace_segments(project_id: str, body: list[SegmentIn]):
         return out
 
     return mutate_meta(project_id, apply)
+
+
+def _sync_changed_segment_text(segment: dict, previous: dict) -> None:
+    """A new translation invalidates audio/layout, including compound children."""
+    if segment.get("source") != previous.get("source"):
+        segment["sourceSubtitle"] = str(segment.get("source") or "")
+    if segment.get("translation") != previous.get("translation"):
+        segment["dubSubtitle"] = str(segment.get("translation") or "")
+        for field in ("audioFile", "audioUrl", "audioDuration", "captionLayout"):
+            segment.pop(field, None)
+    previous_children = {child.get("id"): child for child in previous.get("compoundChildren") or []}
+    for child in segment.get("compoundChildren") or []:
+        _sync_changed_segment_text(child, previous_children.get(child.get("id")) or {})
 
 
 @router.post("/api/projects/{project_id}/segments/compound")

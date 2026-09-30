@@ -81,6 +81,16 @@ const TRANSLATOR_LABELS: Record<(typeof TRANSLATORS)[number], string> = {
   nvidia: 'NVIDIA NIM',
   mistral: 'Mistral',
 }
+export const AI_REVIEW_TRANSLATORS = ['ollama', 'openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral'] as const
+export const TRANSLATION_REVIEW_BASE_TRANSLATORS = ['google', 'mymemory', 'tiktok', 'capcut'] as const
+
+export function canReviewTranslatedDraft(translator: ProjectSettings['translator']) {
+  return TRANSLATION_REVIEW_BASE_TRANSLATORS.includes(translator as (typeof TRANSLATION_REVIEW_BASE_TRANSLATORS)[number])
+}
+
+export function translationReviewOptions() {
+  return AI_REVIEW_TRANSLATORS.map((id) => ({ id, label: TRANSLATOR_LABELS[id] }))
+}
 
 export function normalizeTranslatorForEngine(
   engine: ProjectSettings['engine'],
@@ -104,6 +114,8 @@ export const defaultSettings: ProjectSettings = {
   sourceLang: 'auto',
   targetLang: 'vi',
   translator: 'google',
+  translationReviewMode: 'manual',
+  translationReviewTranslator: 'ollama',
   ollamaMode: 'cloud',
   ollamaModel: 'minimax-m3:cloud',
   ollamaLocalTier: 'balanced',
@@ -230,6 +242,10 @@ export function loadSettings(): ProjectSettings {
       s.originalAudioVolume = Math.max(0, Math.min(200, s.originalAudioVolume))
     }
     if (!TRANSLATORS.includes(s.translator as (typeof TRANSLATORS)[number])) s.translator = 'google'
+    if (!['off', 'manual', 'auto'].includes(s.translationReviewMode)) s.translationReviewMode = 'manual'
+    if (!AI_REVIEW_TRANSLATORS.includes(s.translationReviewTranslator)) {
+      s.translationReviewTranslator = 'ollama'
+    }
     if (s.ollamaMode !== 'local' && s.ollamaMode !== 'cloud') s.ollamaMode = 'cloud'
     if (typeof s.ollamaModel !== 'string' || !s.ollamaModel.trim()) {
       s.ollamaModel = 'minimax-m3:cloud'

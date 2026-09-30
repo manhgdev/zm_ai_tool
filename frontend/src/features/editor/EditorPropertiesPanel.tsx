@@ -7,6 +7,7 @@ import type { ProjectSettings, Segment, TextOverlay } from '@/features/project/p
 import { resolvedSpeakerProfiles, speakerRoleOptions } from '@/features/project/speakerProfiles'
 import { localize, useLocale } from '@/app/i18n'
 import { normalizeTranslatorForEngine, translatorOptions } from '@/app/appSettings'
+import { TranslationReviewField, TranslationReviewSettings } from '@/features/project/TranslationReview'
 import { cn } from '@/shared/lib/cn'
 import { IconHeadphones } from '@/shared/components/Icons'
 import { ScrollArea } from '@/shared/ui/scroll-area'
@@ -42,6 +43,7 @@ const TTS_PRESETS = [0.75, 0.9, 1, 1.2, 1.3, 1.5]
 const clampTtsManual = (v: number) => Math.max(0.75, Math.min(1.5, Math.round(v * 1000) / 1000))
 
 type Props = {
+  projectId: string
   effectivePropTab: PropTab
   setPropTab: (tab: PropTab) => void
   setTool: (tool: 'select' | 'cover' | 'text') => void
@@ -151,6 +153,7 @@ type Props = {
 }
 
 export function EditorPropertiesPanel({
+  projectId,
   effectivePropTab,
   setPropTab,
   setTool,
@@ -400,6 +403,7 @@ export function EditorPropertiesPanel({
                                 </select>
                               </PropLabel>
                             </div>
+                            <TranslationReviewSettings settings={settings} onChange={onSettings} disabled={busy} />
                             <div className="rounded-md border border-border p-2">
                               <div className="flex items-center justify-between gap-2"><b className="text-xs text-foreground">{t('Phạm vi chạy', 'Run range')}</b><input className="h-7 w-16 rounded border border-border bg-background px-1.5 text-right text-xs" type="number" min={5} max={3600} value={previewRunSec} disabled={busy} aria-label={t('Số giây preview', 'Preview seconds')} onChange={(event) => setPreviewRunSec(Math.max(5, Math.min(3600, Number(event.target.value) || 5)))} /></div>
                               <div className="mt-2 grid grid-cols-2 gap-1.5">
@@ -509,15 +513,17 @@ export function EditorPropertiesPanel({
                                 onChange={(e) => editSegment({ ...selected, source: e.target.value }, { textField: 'source' })}
                               />
                             </PropLabel>
-                            <PropLabel label="Bản dịch">
+                            <TranslationReviewField projectId={projectId} segment={selected} settings={settings}
+                              disabled={busy || ttsBusy} onApply={(translation) => editSegment({ ...selected, translation })}>
                               <textarea
                                 className="w-full rounded-md border border-border bg-input px-2 py-1.5 text-xs resize-none outline-none focus:border-ring"
                                 value={selected.translation}
+                                aria-label={t('Bản dịch', 'Translation')}
                                 rows={4}
                                 disabled={busy}
                                 onChange={(e) => editSegment({ ...selected, translation: e.target.value, captionLayout: null }, { textField: 'translation' })}
                               />
-                            </PropLabel>
+                            </TranslationReviewField>
 
                             {isOverlaySeg && (
                               <label className="flex items-center gap-2 text-xs cursor-pointer py-0.5">

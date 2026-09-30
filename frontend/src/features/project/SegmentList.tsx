@@ -22,6 +22,7 @@ type Props = {
   targetLang: string
   sourceLang?: string
   translator?: ProjectSettings['translator']
+  projectBusy?: boolean
   videoUrl: string | null
   projectId: string | null
   logoDetection?: JobStatus['logoDetection']
@@ -41,6 +42,7 @@ export default function SegmentList({
   targetLang,
   sourceLang,
   translator,
+  projectBusy,
   videoUrl,
   projectId,
   logoDetection,
@@ -188,6 +190,8 @@ export default function SegmentList({
           targetLang={targetLang}
           sourceLang={sourceLang}
           translator={translator}
+          settings={settings}
+          projectBusy={projectBusy}
           videoUrl={videoUrl}
           projectId={projectId}
           onChange={onChange}

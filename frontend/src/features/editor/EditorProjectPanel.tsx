@@ -4,6 +4,7 @@ import { api } from '@/features/project/project.api'
 import { resolvedSpeakerProfiles, speakerRoleOptions } from '@/features/project/speakerProfiles'
 import { localize, useLocale } from '@/app/i18n'
 import { normalizeTranslatorForEngine, translatorOptions } from '@/app/appSettings'
+import { TranslationReviewSettings } from '@/features/project/TranslationReview'
 import { ScrollArea } from '@/shared/ui/scroll-area'
 import ProgressPopup from '@/shared/components/ProgressPopup'
 import { formatTimecode, PropLabel } from '@/features/editor/lib'
@@ -121,6 +122,7 @@ export function EditorProjectPanel({ projectId, tab, segments, settings, voices,
           </select>
         </PropLabel>
       </div>
+      <TranslationReviewSettings settings={settings} onChange={onSettings} disabled={busy} />
       <label className="flex cursor-pointer items-center justify-between gap-2 rounded-md border border-border px-2 py-2 text-xs"><span><b className="block text-foreground">{t('Tách người nói', 'Separate speakers')}</b><span className="text-[10px] text-muted-foreground">{t('Phân vai và dùng giọng riêng.', 'Assign roles and individual voices.')}</span></span><input type="checkbox" className="size-4 accent-primary" checked={Boolean(settings.speakerDiarization)} disabled={busy || settings.engine !== 'whisper'} onChange={(e) => onSettings({ ...settings, speakerDiarization: e.target.checked })} /></label>
       {settings.speakerDiarization && settings.engine === 'whisper' && (
         <div className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1.5 text-xs">

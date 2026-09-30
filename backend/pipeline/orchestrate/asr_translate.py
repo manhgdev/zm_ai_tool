@@ -49,6 +49,7 @@ from pipeline.core.resources import adaptive_workers, progress_msg
 from pipeline.ocr.locate import attach_speech_hardsub_boxes
 from pipeline.ocr.extract_parts.textutil import _ocr_fix_zh
 from pipeline.translate import translate_segments
+from pipeline.mt.review import can_review_translated_draft, polish_translations, translation_review_key
 from pipeline.tts import tts_cache_key, tts_segment
 
 from pipeline.orchestrate.tts_fit import assign_tts_fit_speeds
@@ -94,6 +95,7 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
         checkpoint.update({
             "asrKey": current_cache.get("asrKey", checkpoint.get("asrKey")),
             "transKey": current_cache.get("transKey", checkpoint.get("transKey")),
+            "reviewKey": current_cache.get("reviewKey", checkpoint.get("reviewKey")),
             "ocrKey": current_cache.get("ocrKey", checkpoint.get("ocrKey")),
             "segments": copy.deepcopy(current_segments),
         })
@@ -113,6 +115,7 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
         run_cache = {
             "asrKey": legacy_cache.get("asrKey"),
             "transKey": legacy_cache.get("transKey"),
+            "reviewKey": legacy_cache.get("reviewKey"),
             "ocrKey": legacy_cache.get("ocrKey"),
             "segments": meta.get("segments"),
         }
@@ -120,6 +123,7 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
     cache = {
         "asrKey": run_cache.get("asrKey"),
         "transKey": run_cache.get("transKey"),
+        "reviewKey": run_cache.get("reviewKey"),
         "ocrKey": run_cache.get("ocrKey"),
     }
 
@@ -180,6 +184,11 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
 
         work_speed = _meta_baked_speed(meta)
         a_key = asr_cache_key(run_settings, source_fp, speed=work_speed)
+        # The active project is newer than its last run checkpoint after a
+        # manual edit. Use it when rerunning the same ASR/window.
+        if current_segments and current_tag == tag and current_cache.get("asrKey") == a_key:
+            cached_segments = copy.deepcopy(current_segments)
+            cache.update({key: current_cache.get(key) for key in cache})
 
         # Đồng bộ cửa sổ làm việc ngay (status/editor không kẹt Ns cũ)
         meta["previewSec"] = preview_sec
@@ -549,9 +558,13 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
                     )
                 # Ghi kết quả dịch vào segments (bug cũ: nằm nhầm trong else → luôn trống)
                 for i, tr in zip(need_idx, translations):
+                    previous_translation = str(segments[i].get("translation") or "")
                     segments[i]["translation"] = (tr or "").strip() or segments[i].get(
                         "translation"
                     ) or ""
+                    if segments[i]["translation"] != previous_translation:
+                        for field in ("audioFile", "audioUrl", "audioDuration", "captionLayout"):
+                            segments[i].pop(field, None)
                     segments[i]["dubSubtitle"] = segments[i]["translation"]
                     segments[i]["sourceSubtitle"] = str(segments[i].get("source") or "")
                 append_job_event(project_id, "TRANSLATION_CHUNK_READY", {"segmentIds": [str(segments[i].get("id") or "") for i in need_idx], "segments": [segments[i] for i in need_idx]})
@@ -566,6 +579,67 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
             for seg in segments:
                 seg["voice"] = inherit_voice(seg.get("voice"), voice)
             cache["transKey"] = t_key
+
+        # —— AI hậu biên tập bản dịch ——
+        # Chạy sau cả Whisper/SRT/CapCut để cùng một tùy chọn hoạt động nhất
+        # quán cho mọi nguồn. Cache riêng giúp đổi mode/provider không làm mất
+        # bản dịch thủ công và không gọi lại model ở mỗi lần mở project.
+        review_mode = str(settings.get("translationReviewMode") or "manual").lower()
+        review_provider = str(settings.get("translationReviewTranslator") or "ollama").lower()
+        review_key = translation_review_key(segments, settings) if review_mode == "auto" else None
+        target_lang = str(settings.get("targetLang") or "vi")
+        review_needed = (
+            review_mode == "auto"
+            and can_review_translated_draft(str(settings.get("translator") or "google"))
+            and target_lang not in ("none", "off", "source", "")
+            and bool(segments)
+            and cache.get("reviewKey") != review_key
+        )
+        if review_needed:
+            review_idx = [
+                i for i, segment in enumerate(segments)
+                if not segment.get("maskOnly") and str(segment.get("translation") or "").strip()
+            ]
+            if review_idx:
+                review_workers = adaptive_workers(
+                    int(settings.get("workers") or 0),
+                    kind="network",
+                    cap=8,
+                    tasks=len(review_idx),
+                )
+                set_status(
+                    project_id,
+                    step="translate",
+                    progress=78,
+                    message=f"AI chỉnh bản dịch 0/{len(review_idx)} đoạn…",
+                    running=True,
+                )
+                reviewed = polish_translations(
+                    [str(segments[i].get("source") or "") for i in review_idx],
+                    [str(segments[i].get("translation") or "") for i in review_idx],
+                    target_lang,
+                    project_id=project_id,
+                    translator=review_provider,
+                    workers=review_workers,
+                    ollama_mode=str(settings.get("ollamaMode") or "cloud"),
+                    ollama_model=str(settings.get("ollamaModel") or "minimax-m3:cloud"),
+                    ollama_local_tier=str(settings.get("ollamaLocalTier") or "balanced"),
+                )
+                for i, polished in zip(review_idx, reviewed):
+                    value = (polished or "").strip() or str(segments[i].get("translation") or "")
+                    if value != str(segments[i].get("translation") or "").strip():
+                        segments[i].pop("audioFile", None)
+                        segments[i].pop("audioUrl", None)
+                        segments[i].pop("audioDuration", None)
+                        segments[i].pop("captionLayout", None)
+                    segments[i]["translation"] = value
+                    segments[i]["dubSubtitle"] = value
+                append_job_event(
+                    project_id,
+                    "TRANSLATION_REVIEW_READY",
+                    {"segmentIds": [str(segments[i].get("id") or "") for i in review_idx]},
+                )
+            cache["reviewKey"] = translation_review_key(segments, settings)
 
         # Whisper/SRT provide text timing, not its on-screen position. OCR only
         # locates the hard-sub area; it does not replace the SRT's text.
@@ -737,6 +811,7 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
         run_caches[tag] = {
             "asrKey": cache.get("asrKey"),
             "transKey": cache.get("transKey"),
+            "reviewKey": cache.get("reviewKey"),
             "ocrKey": cache.get("ocrKey"),
             "segments": copy.deepcopy(segments),
         }

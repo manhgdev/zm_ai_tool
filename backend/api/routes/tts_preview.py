@@ -22,6 +22,7 @@ from api.deps import (
     ExportPayload,
     PreviewTtsIn,
     RebakeSpeedIn,
+    ReviewTranslationIn,
     RetranslateIn,
     SEG_PRESERVE,
     SegmentIn,
@@ -78,6 +79,7 @@ _validate_segment_editor_fields = validate_segment_editor_fields
 _SEG_PRESERVE = SEG_PRESERVE
 
 from pipeline.translate import translate_segments
+from pipeline.mt.review import can_review_translated_draft, polish_translations
 
 
 @router.post("/api/projects/{project_id}/segments/{seg_id}/preview-tts")
@@ -170,6 +172,8 @@ def api_retranslate(project_id: str, seg_id: str, body: RetranslateIn):
     if not seg:
         raise HTTPException(404, "Segment not found")
     settings = meta.get("settings") or {}
+    if not can_review_translated_draft(str(settings.get("translator") or "google")):
+        raise HTTPException(400, "AI_TRANSLATION_REVIEW_NOT_NEEDED")
     source = (body.text or seg.get("source") or "").strip()
     if not source:
         raise HTTPException(400, "Thiếu chữ nguồn")
@@ -214,6 +218,57 @@ def api_retranslate(project_id: str, seg_id: str, body: RetranslateIn):
     meta["segments"] = segs
     save_meta(project_id, meta)
     return {"translation": tr, "segment": seg}
+
+
+@router.post("/api/projects/{project_id}/segments/{seg_id}/review-translation")
+def api_review_translation(project_id: str, seg_id: str, body: ReviewTranslationIn):
+    """Return a proposal; the normal segment save applies it after user review."""
+    meta = load_meta(project_id)
+    if not meta:
+        raise HTTPException(404)
+    def find_segment(rows: list[dict]) -> dict | None:
+        for row in rows:
+            if row.get("id") == seg_id:
+                return row
+            child = find_segment(row.get("compoundChildren") or [])
+            if child:
+                return child
+        return None
+
+    seg = find_segment(meta.get("segments") or [])
+    if not seg:
+        raise HTTPException(404, "Segment not found")
+    settings = meta.get("settings") or {}
+    source = (body.text or str(seg.get("source") or "")).strip()
+    draft = (body.translation or seg.get("translation") or "").strip()
+    if not source or not draft:
+        raise HTTPException(400, "AI_TRANSLATION_REVIEW_TEXT_REQUIRED")
+    target = body.targetLang or settings.get("targetLang") or "vi"
+    if target in ("none", "off", "source", ""):
+        raise HTTPException(400, "AI_TRANSLATION_REVIEW_TARGET_REQUIRED")
+    try:
+        reviewed = polish_translations(
+            [source],
+            [draft],
+            target,
+            translator=str(
+                body.translator
+                or settings.get("translationReviewTranslator")
+                or "ollama"
+            ),
+            workers=1,
+            ollama_mode=str(body.ollamaMode or settings.get("ollamaMode") or "cloud"),
+            ollama_model=str(
+                body.ollamaModel or settings.get("ollamaModel") or "minimax-m3:cloud"
+            ),
+            ollama_local_tier=str(
+                body.ollamaLocalTier or settings.get("ollamaLocalTier") or "balanced"
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+    translation = (reviewed[0] if reviewed else "").strip() or draft
+    return {"translation": translation}
 
 
 @router.get("/api/projects/{project_id}/tts/{name}")

@@ -466,6 +466,8 @@
   margin-top: 4px;
 }
 
+.ai-review-all-btn { border-color: color-mix(in srgb, var(--primary) 35%, var(--line)); color: var(--primary); }
+
 .clear-cache-btn {
   flex: 0 0 36%;
   max-width: 40%;

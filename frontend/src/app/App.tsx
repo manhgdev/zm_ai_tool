@@ -1060,6 +1060,7 @@ export default function App() {
           }}
           onUpload={onUpload}
           onTranslateAll={() => onTranslateAll(0)}
+          onReviewAll={() => onTranslateAll(0, { ...settings, translationReviewMode: 'auto' })}
           onPreview={(previewSec) => {
             const sec = Math.max(5, Math.min(600, previewSec || settings.previewSec || 20))
             // Chỉ ▶ Preview mới ghi ô settings.previewSec — Dịch cả không đụng
@@ -1160,6 +1161,7 @@ export default function App() {
             targetLang={settings.targetLang}
             sourceLang={settings.sourceLang}
             translator={settings.translator}
+            projectBusy={status.running}
             videoUrl={videoUrl}
             projectId={projectId}
             logoDetection={status.logoDetection}

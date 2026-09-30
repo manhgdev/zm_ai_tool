@@ -18,6 +18,8 @@ class Settings(BaseModel):
     sourceLang: str = "auto"
     targetLang: str = "vi"
     translator: str = "google"
+    translationReviewMode: Literal["off", "manual", "auto"] = "manual"
+    translationReviewTranslator: Literal["ollama", "openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia", "mistral"] = "ollama"
     ollamaMode: str = "cloud"
     ollamaModel: str = "minimax-m3:cloud"
     ollamaLocalTier: str = "balanced"
@@ -222,6 +224,17 @@ class RetranslateIn(BaseModel):
     sourceLang: str | None = None
     targetLang: str | None = None
     translator: str | None = None
+    ollamaMode: str | None = None
+    ollamaModel: str | None = None
+    ollamaLocalTier: str | None = None
+
+
+class ReviewTranslationIn(BaseModel):
+    text: str = Field(default="", max_length=8000)
+    translation: str = Field(default="", max_length=8000)
+    sourceLang: str | None = None
+    targetLang: str | None = None
+    translator: Literal["ollama", "openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia", "mistral"] | None = None
     ollamaMode: str | None = None
     ollamaModel: str | None = None
     ollamaLocalTier: str | None = None

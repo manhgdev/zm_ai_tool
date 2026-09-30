@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, ty
 import type { JobStatus, ProjectSettings } from '@/features/project/project.types'
 import { api } from '@/features/project/project.api'
 import { localize, useLocale } from '@/app/i18n'
-import { normalizeTranslatorForEngine, translatorOptions } from '@/app/appSettings'
+import { canReviewTranslatedDraft, normalizeTranslatorForEngine, translationReviewOptions, translatorOptions } from '@/app/appSettings'
 
 type AnalysisRegion = { x: number; y: number; w: number; h: number }
 type LiveTranslationModel = { id: string; label: string; free: boolean }
@@ -63,6 +63,7 @@ type Props = {
   onSubtitleApplied?: (segments: import('@/features/project/project.types').Segment[], settings: ProjectSettings) => void
   onUpload: (file: File) => void
   onTranslateAll: () => void
+  onReviewAll: () => void
   /** previewSec = số giây từ ô Preview (đã commit draft) */
   onPreview: (previewSec: number) => void
   onCancel: () => void
@@ -124,6 +125,7 @@ export default function Sidebar({
   onSubtitleApplied,
   onUpload,
   onTranslateAll,
+  onReviewAll,
   onPreview,
   onCancel,
   onClearCache,
@@ -145,6 +147,22 @@ export default function Sidebar({
   const [translationModelsLoading, setTranslationModelsLoading] = useState(false)
   const [translationModel, setTranslationModel] = useState('')
   const [ollamaLocalModels, setOllamaLocalModels] = useState<string[]>([])
+  const [configuredReviewProviders, setConfiguredReviewProviders] = useState<string[]>([])
+  const reviewAvailable = canReviewTranslatedDraft(settings.translator)
+    && configuredReviewProviders.includes(settings.translationReviewTranslator)
+  const reviewActive = reviewAvailable && settings.translationReviewMode !== 'off'
+  const modelProvider = reviewActive ? settings.translationReviewTranslator : settings.translator
+
+  useEffect(() => {
+    let cancelled = false
+    void api.getConfig().then((cfg) => {
+      const providers = Object.entries(cfg.cloud || {})
+        .filter(([, value]) => Boolean((value as { apiKeySet?: boolean }).apiKeySet))
+        .map(([id]) => id)
+      if (!cancelled) setConfiguredReviewProviders(providers)
+    }).catch(() => { if (!cancelled) setConfiguredReviewProviders([]) })
+    return () => { cancelled = true }
+  }, [])
   const [previewDraft, setPreviewDraft] = useState(
     String(settings.previewSec > 0 ? settings.previewSec : 20),
   )
@@ -158,16 +176,16 @@ export default function Sidebar({
   }, [projectId])
 
   useEffect(() => {
-    if (!CLOUD_TRANSLATORS.has(settings.translator)) {
+    if (!CLOUD_TRANSLATORS.has(modelProvider)) {
       setTranslationModels([])
       return
     }
     let cancelled = false
     setTranslationModelsLoading(true)
     void api.getConfig().then((cfg) => {
-      if (!cancelled) setTranslationModel(cfg.cloud?.[settings.translator as keyof typeof cfg.cloud]?.model || '')
+      if (!cancelled) setTranslationModel(cfg.cloud?.[modelProvider as keyof typeof cfg.cloud]?.model || '')
     }).catch(() => { if (!cancelled) setTranslationModel('') })
-    fetch(`/api/chat/models?provider=${encodeURIComponent(settings.translator)}&includePaid=true`)
+    fetch(`/api/chat/models?provider=${encodeURIComponent(modelProvider)}&includePaid=true`)
       .then((response) => response.ok ? response.json() as Promise<{ models?: unknown }> : Promise.reject(new Error('model discovery failed')))
       .then((data) => {
         const rows = Array.isArray(data.models) ? data.models.flatMap((item) => {
@@ -184,10 +202,10 @@ export default function Sidebar({
       .catch(() => { if (!cancelled) setTranslationModels([]) })
       .finally(() => { if (!cancelled) setTranslationModelsLoading(false) })
     return () => { cancelled = true }
-  }, [settings.translator])
+  }, [modelProvider])
 
   useEffect(() => {
-    if (settings.translator !== 'ollama' || settings.ollamaMode !== 'local') {
+    if ((settings.translator !== 'ollama' && !(reviewActive && settings.translationReviewTranslator === 'ollama')) || settings.ollamaMode !== 'local') {
       setOllamaLocalModels([])
       return
     }
@@ -200,7 +218,7 @@ export default function Sidebar({
       })
       .catch(() => { if (!cancelled) setOllamaLocalModels([]) })
     return () => { cancelled = true }
-  }, [settings.ollamaMode, settings.translator])
+  }, [settings.ollamaMode, settings.translator, settings.translationReviewMode, settings.translationReviewTranslator])
 
   useEffect(() => {
     setInputSize({ width: 0, height: 0 })
@@ -383,9 +401,9 @@ export default function Sidebar({
   }
 
   const selectTranslationModel = (model: string) => {
-    if (busy || !CLOUD_TRANSLATORS.has(settings.translator) || !model) return
+    if (busy || !CLOUD_TRANSLATORS.has(modelProvider) || !model) return
     setTranslationModel(model)
-    void api.saveConfig({ cloud: { [settings.translator]: { model } } }).catch(() => undefined)
+    void api.saveConfig({ cloud: { [modelProvider]: { model } } }).catch(() => undefined)
   }
 
   /** Commit ô Preview → settings; trả về số giây đã chốt (dùng khi bấm Preview ngay). */
@@ -605,7 +623,7 @@ export default function Sidebar({
             {translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
           </select>
         </Field>
-        {CLOUD_TRANSLATORS.has(settings.translator) && (
+        {!reviewActive && CLOUD_TRANSLATORS.has(modelProvider) && (
           <Field
             className="translation-model-field"
             label={t('Model dịch', 'Translation model')}
@@ -638,6 +656,50 @@ export default function Sidebar({
         )}
       </div>
 
+      {reviewAvailable && (
+        <div className="field-row">
+          <Field label={t('AI chỉnh bản dịch', 'AI translation review')}>
+            <select value={settings.translationReviewMode} disabled={busy}
+              onChange={(e) => set('translationReviewMode', e.target.value as ProjectSettings['translationReviewMode'])}>
+              <option value="off">{t('Tắt', 'Off')}</option>
+              <option value="manual">{t('Thủ công', 'Manual')}</option>
+              <option value="auto">{t('Tự động sau khi dịch', 'Automatic after translation')}</option>
+            </select>
+          </Field>
+          {reviewActive && (
+            <Field label={t('Công cụ AI', 'AI provider')}>
+              <select value={settings.translationReviewTranslator} disabled={busy}
+                onChange={(e) => set('translationReviewTranslator', e.target.value as ProjectSettings['translationReviewTranslator'])}>
+                {translationReviewOptions().filter(({ id }) => configuredReviewProviders.includes(id)).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+              </select>
+            </Field>
+          )}
+        </div>
+      )}
+      {reviewActive && CLOUD_TRANSLATORS.has(modelProvider) && (
+        <Field label={t('Model AI', 'AI model')}>
+          <select value={translationModel} disabled={busy || translationModelsLoading || !translationModels.length}
+            onChange={(e) => selectTranslationModel(e.target.value)}>
+            {!translationModels.length && <option value="">{t('Chưa tải được model', 'No model list loaded')}</option>}
+            {translationModel && !translationModels.some((model) => model.id === translationModel) && <option value={translationModel}>{translationModel}</option>}
+            {translationModels.some((model) => model.free) && (
+              <optgroup label={t('Model free dùng được', 'Free models available')}>
+                {translationModels.filter((model) => model.free).map((model) => (
+                  <option key={model.id} value={model.id}>{model.label || model.id}</option>
+                ))}
+              </optgroup>
+            )}
+            {translationModels.some((model) => !model.free) && (
+              <optgroup label={t('Model cần credit', 'Models requiring credit')}>
+                {translationModels.filter((model) => !model.free).map((model) => (
+                  <option key={model.id} value={model.id}>{model.label || model.id} — {t('cần credit', 'credit required')}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </Field>
+      )}
+
       {settings.engine === 'subtitle' && (
         <Field className="subtitle-source-field" label="File phụ đề" icon={<IconType size={14} />} hint="Dùng timestamp từ file, không chạy Whisper/OCR">
           <div className="subtitle-source-control">
@@ -656,7 +718,7 @@ export default function Sidebar({
         </Field>
       )}
 
-      {settings.translator === 'ollama' && (
+      {(settings.translator === 'ollama' || (reviewActive && settings.translationReviewTranslator === 'ollama')) && (
         <div className="field-row">
           <Field label="Ollama">
             <select
@@ -1112,6 +1174,17 @@ export default function Sidebar({
             </>
           )}
         </button>
+        {reviewAvailable && settings.translationReviewMode !== 'off' && (
+          <button
+            type="button"
+            className="secondary ai-review-all-btn"
+            disabled={busy || !videoUrl || clearingCache}
+            onClick={onReviewAll}
+            title={t('AI sửa tất cả bản dịch, giữ nguyên ý', 'Polish all translations with AI while preserving meaning')}
+          >
+            {t('AI sửa tất cả', 'AI review all')}
+          </button>
+        )}
         {showCancel && (
           <button type="button" className="cancel" onClick={onCancel}>
             Huỷ

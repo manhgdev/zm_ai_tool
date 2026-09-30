@@ -1,4 +1,12 @@
 import test from 'node:test'
+test('Live Preview AI settings include bilingual model groups and credential gating', () => {
+  const source = readFileSync(new URL('../frontend/src/features/project/TranslationReview.tsx', import.meta.url), 'utf8')
+  assert.ok(source.includes("t('Model AI', 'AI model')"))
+  assert.ok(source.includes("t('Model free dùng được', 'Free models available')"))
+  assert.ok(source.includes("t('Model cần credit', 'Models requiring credit')"))
+  assert.ok(source.includes('value.apiKeySet'))
+  assert.ok(source.includes('!providers.length'))
+})
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
@@ -169,4 +177,27 @@ test('static English catalog entries are non-empty', () => {
     assert.equal(typeof value, 'string', key)
     assert.ok(value.trim(), key)
   }
+})
+
+test('Clone and Live Preview share compact bilingual translation review controls', () => {
+  const sidebar = readFileSync(new URL('../frontend/src/features/project/ProjectSidebar.tsx', import.meta.url), 'utf8')
+  const batch = readFileSync(new URL('../frontend/src/features/studio/CloneBatchSettingsPanel.tsx', import.meta.url), 'utf8')
+  const card = readFileSync(new URL('../frontend/src/features/project/SegmentCard.tsx', import.meta.url), 'utf8')
+  const projectPanel = readFileSync(new URL('../frontend/src/features/editor/EditorProjectPanel.tsx', import.meta.url), 'utf8')
+  const properties = readFileSync(new URL('../frontend/src/features/editor/EditorPropertiesPanel.tsx', import.meta.url), 'utf8')
+  const shared = readFileSync(new URL('../frontend/src/features/project/TranslationReview.tsx', import.meta.url), 'utf8')
+  for (const source of [batch, projectPanel]) assert.match(source, /<TranslationReviewSettings settings=\{settings\}/)
+  assert.match(sidebar, /<Field label=\{t\('Công cụ AI', 'AI provider'\)\}/)
+  assert.match(sidebar, /<Field label=\{t\('Model AI', 'AI model'\)\}/)
+  assert.doesNotMatch(sidebar, /<TranslationReviewSettings/)
+  for (const source of [card, properties]) assert.match(source, /<TranslationReviewField projectId=\{projectId\}/)
+  assert.match(shared, /t\('AI chỉnh bản dịch', 'AI translation review'\)/)
+  assert.match(shared, /t\('Tự động sau khi dịch', 'Automatic after translation'\)/)
+  assert.match(shared, /t\('Thủ công', 'Manual'\)/)
+  assert.match(shared, /t\('AI chỉnh bản dịch', 'Review translation with AI'\)/)
+  assert.match(shared, /t\('AI sửa câu này, giữ nguyên ý', 'Polish this translation with AI while preserving meaning'\)/)
+  assert.match(shared, /t\('Nguồn AI dùng để sửa bản dịch', 'AI source used for translation review'\)/)
+  assert.doesNotMatch(sidebar, /translation-review-card|translation-review-title/)
+  const list = readFileSync(new URL('../frontend/src/features/project/SegmentList.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(list, /translation-review-hint/)
 })

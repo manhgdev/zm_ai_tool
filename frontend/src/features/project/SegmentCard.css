@@ -230,11 +230,31 @@
   padding: 0;
 }
 
-.play {
-  background: var(--primary);
+.seg .play {
+  /* Keep TTS action visible in dark themes where --primary may resolve near black. */
+  background: #0ea5e9 !important;
   color: #fff;
-  box-shadow: 0 4px 10px rgba(47, 111, 237, 0.28);
+  box-shadow: 0 4px 10px rgba(14, 165, 233, 0.35);
 }
+
+.seg .play:hover:not(:disabled) {
+  background: #0284c7 !important;
+}
+
+.ai-review-shortcut {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--line));
+  background: color-mix(in srgb, var(--primary) 12%, var(--card));
+  color: var(--primary);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.ai-review-shortcut:hover:not(:disabled) { background: color-mix(in srgb, var(--primary) 20%, var(--card)); }
+.ai-review-shortcut:disabled { opacity: 0.5; }
 
 .retranslate {
   background: color-mix(in srgb, var(--primary) 12%, var(--card));

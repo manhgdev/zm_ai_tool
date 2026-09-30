@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { localize, useLocale } from '@/app/i18n'
 import { applyEngineProfile, normalizeTranslatorForEngine, snapshotEngineProfile, translatorOptions } from '@/app/appSettings'
+import { TranslationReviewSettings } from '@/features/project/TranslationReview'
 import type { ProjectSettings } from '@/features/project/project.types'
 
 type Voice = { id: string; name: string }
@@ -35,7 +36,7 @@ export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
     : [...fontSizes, settings.subtitleFontSize].sort((a, b) => a - b)
 
   useEffect(() => {
-    if (settings.translator !== 'ollama' || settings.ollamaMode !== 'local') {
+    if ((settings.translator !== 'ollama' && !(settings.translationReviewMode !== 'off' && settings.translationReviewTranslator === 'ollama')) || settings.ollamaMode !== 'local') {
       setOllamaLocalModels([])
       return
     }
@@ -48,7 +49,7 @@ export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
       })
       .catch(() => { if (!cancelled) setOllamaLocalModels([]) })
     return () => { cancelled = true }
-  }, [settings.ollamaMode, settings.translator])
+  }, [settings.ollamaMode, settings.translator, settings.translationReviewMode, settings.translationReviewTranslator])
 
   function selectEngine(engine: ProjectSettings['engine']) {
     const next = applyEngineProfile(snapshotEngineProfile(settings), engine)
@@ -118,6 +119,8 @@ export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
             {LANGUAGES.map(([id, vi, en]) => <option key={id} value={id}>{t(vi, en)}</option>)}
           </select>
         </label>
+
+        <div className="col-span-2"><TranslationReviewSettings settings={settings} onChange={onChange} /></div>
 
         <label>
           <span>{t('Khớp thời lượng', 'Duration matching')}</span>
@@ -203,7 +206,7 @@ export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
         </label>
       </div>
 
-      {settings.translator === 'ollama' ? (
+      {settings.translator === 'ollama' || (settings.translationReviewMode !== 'off' && settings.translationReviewTranslator === 'ollama') ? (
         <div className="clone-settings-grid clone-settings-subgroup">
           <label>
             <span>Ollama</span>

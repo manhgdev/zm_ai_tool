@@ -153,6 +153,11 @@ export type ProjectSettings = {
     | 'grok'
     | 'groq'
     | 'nvidia'
+    | 'mistral'
+  /** Hậu biên tập bản dịch bằng AI: tắt, bấm từng đoạn, hoặc chạy sau khi dịch. */
+  translationReviewMode: 'off' | 'manual' | 'auto'
+  /** Provider dùng riêng cho bước AI chỉnh bản dịch. */
+  translationReviewTranslator: Exclude<ProjectSettings['translator'], 'google' | 'mymemory' | 'tiktok' | 'capcut'>
   /** Ollama local dùng model đã tải; cloud dùng hạn mức tài khoản Ollama. */
   ollamaMode: 'local' | 'cloud'
   ollamaModel: string
