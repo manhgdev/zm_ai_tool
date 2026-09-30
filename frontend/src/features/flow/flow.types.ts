@@ -43,6 +43,8 @@ export type FlowJob = {
 
 export type FlowModelCapability = {
   name: string;
+  /** Credits charged for one generation of this video model, when Flow reports it. */
+  creditCost?: number;
   ratios: string[];
   durations: string[];
   resolutions: string[];
@@ -55,6 +57,8 @@ export type FlowCapabilityCatalog = {
   version: number;
   source: string;
   syncedAt: number;
+  /** Plan used when this account-specific pricing snapshot was synced. */
+  pricingPlan?: string;
   image: { defaultModel?: string; models: FlowModelCapability[] };
   video: { defaultModel?: string; models: FlowModelCapability[] };
 };

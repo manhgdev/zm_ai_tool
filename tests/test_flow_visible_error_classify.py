@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from pipeline.flow.service import (
     _classify_visible_flow_error,
+    _flow_credit_blocked,
     _FLOW_SUBMIT_DELAY_MAX_S,
     _FLOW_SUBMIT_DELAY_MIN_S,
 )
@@ -19,6 +20,11 @@ class FlowVisibleErrorClassifyTest(unittest.TestCase):
         msg = _classify_visible_flow_error("Not enough credits to generate")
         self.assertTrue(msg.startswith("FLOW_CREDITS_EMPTY:"))
         self.assertIn("Not enough credits", msg)
+
+    def test_credit_gate_before_submit(self) -> None:
+        self.assertTrue(_flow_credit_blocked("Không có đủ tín dụng để thực hiện hành động này."))
+        self.assertTrue(_flow_credit_blocked("Not enough credits to perform this action"))
+        self.assertFalse(_flow_credit_blocked("720 credits remaining"))
 
     def test_quota(self) -> None:
         msg = _classify_visible_flow_error("Bạn đã hết lượt tạo hôm nay")

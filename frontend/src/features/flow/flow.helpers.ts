@@ -30,6 +30,27 @@ export const FLOW_VIDEO_MODELS = [
 
 export const FLOW_OMNI_FLASH_DURATIONS = ["4", "6", "8", "10"] as const;
 
+/** Official Flow video generation costs; values are credits per generation. */
+export function flowVideoGenerationCost(
+  model: string | undefined | null,
+  duration: string | undefined | null,
+  resolution: string | undefined | null,
+  plan: string | undefined | null,
+): number | null {
+  const name = String(model || "").toLowerCase();
+  const seconds = String(duration || "8");
+  const tier = String(plan || "Free").toLowerCase();
+  if (/omni.*flash/.test(name)) {
+    const draft = String(resolution || "720p").toLowerCase() === "360p";
+    const costs = draft ? { "4": 4, "6": 5, "8": 6, "10": 7 } : { "4": 7, "6": 10, "8": 12, "10": 15 };
+    return costs[seconds as keyof typeof costs] ?? null;
+  }
+  if (/veo\s*3\.1.*quality/.test(name)) return 100;
+  if (/veo\s*3\.1.*fast/.test(name)) return tier === "ultra" ? 10 : 20;
+  if (/veo\s*3\.1.*lite/.test(name)) return tier === "ultra" ? 5 : 10;
+  return null;
+}
+
 export const FLOW_RESOLUTIONS = ["360p", "480p", "720p", "1080p"] as const;
 export const FLOW_VIDEO_DOWNLOAD_QUALITIES = ["360p", "720p", "1080p", "4K"] as const;
 export const FLOW_IMAGE_RESOLUTIONS = ["1K", "2K", "4K"] as const;

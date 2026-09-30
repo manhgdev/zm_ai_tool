@@ -279,6 +279,17 @@ def _classify_visible_flow_error(text: str) -> str:
     return f"FLOW_GENERATION_REJECTED: {raw}"
 
 
+def _flow_credit_blocked(text: str) -> bool:
+    """Detect Flow's pre-submit credit gate, before it exposes a submit button."""
+    return bool(re.search(
+        r"không có đủ tín dụng để thực hiện hành động này|"
+        r"not enough credits|insufficient credits|out of credits|"
+        r"you (?:do not|don't) have enough credits",
+        str(text or ""),
+        re.I,
+    ))
+
+
 # Cooldown per error type (0 = no suspension):
 _COOLDOWN_BOT_S       = 3 * 3600    # 3h  — AUTOMATION_BLOCKED
 _COOLDOWN_QUOTA_S     = 14 * 3600   # 14h — FLOW_QUOTA_EXHAUSTED (daily quota)
@@ -448,8 +459,27 @@ def _flow_job_credit_cost(account: dict[str, Any], kind: str, model: Any) -> int
         return None
     raw = selected.get("creditCost", selected.get("cost"))
     try:
-        return max(0, int(raw)) if raw is not None else None
+        if raw is not None:
+            return max(0, int(raw))
     except (TypeError, ValueError):
+        pass
+    # Flow's capability UI omits creditCost on some accounts, while the
+    # authoritative API model registry still exposes the exact cost.  Use it
+    # only as a catalog lookup fallback; unknown models remain unbounded.
+    try:
+        from ._flow._api import MODEL_REGISTRY
+        selected_name = str(selected.get("name") or requested)
+        match = next(
+            (item for item in MODEL_REGISTRY.values()
+             if isinstance(item, dict) and (
+                 str(item.get("display") or "") == selected_name
+                 or _match_model_choice(selected_name, str(item.get("display") or ""))
+             )),
+            None,
+        )
+        cost = match.get("cost") if match else None
+        return max(0, int(cost)) if cost is not None else None
+    except (ImportError, TypeError, ValueError):
         return None
 
 
@@ -556,6 +586,24 @@ def _image_ui_resolution(value: Any) -> str:
     text = str(value or "").strip()
     match = re.fullmatch(r"([1-9]\d{0,1})[Kk]", text)
     return f"{match.group(1)}K" if match else ""
+
+
+def _official_flow_video_cost(model: str, plan: str | None, duration: str = "8", resolution: str = "720p") -> int | None:
+    """Official per-generation Flow price used when the live price RPC is absent."""
+    name = str(model or "").lower()
+    tier = str(plan or "Free").lower()
+    seconds = str(duration or "8")
+    if "omni" in name and "flash" in name:
+        costs = {"360p": {"4": 4, "6": 5, "8": 6, "10": 7},
+                 "720p": {"4": 7, "6": 10, "8": 12, "10": 15}}
+        return costs.get(str(resolution or "720p").lower(), costs["720p"]).get(seconds)
+    if "veo" in name and "quality" in name:
+        return 100
+    if "veo" in name and "fast" in name:
+        return 10 if tier == "ultra" else 20
+    if "veo" in name and "lite" in name:
+        return 5 if tier == "ultra" else 10
+    return None
 
 
 def _clamp_image_resolution(value: Any, plan: str | None = None) -> str:
@@ -1586,7 +1634,7 @@ class FlowService:
             capability_error = ""
             try:
                 capability_catalog = await asyncio.wait_for(
-                    self._read_capability_catalog(browser, project_id), timeout=45.0,
+                    self._read_capability_catalog(browser, project_id, detected_plan), timeout=45.0,
                 )
             except Exception as catalog_exc:
                 capability_error = str(catalog_exc)
@@ -1656,7 +1704,7 @@ class FlowService:
                 pass
         return store.get_row("accounts", account_id) or account
 
-    async def _read_capability_catalog(self, browser, project_id: str) -> dict[str, Any]:
+    async def _read_capability_catalog(self, browser, project_id: str, plan: str | None = None) -> dict[str, Any]:
         """Read the model/ratio/duration controls actually exposed to this account."""
         from .browser import FLOW_BASE_URL
 
@@ -1669,6 +1717,7 @@ class FlowService:
         await _disable_flow_agent_mode(page)
         await page.wait_for_selector(".settings-trigger-button", state="visible", timeout=15_000)
         controls = page.locator(_FLOW_CONTROL_SELECTOR)
+        model_credit_costs: dict[str, int] = {}
 
         async def model_selector():
             selectors = page.locator("button:has(.model-select-trigger-content)")
@@ -1736,6 +1785,13 @@ class FlowService:
                 name = _clean_flow_model_name(raw_name)
                 if name and name not in result:
                     result.append(name)
+                # Some Flow builds expose the authoritative price beside the
+                # model name in the menu, while the tRPC price catalogue is
+                # unavailable. Preserve that UI value for the account JSON.
+                option_text = re.sub(r"\s+", " ", await option.inner_text()).strip()
+                cost_match = re.search(r"(?<!\d)(\d{1,4})\s*(?:credits?|t[ií]n\s*d[uụ]ng)(?!\w)", option_text, re.I)
+                if name and cost_match:
+                    model_credit_costs[name] = int(cost_match.group(1))
             return result
 
         async def select_model(name: str) -> None:
@@ -1788,7 +1844,10 @@ class FlowService:
                     seen_text.add(key)
             return snapshot
 
-        catalog: dict[str, Any] = {"version": 1, "source": "flow_ui", "syncedAt": time.time()}
+        catalog: dict[str, Any] = {
+            "version": 1, "source": "flow_ui", "syncedAt": time.time(),
+            "pricingPlan": str(plan or "Free"),
+        }
         original_kind = "video"
         for index in range(await controls.count()):
             control = controls.nth(index)
@@ -1814,13 +1873,34 @@ class FlowService:
                 "defaultModel": original_model if any(item["name"] == original_model for item in models) else (models[0]["name"] if models else ""),
                 "models": models,
             }
+            if kind == "video":
+                for entry in models:
+                    cost = model_credit_costs.get(str(entry.get("name") or ""))
+                    if cost is not None:
+                        entry["creditCost"] = cost
+                    elif not entry.get("creditCost"):
+                        fallback_cost = _official_flow_video_cost(
+                            str(entry.get("name") or ""), plan,
+                            str(entry.get("defaultDuration") or "8"),
+                            str(entry.get("defaultResolution") or "720p"),
+                        )
+                        if fallback_cost is not None:
+                            entry["creditCost"] = fallback_cost
         # Credit cost is account-specific and is not rendered in the model
         # selector. Merge the live API catalog when available; never invent a
         # universal cost for every account/plan.
         try:
             from ._flow._api import FlowAPI
             config = await FlowAPI(browser, project_id=project_id).get_video_model_config()
-            video_models = config.get("videoModels", []) if isinstance(config, dict) else []
+            # tRPC deployments have returned both the unwrapped payload and
+            # result/data/json envelopes. Normalize all observed shapes before
+            # reading costs; otherwise the capability catalog silently loses
+            # creditCost while the balance itself still syncs successfully.
+            payload: Any = config
+            for key in ("result", "data", "json"):
+                if isinstance(payload, dict) and isinstance(payload.get(key), dict):
+                    payload = payload[key]
+            video_models = payload.get("videoModels", []) if isinstance(payload, dict) else []
             for entry in catalog.get("video", {}).get("models", []):
                 name = str(entry.get("name") or "")
                 match = next((item for item in video_models if isinstance(item, dict) and (
@@ -2845,7 +2925,7 @@ class FlowService:
         # RESULT_NOT_FOUND is the exception: Flow has no pending/completed
         # media, so submit a fresh generation automatically.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|AUTOMATION_BLOCKED|FLOW_SETTING_MISMATCH|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED|FLOW_DOWNLOAD_QUALITY_UNAVAILABLE|FLOW_RESULT_NOT_FOUND"
+            r"LOGIN_REQUIRED|GENERATION_FAILED|GENERATION_REJECTED|AUTOMATION_BLOCKED|FLOW_SETTING_MISMATCH|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_EMPTY_OUTPUT|FLOW_GENERATION_TIMEOUT|FLOW_PROJECT_NOT_FOUND|FLOW_CREDITS_EMPTY|FLOW_CREDITS_INSUFFICIENT|FLOW_QUOTA_EXHAUSTED|FLOW_DOWNLOAD_QUALITY_UNAVAILABLE|FLOW_RESULT_NOT_FOUND"
             r"|Target page, context or browser has been closed"
             r"|browser has been closed",
             re.I,
@@ -3583,6 +3663,23 @@ class FlowService:
                     continue
             return False
 
+        async def summary_confirms_resolution(value: str) -> bool:
+            """Accept Flow's committed resolution summary when controls close after selection."""
+            summaries = page.locator(".settings-trigger-button, .settings-summary")
+            for index in range(await summaries.count()):
+                summary = summaries.nth(index)
+                try:
+                    if not await summary.is_visible():
+                        continue
+                    text = re.sub(r"\s+", " ", (await summary.inner_text()).strip())
+                    if re.search(rf"(?<!\d){re.escape(value)}(?!\d)", text, re.I):
+                        return True
+                    if value == "720p" and re.search(r"original size|kích thước gốc", text, re.I):
+                        return True
+                except Exception:
+                    continue
+            return False
+
         ratio_label = str(ratio or "").strip()
         if not re.fullmatch(r"\d{1,2}:\d{1,2}", ratio_label):
             raise RuntimeError(f"FLOW_SETTING_MISMATCH: invalid aspect ratio {ratio_label!r}")
@@ -3831,14 +3928,19 @@ class FlowService:
                     except Exception as _exc:
                         _log.debug("resolution ancestor click failed: %s", _exc)
                 if not await _flow_control_is_selected(resolution_tab):
-                    # ponytail: resolution controls change between Flow builds (tabs→dropdown→radio).
-                    # Log a warning and continue rather than permanently failing the job — the model
-                    # already has a default resolution and the output will still be generated.
-                    _log.warning(
-                        "_prepare_ui_format: resolution %s could not be confirmed selected "
-                        "(Flow UI may have changed); continuing with model default",
-                        resolution_value,
-                    )
+                    if await summary_confirms_resolution(resolution_value):
+                        _log.info(
+                            "_prepare_ui_format: resolution %s confirmed by settings summary",
+                            resolution_value,
+                        )
+                    else:
+                        # Flow builds can close the resolution control immediately after
+                        # applying the default. Keep generation moving without treating
+                        # this non-fatal UI state as a submit failure.
+                        _log.info(
+                            "_prepare_ui_format: resolution %s not exposed as a selectable control; using model default",
+                            resolution_value,
+                        )
 
     async def _click_flow_submit(self, page) -> None:
         """Click the submit control used by the current Flow project page.
@@ -3854,6 +3956,17 @@ class FlowService:
         # Submit stays disabled while an attached frame is still processing.
         deadline = time.monotonic() + 60
         while not candidates and time.monotonic() < deadline:
+            try:
+                body_text = await page.locator("body").inner_text()
+                if _flow_credit_blocked(body_text):
+                    raise RuntimeError(
+                        "FLOW_CREDITS_INSUFFICIENT: Không có đủ tín dụng để thực hiện hành động này; "
+                        "hãy chọn model/cấu hình ít tốn credits hơn."
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
             for index in range(await buttons.count()):
                 candidate = buttons.nth(index)
                 try:

@@ -2,6 +2,25 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+test('Flow queue bulk folding is bilingual, covers both kinds and persists', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
+  assert.ok(source.includes('t("Mở rộng tất cả", "Expand all")'))
+  assert.ok(source.includes('t("Thu gọn tất cả", "Collapse all")'))
+  assert.match(source, /disabled=\{!queueGroups.length\} onClick=\{toggleAllFoldersCollapsed\}/)
+  const body = source.match(/const toggleAllFoldersCollapsed = \(\) => \{([\s\S]*?)\n  \};/)[1]
+  const groups = [{ kind: 'video', outputDir: 'same' }, { kind: 'image', outputDir: 'same' }]
+  let state = { 'video-same': true, unrelated: true }
+  let saved
+  const toggle = new Function('queueGroups', 'setCollapsedFolders', 'sessionStorage', 'COLLAPSED_FOLDERS_KEY', body)
+  const run = () => toggle(groups, update => { state = update(state) }, { setItem: (_key, value) => { saved = JSON.parse(value) } }, 'test')
+  run()
+  assert.deepEqual(state, { 'video-same': true, 'image-same': true, unrelated: true })
+  assert.deepEqual(saved, state)
+  run()
+  assert.deepEqual(state, { 'video-same': false, 'image-same': false, unrelated: true })
+  assert.deepEqual(saved, state)
+})
+
 test('Flow top navigation includes Series and Accounts above utility views', () => {
   const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
   const start = source.indexOf('<div className="flow-tabs"')

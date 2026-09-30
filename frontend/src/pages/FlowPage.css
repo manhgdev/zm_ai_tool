@@ -92,9 +92,13 @@
   line-height: 1.25;
 }
 .flow-rail-credit span {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
   font-size: 0.72rem;
   color: var(--muted-foreground);
   line-height: 1.25;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .flow-workspace {
@@ -384,6 +388,29 @@
   font-size: 0.58rem;
   font-style: normal;
   pointer-events: none;
+}
+.flow-video-credit-preview {
+  grid-column: 1 / -1;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--primary) 6%, var(--background));
+  color: var(--muted-foreground);
+  font-size: 0.67rem;
+  line-height: 1.25;
+}
+.flow-video-credit-preview strong {
+  color: var(--primary);
+  font-size: 0.72rem;
+}
+.flow-video-credit-preview span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .flow-settings-grid label:has(.flow-select-wrap i) select {
   padding-right: 68px;

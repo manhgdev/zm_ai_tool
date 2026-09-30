@@ -39,6 +39,7 @@ import {
   WEB_AUTO_DOWNLOAD_DEFAULT_KEY, WEB_OUTPUT_ROOT_KEY, TAB_KEY, RAIL_KEY,
   ACCOUNTS_KEY, CREATE_KIND_KEY, ACTIVE_PANEL_KEY, IMAGE_MODE_KEY, VIDEO_MODE_KEY, COLLAPSED_FOLDERS_KEY,
   FLOW_VIDEO_MODELS, FLOW_IMAGE_MODELS, FLOW_OMNI_FLASH_DURATIONS,
+  flowVideoGenerationCost,
   flowVideoDownloadQualities,
   flowImageResolutions,
   isFlowVideoUiResolution,
@@ -434,6 +435,17 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     (["video", "image"] as const)
       .map((kind) => ({ kind, folders: queueGroups.filter((group) => group.kind === kind) }))
   ), [queueGroups]);
+  const allFoldersCollapsed = queueGroups.length > 0
+    && queueGroups.every((group) => !!collapsedFolders[`${group.kind}-${group.outputDir}`]);
+  const toggleAllFoldersCollapsed = () => {
+    setCollapsedFolders((prev) => {
+      const collapse = !queueGroups.every((group) => !!prev[`${group.kind}-${group.outputDir}`]);
+      const next = { ...prev };
+      for (const group of queueGroups) next[`${group.kind}-${group.outputDir}`] = collapse;
+      try { sessionStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify(next)); } catch { /* ponytail: quota */ }
+      return next;
+    });
+  };
   const activeQueueGroups = useMemo(
     () => queueKind === "all" ? queueGroups : queueGroups.filter((group) => group.kind === queueKind),
     [queueGroups, queueKind],
@@ -801,6 +813,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const capabilityModels = accountCapabilityModels(displayedAccount, createKind);
   const capabilityModel = capabilityModels.find((item) => item.name === settings.model);
+  const catalogCreditCost = typeof capabilityModel?.creditCost === "number"
+    && Number.isFinite(capabilityModel.creditCost)
+    ? Math.max(0, Number(capabilityModel.creditCost))
+    : null;
+  const videoCreditCost = createKind === "video"
+    ? flowVideoGenerationCost(settings.model, settings.duration, settings.resolution, displayedAccount?.plan) ?? catalogCreditCost
+    : null;
+  const videoBatchCreditCost = videoCreditCost == null ? null : videoCreditCost * Math.max(1, settings.count || 1);
   const modelOptions = capabilityModels.length
     ? capabilityModels.map((item) => item.name)
     : createKind === "video" ? [...FLOW_VIDEO_MODELS] : [...FLOW_IMAGE_MODELS];
@@ -972,6 +992,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   };
   const createFlowJobs = async () => {
+    if (postInFlightRef.current) return;
     const prompts = prompt
       .split(/\n\s*\n/)
       .map((item) => item.trim())
@@ -1199,10 +1220,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       setApiError("");
       setTab("queue");
       writeFlowRoutePanel("queue");
-      // Release busy so the queue is interactive while POST is in flight
-      actionLock.current = false;
-      setActionBusy(false);
-      // Mark POST as in-flight so the poll keeps stubs (prevents showing jobs twice)
+      // Keep the action lock until POST resolves so a second click cannot enqueue duplicates.
+      // Mark POST as in-flight so polling keeps optimistic stubs during acceptance.
       postInFlightRef.current = true;
       submitAbortRef.current = new AbortController();
       const created = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs", {
@@ -1937,10 +1956,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           </strong>
           <span>
             {settings.account === "random"
-              ? t("credits (ngẫu nhiên)", "credits (random)")
+              ? t("Tổng credits · tài khoản ngẫu nhiên", "Total credits · random accounts")
               : (displayedAccount?.credits != null
-                ? t("credits còn lại", "credits left")
-                : t("Chưa đồng bộ", "Not synced"))}
+                ? `${displayedAccount.label} · ${t("credits còn lại", "credits left")}`
+                : `${displayedAccount?.label || t("Tài khoản", "Account")} · ${t("Chưa đồng bộ", "Not synced")}`)}
           </span>
         </div>
       </aside>
@@ -2658,6 +2677,30 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           "4K": t("4K", "4K"),
                         }}
                       />
+                      {createKind === "video" ? (
+                        <div className="flow-video-credit-preview" role="status">
+                          {videoCreditCost != null ? (
+                            <strong>
+                              {t("Chi phí tạo", "Generation cost")}: {videoCreditCost} {t("tín dụng / video", "credits / video")}
+                            </strong>
+                          ) : (
+                            <strong>
+                              {t("Chưa có bảng giá model — hãy đồng bộ tài khoản", "Model pricing is unavailable — sync this account")}
+                            </strong>
+                          )}
+                          <span>
+                            {displayedAccount?.credits != null
+                              ? `${t("Số dư", "Balance")}: ${displayedAccount.credits} ${t("tín dụng", "credits")}`
+                              : t("Chưa có số dư tín dụng", "Credit balance unavailable")}
+                            {videoBatchCreditCost != null
+                              ? ` · ${t("Lô hiện tại", "Current batch")}: ${videoBatchCreditCost} ${t("tín dụng", "credits")}`
+                              : ""}
+                            {settings.quality
+                              ? ` · ${t("Chất lượng tải không cộng thêm tín dụng", "Download quality does not add credits")}`
+                              : ""}
+                          </span>
+                        </div>
+                      ) : null}
                     </>
                   ) : (
                     <FlowSelect
@@ -2884,6 +2927,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             <div className="flow-card-title">
               <b>{t(`Hàng đợi (${jobs.length})`, `Queue (${jobs.length})`)}</b>
               <div className="flow-queue-tools">
+                <button className="flow-text-button" type="button" disabled={!queueGroups.length} onClick={toggleAllFoldersCollapsed}>
+                  {allFoldersCollapsed ? t("Mở rộng tất cả", "Expand all") : t("Thu gọn tất cả", "Collapse all")}
+                </button>
                 <button className="flow-text-button" type="button" disabled={actionBusy || !jobs.some(canRetryJob)} onClick={retryAllJobs}>{jobs.filter(canRetryJob).every(isFreshCreateJob) && jobs.some(canRetryJob) ? t("Tạo mới tất cả", "Create all new") : t("Chạy lại tất cả", "Retry all")}</button>
                 <button className="flow-text-button" type="button" disabled={!jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={cancelAllJobs}>{t("Hủy tất cả", "Cancel all")}</button>
                 <button className="flow-text-button is-danger" type="button" disabled={!jobs.length} onClick={deleteAllJobs}>{t("Xóa tất cả", "Delete all")}</button>

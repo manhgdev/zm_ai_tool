@@ -38,35 +38,54 @@
         } catch (_) { /* Browser/dev mode falls back to its own localStorage. */ }
 
         var timer = 0
+        var syncInFlight = false
+        var syncQueued = false
+        var lastPayload = ''
         var sync = function () {
           timer = 0
+          if (syncInFlight) {
+            syncQueued = true
+            return
+          }
           try {
             var storage = {}
             for (var index = 0; index < localStorage.length; index += 1) {
               var key = localStorage.key(index)
               if (key && isPersistent(key)) storage[key] = localStorage.getItem(key) || ''
             }
+            var payload = JSON.stringify({ storage: storage })
+            if (payload === lastPayload) return
+            lastPayload = payload
+            syncInFlight = true
             fetch('/api/ui-preferences', {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ storage: storage }),
+              body: payload,
               keepalive: true,
-            }).catch(function () {})
+            }).catch(function () {}).finally(function () {
+              syncInFlight = false
+              if (syncQueued) {
+                syncQueued = false
+                scheduleSync()
+              }
+            })
           } catch (_) {}
         }
         var scheduleSync = function () {
-          if (!timer) timer = window.setTimeout(sync, 250)
+          if (!timer) timer = window.setTimeout(sync, 1000)
         }
         var storagePrototype = Object.getPrototypeOf(localStorage)
         var setItem = storagePrototype.setItem
         var removeItem = storagePrototype.removeItem
         storagePrototype.setItem = function (key, value) {
+          var previous = this.getItem(key)
           setItem.call(this, key, value)
-          if (isPersistent(String(key))) scheduleSync()
+          if (isPersistent(String(key)) && previous !== String(value)) scheduleSync()
         }
         storagePrototype.removeItem = function (key) {
+          var previous = this.getItem(key)
           removeItem.call(this, key)
-          if (isPersistent(String(key))) scheduleSync()
+          if (isPersistent(String(key)) && previous !== null) scheduleSync()
         }
         window.addEventListener('pagehide', sync)
         if (localStorage.length) scheduleSync()

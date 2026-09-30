@@ -7,11 +7,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from pipeline.flow.service import (
     FlowService, _normalize_catalog_settings, _normalize_video_model,
-    _video_ui_duration, _video_ui_resolution,
+    _video_ui_duration, _video_ui_resolution, _flow_job_credit_cost,
+    _ensure_flow_credits_for_job,
 )
 
 
 class DisabledFlowModelTests(unittest.TestCase):
+    def test_fast_video_cost_fallback_blocks_low_credit_account(self):
+        account = {
+            "credits": 14,
+            "capabilityStatus": "verified",
+            "capabilityCatalog": {
+                "video": {"models": [{"name": "Veo 3.1 - Fast", "ratios": ["16:9"]}]}
+            },
+        }
+        self.assertEqual(_flow_job_credit_cost(account, "video", "Veo 3.1 - Fast"), 20)
+        with self.assertRaisesRegex(ValueError, "FLOW_CREDITS_INSUFFICIENT"):
+            _ensure_flow_credits_for_job(account, "video", {"model": "Veo 3.1 - Fast"})
+
     def test_disabled_model_migrates_to_fast(self):
         self.assertEqual(
             _normalize_video_model("Veo 3.1 - Lite [Lower Priority]"),
