@@ -117,6 +117,33 @@ class DisabledFlowModelTests(unittest.TestCase):
         self.assertEqual(settings["duration"], "")
         self.assertIsNone(_video_ui_duration(account, settings))
 
+    def test_veo_ignores_stale_catalog_durations(self):
+        account = {
+            "capabilityStatus": "verified",
+            "capabilityCatalog": {
+                "video": {
+                    "defaultModel": "Veo 3.1 - Fast",
+                    "models": [{
+                        "name": "Veo 3.1 - Fast",
+                        "ratios": ["16:9"],
+                        "durations": ["8"],
+                        "resolutions": [],
+                        "defaultRatio": "16:9",
+                        "defaultDuration": "8",
+                        "defaultResolution": "",
+                    }],
+                },
+            },
+        }
+        settings, changed = _normalize_catalog_settings(account, "video", {
+            "model": "Veo 3.1 - Fast",
+            "ratio": "16:9",
+            "duration": "8",
+        })
+        self.assertTrue(changed)
+        self.assertEqual(settings["duration"], "")
+        self.assertIsNone(_video_ui_duration(account, settings))
+
     def test_retry_falls_back_when_account_id_is_stale(self):
         service = FlowService()
         job = {

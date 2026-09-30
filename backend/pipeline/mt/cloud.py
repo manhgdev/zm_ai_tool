@@ -27,6 +27,18 @@ _gemini_next_request_at = 0.0
 _gemini_rate_limited_until = 0.0
 _KEY_FAILOVER = {401, 403, 429, 500, 502, 503, 504}
 
+# Provider catalogues also expose guard, embedding and moderation models. They
+# accept text but cannot generate translations, so never send them to MT.
+_NON_TRANSLATION_MODEL_MARKERS = (
+    "prompt-guard", "safeguard", "content-safety", "nemoguard",
+    "embedding", "moderation", "whisper", "orpheus", "audio", "speech",
+    "tts",
+)
+_TRANSLATION_FALLBACKS = {
+    "groq": "openai/gpt-oss-20b",
+    "nvidia": "nvidia/riva-translate-4b-instruct-v2",
+}
+
 
 def _cloud_error(provider: str, reason: str) -> RuntimeError:
     return RuntimeError(f"CLOUD_TRANSLATION_{provider.upper().replace('-', '_')}_{reason}")
@@ -46,6 +58,14 @@ def _http_error(provider: str, status: int) -> RuntimeError:
         504: "SERVICE_UNAVAILABLE",
     }.get(status, "REQUEST_FAILED")
     return _cloud_error(provider, reason)
+
+
+def _translation_model(provider: str, model: str) -> str:
+    """Keep non-generative provider models out of the translation request."""
+    value = str(model or "").strip()
+    if value and not any(marker in value.lower() for marker in _NON_TRANSLATION_MODEL_MARKERS):
+        return value
+    return _TRANSLATION_FALLBACKS.get(provider, value)
 
 
 def _usable_keys(*, api_key: str = "", api_keys: list[str] | None = None) -> list[str]:
@@ -133,6 +153,33 @@ def _estimate_tokens(text: str) -> int:
     return cjk + latin // 3 + 1
 
 
+def _chat_response_text(data: object) -> str:
+    """Read text from string and content-parts OpenAI-compatible responses."""
+    if not isinstance(data, dict):
+        return ""
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return ""
+    choice = choices[0]
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else choice.get("text")
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append(part)
+        elif isinstance(part, dict):
+            text = part.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+            elif isinstance(text, dict) and isinstance(text.get("value"), str):
+                parts.append(text["value"])
+    return "".join(parts).strip()
+
+
 def _short_429_pause(response: httpx.Response, attempt: int) -> float:
     """Local wait (seconds) after every key returns 429 — no shared cooldown."""
     return max(3.0, min(8.0, _gemini_retry_delay(response, attempt)))
@@ -189,7 +236,13 @@ def _openai_compatible_chat(
                         "model": model,
                         "temperature": 0,
                         "max_tokens": max_output_tokens,
-                        **({"reasoning_effort": "low"} if provider == "groq" else {}),
+                        **(
+                            {"reasoning_effort": "none"}
+                            if provider == "openrouter"
+                            else {"reasoning_effort": "low"}
+                            if provider == "groq" and "gpt-oss" in model.lower()
+                            else {}
+                        ),
                         "messages": [
                             {
                                 "role": "system",
@@ -247,11 +300,11 @@ def _openai_compatible_chat(
             # Never propagate httpx's URL here: Gemini auth is carried in the
             # query string and its repr can expose an API key in job logs.
             raise _http_error(provider, r.status_code)
-        data = r.json()
-        return (
-            (((data.get("choices") or [{}])[0].get("message") or {}).get("content"))
-            or ""
-        ).strip()
+        try:
+            data = r.json()
+        except ValueError:
+            return ""
+        return _chat_response_text(data)
 
 
 def _nvidia_riva_language_codes(source_lang: str, target_lang: str, text: str) -> tuple[str, str]:
@@ -388,7 +441,8 @@ def translate_cloud(
         if "API key" in str(exc):
             raise _cloud_error(pid, "API_KEY_MISSING") from None
         raise
-    base_url, model = cred["baseUrl"], cred["model"]
+    base_url = cred["baseUrl"]
+    model = _translation_model(pid, cred["model"])
     out: list[str] = [""] * len(texts)
     if not texts:
         return out

@@ -2,6 +2,21 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+test('Flow top navigation includes Series and Accounts above utility views', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
+  const start = source.indexOf('<div className="flow-tabs"')
+  const end = source.indexOf('{utilityView === "accounts" && (', start)
+  assert.ok(start >= 0 && end > start)
+  const tabs = source.slice(start, end)
+  assert.deepEqual([...tabs.matchAll(/\["(createImage|createVideo|series|queue|history|accounts|logs)", Icon/g)].map(match => match[1]), ['createImage', 'createVideo', 'series', 'queue', 'history', 'accounts', 'logs'])
+  assert.ok(tabs.includes('t("Tạo ảnh", "Create image")'))
+  assert.ok(tabs.includes('t("Tạo video", "Create video")'))
+  assert.match(tabs, /\["series", IconBook, t\("Series", "Series"\)\]/)
+  assert.match(tabs, /\["accounts", IconGear, t\("Tài khoản", "Accounts"\)\]/)
+  assert.ok(tabs.includes('createKind === "image" ? "createImage" : "createVideo"'))
+  assert.ok(tabs.includes('activateRail(id)'))
+})
+
 test('local cleaner explains conservative matching and localizes its stable errors', () => {
   const source = readFileSync(new URL('../frontend/src/pages/VideoCleanerPage.tsx', import.meta.url), 'utf8')
   for (const code of ['CLEANER_LOGO_NOT_DETECTED', 'CLEANER_IMAGE_DEPTH_UNSUPPORTED', 'CLEANER_INVALID_LOGO_MASK']) {

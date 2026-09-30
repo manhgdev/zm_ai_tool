@@ -155,7 +155,7 @@ function applyAccountCapabilities(
     ? current[ratioKey]
     : selected.defaultRatio || selected.ratios[0] || current[ratioKey];
   const duration = kind === "video"
-    ? (selected.durations.length
+    ? (/omni.*flash/i.test(selected.name) && selected.durations.length
       ? (selected.durations.includes(current.duration)
         ? current.duration
         : selected.defaultDuration || selected.durations[0])
@@ -808,13 +808,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     ? capabilityModel.ratios
     : createKind === "video" ? ["16:9", "9:16"] : ["1:1", "16:9", "9:16", "4:3", "3:4"];
   const isOmniFlash = createKind === "video" && /omni.*flash/i.test(settings.model);
-  // Duration radios exist only when Flow exposes them (Omni Flash / catalog).
-  // Veo is fixed-length — never invent a fake "8" option.
-  const durationOptions = capabilityModel?.durations.length
-    ? capabilityModel.durations
-    : isOmniFlash
-      ? [...FLOW_OMNI_FLASH_DURATIONS]
-      : [];
+  // Only Omni Flash has duration controls. Ignore stale catalog durations for Veo.
+  const durationOptions = isOmniFlash
+    ? (capabilityModel?.durations.length
+      ? capabilityModel.durations
+      : [...FLOW_OMNI_FLASH_DURATIONS])
+    : [];
   // Resolution: chỉ Omni Flash video mới có catalog resolutions.
   // Veo 3.1 không có resolution control trên Flow UI → ẩn.
   // Image: theo plan tier (1K/2K/4K) — never keep leftover video Np.
@@ -839,11 +838,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const retryRatioOptions = retryModelCapability?.ratios.length
     ? retryModelCapability.ratios
     : retryTarget?.job.kind === "video" ? ["16:9", "9:16"] : ["1:1", "16:9", "9:16", "4:3", "3:4"];
-  const retryDurationOptions = retryModelCapability?.durations.length
-    ? retryModelCapability.durations
-    : retryTarget?.job.kind === "video" && /omni.*flash/i.test(retryTarget?.model || "")
-      ? [...FLOW_OMNI_FLASH_DURATIONS]
-      : [];
+  const retryIsOmniFlash = retryTarget?.job.kind === "video" && /omni.*flash/i.test(retryTarget?.model || "");
+  const retryDurationOptions = retryIsOmniFlash
+    ? (retryModelCapability?.durations.length
+      ? retryModelCapability.durations
+      : [...FLOW_OMNI_FLASH_DURATIONS])
+    : [];
   const retryResolutionOptions = retryModelCapability?.resolutions.length
     ? retryModelCapability.resolutions
     : retryTarget?.job.kind === "image" ? flowImageResolutions(retryAccount?.plan || "Free") : [];
@@ -1384,7 +1384,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
     setRetryTarget(null);
     const retryRequests = groups.flatMap((group) => {
-      const retrySettings = group.duration.trim()
+      const retrySettings = /omni.*flash/i.test(group.model) && group.duration.trim()
         ? { model: group.model, ratio: group.ratio, duration: group.duration, resolution: group.resolution, quality: group.quality, count: group.count, concurrency }
         : { model: group.model, ratio: group.ratio, resolution: group.resolution, quality: group.quality, count: group.count, concurrency };
       return group.jobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
@@ -1968,6 +1968,28 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             {apiError && <small>{apiError}</small>}
           </div>
         </div>
+        <div className="flow-tabs" role="tablist" aria-label={t("Điều hướng Flow", "Flow navigation")}>
+          {([
+            ["createImage", IconImage, t("Tạo ảnh", "Create image")],
+            ["createVideo", IconVideo, t("Tạo video", "Create video")],
+            ["series", IconBook, t("Series", "Series")],
+            ["queue", IconBatch, t("Hàng đợi", "Queue")],
+            ["history", IconClock, t("Lịch sử", "History")],
+            ["accounts", IconGear, t("Tài khoản", "Accounts")],
+            ["logs", IconLog, t("Log", "Logs")],
+          ] as const).map(([id, Icon, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={(utilityView || (tab === "create" ? (createKind === "image" ? "createImage" : "createVideo") : tab)) === id}
+              className={(utilityView || (tab === "create" ? (createKind === "image" ? "createImage" : "createVideo") : tab)) === id ? "is-active" : ""}
+              onClick={() => activateRail(id)}
+            >
+              <Icon size={16} />{label}
+            </button>
+          ))}
+        </div>
         {utilityView === "accounts" && (
           <section className="flow-accounts">
             <header>
@@ -2289,41 +2311,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               return added[0]?.id || "";
             }}
           />
-        )}
-        {!utilityView && (
-          <div className="flow-tabs" role="tablist">
-            {(
-              [
-                ["create", t("Tạo nội dung", "Create")],
-                ["queue", t("Hàng đợi", "Queue")],
-                ["history", t("Lịch sử", "History")],
-                ["logs", t("Log", "Logs")],
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                role="tab"
-                aria-selected={tab === id}
-                className={tab === id ? "is-active" : ""}
-                onClick={() => {
-                  setTab(id);
-                  writeFlowRoutePanel(id === "create" ? (createKind === "image" ? "image" : "video") : id);
-                }}
-              >
-                {id === "create" ? (
-                  <IconVideo size={16} />
-                ) : id === "queue" ? (
-                  <IconBatch size={16} />
-                ) : id === "history" ? (
-                  <IconClock size={16} />
-                ) : (
-                  <IconBook size={16} />
-                )}
-                {label}
-              </button>
-            ))}
-          </div>
         )}
         {!utilityView && showCreate && (
           <div className="flow-create-grid">
@@ -3560,9 +3547,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     const ratio = capability?.ratios.includes(current.ratio)
                       ? current.ratio
                       : capability?.defaultRatio || capability?.ratios[0] || current.ratio;
-                    const duration = capability?.durations?.includes(current.duration)
+                    const duration = /omni.*flash/i.test(model) && capability?.durations?.includes(current.duration)
                       ? current.duration
-                      : capability?.defaultDuration || capability?.durations?.[0] || "";
+                      : /omni.*flash/i.test(model)
+                        ? capability?.defaultDuration || capability?.durations?.[0] || ""
+                        : "";
                     const resolution = capability?.resolutions?.includes(current.resolution)
                       ? current.resolution
                       : capability?.defaultResolution || capability?.resolutions?.[0] || current.resolution;

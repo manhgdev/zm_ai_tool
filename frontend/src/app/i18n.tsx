@@ -194,7 +194,7 @@ export function localizePipelineMessage(locale: AppLocale, message: string): str
   }
   const cloud = /^CLOUD_TRANSLATION_([A-Z0-9_]+)_(API_KEY_MISSING|AUTH_FAILED|ACCESS_DENIED|RATE_LIMITED_OR_QUOTA|NETWORK_UNAVAILABLE|SERVICE_UNAVAILABLE|MODEL_OR_REQUEST_INVALID|INVALID_RESPONSE|UNSUPPORTED_LANGUAGE_PAIR|REQUEST_FAILED)$/.exec(message)
   if (cloud) {
-    const provider = ({ OPENAI: 'OpenAI', GEMINI: 'Gemini', DEEPSEEK: 'DeepSeek', OPENROUTER: 'OpenRouter', GROK: 'Grok', GROQ: 'Groq', NVIDIA: 'NVIDIA NIM' } as Record<string, string>)[cloud[1]] || cloud[1]
+    const provider = ({ OPENAI: 'OpenAI', GEMINI: 'Gemini', DEEPSEEK: 'DeepSeek', OPENROUTER: 'OpenRouter', GROK: 'Grok', GROQ: 'Groq', NVIDIA: 'NVIDIA NIM', MISTRAL: 'Mistral' } as Record<string, string>)[cloud[1]] || cloud[1]
     const key = ({
       API_KEY_MISSING: 'error.cloud.apiKeyMissing',
       AUTH_FAILED: 'error.cloud.authFailed',

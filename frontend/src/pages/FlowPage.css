@@ -143,12 +143,15 @@
 }
 .flow-tabs {
   display: flex;
+  overflow-x: auto;
   gap: 10px;
   margin-bottom: 14px;
   border-bottom: 1px solid var(--line);
 }
 .flow-tabs button {
   display: inline-flex;
+  flex: 0 0 auto;
+  white-space: nowrap;
   align-items: center;
   gap: 7px;
   height: 39px;
@@ -164,6 +167,8 @@
   border-color: var(--primary);
   color: var(--primary);
 }
+.flow-tabs button:hover { background: var(--surface); color: var(--primary); }
+.flow-tabs button:focus-visible { outline: 2px solid var(--primary); outline-offset: -3px; }
 .flow-create-grid {
   display: grid;
   grid-template-columns: minmax(300px, 1fr) minmax(420px, 1fr);

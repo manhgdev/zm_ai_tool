@@ -586,10 +586,12 @@ def _video_ui_duration(account: dict[str, Any], settings: dict[str, Any]) -> str
     """Duration to click in Flow UI, or None when the model has no duration tabs.
 
     Veo (Free/Pro/Ultra) exposes a fixed length — no 4/6/8/10s radios. Only Omni
-    Flash (and catalog entries that list durations) should attempt selection.
+    Flash should attempt selection, even if a stale catalog lists durations.
     Passing a default ``8`` for Veo makes Playwright wait for a missing control.
     """
     model = _normalize_video_model(settings.get("model"))
+    if not re.search(r"\bomni\b.*\bflash\b", model, re.I):
+        return None
     selected = _video_model_entry(account, model)
     if selected is not None:
         durations = [str(value).strip() for value in selected.get("durations") or [] if str(value).strip()]
@@ -600,11 +602,8 @@ def _video_ui_duration(account: dict[str, Any], settings: dict[str, Any]) -> str
             return requested
         fallback = str(selected.get("defaultDuration") or durations[0]).strip()
         return fallback if fallback in durations else durations[0]
-    # No verified catalog yet: Omni Flash has duration radios; Veo does not.
-    if re.search(r"omni|flash", model, re.I):
-        requested = str(settings.get("duration") or "8").strip()
-        return requested if re.fullmatch(r"\d{1,3}", requested) else "8"
-    return None
+    requested = str(settings.get("duration") or "8").strip()
+    return requested if re.fullmatch(r"\d{1,3}", requested) else "8"
 
 
 def _normalize_catalog_settings(
@@ -651,13 +650,12 @@ def _normalize_catalog_settings(
     ratios = [str(value) for value in selected.get("ratios", []) if str(value)]
     if ratios and str(normalized.get("ratio") or "") not in ratios:
         normalized["ratio"] = str(selected.get("defaultRatio") or ratios[0])
-    durations = [str(value) for value in selected.get("durations", []) if str(value)]
     if kind == "video":
-        if durations:
-            if str(normalized.get("duration") or "") not in durations:
-                normalized["duration"] = str(selected.get("defaultDuration") or durations[0])
-        elif str(normalized.get("duration") or "").strip():
+        duration = _video_ui_duration(account, normalized)
+        if duration is None:
             normalized["duration"] = ""
+        elif str(normalized.get("duration") or "") != duration:
+            normalized["duration"] = duration
     resolutions = [str(value) for value in selected.get("resolutions", []) if str(value)]
     if kind == "video":
         resolutions = [value for value in resolutions if _video_ui_resolution(value)]
