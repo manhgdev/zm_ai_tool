@@ -1115,13 +1115,18 @@ def _synthesize_once(
         if on_progress:
             on_progress(0.95)
 
+    import numpy as np
+
+    audio_array = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if audio_array.size == 0:
+        raise RuntimeError(
+            f"VieNeu trả audio rỗng cho voice={voice!r}; "
+            "kiểm tra file mẫu clone và ngôn ngữ nội dung"
+        )
     try:
         client.save(audio, str(out_wav))
     except Exception:
-        import numpy as np
-
-        arr = np.asarray(audio, dtype=np.float32).reshape(-1)
-        _write_wav_pcm16(out_wav, arr, 48000)
+        _write_wav_pcm16(out_wav, audio_array, 48000)
     if on_progress:
         on_progress(1.0)
 
@@ -1184,13 +1189,9 @@ def clone_voice(
     safe = voice_store.make_clone_id(display, existing)
     dest = voice_store.CLONED_DIR / f"{safe}.wav"
     if ref_path.resolve() != dest.resolve():
-        import shutil
-        import subprocess
-
-        if ref_path.suffix.lower() == ".wav":
-            shutil.copy2(ref_path, dest)
-        else:
-            _normalize_clone_reference(ref_path, dest)
+        # A .wav extension does not guarantee VieNeu's required PCM format.
+        # Normalize every upload to mono PCM16/48 kHz before registering it.
+        _normalize_clone_reference(ref_path, dest)
     # Register only the reference here. _register_clone initializes VieNeu on
     # Register the reference; VieNeu initializes lazily on the first synthesis.
     clean_tags = voice_store.normalize_voice_tags(tags, strict=True)

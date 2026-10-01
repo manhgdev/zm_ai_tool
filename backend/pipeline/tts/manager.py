@@ -24,7 +24,6 @@ from .eleven import (
 )
 from . import capcut as capcut_client
 from .schemas import PREFIX_CAPCUT, PREFIX_ELEVEN, PREFIX_VIENEU, VIENEU_TTS_VER
-from .text_split import normalize_tts_text
 
 CC_TTS_VER = "cc6-final-trim-leading-silence"
 _VOICES_JSON = Path(__file__).resolve().parent / "voices_capcut.json"
@@ -227,7 +226,7 @@ def tts_cache_key(text: str, voice: str, lang: str, match: str) -> str:
     else:
         ver, model = EL_TTS_VER, EL_MODEL
     ref_token = vieneu_engine.reference_cache_token(voice)
-    raw = f"{text.strip()}|{voice}|{lang}|{match}|{model}|{code}|{ver}|{ref_token}".encode()
+    raw = f"original-text-v1|{text.strip()}|{voice}|{lang}|{match}|{model}|{code}|{ver}|{ref_token}".encode()
     return hashlib.sha1(raw).hexdigest()[:20]
 
 
@@ -284,7 +283,6 @@ def tts_segment(
 
     Long text: VieNeu handles chunking via max_chars; studio layer may pre-split.
     """
-    text = normalize_tts_text(text)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     has_file = out_wav.exists() and out_wav.stat().st_size > 78 and ffprobe_duration(out_wav) > 0
     if not has_file:
@@ -292,6 +290,22 @@ def tts_segment(
             force_refit = False
         resolved = resolve_voice(voice, lang)
         if vieneu_engine.parse_voice(resolved):
+            from .voice_store import normalize_voice_language
+
+            requested_language = normalize_voice_language(lang)
+            # VieNeu v3 Turbo/Nano only has Vietnamese and English G2P.  With
+            # auto language, reject CJK text before the SDK turns it into []
+            # and writes a 78-byte WAV header.
+            if requested_language and requested_language not in vieneu_engine.VIENEU_TEXT_LANGUAGES:
+                raise RuntimeError(
+                    "VieNeu chỉ hỗ trợ tiếng Việt và tiếng Anh; "
+                    "hãy chọn giọng CapCut cho ngôn ngữ này"
+                )
+            if not requested_language and re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text):
+                raise RuntimeError(
+                    "VieNeu không nhận dạng được chữ Trung/ngoại ngữ khi để Tự động; "
+                    "hãy chọn đúng ngôn ngữ hoặc dùng giọng CapCut"
+                )
             vieneu_engine.synthesize(
                 text,
                 resolved,

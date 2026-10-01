@@ -391,5 +391,33 @@
     "favorite": false,
     "tags": [],
     "source": "ZMTTS"
+  },
+  {
+    "id": "zmt:tieng-viet--theanh28-trending",
+    "name": "THEANH28 TRENDING",
+    "label": "THEANH28 TRENDING",
+    "type": "zmAI",
+    "engine": "vieneu",
+    "mode": "reference",
+    "language": "vi",
+    "ref_file": "zmt-364e0470c3795e2b.wav",
+    "hidden": false,
+    "favorite": false,
+    "tags": [],
+    "source": "ZMTTS"
+  },
+  {
+    "id": "zmt:tieng-viet--chau-tinh-tri",
+    "name": "Châu Tinh Trì",
+    "label": "Châu Tinh Trì",
+    "type": "zmAI",
+    "engine": "vieneu",
+    "mode": "reference",
+    "language": "vi",
+    "ref_file": "zmt-263e3ba2bf30ea05.wav",
+    "hidden": false,
+    "favorite": false,
+    "tags": [],
+    "source": "ZMTTS"
   }
 ]

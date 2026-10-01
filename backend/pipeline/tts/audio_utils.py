@@ -16,26 +16,19 @@ def trim_silence(wav: Path, *, trailing: bool = True) -> float:
     """Cut hush at the start (and optionally end) of a clip.
 
     Used by Studio's "Loại bỏ khoảng lặng thừa" and CapCut leading cleanup.
-    ``trailing=True`` trims the trailing hush only. It deliberately preserves
-    pauses inside the utterance so punctuation remains audible.
+    ``trailing=True`` also trims the tail, preserving every internal pause.
     """
     if not wav.is_file():
         return 0.0
+    af = (
+        "silenceremove="
+        "start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02:"
+        "detection=rms"
+    )
     if trailing:
-        # Keep punctuation pauses inside the utterance; only trim the tail.
-        # Tiny start/stop_silence pads avoid clipping consonant attacks.
-        af = (
-            "silenceremove="
-            "start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02:"
-            "stop_periods=1:stop_duration=0.05:stop_threshold=-45dB:stop_silence=0.03:"
-            "detection=rms"
-        )
-    else:
-        af = (
-            "silenceremove="
-            "start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02:"
-            "detection=rms"
-        )
+        # Trim the reversed start, then restore order. stop_periods=1 would
+        # discard everything after the first internal pause.
+        af = f"{af},areverse,{af},areverse"
     trimmed = wav.with_name(wav.stem + "_trim.wav")
     try:
         subprocess.check_call(

@@ -20,7 +20,7 @@ from . import audio_utils
 from .engines.vieneu import parse_voice as parse_vieneu_voice
 from .engines.vieneu import reference_cache_token, reset_client as reset_vieneu_client
 from .manager import list_voices, tts_segment
-from .text_split import normalize_tts_text, split_sentences
+from .text_split import split_sentences
 from .voice_store import TTS_OUTPUT, TTS_TEMP, ensure_vieneu_dirs
 
 
@@ -57,7 +57,7 @@ def _job_fingerprint(
 
     raw = "|".join(
         [
-            "v10",  # normalize CJK ASR spacing and replacement characters before TTS
+            "v12-original-text-safe-trim",  # Do not reuse audio cut at an internal pause.
             (text or "").strip(),
             (srt_text or "").strip(),
             (voice or "").strip(),
@@ -469,10 +469,7 @@ def synth_text_job(
             set_job_context(job_id)
         except Exception:
             pass
-        # auto_split: tách thêm theo .!? ; blank line luôn tách part riêng.
-        chunks = split_sentences(text, max_chars=240, by_sentence=bool(auto_split))
-        if not chunks:
-            chunks = [text.strip() or "."]
+        chunks = split_sentences(text, max_chars=240) if auto_split else [text.strip() or "."]
         total_chunks = len(chunks)
         set_job_progress(job_id, 0, total_chunks, f"Bắt đầu tạo {total_chunks} câu…")
         import concurrent.futures
@@ -747,7 +744,7 @@ def synth_srt_job(
         def _process_cue(i: int, cue: dict, part: Path):
             if _is_cancelled(job_id):
                 return
-            text = normalize_tts_text(str(cue.get("text") or "").strip()) or "…"
+            text = str(cue.get("text") or "").strip() or "…"
             # CapCut's Vietnamese voices reject untranslated CJK cues with
             # TTSInvalidText. Fail early with a stable message so the UI can
             # point to the exact cue instead of exposing the provider payload.
