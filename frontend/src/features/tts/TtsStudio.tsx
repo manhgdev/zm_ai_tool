@@ -721,6 +721,13 @@ export default function TtsStudio({
     setSection(next)
     setSideOpen(false)
   }
+  function handleBack() {
+    if (window.history.state?.ttsSection) {
+      window.history.back()
+      return
+    }
+    onBack()
+  }
 
   const isFullDash = FULL_DASHBOARD.has(section)
   const showComingSoon = COMING_SOON.has(section)
@@ -1646,7 +1653,7 @@ export default function TtsStudio({
       <div className="tts-main">
         <div className="tts-page-head">
           <div>
-            <BackTitle onBack={onBack}>Text to Speech (TTS)</BackTitle>
+            <BackTitle onBack={handleBack}>Text to Speech (TTS)</BackTitle>
             <p>Nhập văn bản, chọn giọng và tạo giọng nói AI tự nhiên</p>
           </div>
           <div className="tts-page-actions">
