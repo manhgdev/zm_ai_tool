@@ -4,6 +4,7 @@ import { api } from '@/features/project/project.api'
 import ProgressPopup from '@/shared/components/ProgressPopup'
 import { IconHeadphones, IconHeart, IconMic, IconSpeaker } from '@/shared/components/Icons'
 import { BackTitle } from '@/shared/components/BackTitle'
+import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { studioApi } from '@/features/studio/studio.api'
 import { toast } from 'sonner'
@@ -148,6 +149,7 @@ export default function TtsStudio({
   const [progressMinimized, setProgressMinimized] = useState(false)
   const [error, setError] = useState('')
   const [logOpen, setLogOpen] = useState(false)
+  const [deleteHistoryOpen, setDeleteHistoryOpen] = useState(false)
   const [ttsLogs, setTtsLogs] = useState<string[]>(() => {
     try {
       const savedLogs: unknown = JSON.parse(localStorage.getItem('zm-ai-tool:tts-logs:v1') || '[]')
@@ -1442,6 +1444,9 @@ export default function TtsStudio({
           toast.error(e instanceof Error ? e.message : t('Xóa thất bại', 'Delete failed'))
         })
       }}
+      onDeleteAll={() => {
+        if (history.length) setDeleteHistoryOpen(true)
+      }}
       isDesktopApp={isDesktopApp}
       onReveal={(id, kind, style) => {
         setDownloadMenuId(null)
@@ -2657,6 +2662,25 @@ export default function TtsStudio({
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={deleteHistoryOpen}
+        title={t('Xóa toàn bộ lịch sử tạo giọng?', 'Delete all generated voice history?')}
+        message={t('Tất cả bản ghi và file audio trong lịch sử sẽ bị xóa.', 'All history records and audio files will be deleted.')}
+        confirmLabel={t('Xóa tất cả', 'Delete all')}
+        cancelLabel={t('Hủy', 'Cancel')}
+        danger
+        onCancel={() => setDeleteHistoryOpen(false)}
+        onConfirm={() => {
+          void Promise.all(history.map((item) => api.ttsStudioDelete(item.id))).then(() => {
+            toast.success(t('Đã xóa toàn bộ lịch sử.', 'All history deleted.'))
+            setHistory([])
+            setHistoryPage(1)
+            setDeleteHistoryOpen(false)
+            return loadHistory(true)
+          }).catch((e) => toast.error(e instanceof Error ? e.message : t('Xóa lịch sử thất bại', 'Failed to delete history')))
+        }}
+      />
     </div>
   )
 }

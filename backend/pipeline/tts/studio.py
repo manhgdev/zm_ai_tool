@@ -544,11 +544,27 @@ def synth_text_job(
             for future in concurrent.futures.as_completed(futures):
                 if _is_cancelled(job_id):
                     raise RuntimeError("Job đã hủy")
-                future.result()
+                try:
+                    future.result()
+                except Exception:
+                    # Stop queued chunks and signal active providers immediately.
+                    request_cancel(job_id)
+                    for pending in futures:
+                        if pending is not future:
+                            pending.cancel()
+                    raise
 
         part_durs: list[float] = [ffprobe_duration(p) for p in part_paths]
-        if any(duration <= 0 or not _audio_is_valid(path) for path, duration in zip(part_paths, part_durs)):
-            raise RuntimeError("TTS tạo audio rỗng hoặc không hợp lệ")
+        invalid_parts = [
+            f"{path.name}(size={path.stat().st_size if path.is_file() else 0},duration={duration:.3f})"
+            for path, duration in zip(part_paths, part_durs)
+            if duration <= 0 or not _audio_is_valid(path)
+        ]
+        if invalid_parts:
+            raise RuntimeError(
+                "TTS tạo audio rỗng hoặc không hợp lệ; "
+                f"job={job_id} engine={engine_type} invalidParts={', '.join(invalid_parts)}"
+            )
         set_job_progress_pct(
             job_id, 95, "Đang ghép nối âm thanh và tạo phụ đề…",
             current=total_chunks, total=total_chunks,

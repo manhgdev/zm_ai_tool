@@ -21,6 +21,7 @@ type Props = {
   playingHistoryId: string | null
   onPlay: (h: HistoryItem) => void
   onDelete: (h: HistoryItem) => void
+  onDeleteAll: () => void
   isDesktopApp?: boolean
   /** APP mở file local trong Finder/Explorer; WEB mới tải qua trình duyệt. */
   onReveal: (jobId: string, kind: 'wav' | 'mp3' | 'srt' | 'zip', style?: string) => void
@@ -40,6 +41,7 @@ export default function TtsHistoryPanel({
   playingHistoryId,
   onPlay,
   onDelete,
+  onDeleteAll,
   isDesktopApp = false,
   onReveal,
   onDownload,
@@ -61,6 +63,12 @@ export default function TtsHistoryPanel({
 
   return (
     <>
+      <div className="tts-history-toolbar">
+        <strong>{t('Các bản ghi đã tạo', 'Generated recordings')}</strong>
+        <button type="button" className="tts-history-clear" disabled={!historyCapped.length} onClick={onDeleteAll}>
+          <IconTrash size={12} /> {t('Xóa tất cả', 'Delete all')}
+        </button>
+      </div>
       <div className="tts-history-wrap">
         <table className="tts-history">
           <thead>

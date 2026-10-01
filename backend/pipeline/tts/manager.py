@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..core.config import EL_ADAM
-from ..core.media import ffprobe_duration
+from ..core.media import _has_audio_stream, ffprobe_duration
 from . import audio_utils
 from .engines import vieneu as vieneu_engine
 from .engines import system as system_engine
@@ -29,6 +29,20 @@ from .text_split import normalize_tts_text
 CC_TTS_VER = "cc6-final-trim-leading-silence"
 _VOICES_JSON = Path(__file__).resolve().parent / "voices_capcut.json"
 _cc_voices_cache: list[dict[str, Any]] | None = None
+
+
+def _engine_of(voice: str) -> str:
+    """Return a stable engine label for diagnostic messages."""
+    value = voice or ""
+    parsed = vieneu_engine.parse_voice(value)
+    if parsed:
+        kind, _ = parsed
+        return "zmai" if kind == "reference" else "clone" if kind == "clone" else "vieneu"
+    if value.startswith("cc:"):
+        return "capcut"
+    if value.startswith(PREFIX_ELEVEN):
+        return "elevenlabs"
+    return "system"
 
 
 def _capcut_voice_metadata(voice: dict[str, Any]) -> dict[str, str]:
@@ -305,8 +319,18 @@ def tts_segment(
     # leading room from other providers.
     if _cc_parse(resolve_voice(voice, lang)):
         duration = audio_utils.trim_leading_silence(out_wav)
-    if not out_wav.is_file() or out_wav.stat().st_size <= 78 or duration <= 0:
-        raise RuntimeError("TTS tạo audio rỗng hoặc không hợp lệ")
+    exists = out_wav.is_file()
+    size = out_wav.stat().st_size if exists else 0
+    probed_duration = ffprobe_duration(out_wav) if exists else 0.0
+    has_stream = _has_audio_stream(out_wav) if exists else False
+    if not exists or size <= 78 or duration <= 0 or probed_duration <= 0 or not has_stream:
+        raise RuntimeError(
+            "TTS tạo audio rỗng hoặc không hợp lệ; "
+            f"engine={_engine_of(voice)} voice={voice!r} lang={lang!r} "
+            f"path={out_wav} exists={exists} size={size} "
+            f"duration={duration:.3f} probedDuration={probed_duration:.3f} "
+            f"audioStream={has_stream} platform={platform.system()}"
+        )
     return duration
 
 

@@ -187,10 +187,10 @@ export default function ProgressPopup({
         <div className="flex items-start gap-2 border-b border-border px-4 py-3">
           <div className="min-w-0 flex-1">
             <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-            {line ? (
+            {!failed && line ? (
               <p className="mt-0.5 text-xs text-muted-foreground leading-snug break-words select-text">{line}</p>
             ) : null}
-            {failed && rawBase && rawBase !== line ? (
+            {failed && rawBase ? (
               <pre className="mt-2 max-h-36 overflow-y-auto rounded bg-muted/60 p-2 text-[10px] leading-relaxed font-mono whitespace-pre-wrap break-all select-text">{rawBase}</pre>
             ) : null}
           </div>

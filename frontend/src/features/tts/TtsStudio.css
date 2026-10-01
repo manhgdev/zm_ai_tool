@@ -2324,6 +2324,10 @@ html.dark .tts-log-row-head button {
   height: auto;
 }
 
+.tts-history-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; color: var(--tts-ink); font-size: .78rem; }
+.tts-history-clear { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 9px; border: 1px solid var(--tts-line); border-radius: 6px; background: transparent; color: #c93646; font-size: .68rem; font-weight: 750; cursor: pointer; }
+.tts-history-clear:disabled { cursor: not-allowed; opacity: .45; }
+
 @media (max-width: 900px) {
   .tts-transcribe-layout {
     grid-template-columns: 1fr;
