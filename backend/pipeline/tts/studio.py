@@ -411,11 +411,18 @@ def _concat_wavs(parts: list[Path], out: Path, gap_ms: int = 0) -> float:
 
 
 def _postprocess_part(path: Path, *, trim: bool, normalize: bool) -> None:
-    """Apply Studio advanced audio options to one synthesized part."""
-    if trim:
-        audio_utils.trim_silence(path)
+    """Apply only waveform normalization after synthesis.
+
+    ``trim`` is retained for API/settings compatibility; excess whitespace is
+    removed from text before synthesis so audio words are never cut.
+    """
     if normalize:
         audio_utils.normalize_loudness(path)
+
+
+def _compact_tts_text(value: str) -> str:
+    """Collapse spaces/newlines without changing any spoken characters."""
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def synth_text_job(
@@ -436,8 +443,9 @@ def synth_text_job(
     job_id: str | None = None,
 ) -> dict[str, Any]:
     ensure_vieneu_dirs()
+    source_text = _compact_tts_text(text) if trim_silence else text.strip()
     fp = _job_fingerprint(
-        text=text,
+        text=source_text,
         srt_text="",
         voice=voice,
         lang=lang,
@@ -469,7 +477,7 @@ def synth_text_job(
             set_job_context(job_id)
         except Exception:
             pass
-        chunks = split_sentences(text, max_chars=240) if auto_split else [text.strip() or "."]
+        chunks = split_sentences(source_text, max_chars=240) if auto_split else [source_text or "."]
         total_chunks = len(chunks)
         set_job_progress(job_id, 0, total_chunks, f"Bắt đầu tạo {total_chunks} câu…")
         import concurrent.futures
@@ -599,7 +607,7 @@ def synth_text_job(
             "createdAt": datetime.now().isoformat(timespec="seconds"),
             "audioFile": "audio.wav",
             "srtFile": "subs.srt",
-            "text": text,
+            "text": source_text,
             "chunks": chunks,
             "partDurs": part_durs,
             "gapMs": gap_ms,
@@ -663,9 +671,10 @@ def synth_srt_job(
     effective_match = (
         "stretch" if keep_timeline and match_duration == "natural" else match_duration
     )
+    source_srt_text = _compact_tts_text(srt_text) if trim_silence else srt_text
     fp = _job_fingerprint(
         text="",
-        srt_text=srt_text,
+        srt_text=source_srt_text,
         voice=voice,
         lang=lang,
         speed=speed,
@@ -744,7 +753,8 @@ def synth_srt_job(
         def _process_cue(i: int, cue: dict, part: Path):
             if _is_cancelled(job_id):
                 return
-            text = str(cue.get("text") or "").strip() or "…"
+            text = _compact_tts_text(str(cue.get("text") or "")) if trim_silence else str(cue.get("text") or "").strip()
+            text = text or "…"
             # CapCut's Vietnamese voices reject untranslated CJK cues with
             # TTSInvalidText. Fail early with a stable message so the UI can
             # point to the exact cue instead of exposing the provider payload.
@@ -871,7 +881,7 @@ def synth_srt_job(
         write_srt(srt_path, export_cues, capcut=False)
         # backup bản gốc (byte-for-byte parse-normalized)
         try:
-            (job_dir / "source.srt").write_bytes(b"\xef\xbb\xbf" + srt_text.encode("utf-8"))
+            (job_dir / "source.srt").write_bytes(b"\xef\xbb\xbf" + source_srt_text.encode("utf-8"))
         except OSError:
             pass
         out_cues = export_cues

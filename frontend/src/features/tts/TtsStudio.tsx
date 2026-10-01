@@ -2252,8 +2252,8 @@ export default function TtsStudio({
             <label className="tts-check">
               <input type="checkbox" checked={trimSilence} onChange={(e) => setTrimSilence(e.target.checked)} />
               <span>
-                Loại bỏ khoảng lặng thừa
-                <small>Tự động cắt khoảng lặng ở đầu và cuối</small>
+                {t('Gọn khoảng trắng văn bản', 'Compact text whitespace')}
+                <small>{t('Gộp khoảng trắng và cách dòng trước khi tạo giọng', 'Collapse spaces and line breaks before synthesis')}</small>
               </span>
             </label>
             <label className="tts-field" style={{ marginTop: 4 }}>

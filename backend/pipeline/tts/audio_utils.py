@@ -20,9 +20,12 @@ def trim_silence(wav: Path, *, trailing: bool = True) -> float:
     """
     if not wav.is_file():
         return 0.0
+    # Conservative edge-only trim.  TTS word endings can be quiet; the old
+    # -45 dB / 20 ms settings treated those phonemes as silence and removed
+    # complete words.  Keep a small safety pad at both edges.
     af = (
         "silenceremove="
-        "start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02:"
+        "start_periods=1:start_duration=0.12:start_threshold=-60dB:start_silence=0.08:"
         "detection=rms"
     )
     if trailing:
