@@ -36,43 +36,6 @@ html.dark .tts-studio {
   --tts-card-bg: #1e293b;
 }
 
-/* TTS settings — isolated from the resizable synthesis dashboard. */
-.tts-settings-page { width: 100%; max-width: 960px; }
-.tts-settings-heading { margin-bottom: 24px; }
-.tts-settings-heading h2 { margin: 0 0 6px; font-size: 1.35rem; font-weight: 700; letter-spacing: -0.025em; }
-.tts-settings-heading p, .tts-settings-engine-name p { margin: 0; color: var(--tts-muted); font-size: 0.85rem; }
-.tts-settings-engine { border: 1px solid var(--tts-line); border-radius: 16px; background: var(--tts-card); overflow: hidden; box-shadow: 0 4px 20px rgb(0 0 0 / 3%); }
-.tts-settings-engine-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding: 26px; }
-.tts-settings-engine-name { display: flex; align-items: center; gap: 14px; min-width: 0; }
-.tts-settings-icon { display: grid; place-items: center; width: 48px; height: 48px; flex-shrink: 0; border: 1px solid var(--tts-blue-border); border-radius: 14px; background: var(--tts-blue-soft); color: var(--tts-ink); }
-.tts-settings-engine-name h3 { margin: 0 0 4px; font-size: 1.12rem; font-weight: 700; }
-.tts-settings-engine-name h3 span { font-size: 0.72rem; font-weight: 600; color: var(--tts-muted); margin-left: 4px; }
-.tts-settings-status { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--tts-line); border-radius: 999px; padding: 6px 11px; font-size: 0.75rem; font-weight: 600; color: var(--tts-muted); }
-.tts-settings-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.tts-settings-status.is-ready { background: var(--tts-green-soft); color: #166534; border-color: transparent; }
-.tts-settings-status.is-error { color: #b91c1c; }
-html.dark .tts-settings-status.is-ready { color: #bbf7d0; }
-html.dark .tts-settings-status.is-error { color: #fca5a5; }
-.tts-settings-routes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 26px 26px; }
-.tts-settings-route { position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 16px; border: 1px solid var(--tts-line); border-radius: 12px; background: var(--tts-bg); overflow: hidden; }
-.tts-settings-route::before { content: ''; width: 28px; height: 3px; border-radius: 99px; background: var(--tts-blue); }
-.tts-settings-route.route-cloud::before { background: #0ea5e9; }
-.tts-settings-route.route-clone::before { background: var(--tts-purple); }
-.tts-settings-route span { font-size: 0.72rem; font-weight: 600; color: var(--tts-muted); }
-.tts-settings-route strong { font-size: 0.84rem; font-weight: 700; line-height: 1.35; }
-.tts-settings-route small { min-height: 2.8em; font-size: 0.72rem; color: var(--tts-muted); line-height: 1.5; }
-.tts-settings-footer { padding: 20px 26px; border-top: 1px solid var(--tts-line); display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
-.tts-settings-footer p { margin: 0; flex: 1 1 220px; font-size: 0.77rem; line-height: 1.6; color: var(--tts-muted); }
-.tts-settings-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.tts-settings-actions .tts-btn { min-height: 40px; }
-.tts-settings-actions button:focus-visible { outline: 2px solid var(--tts-blue); outline-offset: 3px; }
-@media (max-width: 600px) {
-  .tts-settings-engine-head, .tts-settings-footer { padding: 18px; }
-  .tts-settings-routes { grid-template-columns: 1fr; margin: 0 18px 18px; }
-  .tts-settings-actions { width: 100%; }
-  .tts-settings-actions .tts-btn { flex: 1 1 auto; }
-}
-
 /* ── Sidebar ── */
 .tts-side {
   background: var(--tts-card);

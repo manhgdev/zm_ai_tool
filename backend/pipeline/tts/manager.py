@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import platform
 import re
 import subprocess
@@ -25,9 +24,9 @@ from .eleven import (
 )
 from . import capcut as capcut_client
 from .schemas import PREFIX_CAPCUT, PREFIX_ELEVEN, PREFIX_VIENEU, VIENEU_TTS_VER
+from .text_split import normalize_tts_text
 
 CC_TTS_VER = "cc6-final-trim-leading-silence"
-DEFAULT_CAPCUT_VOICE = "cc:BV074_streaming:7102355709945188865"
 _VOICES_JSON = Path(__file__).resolve().parent / "voices_capcut.json"
 _cc_voices_cache: list[dict[str, Any]] | None = None
 
@@ -167,7 +166,7 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
         voices = [
             voice
             for voice in voices
-            if voice.get("type") == "clone" or normalize_voice_language(voice.get("language")) == requested_language
+            if normalize_voice_language(voice.get("language")) == requested_language
         ]
     # Auto includes the online ZMTTS catalog too; do not truncate it before
     # the selector can show the voices that are available on demand.
@@ -193,8 +192,6 @@ def resolve_voice(voice: str, lang: str = "vi") -> str:
         vn = vieneu_engine.list_voices("vi")
         if vn:
             return vn[0]["id"]
-    if _cc_parse(DEFAULT_CAPCUT_VOICE):
-        return DEFAULT_CAPCUT_VOICE
     if _el_keys():
         return f"{PREFIX_ELEVEN}{EL_ADAM}"
     parsed = _parse_say_voices()
@@ -207,35 +204,6 @@ def resolve_voice(voice: str, lang: str = "vi") -> str:
     return voice if voice and voice != "system" else "Samantha"
 
 
-def clone_route(voice: str, lang: str) -> dict[str, str] | None:
-    """Route user references by input language; never reinterpret cloud IDs."""
-    if voice.startswith((PREFIX_CAPCUT, PREFIX_ELEVEN)):
-        return None
-    parsed = vieneu_engine.parse_voice(voice)
-    if not parsed or parsed[0] not in ('clone', 'reference', 'remote-reference'):
-        return None
-    from .voice_store import normalize_voice_language
-    language = normalize_voice_language(lang)
-    if not language:
-        raise ValueError('TTS_LANGUAGE_REQUIRED')
-    if language in ('vi', 'en'):
-        return None
-    sources = sorted(_cc_voice_options(language), key=lambda item: item['id'])
-    if not sources:
-        sources = sorted(_el_voice_options(), key=lambda item: item['id'])
-    if not sources:
-        raise ValueError('TTS_SOURCE_UNAVAILABLE')
-    return {'engine': 'openvoice', 'language': language, 'sourceVoice': sources[0]['id'], 'sourceEngine': sources[0].get('engine', 'capcut')}
-
-
-def clone_cache_token(voice: str, lang: str) -> str:
-    route = clone_route(voice, lang)
-    if not route:
-        return ''
-    from .engines.openvoice import cache_token
-    return cache_token(voice, route)
-
-
 def tts_cache_key(text: str, voice: str, lang: str, match: str) -> str:
     code = _el_lang_code(lang, text)
     if voice.startswith(PREFIX_CAPCUT):
@@ -245,8 +213,7 @@ def tts_cache_key(text: str, voice: str, lang: str, match: str) -> str:
     else:
         ver, model = EL_TTS_VER, EL_MODEL
     ref_token = vieneu_engine.reference_cache_token(voice)
-    token = clone_cache_token(voice, lang)
-    raw = (f"{text.strip()}|{voice}|{lang}|{match}|{model}|{code}|{ver}|{ref_token}" + ('|' + token if token else '')).encode()
+    raw = f"{text.strip()}|{voice}|{lang}|{match}|{model}|{code}|{ver}|{ref_token}".encode()
     return hashlib.sha1(raw).hexdigest()[:20]
 
 
@@ -261,14 +228,16 @@ def synthesize_raw(
     """Write wav for voice (no duration fit)."""
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     resolved = resolve_voice(voice, lang)
-    if not resolved.startswith((PREFIX_CAPCUT, PREFIX_ELEVEN)):
-        route = clone_route(resolved, lang)
-        if route:
-            from .engines.openvoice import synthesize
-            synthesize(text, resolved, out_wav, route)
-            return
     vn = vieneu_engine.parse_voice(resolved)
-    if vn and not resolved.startswith((PREFIX_CAPCUT, PREFIX_ELEVEN)):
+    if vn:
+        from .voice_store import normalize_voice_language
+
+        requested_language = normalize_voice_language(lang)
+        if requested_language and requested_language not in vieneu_engine.VIENEU_TEXT_LANGUAGES:
+            raise RuntimeError(
+                "VieNeu chỉ hỗ trợ tiếng Việt và tiếng Anh; "
+                "hãy chọn voice CapCut cho ngôn ngữ này"
+            )
         vieneu_engine.synthesize(text, resolved, out_wav, style=style)
         return
     cc = _cc_parse(resolved)
@@ -301,24 +270,14 @@ def tts_segment(
 
     Long text: VieNeu handles chunking via max_chars; studio layer may pre-split.
     """
+    text = normalize_tts_text(text)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
-    route = clone_route(voice, lang)
-    has_file = out_wav.exists() and out_wav.stat().st_size > 128
-    if route and has_file:
-        from .engines.openvoice import cache_token
-        try:
-            cached = json.loads(out_wav.with_suffix('.openvoice.json').read_text(encoding='utf-8'))
-            has_file = cached.get('cacheToken') == cache_token(voice, route) and cached.get('text') == text
-        except (OSError, ValueError):
-            has_file = False
+    has_file = out_wav.exists() and out_wav.stat().st_size > 78 and ffprobe_duration(out_wav) > 0
     if not has_file:
         if force_refit:
             force_refit = False
         resolved = resolve_voice(voice, lang)
-        if route:
-            from .engines.openvoice import synthesize
-            synthesize(text, resolved, out_wav, route, cancel_check, on_progress)
-        elif not resolved.startswith((PREFIX_CAPCUT, PREFIX_ELEVEN)) and vieneu_engine.parse_voice(resolved):
+        if vieneu_engine.parse_voice(resolved):
             vieneu_engine.synthesize(
                 text,
                 resolved,
@@ -346,13 +305,13 @@ def tts_segment(
     # leading room from other providers.
     if _cc_parse(resolve_voice(voice, lang)):
         duration = audio_utils.trim_leading_silence(out_wav)
+    if not out_wav.is_file() or out_wav.stat().st_size <= 78 or duration <= 0:
+        raise RuntimeError("TTS tạo audio rỗng hoặc không hợp lệ")
     return duration
 
 
 def engines_status() -> dict[str, Any]:
-    from .engines.openvoice import status as openvoice_status
     return {
-        "openvoice": openvoice_status(),
         "vieneu": vieneu_engine.status(),
         "capcut": {"id": "capcut", "name": "CapCut TTS", "local": False, "ready": True},
         "elevenlabs": {

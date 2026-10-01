@@ -126,12 +126,6 @@ def run_review_job(job: dict[str, Any]) -> dict[str, Any]:
     settings["recognitionEngine"] = recognition_engine
     lang = str(settings.get("language") or "vi")
     voice = str(settings.get("voice") or "system")
-    from pipeline.tts.manager import clone_cache_token
-    token = clone_cache_token(voice, lang)
-    if token:
-        settings['cloneCacheToken'] = token
-    else:
-        settings.pop('cloneCacheToken', None)
     _note(job_id, f"Nguồn: {src}", stage="metadata", progress=0.04)
     _note(job_id, f"Cài đặt: nhận dạng={recognition_engine} gốc={source_lang} thoại={lang} mode={mode} voice={voice} caption={settings.get('captionMode') or 'off'}")
     check_cancel(job_id)
@@ -1037,8 +1031,7 @@ def _finalize_key(settings: dict[str, Any]) -> str:
         "quality",
     )
     settings_key = "|".join(f"{key}={_norm_setting(settings.get(key))}" for key in keys)
-    token = settings.get('cloneCacheToken')
-    return f"finalizeVersion={REVIEW_FINALIZE_VERSION}|{settings_key}" + (f'|clone={token}' if token else '')
+    return f"finalizeVersion={REVIEW_FINALIZE_VERSION}|{settings_key}"
 
 
 def _media_artifact_ok(path: Path) -> bool:

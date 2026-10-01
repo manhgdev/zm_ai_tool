@@ -18,7 +18,7 @@ from ..export.srt import SRT_STYLES, cues_from_parts, parse_srt, style_params, w
 from . import audio_utils
 from .engines.vieneu import parse_voice as parse_vieneu_voice
 from .engines.vieneu import reference_cache_token, reset_client as reset_vieneu_client
-from .manager import list_voices, tts_segment, clone_cache_token, clone_route
+from .manager import list_voices, tts_segment
 from .text_split import split_sentences
 from .voice_store import TTS_OUTPUT, TTS_TEMP, ensure_vieneu_dirs
 
@@ -56,7 +56,7 @@ def _job_fingerprint(
 
     raw = "|".join(
         [
-            "v9",  # zmAI/clone: infer()+no ref_codes (babble guard; read only typed text)
+            "v10",  # normalize CJK ASR spacing and replacement characters before TTS
             (text or "").strip(),
             (srt_text or "").strip(),
             (voice or "").strip(),
@@ -74,10 +74,15 @@ def _job_fingerprint(
             "1" if trim_silence else "0",
         ]
     )
-    token = clone_cache_token(voice, lang)
-    if token:
-        raw += '|' + token
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _audio_is_valid(path: Path) -> bool:
+    """Reject WAV headers and corrupt files before they enter cache/history."""
+    try:
+        return path.is_file() and path.stat().st_size > 78 and float(ffprobe_duration(path) or 0) > 0
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def _find_cached_job(fp: str) -> dict[str, Any] | None:
@@ -89,19 +94,19 @@ def _find_cached_job(fp: str) -> dict[str, Any] | None:
             continue
         meta_p = d / "meta.json"
         wav = d / "audio.wav"
-        if not meta_p.is_file() or not wav.is_file() or wav.stat().st_size < 64:
+        if not meta_p.is_file() or not _audio_is_valid(wav):
             continue
         try:
             m = json.loads(meta_p.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if m.get("fingerprint") != fp:
+        if m.get("fingerprint") != fp or m.get("status") != "done":
             continue
         jid = d.name
         m["id"] = jid
         return {
             "id": jid,
-            "duration": float(m.get("duration") or ffprobe_duration(wav)),
+            "duration": float(ffprobe_duration(wav)),
             "audioUrl": f"/api/tts/studio/jobs/{jid}/audio.wav",
             "mp3Url": f"/api/tts/studio/jobs/{jid}/audio.mp3",
             "srtUrl": f"/api/tts/studio/jobs/{jid}/subs.srt",
@@ -322,6 +327,21 @@ def _write_meta(job_dir: Path, meta: dict[str, Any]) -> None:
     )
 
 
+def mark_job_meta_error(job_id: str, error: Exception | str) -> None:
+    """Keep a failed publish/synthesis out of the completed history."""
+    try:
+        job_dir = _job_dir(job_id)
+        meta_path = job_dir / "meta.json"
+        if not meta_path.is_file():
+            return
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["status"] = "error"
+        meta["error"] = str(error)
+        _write_meta(job_dir, meta)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
 def _concat_wavs(parts: list[Path], out: Path, gap_ms: int = 0) -> float:
     if len(parts) == 1:
         shutil.copy2(parts[0], out)
@@ -488,9 +508,7 @@ def synth_text_job(
                     return
                 with frac_lock:
                     chunk_frac[i] = max(chunk_frac[i], min(1.0, float(frac)))
-                route = clone_route(voice, lang)
-                stage = ('OPENVOICE_SOURCE' if frac < 0.5 else 'OPENVOICE_EMBEDDING' if frac < 0.7 else 'OPENVOICE_CONVERSION') if route else ''
-                _publish_frac(f"{stage} · {i + 1}/{total_chunks}" if stage else f"Đang tạo câu {i + 1}/{total_chunks}…")
+                _publish_frac(f"Đang tạo câu {i + 1}/{total_chunks}…")
 
             tts_segment(
                 chunk, voice, part, None, "none",
@@ -499,6 +517,8 @@ def synth_text_job(
                 on_progress=_on_progress,
             )
             _postprocess_part(part, trim=trim_silence, normalize=normalize)
+            if not _audio_is_valid(part):
+                raise RuntimeError(f"TTS tạo audio rỗng ở câu {i + 1}")
             with frac_lock:
                 chunk_frac[i] = 1.0
             _publish_frac(f"Đã xong câu {i + 1}/{total_chunks}…")
@@ -511,6 +531,8 @@ def synth_text_job(
                 future.result()
 
         part_durs: list[float] = [ffprobe_duration(p) for p in part_paths]
+        if any(duration <= 0 or not _audio_is_valid(path) for path, duration in zip(part_paths, part_durs)):
+            raise RuntimeError("TTS tạo audio rỗng hoặc không hợp lệ")
         set_job_progress_pct(
             job_id, 95, "Đang ghép nối âm thanh và tạo phụ đề…",
             current=total_chunks, total=total_chunks,
@@ -532,6 +554,8 @@ def synth_text_job(
             dur = _concat_wavs(part_paths, wav, gap_ms=max(0, int(gap_ms)))
             for p in part_paths:
                 p.unlink(missing_ok=True)
+        if not _audio_is_valid(wav):
+            raise RuntimeError("TTS ghép audio rỗng hoặc không hợp lệ")
         srt_path = job_dir / "subs.srt"
         write_srt(srt_path, cues, capcut=True)
         _ = match_duration
@@ -543,7 +567,6 @@ def synth_text_job(
             "lang": lang,
             "duration": dur,
             "engine": _engine_of(voice),
-            "cloneRoute": clone_route(voice, lang),
             "createdAt": datetime.now().isoformat(timespec="seconds"),
             "audioFile": "audio.wav",
             "srtFile": "subs.srt",
@@ -575,7 +598,7 @@ def synth_text_job(
             "cached": False,
         }
     except Exception:
-        if _is_cancelled(job_id) and parse_vieneu_voice(voice) and not clone_route(voice, lang):
+        if _is_cancelled(job_id) and parse_vieneu_voice(voice):
             reset_vieneu_client()
         if job_dir.is_dir() and not (job_dir / "audio.wav").is_file():
             shutil.rmtree(job_dir, ignore_errors=True)
@@ -701,9 +724,7 @@ def synth_srt_job(
                     return
                 with frac_lock:
                     cue_frac[i] = max(cue_frac[i], min(1.0, float(frac)))
-                route = clone_route(voice, lang)
-                stage = ('OPENVOICE_SOURCE' if frac < 0.5 else 'OPENVOICE_EMBEDDING' if frac < 0.7 else 'OPENVOICE_CONVERSION') if route else ''
-                _publish_frac(f"{stage} · {i + 1}/{total_cues}" if stage else f"Đang tạo đoạn SRT {i + 1}/{total_cues}…")
+                _publish_frac(f"Đang tạo đoạn SRT {i + 1}/{total_cues}…")
 
             tts_segment(
                 text, voice, part, target, use_match,
@@ -712,6 +733,8 @@ def synth_srt_job(
                 on_progress=_on_progress,
             )
             _postprocess_part(part, trim=trim_silence, normalize=normalize)
+            if not _audio_is_valid(part):
+                raise RuntimeError(f"TTS tạo audio rỗng ở đoạn SRT {i + 1}")
             with frac_lock:
                 cue_frac[i] = 1.0
             _publish_frac(f"Đã xong đoạn SRT {i + 1}/{total_cues}…")
@@ -810,6 +833,8 @@ def synth_srt_job(
             pass
         out_cues = export_cues
         dur = ffprobe_duration(wav)
+        if not _audio_is_valid(wav):
+            raise RuntimeError("TTS xuất audio SRT rỗng hoặc không hợp lệ")
         meta = {
             "id": job_id,
             "title": (
@@ -821,7 +846,6 @@ def synth_srt_job(
             "lang": lang,
             "duration": dur,
             "engine": _engine_of(voice),
-            "cloneRoute": clone_route(voice, lang),
             "createdAt": datetime.now().isoformat(timespec="seconds"),
             "audioFile": "audio.wav",
             "srtFile": "subs.srt",
@@ -854,7 +878,7 @@ def synth_srt_job(
             "cached": False,
         }
     except Exception:
-        if _is_cancelled(job_id) and parse_vieneu_voice(voice) and not clone_route(voice, lang):
+        if _is_cancelled(job_id) and parse_vieneu_voice(voice):
             reset_vieneu_client()
         if job_dir.is_dir() and not (job_dir / "audio.wav").is_file():
             shutil.rmtree(job_dir, ignore_errors=True)
@@ -975,10 +999,12 @@ def rebuild_srt(job_id: str, srt_style: str = "hard") -> Path:
 def ensure_wav(job_id: str) -> Path:
     job_dir = _job_dir(job_id)
     wav = job_dir / "audio.wav"
-    if not wav.is_file():
+    if not wav.is_file() or not _audio_is_valid(wav):
         raise FileNotFoundError("audio.wav missing")
     marker = job_dir / ".quicktime-wav-ready"
     if marker.is_file() and marker.stat().st_mtime >= wav.stat().st_mtime:
+        if not _audio_is_valid(wav):
+            raise RuntimeError("audio.wav rỗng hoặc không hợp lệ")
         return wav
     temp = job_dir / ".audio-quicktime.wav"
     try:
@@ -994,6 +1020,8 @@ def ensure_wav(job_id: str) -> Path:
         marker.write_text("pcm_s16le/48000/mono\n", encoding="ascii")
     finally:
         temp.unlink(missing_ok=True)
+    if not _audio_is_valid(wav):
+        raise RuntimeError("audio.wav rỗng hoặc không hợp lệ")
     return wav
 
 
@@ -1016,17 +1044,16 @@ def ensure_mp3(job_id: str) -> Path:
 
 def publish_job_outputs(job_id: str, output_dir: str = "", output_format: str = "wav48") -> Path:
     """Publish one TTS job into a stable user-selected root/job-id folder under ZM_AI_TOOL/text-to-speech."""
-    target = item_output_folder(selected_or_default("tts", output_dir), job_id)
     job_dir = _job_dir(job_id)
+    wav_file = ensure_wav(job_id)
+    mp3_file = ensure_mp3(job_id)
+    target = item_output_folder(selected_or_default("tts", output_dir), job_id)
     source_srt = job_dir / "subs.srt"
     if source_srt.is_file():
         shutil.copy2(source_srt, target / "subtitles.srt")
     source_srt_original = job_dir / "source.srt"
     if source_srt_original.is_file():
         shutil.copy2(source_srt_original, target / "source.srt")
-
-    wav_file = ensure_wav(job_id)
-    mp3_file = ensure_mp3(job_id)
 
     if wav_file.is_file():
         shutil.copy2(wav_file, target / "audio.wav")
@@ -1096,7 +1123,7 @@ def published_job_output_dir(job_id: str) -> Path:
 def ensure_zip(job_id: str, srt_style: str = "hard") -> Path:
     job_dir = _job_dir(job_id)
     wav = job_dir / "audio.wav"
-    if not wav.is_file():
+    if not _audio_is_valid(wav):
         raise FileNotFoundError("audio.wav missing")
 
     # Get the SRT file for requested style
@@ -1168,11 +1195,17 @@ def prune_history(keep: int = HISTORY_MAX) -> int:
     ensure_vieneu_dirs()
     if not TTS_OUTPUT.is_dir() or keep < 0:
         return 0
-    dirs = sorted(
-        (d for d in TTS_OUTPUT.iterdir() if d.is_dir()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    completed: list[Path] = []
+    for d in TTS_OUTPUT.iterdir():
+        if not d.is_dir() or not _audio_is_valid(d / "audio.wav"):
+            continue
+        try:
+            meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if meta.get("status") == "done":
+            completed.append(d)
+    dirs = sorted(completed, key=lambda p: p.stat().st_mtime, reverse=True)
     removed = 0
     for d in dirs[keep:]:
         try:
@@ -1193,14 +1226,18 @@ def list_history(limit: int = HISTORY_MAX) -> list[dict[str, Any]]:
         if not d.is_dir():
             continue
         meta_p = d / "meta.json"
-        if not meta_p.is_file():
+        wav = d / "audio.wav"
+        if not meta_p.is_file() or not _audio_is_valid(wav):
             continue
         try:
             m = json.loads(meta_p.read_text(encoding="utf-8"))
         except Exception:
             continue
         jid = d.name
+        if m.get("status") != "done":
+            continue
         m["id"] = jid
+        m["duration"] = float(ffprobe_duration(wav))
         m["audioUrl"] = f"/api/tts/studio/jobs/{jid}/audio.wav"
         m["mp3Url"] = f"/api/tts/studio/jobs/{jid}/audio.mp3"
         m["srtUrl"] = f"/api/tts/studio/jobs/{jid}/subs.srt"

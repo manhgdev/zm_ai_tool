@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { localize, localizePipelineMessage, useLocale } from '@/app/i18n'
 import { api } from '@/features/project/project.api'
 import ProgressPopup from '@/shared/components/ProgressPopup'
-import { IconGear, IconHeadphones, IconHeart, IconMic, IconSpeaker } from '@/shared/components/Icons'
+import { IconHeadphones, IconHeart, IconMic, IconSpeaker } from '@/shared/components/Icons'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { studioApi } from '@/features/studio/studio.api'
@@ -29,7 +29,7 @@ import {
   type DashLayout,
 } from './ttsDashboardLayout'
 import type { EngineStatus, HistoryItem, Voice } from './tts.types'
-import { LANGUAGE_NAMES, voiceDisplayName, voiceEngineBucket, voiceMetadata } from './lib/voiceDisplay'
+import { voiceDisplayName, voiceEngineBucket, voiceMetadata } from './lib/voiceDisplay'
 import { SRT_STYLE_OPTIONS, looksLikeSrt, srtPreviewLines } from './lib/srt'
 import { downloadWavHref, triggerDownload as startDownload } from './lib/download'
 import { HISTORY_MAX, fmtDur, previewSampleFor } from './lib/format'
@@ -109,37 +109,6 @@ export default function TtsStudio({
     }
   })
   const [lang, setLang] = useState(saved.lang)
-  const [languageRequest, setLanguageRequest] = useState<{ resolve: (value: string) => void } | null>(null)
-  const [suggestedLanguage, setSuggestedLanguage] = useState('')
-  const [detectingLanguage, setDetectingLanguage] = useState(false)
-  const [installingOpenVoice, setInstallingOpenVoice] = useState(false)
-  const languageEdited = useRef(false)
-  const languageWaiter = useRef<((value: string) => void) | null>(null)
-  useEffect(() => () => { languageWaiter.current?.('') }, [])
-
-  async function cloneInputLanguage(id: string, content: string, current = lang): Promise<string> {
-    const item = voices.find((v) => v.id === id)
-    const isClone = id.startsWith('vn:clone:') || item?.type === 'zmAI' || item?.engine === 'zmai' || item?.type === 'clone'
-    if (!isClone || current !== 'auto') return current
-    setSuggestedLanguage('')
-    languageEdited.current = false
-    setDetectingLanguage(true)
-    const selection = new Promise<string>((resolve) => {
-      languageWaiter.current = resolve
-      setLanguageRequest({ resolve })
-    })
-    const waiter = languageWaiter.current
-    const previousFocus = document.activeElement
-    void api.ttsDetectLanguage(content).then((result) => {
-      if (languageWaiter.current === waiter && !languageEdited.current && LANGUAGE_NAMES[result.language]) setSuggestedLanguage(result.language)
-    }).catch(() => { /* Manual selection remains available without the optional detector. */ })
-      .finally(() => { if (languageWaiter.current === waiter) setDetectingLanguage(false) })
-    const chosen = await selection
-    languageWaiter.current = null
-    if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus()
-    if (!chosen) throw new Error(t('Đã hủy xác nhận ngôn ngữ.', 'Language confirmation cancelled.'))
-    return chosen
-  }
   const [engine, setEngine] = useState<TtsEngine>(saved.engine)
   const [voice, setVoice] = useState(saved.voice)
   const [style, setStyle] = useState(saved.style)
@@ -406,28 +375,25 @@ export default function TtsStudio({
     return pref
   }, [voices, localFavorites])
 
-  /** Share engine/language filtering between the library and synthesis selector. */
+  /** Chỉ giọng thuộc Engine đang chọn */
   const engineVoices = useMemo(
-    () => sortedVoices.filter((v) => {
-      const bucket = voiceEngineBucket(v)
-      const matchesLang = bucket === 'clone' || !lang || lang === 'auto' ||
-        v.language?.split(/[-_]/)[0].toLowerCase() === lang.split(/[-_]/)[0].toLowerCase()
-      return (engine === 'all' || bucket === engine) && matchesLang
-    }),
-    [sortedVoices, engine, lang],
+    () => engine === 'all' ? sortedVoices : sortedVoices.filter((v) => voiceEngineBucket(v) === engine),
+    [sortedVoices, engine],
   )
   const voiceFilterTags: readonly string[] = VOICE_TAGS
   const activeVoiceTag = voiceFilterTags.includes(voiceTag) ? voiceTag : ''
   const visibleEngineVoices = useMemo(() => {
     const query = voiceQuery.trim().toLocaleLowerCase('vi')
+    const langFilter = lang && lang !== 'auto' ? lang.split('-')[0] : ''
     return engineVoices.filter((v) => {
       const metadata = voiceMetadata(v)
+      const matchesLang = !langFilter || v.language?.split(/[-_]/)[0].toLowerCase() === langFilter.toLowerCase()
       const matchesTag = !activeVoiceTag || metadata.tags.some((tag) => tag.label === activeVoiceTag)
       const matchesQuery = !query || [v.name, metadata.description, ...metadata.tags.map((tag) => tag.label)]
         .join(' ')
         .toLocaleLowerCase('vi')
         .includes(query)
-      return matchesTag && matchesQuery
+      return matchesLang && matchesTag && matchesQuery
     })
   }, [activeVoiceTag, engineVoices, lang, voiceQuery])
   const voiceListPageCount = Math.max(1, Math.ceil(visibleEngineVoices.length / voiceListPageSize))
@@ -649,7 +615,6 @@ export default function TtsStudio({
   }, [loadStatus, loadHistory])
 
   const vieneu = status.vieneu
-  const openvoice = status.openvoice
   const vieneuLoadState = String(vieneu?.loadState || '')
   const vieneuLoadOk = Boolean(vieneu?.installed && (vieneu?.ready || vieneuLoadState === 'ready'))
   const vieneuLoadWarn = vieneuLoadState === 'loading' || (Boolean(vieneu?.installed) && vieneuLoadState === 'cold')
@@ -670,29 +635,6 @@ export default function TtsStudio({
     const timer = window.setInterval(() => void loadStatus(), 2000)
     return () => window.clearInterval(timer)
   }, [vieneuLoadState, busy, loadStatus])
-
-  async function installOpenVoice() {
-    if (busy || openvoice?.installed) return
-    setBusyKind('synth')
-    setBusy(true)
-    setInstallingOpenVoice(true)
-    setError('')
-    try {
-      const started = await api.ttsOpenVoiceInstall()
-      activeJobIdRef.current = started.id
-      const result = await waitForTtsJob(started.id, 40 * 60 * 1000)
-      if (result.error) throw new Error(result.error)
-      toast.success(t('Đã cài OpenVoice V2.', 'OpenVoice V2 installed.'))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t('Cài OpenVoice thất bại', 'OpenVoice installation failed'))
-    } finally {
-      activeJobIdRef.current = null
-      setInstallingOpenVoice(false)
-      setBusy(false)
-      setBusyKind(null)
-      void loadStatus()
-    }
-  }
 
   function go(id: string) {
     // input/srt gộp vào dashboard Tổng quan (không còn tab sidebar riêng)
@@ -826,14 +768,13 @@ export default function TtsStudio({
     activeJobIdRef.current = requestJobId
 
     try {
-      const inputLang = await cloneInputLanguage(voice, useSrt ? srtPreviewLines(srtRaw) : text.trim())
       // Kick off — backend trả {id, running:true} ngay (không block)
       const res = await api.ttsStudioSynth({
         jobId: requestJobId,
         text: useSrt ? undefined : text.trim(),
         srtText: useSrt ? srtRaw : undefined,
         voice,
-        lang: inputLang,
+        lang,
         speed,
         volume,
         pitch,
@@ -905,12 +846,11 @@ export default function TtsStudio({
     setError('')
     const requestJobId = crypto.randomUUID().replaceAll('-', '').slice(0, 12)
     try {
-      const inputLang = await cloneInputLanguage(voice, sample)
       const res = await api.ttsStudioSynth({
         jobId: requestJobId,
         text: sample,
         voice,
-        lang: inputLang,
+        lang,
         speed,
         volume,
         pitch,
@@ -1232,7 +1172,7 @@ export default function TtsStudio({
     setPreviewGeneratingVoiceId(v.id)
     setError('')
     try {
-      const sampleLang = await cloneInputLanguage(v.id, previewSampleFor(lang), lang)
+      const sampleLang = v.language || lang
       const previewJobId = crypto.randomUUID().replaceAll('-', '').slice(0, 12)
       const res = await api.ttsStudioSynth({
         jobId: previewJobId,
@@ -1552,7 +1492,6 @@ export default function TtsStudio({
             <option value="transcribe">{t('Chép lời', 'Transcribe')}</option>
             <option value="history">{t('Lịch sử tạo', 'History')}</option>
             <option value="clone">{t('Clone giọng nói', 'Clone voice')}</option>
-            <option value="settings">{t('Cài đặt', 'Settings')}</option>
           </select>
 
           <div className="tts-sec">{t('Công cụ', 'Tools')}</div>
@@ -1573,9 +1512,6 @@ export default function TtsStudio({
           <button type="button" className={`tts-nav${section === 'clone' ? ' active' : ''}`} onClick={() => go('clone')}>
             <IconClone /> {t('Clone giọng nói', 'Clone voice')}
             <span className="pill-new">{t('Mới', 'New')}</span>
-          </button>
-          <button type="button" className={`tts-nav${section === 'settings' ? ' active' : ''}`} onClick={() => go('settings')}>
-            <IconGear size={14} /> {t('Cài đặt', 'Settings')}
           </button>
         </div>
 
@@ -1728,40 +1664,6 @@ export default function TtsStudio({
           />
         )}
 
-        {section === 'settings' && (
-          <div className="tts-page-panel tts-settings-page">
-            <header className="tts-settings-heading">
-              <h2>{t('Cài đặt TTS', 'TTS settings')}</h2>
-              <p>{t('Quản lý bộ máy giọng nói và các tính năng bổ sung.', 'Manage voice engines and optional features.')}</p>
-            </header>
-            <section className="tts-settings-engine" aria-labelledby="openvoice-settings-title">
-              <div className="tts-settings-engine-head">
-                <div className="tts-settings-engine-name">
-                  <span className="tts-settings-icon" aria-hidden="true"><IconMic size={24} /></span>
-                  <div><h3 id="openvoice-settings-title">OpenVoice <span>V2</span></h3><p>{t('Clone giọng đa ngôn ngữ', 'Multilingual voice cloning')}</p></div>
-                </div>
-                <span className={`tts-settings-status${openvoice?.ready ? ' is-ready' : openvoice?.loadState === 'failed' ? ' is-error' : ''}`} role="status">
-                  {!openvoice ? t('Đang kiểm tra…', 'Checking…') : openvoice.ready ? t('Sẵn sàng', 'Ready') : installingOpenVoice || openvoice.loadState === 'installing' ? t('Đang cài…', 'Installing…') : openvoice.loadState === 'failed' ? t('Cài đặt thất bại', 'Installation failed') : t('Chưa cài', 'Not installed')}
-                </span>
-              </div>
-              <div className="tts-settings-routes">
-                <div className="tts-settings-route route-local"><span>{t('Tiếng Việt & tiếng Anh', 'Vietnamese & English')}</span><strong>VieNeu v3 Turbo</strong><small>{t('Giữ bộ máy hiện tại', 'Uses the existing engine')}</small></div>
-                <div className="tts-settings-route route-cloud"><span>{t('Giọng cloud trực tiếp', 'Direct cloud voices')}</span><strong>CapCut / ElevenLabs → Audio</strong><small>{t('Tạo cloud xong trả thẳng audio, không qua OpenVoice.', 'Cloud synthesis returns the audio directly without OpenVoice.')}</small></div>
-                <div className="tts-settings-route route-clone"><span>{t('Clone ngôn ngữ khác', 'Clones in other languages')}</span><strong>Cloud → OpenVoice → Clone</strong><small>{t('Chỉ khi chọn giọng clone: cloud tạo audio nguồn, OpenVoice chuyển sang giọng clone đã chọn.', 'Only for a clone voice: cloud creates source audio, then OpenVoice converts it to the selected clone.')}</small></div>
-              </div>
-              <div className="tts-settings-footer">
-                <p>{t('Cài riêng, không thay đổi VieNeu. Không tải sẵn giọng mẫu.', 'Installed separately without changing VieNeu. No voice samples downloaded.')}</p>
-                <div className="tts-settings-actions">
-                <button type="button" className="tts-btn tts-btn-blue" disabled={busy || Boolean(openvoice?.installed) || openvoice?.loadState === 'installing'} onClick={() => void installOpenVoice()}>
-                  {installingOpenVoice ? t('Đang cài OpenVoice…', 'Installing OpenVoice…') : openvoice?.installed ? t('Đã cài', 'Installed') : t('Cài OpenVoice', 'Install OpenVoice')}
-                </button>
-                <button type="button" className="tts-btn tts-btn-ghost" onClick={() => void loadStatus()}>{t('Làm mới trạng thái', 'Refresh status')}</button>
-                </div>
-              </div>
-            </section>
-          </div>
-        )}
-
         {section === 'voice' && (
           <div className="tts-page-panel tts-voice-page">
             <section className="tts-card" id="tts-voice-list">
@@ -1775,10 +1677,8 @@ export default function TtsStudio({
                     value={lang}
                     onChange={(e) => {
                       setLang(e.target.value)
-                      if (!voice.startsWith('vn:clone:') && selectedVoice?.mode !== 'reference') {
-                        preferredVoiceRef.current = ''
-                        setVoice('')
-                      }
+                      preferredVoiceRef.current = ''
+                      setVoice('')
                     }}
                   >
                     <option value="auto">Tự động</option>
@@ -2021,10 +1921,8 @@ export default function TtsStudio({
                   value={lang}
                   onChange={(e) => {
                     setLang(e.target.value)
-                    if (!voice.startsWith('vn:clone:') && selectedVoice?.mode !== 'reference') {
-                      preferredVoiceRef.current = ''
-                      setVoice('')
-                    }
+                    preferredVoiceRef.current = ''
+                    setVoice('')
                   }}
                 >
                   <option value="auto">Tự động</option>
@@ -2568,7 +2466,7 @@ export default function TtsStudio({
       </div>
 
       <ProgressPopup
-        active={!languageRequest && (busy || Boolean(error && error !== 'Đã hủy' && error !== 'cancelled'))}
+        active={busy || Boolean(error && error !== 'Đã hủy' && error !== 'cancelled')}
         minimized={progressMinimized}
         running={busy}
         title={busy ? busyTitle : error ? 'Lỗi TTS' : 'TTS'}
@@ -2580,35 +2478,8 @@ export default function TtsStudio({
           if (!busy && error) setError('')
         }}
         onRestore={() => setProgressMinimized(false)}
-        onCancel={busy && !installingOpenVoice ? () => { void onCancelJob() } : undefined}
+        onCancel={busy ? () => { void onCancelJob() } : undefined}
       />
-
-      {languageRequest && (
-        <div className="tts-modal-backdrop" onKeyDown={(event) => {
-          if (event.key === 'Escape') { languageRequest.resolve(''); setLanguageRequest(null) }
-          if (event.key === 'Tab') {
-            const controls = event.currentTarget.querySelectorAll<HTMLElement>('select, button:not(:disabled)')
-            const first = controls[0], last = controls[controls.length - 1]
-            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
-            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
-          }
-        }}>
-          <div className="tts-modal" role="dialog" aria-modal="true" aria-labelledby="clone-language-title">
-            <h3 id="clone-language-title">{t('Xác nhận ngôn ngữ nội dung', 'Confirm input language')}</h3>
-            <p>{t('Văn bản ngắn hoặc trộn ngôn ngữ: chọn ngôn ngữ chính. Không tự dịch hoặc bỏ chữ.', 'For short or mixed-language text, choose the main language. Text is not translated or removed.')}</p>
-            <label className="tts-field">
-              <span>{t('Ngôn ngữ đầu vào', 'Input language')}</span>
-              <select autoFocus value={suggestedLanguage} onChange={(event) => { languageEdited.current = true; setSuggestedLanguage(event.target.value) }}>
-                <option value="">{t('Chọn ngôn ngữ', 'Choose language')}</option>
-                {Object.keys(LANGUAGE_NAMES).map((code) => <option key={code} value={code}>{new Intl.DisplayNames([locale], { type: 'language' }).of(code) || code}</option>)}
-              </select>
-            </label>
-            {detectingLanguage && <small>{t('Đang nhận diện; bạn có thể chọn thủ công.', 'Detecting; you can select manually.')}</small>}
-            <button type="button" onClick={() => { languageRequest.resolve(''); setLanguageRequest(null) }}>{t('Hủy', 'Cancel')}</button>
-            <button type="button" disabled={!suggestedLanguage} onClick={() => { languageRequest.resolve(suggestedLanguage); setLanguageRequest(null) }}>{t('Xác nhận', 'Confirm')}</button>
-          </div>
-        </div>
-      )}
 
       {editingVoice && (
         <VoiceMetadataModal

@@ -101,7 +101,7 @@ def api_preview_tts(project_id: str, seg_id: str, body: PreviewTtsIn):
     name = f"{key}.wav"
     wav = root / "tts" / name
     try:
-        if wav.exists():
+        if wav.exists() and wav.stat().st_size > 78 and ffprobe_duration(wav) > 0:
             dur = ffprobe_duration(wav)
         else:
             dur = _tts_segment_safe(text, body.voice or "system", wav, lang, speed)
@@ -116,8 +116,7 @@ def api_preview_tts(project_id: str, seg_id: str, body: PreviewTtsIn):
 def _tts_segment_safe(text: str, voice: str, wav: Path, lang: str, speed: float) -> float:
     """Gọi tts_segment — trong frozen app chạy qua subprocess .venv-runtime để có torch."""
     import sys
-    from pipeline.tts.manager import clone_route
-    if clone_route(voice, lang) or not getattr(sys, "frozen", False):
+    if not getattr(sys, "frozen", False):
         return tts_segment(text, voice, wav, None, "none", lang=lang, speed=speed)
     # ponytail: frozen app — torch/model chỉ có trong .venv-runtime, không trong bundle
     import json as _json

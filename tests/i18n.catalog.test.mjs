@@ -89,26 +89,15 @@ test('download completion automatically applies update once without a second but
   assert.match(source, /if \(updateDialog\?\.kind !== 'downloading' && updateDialog\?\.kind !== 'cancelling'\) return/)
 })
 
-test('OpenVoice controls and errors have Vietnamese and English labels', () => {
+test('stable TTS routing removes language confirmation and OpenVoice controls', () => {
   const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
-  const messages = readFileSync(new URL('../frontend/src/app/i18n.tsx', import.meta.url), 'utf8')
-  const voiceFilter = source.slice(source.indexOf('const engineVoices = useMemo'), source.indexOf('const voiceFilterTags'))
-  assert.match(voiceFilter, /v\.language\?\.split/)
-  assert.doesNotMatch(voiceFilter, /mode === 'reference'/)
-  assert.match(source, /t\('Cài OpenVoice', 'Install OpenVoice'\)/)
-  assert.match(source, /t\('Cài đặt TTS', 'TTS settings'\)/)
-  assert.match(source, /t\('Clone giọng đa ngôn ngữ', 'Multilingual voice cloning'\)/)
-  assert.match(source, /t\('Tạo cloud xong trả thẳng audio, không qua OpenVoice\.', 'Cloud synthesis returns the audio directly without OpenVoice\.'/)
-  assert.match(source, /t\('Chỉ khi chọn giọng clone: cloud tạo audio nguồn, OpenVoice chuyển sang giọng clone đã chọn\.'/)
-  const sidebar = source.split('</aside>')[0]
-  assert.match(sidebar, /go\('settings'\)/)
-  assert.doesNotMatch(sidebar, /tts-openvoice-card/)
+  const api = readFileSync(new URL('../frontend/src/features/project/project.api.ts', import.meta.url), 'utf8')
   const routes = readFileSync(new URL('../frontend/src/features/tts/lib/ttsStudioHelpers.tsx', import.meta.url), 'utf8')
-  assert.match(routes, /TTS_URL_SECTIONS = new Set\(\[[\s\S]*?'settings'/)
-  assert.match(source, /t\('Xác nhận ngôn ngữ nội dung', 'Confirm input language'\)/)
-  for (const key of ['TTS_LANGUAGE_REQUIRED', 'TTS_SOURCE_UNAVAILABLE', 'OPENVOICE_NOT_INSTALLED', 'OPENVOICE_WORKER_FAILED', 'OPENVOICE_TIMEOUT']) {
-    assert.match(messages, new RegExp(`${key}: \\[\\s*'[^']+',\\s*'[^']+'\\s*\\]`))
-  }
+  assert.doesNotMatch(source, /OpenVoice V2|Xác nhận ngôn ngữ nội dung|cloneInputLanguage|languageRequest/)
+  assert.doesNotMatch(api, /ttsDetectLanguage|ttsOpenVoiceInstall|tts\/language|tts\/openvoice\/install/)
+  assert.doesNotMatch(routes, /'settings'/)
+  assert.match(source, /preferredVoiceRef\.current = ''\s*\n\s*setVoice\(''\)/)
+  assert.match(source, /TTS_TRANSCRIBE_RESULT_LS_KEY/)
 })
 
 test('installation progress has a single detailed surface, without dependency dumps', () => {

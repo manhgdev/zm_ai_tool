@@ -42,6 +42,10 @@ MODE_TURBO = "v3turbo"
 MODE_NANO = "v3nano"
 SELECTABLE_MODES = frozenset({MODE_TURBO, MODE_NANO})
 DEFAULT_MODE = MODE_TURBO
+# VieNeu v3 Turbo is trained for Vietnamese and English speech.  Other
+# ZMTTS references remain on disk for preview/history, but exposing them as
+# selectable VieNeu voices produces an empty WAV for unsupported scripts.
+VIENEU_TEXT_LANGUAGES = frozenset({"vi", "en"})
 
 MODEL_CATALOG: list[dict[str, Any]] = [
     {
@@ -702,6 +706,13 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for item in voice_store.load_reference_voices():
         voice_id = str(item["id"])
+        language = voice_store.normalize_voice_language(item.get("language")) or "vi"
+        is_zmt_reference = (
+            voice_id.startswith(zmtss_catalog.VOICE_ID_PREFIX)
+            or str(item.get("source") or "").strip().lower() == "zmtts"
+        )
+        if is_zmt_reference and language not in VIENEU_TEXT_LANGUAGES:
+            continue
         ref_path = voice_store.reference_path(item)
         out.append(
             {
@@ -714,7 +725,7 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
                 "tags": voice_store.normalize_voice_tags(item.get("tags")),
                 # Current bundled zmAI references are Vietnamese; keep an
                 # explicit label even when legacy metadata omitted language.
-                "language": voice_store.normalize_voice_language(item.get("language")) or "vi",
+                "language": language,
                 "favorite": bool(item.get("favorite")),
                 "previewUrl": _preview_api_url(voice_id) if ref_path.is_file() else None,
             }
@@ -724,6 +735,8 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
     listed_ids = {str(v.get("id") or "") for v in out}
     for item in zmtss_catalog.voices():
         language = zmtss_catalog.language_code(item.get("language"))
+        if language not in VIENEU_TEXT_LANGUAGES:
+            continue
         if requested_language and language != requested_language:
             continue
         remote_id = str(item["id"])
@@ -1164,7 +1177,7 @@ def clone_voice(
     _ = transcript  # reserved for future ref_text APIs
     from ...core.media import ffprobe_duration
     if not ref_path.is_file() or ffprobe_duration(ref_path) <= 0:
-        raise ValueError('OPENVOICE_INVALID_AUDIO')
+        raise ValueError('TTS_INVALID_AUDIO')
     voice_store.ensure_vieneu_dirs()
     display = name.strip() or "clone"
     existing = {str(x.get("id") or "") for x in voice_store.load_cloned()}
@@ -1179,7 +1192,7 @@ def clone_voice(
         else:
             _normalize_clone_reference(ref_path, dest)
     # Register only the reference here. _register_clone initializes VieNeu on
-    # the first VI/EN synthesis; OpenVoice does not need a VieNeu client.
+    # Register the reference; VieNeu initializes lazily on the first synthesis.
     clean_tags = voice_store.normalize_voice_tags(tags, strict=True)
     voice_store.add_cloned(safe, display, f"cloned/{safe}.wav", tags=clean_tags)
     return {

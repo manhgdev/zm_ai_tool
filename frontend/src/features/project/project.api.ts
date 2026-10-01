@@ -303,18 +303,6 @@ export const api = {
       cloneRequiresPytorch?: boolean
     }>>(`${base}/tts/status`, undefined, 15_000),
 
-  ttsDetectLanguage: (text: string) =>
-    fetchJson<{ language: string; requiresConfirmation?: boolean }>(`${base}/tts/language`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    }, 30_000),
-
-  ttsOpenVoiceInstall: () =>
-    fetchJson<{ id: string; running: boolean; status?: Record<string, unknown> }>(
-      `${base}/tts/openvoice/install`, { method: 'POST' }, 15_000,
-    ),
-
   ttsWarm: () =>
     fetchJson<{ ok: boolean; loadState?: string; installed?: boolean; mode?: string }>(
       `${base}/tts/warm`,

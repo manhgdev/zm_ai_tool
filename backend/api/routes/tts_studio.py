@@ -69,6 +69,7 @@ from pipeline.export.mux import (
     separate_no_vocals,
 )
 from pipeline.tts import engines_status
+from pipeline.tts.text_split import normalize_tts_text
 
 router = APIRouter()
 
@@ -82,40 +83,6 @@ _SEG_PRESERVE = SEG_PRESERVE
 from pipeline.tts import voice_store
 from pipeline.tts.engines import vieneu as vieneu_engine
 from pipeline.tts.voice_store import TTS_OUTPUT, ensure_vieneu_dirs
-
-
-class LanguageIn(BaseModel):
-    text: str
-
-
-@router.post('/api/tts/language')
-def api_tts_language(body: LanguageIn):
-    from pipeline.tts.engines.openvoice import detect_language
-    if not body.text.strip() or len(body.text) > 100_000:
-        raise HTTPException(400, 'TTS_LANGUAGE_REQUIRED')
-    try:
-        return detect_language(body.text)
-    except Exception as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-
-@router.post('/api/tts/openvoice/install')
-def api_openvoice_install():
-    from pipeline.tts.engines.openvoice import install
-    from pipeline.tts.studio import set_job_progress_pct, set_job_complete, set_job_error
-    job_id = uuid.uuid4().hex[:12]
-    def progress(pct, error=None):
-        if error:
-            set_job_error(job_id, error)
-        elif pct == 100:
-            set_job_complete(job_id, 'OpenVoice V2')
-        else:
-            set_job_progress_pct(job_id, pct, 'OpenVoice V2')
-    try:
-        install(progress)
-    except RuntimeError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return {'id': job_id, 'running': True}
 
 
 @router.post("/api/tts/studio/synthesize")
@@ -139,6 +106,7 @@ def api_tts_studio_synth(body: StudioSynthIn):
     set_job_progress(job_id, 1, 100, "Đang khởi tạo TTS…")
 
     def _run() -> None:
+        jid = ""
         try:
             if srt_text:
                 result = synth_srt_job(
@@ -176,16 +144,15 @@ def api_tts_studio_synth(body: StudioSynthIn):
                 )
             jid = result.get("id") or result.get("job_id")
             if jid:
-                try:
-                    from pipeline.tts.studio import publish_job_outputs
-                    publish_job_outputs(str(jid), body.outputDir, body.outputFormat)
-                except Exception as pub_err:
-                    import logging
-                    logging.getLogger(__name__).warning("publish_job_outputs failed: %s", pub_err)
+                from pipeline.tts.studio import publish_job_outputs
+                publish_job_outputs(str(jid), body.outputDir, body.outputFormat)
             # Cache hits return an older completed job id. The browser still
             # polls the new request id, so publish its terminal state too.
             set_job_complete(job_id, result_job_id=str(jid or job_id))
         except Exception as e:
+            if jid:
+                from pipeline.tts.studio import mark_job_meta_error
+                mark_job_meta_error(str(jid), e)
             set_job_error(job_id, e)
             import logging
             logging.getLogger(__name__).error("tts_studio_synth background error: %s", e)
@@ -252,10 +219,10 @@ async def api_tts_studio_transcribe(
     def _join_text(rows: list) -> str:
         parts: list[str] = []
         for seg in rows or []:
-            piece = str(seg.get("source") or seg.get("text") or "").strip()
+            piece = normalize_tts_text(str(seg.get("source") or seg.get("text") or ""))
             if piece:
                 parts.append(piece)
-        return " ".join(parts).strip()
+        return "\n".join(parts).strip()
 
     def _run() -> None:
         from pipeline.tts.studio import _jobs_lock, _running

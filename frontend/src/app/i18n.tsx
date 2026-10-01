@@ -168,29 +168,8 @@ export function localize(locale: AppLocale, vietnamese: string, english: string)
 
 /** Backend job messages include dynamic counts, so they cannot use the static catalog. */
 export function localizePipelineMessage(locale: AppLocale, message: string): string {
-  const cloneErrors: Record<string, [string, string]> = {
-    TTS_LANGUAGE_REQUIRED: ['Chọn ngôn ngữ nội dung trước khi tạo giọng clone.', 'Choose the input language before cloning.'],
-    TTS_SOURCE_UNAVAILABLE: ['Không có giọng CapCut nguồn cho ngôn ngữ này.', 'No CapCut source voice is available for this language.'],
-    OPENVOICE_NOT_INSTALLED: ['Cài OpenVoice V2 trong TTS → Cài đặt.', 'Install OpenVoice V2 in TTS → Settings.'],
-    OPENVOICE_INSTALL_FAILED: ['Cài OpenVoice thất bại. Xem openvoice-v2/install.log.', 'OpenVoice installation failed. See openvoice-v2/install.log.'],
-    OPENVOICE_INSTALL_BUSY: ['OpenVoice đang được cài đặt.', 'OpenVoice installation is already running.'],
-    OPENVOICE_REFERENCE_MISSING: ['Thiếu audio mẫu local của giọng clone. Hãy thêm audio mẫu.', 'The local clone reference is missing. Add a reference recording.'],
-    OPENVOICE_INVALID_AUDIO: ['Audio nguồn hoặc mẫu rỗng, im lặng hoặc không hợp lệ.', 'Source or reference audio is empty, silent, or invalid.'],
-    OPENVOICE_CONVERSION_FAILED: ['OpenVoice chuyển giọng thất bại. Không dùng audio nguồn thay thế.', 'OpenVoice conversion failed. Source audio was not substituted.'],
-    OPENVOICE_WORKER_FAILED: ['Tiến trình OpenVoice bị lỗi. Có thể thử lại job.', 'The OpenVoice worker failed. You can retry the job.'],
-    OPENVOICE_TIMEOUT: ['OpenVoice quá thời gian xử lý.', 'OpenVoice timed out.'],
-    OPENVOICE_CANCELLED: ['Đã hủy chuyển giọng.', 'Voice conversion cancelled.'],
-  }
-  const cloneError = Object.keys(cloneErrors).find((code) => message.includes(code))
-  if (cloneError) return localize(locale, ...cloneErrors[cloneError])
-  const cloneStage = /^(OPENVOICE_SOURCE|OPENVOICE_EMBEDDING|OPENVOICE_CONVERSION) · (\d+\/\d+)$/.exec(message)
-  if (cloneStage) {
-    const labels: Record<string, [string, string]> = {
-      OPENVOICE_SOURCE: ['CapCut: tạo audio nguồn', 'CapCut: generating source audio'],
-      OPENVOICE_EMBEDDING: ['OpenVoice: phân tích giọng', 'OpenVoice: extracting embeddings'],
-      OPENVOICE_CONVERSION: ['OpenVoice: chuyển giọng', 'OpenVoice: converting voice'],
-    }
-    return `${localize(locale, ...labels[cloneStage[1]])} · ${cloneStage[2]}`
+  if (message.includes('TTS_INVALID_AUDIO')) {
+    return localize(locale, 'Audio mẫu hoặc audio TTS rỗng, im lặng hoặc không hợp lệ.', 'The reference or generated TTS audio is empty, silent, or invalid.')
   }
   const cloud = /^CLOUD_TRANSLATION_([A-Z0-9_]+)_(API_KEY_MISSING|AUTH_FAILED|ACCESS_DENIED|RATE_LIMITED_OR_QUOTA|NETWORK_UNAVAILABLE|SERVICE_UNAVAILABLE|MODEL_OR_REQUEST_INVALID|INVALID_RESPONSE|UNSUPPORTED_LANGUAGE_PAIR|REQUEST_FAILED)$/.exec(message)
   if (cloud) {

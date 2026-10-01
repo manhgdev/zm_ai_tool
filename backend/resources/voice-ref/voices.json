@@ -335,5 +335,47 @@
     "favorite": false,
     "tags": [],
     "source": "ZMTTS"
+  },
+  {
+    "id": "zmt:tieng-trung--zf-004",
+    "name": "zf_004",
+    "label": "zf_004",
+    "type": "zmAI",
+    "engine": "vieneu",
+    "mode": "reference",
+    "language": "zh",
+    "ref_file": "zmt-9a96fd5f02f9a6ee.wav",
+    "hidden": false,
+    "favorite": false,
+    "tags": [],
+    "source": "ZMTTS"
+  },
+  {
+    "id": "zmt:tieng-anh--af-alloy",
+    "name": "af_alloy",
+    "label": "af_alloy",
+    "type": "zmAI",
+    "engine": "vieneu",
+    "mode": "reference",
+    "language": "en",
+    "ref_file": "zmt-b16eed4df3b0b96f.wav",
+    "hidden": false,
+    "favorite": false,
+    "tags": [],
+    "source": "ZMTTS"
+  },
+  {
+    "id": "zmt:tieng-trung--zf-007",
+    "name": "zf_007",
+    "label": "zf_007",
+    "type": "zmAI",
+    "engine": "vieneu",
+    "mode": "reference",
+    "language": "zh",
+    "ref_file": "zmt-218bbdcaab5fdff3.wav",
+    "hidden": false,
+    "favorite": false,
+    "tags": [],
+    "source": "ZMTTS"
   }
 ]
