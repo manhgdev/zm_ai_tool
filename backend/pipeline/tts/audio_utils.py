@@ -13,22 +13,21 @@ def trim_leading_silence(wav: Path) -> float:
 
 
 def trim_silence(wav: Path, *, trailing: bool = True) -> float:
-    """Cut hush at the start (and optionally end / middle) of a clip.
+    """Cut hush at the start (and optionally end) of a clip.
 
     Used by Studio's "Loại bỏ khoảng lặng thừa" and CapCut leading cleanup.
-    ``trailing=True`` also strips mid-file silence (stop_periods=-1) so pauses
-    between phrases inside one part get tightened — keep a short pad so speech
-    does not sound clipped.
+    ``trailing=True`` trims the trailing hush only. It deliberately preserves
+    pauses inside the utterance so punctuation remains audible.
     """
     if not wav.is_file():
         return 0.0
     if trailing:
-        # stop_periods=-1 also strips mid-file hush (blank-line pauses inside one part).
+        # Keep punctuation pauses inside the utterance; only trim the tail.
         # Tiny start/stop_silence pads avoid clipping consonant attacks.
         af = (
             "silenceremove="
             "start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02:"
-            "stop_periods=-1:stop_duration=0.05:stop_threshold=-45dB:stop_silence=0.03:"
+            "stop_periods=1:stop_duration=0.05:stop_threshold=-45dB:stop_silence=0.03:"
             "detection=rms"
         )
     else:
@@ -48,8 +47,12 @@ def trim_silence(wav: Path, *, trailing: bool = True) -> float:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        # Do not replace a valid source with a header-only/zero-duration file.
+        # This can happen for very short or very quiet provider audio.
         if trimmed.is_file() and trimmed.stat().st_size > 128:
-            trimmed.replace(wav)
+            trimmed_duration = ffprobe_duration(trimmed)
+            if trimmed_duration > 0:
+                trimmed.replace(wav)
     finally:
         trimmed.unlink(missing_ok=True)
     return ffprobe_duration(wav)

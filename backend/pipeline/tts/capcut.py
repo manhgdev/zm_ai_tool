@@ -432,7 +432,7 @@ def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, ra
     last_err: BaseException | None = None
     for attempt in range(3):
         if cancel_check and cancel_check():
-            raise RuntimeError('OPENVOICE_CANCELLED')
+            raise RuntimeError('TTS_CANCELLED')
         device = load_device()
         try:
             tid, token = tts_create(text, voice, resource_id, rate, device)
@@ -441,7 +441,7 @@ def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, ra
             url: str | None = None
             while time.time() < deadline:
                 if cancel_check and cancel_check():
-                    raise RuntimeError('OPENVOICE_CANCELLED')
+                    raise RuntimeError('TTS_CANCELLED')
                 last = tts_query(tid, token, device)
                 tasks = ((last.get("data") or {}).get("tasks")) or []
                 task = tasks[0] if tasks else {}
@@ -471,7 +471,7 @@ def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, ra
             return out_mp3
         except Exception as e:
             if cancel_check and cancel_check():
-                raise RuntimeError('OPENVOICE_CANCELLED') from e
+                raise RuntimeError('TTS_CANCELLED') from e
             last_err = e
             # CapCut can reject a laugh intermittently; retry once with a minimal
             # valid utterance instead of failing the whole dubbing job.

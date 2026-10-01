@@ -89,15 +89,28 @@ test('download completion automatically applies update once without a second but
   assert.match(source, /if \(updateDialog\?\.kind !== 'downloading' && updateDialog\?\.kind !== 'cancelling'\) return/)
 })
 
-test('stable TTS routing removes language confirmation and OpenVoice controls', () => {
+test('stable TTS routing removes language confirmation controls', () => {
   const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
   const api = readFileSync(new URL('../frontend/src/features/project/project.api.ts', import.meta.url), 'utf8')
   const routes = readFileSync(new URL('../frontend/src/features/tts/lib/ttsStudioHelpers.tsx', import.meta.url), 'utf8')
-  assert.doesNotMatch(source, /OpenVoice V2|Xác nhận ngôn ngữ nội dung|cloneInputLanguage|languageRequest/)
-  assert.doesNotMatch(api, /ttsDetectLanguage|ttsOpenVoiceInstall|tts\/language|tts\/openvoice\/install/)
+  assert.doesNotMatch(source, /Xác nhận ngôn ngữ nội dung|cloneInputLanguage|languageRequest/)
+  assert.doesNotMatch(api, /ttsDetectLanguage|tts\/language/)
   assert.doesNotMatch(routes, /'settings'/)
   assert.match(source, /preferredVoiceRef\.current = ''\s*\n\s*setVoice\(''\)/)
   assert.match(source, /TTS_TRANSCRIBE_RESULT_LS_KEY/)
+})
+
+test('TTS restores the saved voice only after the full catalog loads', () => {
+  const app = readFileSync(new URL('../frontend/src/app/App.tsx', import.meta.url), 'utf8')
+  const page = readFileSync(new URL('../frontend/src/pages/TtsPage.tsx', import.meta.url), 'utf8')
+  const studio = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
+  assert.match(app, /const \[voicesLoaded, setVoicesLoaded\] = useState\(false\)/)
+  assert.match(app, /setVoicesLoaded\(true\)/)
+  assert.match(app, /onRefreshVoices=\{refreshVoices\}/)
+  assert.match(page, /voicesLoaded: boolean/)
+  assert.match(studio, /if \(!voicesLoaded\) return/)
+  assert.match(studio, /disabled=\{!voicesLoaded\}/)
+  assert.match(studio, /lang === 'auto' \|\| v\.id === 'system'/)
 })
 
 test('installation progress has a single detailed surface, without dependency dumps', () => {

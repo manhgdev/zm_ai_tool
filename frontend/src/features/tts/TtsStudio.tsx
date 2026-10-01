@@ -58,8 +58,9 @@ import './TtsStudio.css'
 
 type Props = {
   voices: Voice[]
+  voicesLoaded: boolean
   onBack: () => void
-  onRefreshVoices?: (lang?: string) => void
+  onRefreshVoices?: (lang?: string, force?: boolean) => void
   isDesktopApp?: boolean
   /** Mobile drawer — controlled từ Header ☰ */
   sideOpen?: boolean
@@ -79,6 +80,7 @@ type TtsRealtimeProgress = {
 
 export default function TtsStudio({
   voices,
+  voicesLoaded,
   onBack,
   onRefreshVoices,
   isDesktopApp = false,
@@ -144,6 +146,10 @@ export default function TtsStudio({
   const [busyCustomMessage, setBusyCustomMessage] = useState('')
   const [progressMinimized, setProgressMinimized] = useState(false)
   const [error, setError] = useState('')
+  const statusLoadedRef = useRef(false)
+  const statusRequestRef = useRef<Promise<void> | null>(null)
+  const historyLoadedRef = useRef(false)
+  const historyRequestRef = useRef<Promise<void> | null>(null)
 
   const [initialActiveJob] = useState<{ id: string; duration: number; audioUrl: string; mp3Url?: string } | null>(() => {
     try {
@@ -340,7 +346,7 @@ export default function TtsStudio({
       setError('')
       try {
         await api.ttsStudioVoicePatch(v.id, { favorite: next })
-        onRefreshVoices?.(lang)
+        onRefreshVoices?.(lang, true)
         toast.success(next ? t('Đã thêm vào yêu thích.', 'Added to favorites.') : t('Đã bỏ yêu thích.', 'Removed from favorites.'))
       } catch (e) {
         const msg = e instanceof Error ? e.message : t('Không thể lưu yêu thích', 'Could not save favorite')
@@ -375,27 +381,29 @@ export default function TtsStudio({
     return pref
   }, [voices, localFavorites])
 
-  /** Chỉ giọng thuộc Engine đang chọn */
+  /** Catalog luôn đủ ngôn ngữ; lọc tại đây trước khi khôi phục/chọn giọng. */
   const engineVoices = useMemo(
-    () => engine === 'all' ? sortedVoices : sortedVoices.filter((v) => voiceEngineBucket(v) === engine),
-    [sortedVoices, engine],
+    () => sortedVoices.filter((v) => {
+      const matchesLang = lang === 'auto' || v.id === 'system' ||
+        v.language?.split(/[-_]/)[0].toLowerCase() === lang.toLowerCase()
+      return matchesLang && (engine === 'all' || voiceEngineBucket(v) === engine)
+    }),
+    [sortedVoices, engine, lang],
   )
   const voiceFilterTags: readonly string[] = VOICE_TAGS
   const activeVoiceTag = voiceFilterTags.includes(voiceTag) ? voiceTag : ''
   const visibleEngineVoices = useMemo(() => {
     const query = voiceQuery.trim().toLocaleLowerCase('vi')
-    const langFilter = lang && lang !== 'auto' ? lang.split('-')[0] : ''
     return engineVoices.filter((v) => {
       const metadata = voiceMetadata(v)
-      const matchesLang = !langFilter || v.language?.split(/[-_]/)[0].toLowerCase() === langFilter.toLowerCase()
       const matchesTag = !activeVoiceTag || metadata.tags.some((tag) => tag.label === activeVoiceTag)
       const matchesQuery = !query || [v.name, metadata.description, ...metadata.tags.map((tag) => tag.label)]
         .join(' ')
         .toLocaleLowerCase('vi')
         .includes(query)
-      return matchesLang && matchesTag && matchesQuery
+      return matchesTag && matchesQuery
     })
-  }, [activeVoiceTag, engineVoices, lang, voiceQuery])
+  }, [activeVoiceTag, engineVoices, voiceQuery])
   const voiceListPageCount = Math.max(1, Math.ceil(visibleEngineVoices.length / voiceListPageSize))
   const safeVoiceListPage = Math.min(voiceListPage, voiceListPageCount)
   const pagedEngineVoices = useMemo(() => {
@@ -429,21 +437,14 @@ export default function TtsStudio({
   }, [voiceQuery, activeVoiceTag, voiceListPageSize])
 
   useEffect(() => {
-    // Keep restored/preferred voice until the async list arrives; only then fall back.
+    // Only a successful catalog response can invalidate the saved voice.
+    if (!voicesLoaded) return
     if (voice && engineVoices.some((v) => v.id === voice)) {
       preferredVoiceRef.current = voice
       return
     }
     if (!engineVoices.length) {
-      // App seeds eleven+system before /api/voices returns — don't wipe restored vn:/cc: ids.
-      const looksSeed =
-        voices.length === 0 ||
-        (voices.length <= 3 &&
-          voices.every((v) => {
-            const b = voiceEngineBucket(v)
-            return b === 'eleven' || b === 'system'
-          }))
-      if (!looksSeed && voice) setVoice('')
+      if (voice) setVoice('')
       return
     }
     const preferred = preferredVoiceRef.current
@@ -454,7 +455,7 @@ export default function TtsStudio({
     const fallback = engineVoices[0].id
     preferredVoiceRef.current = fallback
     setVoice(fallback)
-  }, [engineVoices, voice, lang, engine, voices])
+  }, [engineVoices, voice, voicesLoaded])
 
   useEffect(() => {
     persistTtsSettings({
@@ -533,67 +534,91 @@ export default function TtsStudio({
     voicePreviewRef.current = null
   }, [])
 
-  const loadStatus = useCallback(async () => {
+  const loadStatus = useCallback(async (force = false) => {
+    if (statusRequestRef.current) return statusRequestRef.current
+    if (!force && statusLoadedRef.current) return
+    const request = (async () => {
+      try {
+        setStatus(await api.ttsStatus() as Record<string, EngineStatus>)
+        statusLoadedRef.current = true
+      } catch {
+        statusLoadedRef.current = false
+        // Keep prior status if any; otherwise leave a stub so UI is not stuck on "Checking…".
+        setStatus((prev) => (
+          prev.vieneu
+            ? prev
+            : {
+                vieneu: {
+                  id: 'vieneu',
+                  name: 'VieNeu Local',
+                  installed: false,
+                  ready: false,
+                  loadState: 'error',
+                  message: 'Không đọc được trạng thái TTS / Could not read TTS status',
+                },
+              }
+        ))
+      }
+    })()
+    statusRequestRef.current = request
     try {
-      setStatus(await api.ttsStatus() as Record<string, EngineStatus>)
-    } catch {
-      // Keep prior status if any; otherwise leave a stub so UI is not stuck on "Checking…".
-      setStatus((prev) => (
-        prev.vieneu
-          ? prev
-          : {
-              vieneu: {
-                id: 'vieneu',
-                name: 'VieNeu Local',
-                installed: false,
-                ready: false,
-                loadState: 'error',
-                message: 'Không đọc được trạng thái TTS / Could not read TTS status',
-              },
-            }
-      ))
+      await request
+    } finally {
+      if (statusRequestRef.current === request) statusRequestRef.current = null
     }
   }, [])
 
-  const loadHistory = useCallback(async () => {
-    try {
-      const rows = await api.ttsStudioHistory()
-      const formattedRows: HistoryItem[] = rows.slice(0, HISTORY_MAX).map((r) => ({
-        id: String(r.id || ''),
-        title: String(r.title || ''),
-        voice: String(r.voice || ''),
-        voiceName: r.voiceName ? String(r.voiceName) : undefined,
-        engine: String(r.engine || ''),
-        duration: Number(r.duration || 0),
-        createdAt: String(r.createdAt || ''),
-        audioUrl: String(r.audioUrl || ''),
-        mp3Url: r.mp3Url ? String(r.mp3Url) : undefined,
-        srtUrl: r.srtUrl ? String(r.srtUrl) : undefined,
-        zipUrl: r.zipUrl ? String(r.zipUrl) : undefined,
-        text: String(r.text || ''),
-      }))
-      setHistory(formattedRows)
-      setHistoryPage(1)
+  const loadHistory = useCallback(async (force = false) => {
+    if (historyRequestRef.current) return historyRequestRef.current
+    if (!force && historyLoadedRef.current) return
+    const request = (async () => {
+      try {
+        const rows = await api.ttsStudioHistory()
+        const formattedRows: HistoryItem[] = rows.slice(0, HISTORY_MAX).map((r) => ({
+          id: String(r.id || ''),
+          title: String(r.title || ''),
+          voice: String(r.voice || ''),
+          voiceName: r.voiceName ? String(r.voiceName) : undefined,
+          engine: String(r.engine || ''),
+          duration: Number(r.duration || 0),
+          createdAt: String(r.createdAt || ''),
+          audioUrl: String(r.audioUrl || ''),
+          mp3Url: r.mp3Url ? String(r.mp3Url) : undefined,
+          srtUrl: r.srtUrl ? String(r.srtUrl) : undefined,
+          zipUrl: r.zipUrl ? String(r.zipUrl) : undefined,
+          text: String(r.text || ''),
+        }))
+        setHistory(formattedRows)
+        setHistoryPage(1)
+        historyLoadedRef.current = true
 
-      // ponytail: nếu chưa có audio preview nào (lần đầu vào), tự động khôi phục bản tạo gần nhất từ lịch sử
-      setJobId((currentJobId) => {
-        if (currentJobId) return currentJobId
-        const latest = formattedRows[0]
-        if (latest && latest.id && latest.audioUrl) {
-          const stamp = Date.now()
-          const finalAudio = `${latest.audioUrl}${latest.audioUrl.includes('?') ? '&' : '?'}t=${stamp}`
-          const mp3 = latest.mp3Url || `/api/tts/studio/jobs/${latest.id}/audio.mp3`
-          const finalMp3 = `${mp3}${mp3.includes('?') ? '&' : '?'}download=1&t=${stamp}`
-          setAudioUrl(finalAudio)
-          setMp3Url(finalMp3)
-          setDuration(Number(latest.duration || 0))
-          setText((curText) => curText || latest.text || '')
-          return String(latest.id)
-        }
-        return null
-      })
-    } catch {
-      /* ignore */
+        // ponytail: nếu chưa có audio preview nào (lần đầu vào), tự động khôi phục bản tạo gần nhất từ lịch sử
+        setJobId((currentJobId) => {
+          if (currentJobId) return currentJobId
+          const latest = formattedRows[0]
+          if (latest && latest.id && latest.audioUrl) {
+            const stamp = Date.now()
+            const finalAudio = `${latest.audioUrl}${latest.audioUrl.includes('?') ? '&' : '?'}t=${stamp}`
+            const mp3 = latest.mp3Url || `/api/tts/studio/jobs/${latest.id}/audio.mp3`
+            const finalMp3 = `${mp3}${mp3.includes('?') ? '&' : '?'}download=1&t=${stamp}`
+            setAudioUrl(finalAudio)
+            setMp3Url(finalMp3)
+            setDuration(Number(latest.duration || 0))
+            setText((curText) => curText || latest.text || '')
+            return String(latest.id)
+          }
+          return null
+        })
+      } catch {
+        historyLoadedRef.current = false
+        /* ignore */
+      }
+    })()
+    historyRequestRef.current = request
+    try {
+      await request
+    } finally {
+      if (historyRequestRef.current === request) historyRequestRef.current = null
     }
   }, [])
 
@@ -605,11 +630,15 @@ export default function TtsStudio({
       if (cancelled) return
       // Warm once per mount; backend no-ops when model already ready.
       try {
-        await api.ttsWarm()
+        const warm = await api.ttsWarm()
+        if (!cancelled && warm.loadState !== 'ready') {
+          window.setTimeout(() => {
+            if (!cancelled) void loadStatus(true)
+          }, warm.loadState === 'loading' ? 1200 : 0)
+        }
       } catch {
         /* ignore */
       }
-      if (!cancelled) void loadStatus()
     })()
     return () => { cancelled = true }
   }, [loadStatus, loadHistory])
@@ -630,11 +659,9 @@ export default function TtsStudio({
             ? t('Sẵn sàng', 'Ready')
             : t('Đã cài — nạp khi mở /text-to-speech', 'Installed — loads when opening /text-to-speech')
 
-  useEffect(() => {
-    if (vieneuLoadState !== 'loading' && !busy) return
-    const timer = window.setInterval(() => void loadStatus(), 2000)
-    return () => window.clearInterval(timer)
-  }, [vieneuLoadState, busy, loadStatus])
+  // Job progress and completion arrive through the shared TTS SSE stream.
+  // Status is loaded once on mount and refreshed explicitly after warm/retry;
+  // avoid a second-by-second request loop while SSE is connected.
 
   function go(id: string) {
     // input/srt gộp vào dashboard Tổng quan (không còn tab sidebar riêng)
@@ -814,8 +841,9 @@ export default function TtsStudio({
       } else if (resAny.publishedDir) {
         toast.success(t(`Đã lưu vào: ${resAny.publishedDir}`, `Saved to: ${resAny.publishedDir}`))
       }
-      // Cùng giọng + chữ + setting → server trả cache, không thêm lịch sử mới
-      if (!(res as { cached?: boolean }).cached) await loadHistory()
+      // Cùng giọng + chữ + setting → server trả cache, không thêm lịch sử mới.
+      // History refresh không được giữ popup tiến độ mở sau khi audio đã sẵn sàng.
+      if (!(res as { cached?: boolean }).cached) void loadHistory(true)
       setTimeout(() => audioRef.current?.play().catch(() => {}), 80)
     } catch (e) {
       if (!cancelledJobIdsRef.current.has(requestJobId)) {
@@ -829,7 +857,7 @@ export default function TtsStudio({
         setBusy(false)
         setBusyKind(null)
       }
-      void loadStatus()
+      void loadStatus(true)
     }
   }
 
@@ -966,7 +994,7 @@ export default function TtsStudio({
       setEngine('clone')
       preferredVoiceRef.current = v.id
       setVoice(v.id)
-      onRefreshVoices?.(lang)
+      onRefreshVoices?.(lang, true)
       setCloneFile(null)
       setCloneName('')
       setCloneTags([])
@@ -999,7 +1027,7 @@ export default function TtsStudio({
         preferredVoiceRef.current = v.id
         setVoice(v.id)
       }
-      onRefreshVoices?.(lang)
+      onRefreshVoices?.(lang, true)
       setEditingVoice(null)
       toast.success(t('Đã lưu thông tin giọng thành công!', 'Voice metadata saved successfully!'))
     } catch (e) {
@@ -1028,7 +1056,7 @@ export default function TtsStudio({
         preferredVoiceRef.current = ''
         setVoice('')
       }
-      onRefreshVoices?.(lang)
+      onRefreshVoices?.(lang, true)
       toast.success(t('Đã xóa giọng thành công!', 'Voice deleted successfully!'))
     } catch (e) {
       const msg = e instanceof Error ? e.message : t('Xóa giọng thất bại', 'Failed to delete voice')
@@ -1051,7 +1079,7 @@ export default function TtsStudio({
         setVoice(v.id)
         setEngine(target)
       }
-      onRefreshVoices?.(lang)
+      onRefreshVoices?.(lang, true)
       toast.success(t('Đã chuyển engine giọng thành công!', 'Voice engine updated successfully!'))
     } catch (e) {
       const msg = e instanceof Error ? e.message : t('Chuyển engine thất bại', 'Failed to change engine')
@@ -1096,7 +1124,7 @@ export default function TtsStudio({
     setError('')
     try {
       const result = await api.ttsStudioVoicesBulkMove(voiceIds, target)
-      onRefreshVoices?.(lang)
+      onRefreshVoices?.(lang, true)
       if (result.failures.length === 0) {
         setSelectedVoiceIds(new Set())
         setBulkMoveOpen(false)
@@ -1359,7 +1387,7 @@ export default function TtsStudio({
         if (playingHistoryId === h.id) stopHistoryPlayback()
         void api.ttsStudioDelete(h.id).then(() => {
           toast.success(t('Đã xóa bản thu thành công!', 'History item deleted successfully!'))
-          return loadHistory()
+          return loadHistory(true)
         }).catch((e) => {
           toast.error(e instanceof Error ? e.message : t('Xóa thất bại', 'Delete failed'))
         })
@@ -1559,7 +1587,7 @@ export default function TtsStudio({
           <button
             type="button"
             className="tts-link"
-            onClick={() => void loadStatus()}
+            onClick={() => void loadStatus(true)}
           >
             {t('Làm mới trạng thái', 'Refresh status')}
           </button>
@@ -1826,7 +1854,7 @@ export default function TtsStudio({
                 <button type="button" className="tts-btn tts-btn-blue" onClick={() => go('clone')}>
                   Clone giọng mới
                 </button>
-                <button type="button" className="tts-btn tts-btn-ghost" onClick={() => onRefreshVoices?.(lang)}>
+                <button type="button" className="tts-btn tts-btn-ghost" onClick={() => onRefreshVoices?.(lang, true)}>
                   Làm mới
                 </button>
               </div>
@@ -1847,7 +1875,7 @@ export default function TtsStudio({
             onFileChange={setCloneFile}
             onTagsChange={setCloneTags}
             onSubmit={() => void onClone()}
-            onOpenVoiceList={() => go('voice')}
+            onVoiceList={() => go('voice')}
             />
           </div>
         )}
@@ -1972,19 +2000,23 @@ export default function TtsStudio({
               <div className="tts-inline">
                 <select
                   value={voice}
+                  disabled={!voicesLoaded}
                   onChange={(e) => {
                     preferredVoiceRef.current = e.target.value
                     setVoice(e.target.value)
                   }}
                 >
-                  {engineVoices.length === 0 && (
+                  {!voicesLoaded && (
+                    <option value={voice}>{t('Đang tải giọng…', 'Loading voices…')}</option>
+                  )}
+                  {voicesLoaded && engineVoices.length === 0 && (
                     <option value="">
                       {engine === 'clone'
                         ? '— Chưa có giọng clone —'
                         : '— Không có giọng engine này —'}
                     </option>
                   )}
-                  {engineVoices.map((v) => (
+                  {voicesLoaded && engineVoices.map((v) => (
                     <option key={v.id} value={v.id}>{v.name}</option>
                   ))}
                 </select>
@@ -2184,7 +2216,7 @@ export default function TtsStudio({
           onFileChange={setCloneFile}
           onTagsChange={setCloneTags}
           onSubmit={() => void onClone()}
-          onOpenVoiceList={() => go('voice')}
+          onVoiceList={() => go('voice')}
           />
           </DashPanel>
 

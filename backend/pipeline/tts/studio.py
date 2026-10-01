@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -19,7 +20,7 @@ from . import audio_utils
 from .engines.vieneu import parse_voice as parse_vieneu_voice
 from .engines.vieneu import reference_cache_token, reset_client as reset_vieneu_client
 from .manager import list_voices, tts_segment
-from .text_split import split_sentences
+from .text_split import normalize_tts_text, split_sentences
 from .voice_store import TTS_OUTPUT, TTS_TEMP, ensure_vieneu_dirs
 
 
@@ -77,12 +78,24 @@ def _job_fingerprint(
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
 
 
-def _audio_is_valid(path: Path) -> bool:
+def _audio_is_valid(path: Path, known_duration: float | None = None) -> bool:
     """Reject WAV headers and corrupt files before they enter cache/history."""
     try:
-        return path.is_file() and path.stat().st_size > 78 and float(ffprobe_duration(path) or 0) > 0
+        if not path.is_file() or path.stat().st_size <= 78:
+            return False
+        if known_duration is not None and known_duration > 0:
+            return True
+        return float(ffprobe_duration(path) or 0) > 0
     except (OSError, ValueError, TypeError):
         return False
+
+
+def _stored_duration(meta: dict[str, Any]) -> float | None:
+    try:
+        duration = float(meta.get("duration") or 0)
+    except (TypeError, ValueError):
+        return None
+    return duration if duration > 0 else None
 
 
 def _find_cached_job(fp: str) -> dict[str, Any] | None:
@@ -94,7 +107,7 @@ def _find_cached_job(fp: str) -> dict[str, Any] | None:
             continue
         meta_p = d / "meta.json"
         wav = d / "audio.wav"
-        if not meta_p.is_file() or not _audio_is_valid(wav):
+        if not meta_p.is_file():
             continue
         try:
             m = json.loads(meta_p.read_text(encoding="utf-8"))
@@ -102,11 +115,14 @@ def _find_cached_job(fp: str) -> dict[str, Any] | None:
             continue
         if m.get("fingerprint") != fp or m.get("status") != "done":
             continue
+        duration = _stored_duration(m)
+        if not _audio_is_valid(wav, known_duration=duration):
+            continue
         jid = d.name
         m["id"] = jid
         return {
             "id": jid,
-            "duration": float(ffprobe_duration(wav)),
+            "duration": duration if duration is not None else float(ffprobe_duration(wav)),
             "audioUrl": f"/api/tts/studio/jobs/{jid}/audio.wav",
             "mp3Url": f"/api/tts/studio/jobs/{jid}/audio.mp3",
             "srtUrl": f"/api/tts/studio/jobs/{jid}/subs.srt",
@@ -715,7 +731,14 @@ def synth_srt_job(
         def _process_cue(i: int, cue: dict, part: Path):
             if _is_cancelled(job_id):
                 return
-            text = str(cue.get("text") or "").strip() or "…"
+            text = normalize_tts_text(str(cue.get("text") or "").strip()) or "…"
+            # CapCut's Vietnamese voices reject untranslated CJK cues with
+            # TTSInvalidText. Fail early with a stable message so the UI can
+            # point to the exact cue instead of exposing the provider payload.
+            if lang.split("-", 1)[0].lower() == "vi" and re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text) and voice.startswith("cc:"):
+                raise ValueError(
+                    f"CAPCUT_TTS_INVALID_TEXT|cue={i + 1}|text={text[:80]}"
+                )
             slot = max(0.15, float(cue["end"]) - float(cue["start"]))
             target = slot if use_match != "none" else None
 
@@ -726,12 +749,19 @@ def synth_srt_job(
                     cue_frac[i] = max(cue_frac[i], min(1.0, float(frac)))
                 _publish_frac(f"Đang tạo đoạn SRT {i + 1}/{total_cues}…")
 
-            tts_segment(
-                text, voice, part, target, use_match,
-                lang=lang, speed=speed, volume=volume, pitch=pitch, style=style,
-                cancel_check=lambda: _is_cancelled(job_id),
-                on_progress=_on_progress,
-            )
+            try:
+                tts_segment(
+                    text, voice, part, target, use_match,
+                    lang=lang, speed=speed, volume=volume, pitch=pitch, style=style,
+                    cancel_check=lambda: _is_cancelled(job_id),
+                    on_progress=_on_progress,
+                )
+            except Exception as exc:
+                if "TTSInvalidText" in str(exc):
+                    raise ValueError(
+                        f"CAPCUT_TTS_INVALID_TEXT|cue={i + 1}|text={text[:80]}"
+                    ) from exc
+                raise
             _postprocess_part(part, trim=trim_silence, normalize=normalize)
             if not _audio_is_valid(part):
                 raise RuntimeError(f"TTS tạo audio rỗng ở đoạn SRT {i + 1}")
@@ -1218,7 +1248,6 @@ def prune_history(keep: int = HISTORY_MAX) -> int:
 
 def list_history(limit: int = HISTORY_MAX) -> list[dict[str, Any]]:
     ensure_vieneu_dirs()
-    prune_history(HISTORY_MAX)
     items: list[dict[str, Any]] = []
     if not TTS_OUTPUT.is_dir():
         return items
@@ -1227,7 +1256,7 @@ def list_history(limit: int = HISTORY_MAX) -> list[dict[str, Any]]:
             continue
         meta_p = d / "meta.json"
         wav = d / "audio.wav"
-        if not meta_p.is_file() or not _audio_is_valid(wav):
+        if not meta_p.is_file():
             continue
         try:
             m = json.loads(meta_p.read_text(encoding="utf-8"))
@@ -1236,8 +1265,11 @@ def list_history(limit: int = HISTORY_MAX) -> list[dict[str, Any]]:
         jid = d.name
         if m.get("status") != "done":
             continue
+        duration = _stored_duration(m)
+        if not _audio_is_valid(wav, known_duration=duration):
+            continue
         m["id"] = jid
-        m["duration"] = float(ffprobe_duration(wav))
+        m["duration"] = duration if duration is not None else float(ffprobe_duration(wav))
         m["audioUrl"] = f"/api/tts/studio/jobs/{jid}/audio.wav"
         m["mp3Url"] = f"/api/tts/studio/jobs/{jid}/audio.mp3"
         m["srtUrl"] = f"/api/tts/studio/jobs/{jid}/subs.srt"

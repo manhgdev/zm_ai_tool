@@ -15,7 +15,7 @@ type Props = {
   onTagsChange: (tags: VoiceTagLabel[]) => void
   onSubmit: () => void
   /** Mở tab «Danh sách giọng» */
-  onOpenVoiceList: () => void
+  onVoiceList: () => void
 }
 
 export default function VoiceClonePanel({
@@ -29,7 +29,7 @@ export default function VoiceClonePanel({
   onFileChange,
   onTagsChange,
   onSubmit,
-  onOpenVoiceList,
+  onVoiceList,
 }: Props) {
   const [isDragging, setIsDragging] = useState(false)
   const fileInputId = variant === 'dash' ? 'tts-clone-file-dash' : 'tts-clone-file'
@@ -52,7 +52,7 @@ export default function VoiceClonePanel({
               type="button"
               className="link"
               style={{ background: 'none', border: 0, cursor: 'pointer', padding: 0, font: 'inherit', color: 'inherit' }}
-              onClick={onOpenVoiceList}
+              onClick={onVoiceList}
             >
               {cloneCount} giọng đã lưu{variant === 'dash' ? ' — quản lý' : ''}
             </button>

@@ -1,6 +1,7 @@
 import {
   Suspense,
   lazy,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -98,6 +99,9 @@ export default function App() {
     { id: DEFAULT_CAPCUT_VOICE, name: 'CapCut · Cô Gái Hoạt Ngôn' },
     { id: 'system', name: 'Giọng hệ thống (theo ngôn ngữ đích)' },
   ])
+  const [voicesLoaded, setVoicesLoaded] = useState(false)
+  const voicesLoadedRef = useRef(false)
+  const voicesRequestRef = useRef<Promise<void> | null>(null)
   const [settings, setSettings] = useState(loadSettings)
   const [configOpen, setConfigOpen] = useState(false)
   const [configSection, setConfigSection] = useState<'setup' | 'cloud' | 'tts' | 'license'>(() =>
@@ -341,6 +345,33 @@ export default function App() {
     api.hardware().then(setHw).catch(() => setHw({ label: 'Local', accel: 'cpu' }))
   }, [])
 
+  function updateVoices(vs: typeof voices) {
+    if (!Array.isArray(vs)) return
+    setVoices(vs)
+    setVoicesLoaded(true)
+    voicesLoadedRef.current = true
+    if (vs.length) {
+      setSettings((s) => {
+        const next = vs.some((v) => v.id === s.defaultVoice) ? s : { ...s, defaultVoice: vs[0].id }
+        if (next !== s) persistSettings(next)
+        return next
+      })
+    }
+  }
+
+  const refreshVoices = useCallback((_lang?: string, force = false) => {
+    if (voicesRequestRef.current) return
+    if (!force && voicesLoadedRef.current) return
+    const request = api.voices('all')
+      .then(updateVoices)
+      .catch(() => {})
+      .finally(() => {
+        if (voicesRequestRef.current === request) voicesRequestRef.current = null
+      })
+    voicesRequestRef.current = request
+    void request
+  }, [])
+
   function passSetupGate() {
     persistSetupGate()
     setSetupGatePassed(true)
@@ -350,7 +381,7 @@ export default function App() {
     void api.passSetupGate().catch(() => {
       /* file gate — localStorage vẫn giữ */
     })
-    void api.voices('all').then(setVoices).catch(() => {})
+    refreshVoices(undefined, true)
   }
 
   // Lần đầu: Thiết lập. Lần sau: đọc gate từ disk (ổn định hơn localStorage theo port).
@@ -416,33 +447,9 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const ac = new AbortController()
-    const t = window.setTimeout(() => ac.abort(), 8000)
-    fetch(`/api/voices?lang=all`, {
-      signal: ac.signal,
-    })
-      .then(async (r) => {
-        if (!r.ok) throw new Error(await r.text())
-        return r.json() as Promise<{ id: string; name: string; previewUrl?: string }[]>
-      })
-      .then((vs) => {
-        if (!Array.isArray(vs) || !vs.length) return
-        setVoices(vs)
-        setSettings((s) => {
-          const next = vs.some((v) => v.id === s.defaultVoice) ? s : { ...s, defaultVoice: vs[0].id }
-          if (next !== s) persistSettings(next)
-          return next
-        })
-      })
-      .catch(() => {
-        /* giữ preset đã seed — tránh kẹt "Đang tải giọng" */
-      })
-      .finally(() => window.clearTimeout(t))
-    return () => {
-      ac.abort()
-      window.clearTimeout(t)
-    }
-  }, [settings.targetLang])
+    // App owns the catalog request; TTS reuses it instead of polling per language.
+    refreshVoices()
+  }, [refreshVoices])
 
   async function onUpload(file: File) {
     const switchVersion = ++projectSwitchRef.current
@@ -886,16 +893,14 @@ export default function App() {
         initialSection={configSection}
         forceSetup={firstRunBlocked}
         onSetupReady={passSetupGate}
-        onSaved={() => {
-          void api.voices('all').then(setVoices).catch(() => {})
-        }}
+        onSaved={() => refreshVoices(undefined, true)}
         licenseStatus={licenseStatus || undefined}
         onLicenseStatusChange={setLicenseStatus}
         onClose={() => {
           if (firstRunBlocked) return
           setConfigOpen(false)
           // đóng config cũng refresh voices (user có thể vừa lưu key)
-          void api.voices('all').then(setVoices).catch(() => {})
+          refreshVoices(undefined, true)
         }}
       />
       {licenseBlocked && (
@@ -910,12 +915,11 @@ export default function App() {
       appMode === 'tts' ? (
         <TtsPage
           voices={voices}
+          voicesLoaded={voicesLoaded}
           sideOpen={ttsSideOpen}
           onBack={goBackTab}
           onSideOpenChange={setTtsSideOpen}
-          onRefreshVoices={(lang) => {
-            void api.voices(lang || 'all').then(setVoices).catch(() => {})
-          }}
+          onRefreshVoices={refreshVoices}
           isDesktopApp={isDesktopApp}
           onOpenSetup={() => {
             setConfigSection('setup')

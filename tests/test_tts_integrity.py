@@ -43,6 +43,21 @@ def test_history_hides_empty_done_jobs_without_deleting_them(tmp_path: Path) -> 
     assert meta.is_file() and (job / "audio.wav").is_file()
 
 
+def test_history_uses_stored_duration_without_pruning_or_reprobing(tmp_path: Path) -> None:
+    job = tmp_path / "ready"
+    job.mkdir()
+    _valid_wav(job / "audio.wav")
+    (job / "meta.json").write_text(json.dumps({"status": "done", "title": "ready", "duration": 1.25}))
+    with (
+        patch.object(studio, "TTS_OUTPUT", tmp_path),
+        patch.object(studio, "ensure_vieneu_dirs"),
+        patch.object(studio, "prune_history", side_effect=AssertionError("history must not prune on read")),
+        patch.object(studio, "ffprobe_duration", side_effect=AssertionError("stored duration should be used")),
+    ):
+        rows = studio.list_history()
+    assert rows[0]["duration"] == 1.25
+
+
 def test_ensure_wav_rejects_empty_audio(tmp_path: Path) -> None:
     job = tmp_path / "empty"
     job.mkdir()

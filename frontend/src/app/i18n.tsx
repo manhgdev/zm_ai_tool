@@ -168,6 +168,16 @@ export function localize(locale: AppLocale, vietnamese: string, english: string)
 
 /** Backend job messages include dynamic counts, so they cannot use the static catalog. */
 export function localizePipelineMessage(locale: AppLocale, message: string): string {
+  const capcutInvalid = /^CAPCUT_TTS_INVALID_TEXT\|cue=(\d+)\|text=(.*)$/u.exec(message)
+  if (capcutInvalid) {
+    const cue = capcutInvalid[1]
+    const text = capcutInvalid[2]
+    return localize(
+      locale,
+      `CapCut không nhận cue ${cue} vì nội dung chưa hợp lệ (${text}). Hãy sửa bản dịch hoặc chọn giọng đúng ngôn ngữ rồi thử lại.`,
+      `CapCut rejected cue ${cue} because the text is invalid (${text}). Fix the translation or choose a voice for the right language, then try again.`,
+    )
+  }
   if (message.includes('TTS_INVALID_AUDIO')) {
     return localize(locale, 'Audio mẫu hoặc audio TTS rỗng, im lặng hoặc không hợp lệ.', 'The reference or generated TTS audio is empty, silent, or invalid.')
   }

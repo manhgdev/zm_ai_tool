@@ -377,5 +377,19 @@
     "favorite": false,
     "tags": [],
     "source": "ZMTTS"
+  },
+  {
+    "id": "zmt:tieng-viet--adam",
+    "name": "Adam",
+    "label": "Adam",
+    "type": "zmAI",
+    "engine": "vieneu",
+    "mode": "reference",
+    "language": "vi",
+    "ref_file": "zmt-327a56dfda7ec522.wav",
+    "hidden": false,
+    "favorite": false,
+    "tags": [],
+    "source": "ZMTTS"
   }
 ]
