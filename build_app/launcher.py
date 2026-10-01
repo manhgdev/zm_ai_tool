@@ -656,7 +656,8 @@ def app_version() -> str:
 
 
 APP_VERSION = app_version()
-set_desktop_path("ZM_AI_TOOL_VERSION", APP_VERSION)
+# Restart/update children can inherit the previous app's version on any platform.
+os.environ["ZM_AI_TOOL_VERSION"] = APP_VERSION
 
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from main import app  # noqa: E402

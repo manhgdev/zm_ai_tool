@@ -2140,7 +2140,9 @@
   opacity: 0.45;
 }
 .flow-log-list {
-  max-height: min(62vh, 640px);
+  max-height: none;
+  height: calc(100vh - 250px);
+  min-height: 240px;
   overflow: auto;
 }
 .flow-log-row {

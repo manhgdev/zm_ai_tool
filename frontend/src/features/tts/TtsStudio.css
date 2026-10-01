@@ -2192,6 +2192,125 @@ html.dark .tts-wave-box {
   width: 100%;
 }
 
+.tts-transcribe-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.tts-page-panel.tts-transcribe-page {
+  max-width: none;
+}
+
+.tts-transcribe-layout > .tts-card {
+  min-width: 0;
+}
+
+.tts-transcribe-description {
+  margin: 0 0 10px;
+  color: var(--tts-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.tts-transcribe-field {
+  margin-bottom: 10px;
+}
+
+.tts-transcribe-hint {
+  display: block;
+  margin-top: 5px;
+  color: var(--tts-muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.tts-transcribe-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.tts-transcribe-empty {
+  display: grid;
+  min-height: 220px;
+  place-content: center;
+  gap: 5px;
+  padding: 16px;
+  border: 1px dashed var(--tts-line);
+  border-radius: 8px;
+  color: var(--tts-muted);
+  text-align: center;
+  font-size: 0.74rem;
+}
+
+.tts-transcribe-empty strong {
+  color: var(--tts-ink, var(--ink));
+  font-size: 0.82rem;
+}
+
+.tts-log-page {
+  margin: 0 20px 16px;
+  min-height: calc(100vh - 190px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.tts-log-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.tts-log-page-head > div:first-child { display: grid; gap: 2px; }
+.tts-log-page-head h2 { margin: 0; color: var(--ink); font-size: .86rem; }
+.tts-log-page-head p { margin: 0; color: var(--muted-foreground); font-size: .72rem; }
+.tts-log-actions { display: flex; flex: 0 0 auto; gap: 5px; align-items: center; }
+.tts-log-copy, .tts-log-clear {
+  min-height: 30px; padding: 0 9px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--background); color: var(--ink);
+  font-size: .68rem; font-weight: 750; cursor: pointer; white-space: nowrap;
+}
+.tts-log-clear { color: #c93646; }
+.tts-log-copy:disabled, .tts-log-clear:disabled { cursor: not-allowed; opacity: .45; }
+.tts-log-list { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.tts-log-row { display: grid; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); border-left: 3px solid color-mix(in srgb, var(--muted-foreground) 45%, transparent); color: var(--ink); font-size: .72rem; }
+.tts-log-row.is-error { border-left-color: #d34b58; background: color-mix(in srgb, #d34b58 4%, var(--surface)); }
+.tts-log-row-head { display: flex; align-items: center; gap: 8px; }
+.tts-log-row-head span { padding: 3px 7px; border-radius: 99px; background: color-mix(in srgb, var(--primary) 10%, var(--surface)); color: var(--primary); font-size: .62rem; font-weight: 850; }
+.tts-log-row.is-error .tts-log-row-head span { background: #fee2e2; color: #c93646; }
+.tts-log-row-head button { margin-left: auto; min-height: 24px; padding: 0 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--background); color: var(--ink); font-size: .62rem; font-weight: 750; cursor: pointer; }
+.tts-log-row p { margin: 0; color: var(--ink); line-height: 1.5; overflow-wrap: anywhere; user-select: text; }
+.tts-log-empty { display: grid; place-items: center; min-height: 220px; color: var(--muted-foreground); font-size: .78rem; }
+
+html.dark .tts-log-page {
+  background: #111a25;
+  border-color: #2b2f33;
+}
+html.dark .tts-log-page-head,
+html.dark .tts-log-row {
+  border-color: #2b2f33;
+}
+html.dark .tts-log-row {
+  background: #16212d;
+}
+html.dark .tts-log-row.is-error {
+  background: #211b20;
+}
+html.dark .tts-log-copy,
+html.dark .tts-log-clear,
+html.dark .tts-log-row-head button {
+  background: #1a2734;
+  border-color: #363b40;
+}
+
 .tts-page-panel.tts-voice-page {
   max-width: none;
 }
@@ -2203,6 +2322,16 @@ html.dark .tts-wave-box {
 .tts-page-panel > .tts-card {
   width: 100%;
   height: auto;
+}
+
+@media (max-width: 900px) {
+  .tts-transcribe-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .tts-transcribe-empty {
+    min-height: 130px;
+  }
 }
 
 .tts-page-panel > .tts-history-card {

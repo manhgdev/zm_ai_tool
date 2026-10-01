@@ -44,10 +44,11 @@ export const SECTION_LABELS: Record<string, string> = {
   overview: 'Tổng quan', input: 'Nhập văn bản', srt: 'Nhập SRT / Phụ đề',
   make: 'Tạo giọng nói', history: 'Lịch sử tạo', voice: 'Danh sách giọng',
   clone: 'Clone giọng nói', transcribe: 'Chép lời',
+  log: 'Log xử lý',
 }
 
 export const TTS_URL_SECTIONS = new Set([
-  'overview', 'history', 'voice', 'clone', 'transcribe',
+  'overview', 'history', 'voice', 'clone', 'transcribe', 'log',
 ])
 
 export function sectionFromUrl(): string {

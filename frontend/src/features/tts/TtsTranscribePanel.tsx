@@ -63,19 +63,19 @@ export default function TtsTranscribePanel({
   }, [engine, t])
 
   return (
-    <div className="tts-page-panel">
-      <section className="tts-card" id="tts-transcribe">
+    <div className="tts-page-panel tts-transcribe-page tts-transcribe-layout">
+      <section className="tts-card tts-transcribe-source" id="tts-transcribe">
         <h3 className="tts-card-title">
           <span className="tts-step">1</span> {t('Chép lời', 'Transcribe')}
         </h3>
-        <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: 'var(--tts-muted)', lineHeight: 1.6 }}>
+        <p className="tts-transcribe-description">
           {t(
             'Chọn nguồn nhận dạng giống Clone Video (Whisper / CapCut / OCR / phụ đề), rồi đưa text vào Tạo giọng nói.',
             'Pick a recognition source like Clone Video (Whisper / CapCut / OCR / subtitles), then send text to Create voice.',
           )}
         </p>
 
-        <label className="tts-field" style={{ marginBottom: 12 }}>
+        <label className="tts-field tts-transcribe-field">
           <span>{t('Nguồn nhận dạng', 'Recognition source')}</span>
           <select
             value={engine}
@@ -90,12 +90,12 @@ export default function TtsTranscribePanel({
             <option value="paddleocr">{t('Chữ trên màn (OCR)', 'On-screen text (OCR)')}</option>
             <option value="subtitle">{t('Phụ đề SRT', 'Subtitle SRT')}</option>
           </select>
-          <span style={{ display: 'block', marginTop: 6, fontSize: '0.72rem', color: 'var(--tts-muted)' }}>
+          <span className="tts-transcribe-hint">
             {engineHint}
           </span>
         </label>
 
-        <label className="tts-field" style={{ marginBottom: 12 }}>
+        <label className="tts-field tts-transcribe-field">
           <span>{t('Ngôn ngữ nguồn', 'Source language')}</span>
           <select value={lang} disabled={busy || engine === 'subtitle'} onChange={(e) => onLangChange(e.target.value)}>
             <option value="auto">{t('Tự động', 'Auto')}</option>
@@ -142,7 +142,7 @@ export default function TtsTranscribePanel({
           </label>
         </div>
 
-        <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div className="tts-transcribe-actions">
           <button
             type="button"
             className="tts-btn tts-btn-blue"
@@ -155,7 +155,7 @@ export default function TtsTranscribePanel({
       </section>
 
       {resultText ? (
-        <section className="tts-card" style={{ marginTop: 16 }}>
+        <section className="tts-card tts-transcribe-result">
           <h3 className="tts-card-title">
             <span className="tts-step">2</span> {t('Kết quả', 'Result')}
           </h3>
@@ -166,7 +166,7 @@ export default function TtsTranscribePanel({
             disabled={busy}
             onChange={(e) => onResultChange(e.target.value)}
           />
-          <div style={{ marginTop: 12 }}>
+          <div className="tts-transcribe-actions">
             <button type="button" className="tts-btn tts-btn-blue" disabled={busy || !resultText.trim()} onClick={onApplyToTts}>
               {t('Đưa vào Tạo giọng nói', 'Send to Create voice')}
             </button>

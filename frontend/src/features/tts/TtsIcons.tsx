@@ -15,6 +15,15 @@ export function IconList({ size = 14 }: { size?: number }) {
     </svg>
   )
 }
+/** Same document-style log icon used by Flow activity logs. */
+export function IconLog({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+      <path d="M5 4h14v16H5z" />
+      <path d="M8 8h8M8 12h8M8 16h5" />
+    </svg>
+  )
+}
 export function IconClock({ size = 14 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

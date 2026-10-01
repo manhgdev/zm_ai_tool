@@ -41,6 +41,7 @@ import {
   IconHelp,
   IconKb,
   IconList,
+  IconLog,
   IconPaste,
   IconPause,
   IconPlay,
@@ -146,6 +147,38 @@ export default function TtsStudio({
   const [busyCustomMessage, setBusyCustomMessage] = useState('')
   const [progressMinimized, setProgressMinimized] = useState(false)
   const [error, setError] = useState('')
+  const [logOpen, setLogOpen] = useState(false)
+  const [ttsLogs, setTtsLogs] = useState<string[]>(() => {
+    try {
+      const savedLogs: unknown = JSON.parse(localStorage.getItem('zm-ai-tool:tts-logs:v1') || '[]')
+      return Array.isArray(savedLogs) ? savedLogs.filter((line): line is string => typeof line === 'string').slice(-50) : []
+    } catch { return [] }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('zm-ai-tool:tts-logs:v1', JSON.stringify(ttsLogs.slice(-50))) } catch { /* storage unavailable */ }
+  }, [ttsLogs])
+  async function copyTtsLog(value: string) {
+    try {
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable')
+        await navigator.clipboard.writeText(value)
+      } catch {
+        const input = document.createElement('textarea')
+        input.value = value
+        input.style.position = 'fixed'
+        input.style.opacity = '0'
+        document.body.appendChild(input)
+        try {
+          input.select()
+          if (!document.execCommand('copy')) throw new Error('Copy failed')
+        } finally { input.remove() }
+      }
+      toast.success(t('Đã sao chép', 'Copied'))
+    } catch {
+      toast.error(t('Không thể sao chép. Hãy bôi đen log và nhấn Ctrl+C hoặc Cmd+C.', 'Could not copy. Select the log and press Ctrl+C or Cmd+C.'))
+    }
+  }
+  useEffect(() => { setLogOpen(section === 'log') }, [section])
   const statusLoadedRef = useRef(false)
   const statusRequestRef = useRef<Promise<void> | null>(null)
   const historyLoadedRef = useRef(false)
@@ -190,9 +223,16 @@ export default function TtsStudio({
     if (Number(progress.pct) > 0 && (!activeId || progressId === activeId)) setBusyProgress(Number(progress.pct))
     if (progress.message) setBusyCustomMessage(progress.message)
     if (progress.error) setError(progress.error)
+    if (progress.error) {
+      const line = `[${new Date().toLocaleTimeString()}] ${progress.error}`
+      setTtsLogs((current) => [...current, line].slice(-50))
+    }
     if (progressId && (progress.done || progress.error)) ttsWaitersRef.current.get(progressId)?.(progress)
   }, [])
   useRealtimeEvents('tts', onTtsRealtime)
+  useEffect(() => {
+    if (error) setTtsLogs((current) => [...current, `[${new Date().toLocaleTimeString()}] ${error}`].slice(-50))
+  }, [error])
   const waitForTtsJob = useCallback((jobId: string, timeoutMs = 10 * 60 * 1000) => new Promise<TtsRealtimeProgress>((resolve, reject) => {
     const existing = ttsProgressRef.current.get(jobId)
     if (existing?.done || existing?.error) { resolve(existing); return }
@@ -290,7 +330,7 @@ export default function TtsStudio({
   const [voiceQuery, setVoiceQuery] = useState('')
   const [voiceTag, setVoiceTag] = useState('')
   const [voiceListPage, setVoiceListPage] = useState(1)
-  const [voiceListPageSize, setVoiceListPageSize] = useState(25)
+  const [voiceListPageSize, setVoiceListPageSize] = useState(24)
   const [editingVoice, setEditingVoice] = useState<Voice | null>(null)
   const [localFavorites, setLocalFavorites] = useState<Set<string>>(() => {
     try {
@@ -500,7 +540,10 @@ export default function TtsStudio({
   }, [dashLayout])
 
   useEffect(() => {
-    const onPopState = () => setSection(sectionFromUrl())
+    const onPopState = () => {
+      setSection(sectionFromUrl())
+      setSideOpen(false)
+    }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
@@ -1519,7 +1562,9 @@ export default function TtsStudio({
             <option value="overview">{t('Tạo giọng nói', 'Create voice')}</option>
             <option value="transcribe">{t('Chép lời', 'Transcribe')}</option>
             <option value="history">{t('Lịch sử tạo', 'History')}</option>
+            <option value="voice">{t('Danh sách giọng', 'Voice list')}</option>
             <option value="clone">{t('Clone giọng nói', 'Clone voice')}</option>
+            <option value="log">{t('Log xử lý', 'Processing log')}</option>
           </select>
 
           <div className="tts-sec">{t('Công cụ', 'Tools')}</div>
@@ -1540,6 +1585,9 @@ export default function TtsStudio({
           <button type="button" className={`tts-nav${section === 'clone' ? ' active' : ''}`} onClick={() => go('clone')}>
             <IconClone /> {t('Clone giọng nói', 'Clone voice')}
             <span className="pill-new">{t('Mới', 'New')}</span>
+          </button>
+          <button type="button" className={`tts-nav${section === 'log' ? ' active' : ''}`} onClick={() => go('log')}>
+            <IconLog size={14} /> {t('Log xử lý', 'Processing log')}
           </button>
         </div>
 
@@ -1619,6 +1667,38 @@ export default function TtsStudio({
           </div>
         </div>
 
+        {logOpen && (
+          <section className="tts-log-page" aria-labelledby="tts-log-title">
+            <div className="tts-log-page-head">
+              <div>
+                <h2 id="tts-log-title">{t('Log xử lý TTS', 'TTS processing log')}</h2>
+                <p>{t('Ghi lại lỗi TTS và ngữ cảnh để tìm nguyên nhân.', 'Capture TTS errors and context to help find the cause.')}</p>
+              </div>
+              <div className="tts-log-actions">
+                <button type="button" className="tts-log-copy" disabled={!ttsLogs.length} onClick={() => void copyTtsLog([...ttsLogs].reverse().join('\n'))}>{t('Sao chép log', 'Copy logs')}</button>
+                <button type="button" className="tts-log-clear" disabled={!ttsLogs.length} onClick={() => setTtsLogs([])}>{t('Xóa log', 'Clear logs')}</button>
+              </div>
+            </div>
+            {ttsLogs.length ? (
+              <div className="tts-log-list" role="log" aria-live="polite">
+                {[...ttsLogs].reverse().map((entry, index) => {
+                  const isError = /lỗi|error|fail|thất bại/i.test(entry)
+                  return (
+                    <article className={`tts-log-row${isError ? ' is-error' : ''}`} key={`${entry}-${index}`}>
+                      <header className="tts-log-row-head">
+                        {isError && <span>{t('LỖI', 'ERROR')}</span>}
+                        <button type="button" onClick={() => void copyTtsLog(entry)}>{t('Sao chép', 'Copy')}</button>
+                      </header>
+                      <p>{entry}</p>
+                    </article>
+                  )
+                })}
+              </div>
+            ) : <div className="tts-log-empty">{t('Chưa có log TTS', 'No TTS logs yet')}</div>}
+          </section>
+        )}
+
+        {!logOpen && <>
         {(isFullDash || section === 'clone' || section === 'transcribe') && (
           <div className="tts-mobile-mode-tabs" role="tablist" aria-label={t('Chế độ', 'Mode')}>
             <button
@@ -1764,7 +1844,7 @@ export default function TtsStudio({
                     onChange={(e) => setVoiceListPageSize(Number(e.target.value))}
                   >
                     <option value={20}>20</option>
-                    <option value={25}>25</option>
+                    <option value={24}>24</option>
                     <option value={50}>50</option>
                     <option value={100}>100</option>
                   </select>
@@ -2495,6 +2575,7 @@ export default function TtsStudio({
         </section>
         </>
         )}
+        </>}
       </div>
 
       <ProgressPopup
