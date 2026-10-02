@@ -283,6 +283,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       displayOutputFolder: raw.displayOutputFolder ? String(raw.displayOutputFolder) : "",
       seriesContext: raw.seriesContext && typeof raw.seriesContext === "object" ? raw.seriesContext as FlowJob["seriesContext"] : undefined,
       error: raw.error ? String(raw.error) : null,
+      quotaModelFallbackApplied: raw.quotaModelFallbackApplied === true,
       settings: {
         model: savedModel === "Veo 3.1 - Lite [Lower Priority]" ? "Veo 3.1 - Fast" : savedModel,
         ratio: String(s.ratio || "16:9"),

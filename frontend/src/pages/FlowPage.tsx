@@ -521,6 +521,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   }, [accounts, settings.account, createKind]);
   useEffect(() => {
     const account = selectedFlowAccount(accounts, settings.account);
+    const preferredImageModel = String(account?.preferredImageModel || "");
+    if (createKind === "image" && preferredImageModel === "Nano Banana 2" && settings.imageModel !== preferredImageModel) {
+      setSettings((current) => ({ ...current, imageModel: preferredImageModel, model: preferredImageModel }));
+      return;
+    }
     if (!account?.capabilityCatalog || account.capabilityStatus !== "verified") return;
     setSettings((current) => applyAccountCapabilities(
       account,

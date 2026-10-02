@@ -659,6 +659,13 @@ def _normalize_catalog_settings(
 ) -> tuple[dict[str, Any], bool]:
     """Select only model/ratio/duration values verified for this account."""
     section = _catalog_section(account, kind)
+    original_settings = settings
+    if (kind == "image" and account.get("preferredImageModel") == "Nano Banana 2"
+            and settings.get("model") in {"Nano Banana Pro", "Nano Banana 2"}):
+        settings = {**settings, "model": "Nano Banana 2"}
+        # A cached Pro-only catalog must not undo the quota fallback.
+        if not any(item.get("name") == "Nano Banana 2" for item in section.get("models", []) if isinstance(item, dict)):
+            section = {}
     models = [item for item in section.get("models", []) if isinstance(item, dict) and item.get("name")]
     if not models:
         normalized = dict(settings)
@@ -685,7 +692,7 @@ def _normalize_catalog_settings(
                 # duration control for fixed-length models such as Veo.
                 normalized["duration"] = ""
                 changed = True
-        return normalized, changed
+        return normalized, changed or normalized != original_settings
     requested = str(settings.get("model") or "")
     selected = next((item for item in models if item["name"] == requested), None)
     if selected is None:
@@ -733,7 +740,7 @@ def _normalize_catalog_settings(
         normalized["resolution"] = clamped
         if str(normalized.get("quality") or "").strip():
             normalized["quality"] = ""
-    return normalized, normalized != settings
+    return normalized, normalized != original_settings
 
 
 def _mode_tab_icon(kind: str) -> str:
@@ -3159,7 +3166,9 @@ class FlowService:
                 self._account_condition.notify_all()
 
             current_job = store.get_row("jobs", job_id) or {}
-            if current_job.get("status") in {"failed", "action_required"}:
+            if current_job.get("stage") == "model_fallback" and job_id not in self._cancelled:
+                self.retry(job_id, {"accountId": account_id})
+            elif current_job.get("status") in {"failed", "action_required"}:
                 err_msg = str(current_job.get("error") or "Unknown error")
                 if current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
                     self._try_fallback_account(job_id, account_id, err_msg)
@@ -5138,10 +5147,12 @@ class FlowService:
                     "preferredImageModel": "Nano Banana 2",
                     "updatedAt": time.time(),
                 })
-                store.patch_row("jobs", job_id, {"quotaModelFallbackApplied": True})
-                with self._account_condition:
-                    self._running_jobs.discard(job_id)
-                self.retry(job_id, {"settings": fallback_settings, "accountId": account["id"]})
+                store.patch_row("jobs", job_id, {
+                    "quotaModelFallbackApplied": True,
+                    "settings": fallback_settings,
+                    "status": "processing", "stage": "model_fallback",
+                    "error": None, "updatedAt": time.time(),
+                })
                 return
             action = "action_required" if needs_login else "failed"
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")

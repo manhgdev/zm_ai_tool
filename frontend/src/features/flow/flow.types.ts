@@ -85,6 +85,7 @@ export type FlowAccount = {
   capabilityCatalog?: FlowCapabilityCatalog | null;
   capabilityStatus?: "verified" | "stale" | "unknown";
   capabilitySyncedAt?: number | null;
+  preferredImageModel?: string;
   capabilityError?: string;
   suspendedUntil?: number | null;
   suspendReason?: string | null;
