@@ -59,6 +59,7 @@ import {
   formatFlowJobSettingsMeta,
   normalizeFlowJobs as normalizeFlowJobRows,
   normalizeFlowAccounts,
+  isFlowAccountConnected,
   selectedFlowAccount as resolveSelectedFlowAccount,
   flowRequest, loadFlowSnapshot,
   saveWebOutputRoot, loadWebOutputRoot,
@@ -100,10 +101,7 @@ function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts: FlowA
 }
 
 function selectedFlowAccount(accounts: FlowAccount[], accountLabel: string) {
-  return accounts.find((account) => account.label === accountLabel)
-    || accounts.find((account) => account.isDefault)
-    || accounts.find((account) => account.status === "online")
-    || resolveSelectedFlowAccount(accounts, accountLabel);
+  return resolveSelectedFlowAccount(accounts, accountLabel);
 }
 
 function formatRemainingCooldown(untilSec: number, t: (vi: string, en: string) => string): string {
@@ -522,11 +520,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     } catch { }
   }, [videoMode]);
   useEffect(() => {
-    if (settings.account === "random" || !accounts.length || accounts.some((account) => account.label === settings.account)) return;
-    const fallback = selectedFlowAccount(accounts, settings.account);
-    if (fallback) {
-      setSettings((current) => settingsWithSelectedAccount(current, createKind, fallback.label));
-    }
+    if (settings.account === "random" || !accounts.length || accounts.some((account) => account.label === settings.account && isFlowAccountConnected(account))) return;
+    const fallback = selectedFlowAccount(accounts, "random");
+    setSettings((current) => settingsWithSelectedAccount(current, createKind, fallback?.label || "random"));
   }, [accounts, settings.account, createKind]);
   useEffect(() => {
     const account = selectedFlowAccount(accounts, settings.account);
@@ -1019,10 +1015,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const account = selectedFlowAccount(accounts, settings.account);
     if (!prompts.length || !account) {
       if (!account) {
-        // Chưa có tài khoản → tự nhảy qua tab Tài khoản và mở form thêm
         setUtilityView("accounts");
-        addAccount();
-        toast.info(t("Vui lòng thêm tài khoản Flow trước khi tạo.", "Please add a Flow account first."));
+        writeFlowRoutePanel("accounts");
+        if (!accounts.length) addAccount();
+        toast.info(t("Vui lòng kết nối tài khoản Flow trước khi tạo.", "Please connect a Flow account before generating."));
       } else {
         setApiError(t("Cần nhập prompt.", "A prompt is required."));
       }
@@ -1034,41 +1030,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setTab("queue");
     writeFlowRoutePanel("queue");
     if (settings.account === "random") {
-      const hasOnline = accounts.some((a) => a.status === "online");
+      const hasOnline = accounts.some(isFlowAccountConnected);
       if (!hasOnline) {
         setApiError(t("Không có tài khoản Flow nào đang online.", "No Flow accounts are currently online."));
         return;
       }
     } else {
-      if (account.status !== "online") {
-        // Thử tự reconnect headless trước
-        toast.info(t("Đang thử kết nối lại tự động...", "Attempting auto-reconnect..."));
-        try {
-          const refreshed = await flowRequest<FlowAccount>(
-            `/api/flow/accounts/${account.id}/sync`,
-            { method: "POST" },
-          );
-          if (refreshed.status === "online") {
-            // Headless thành công → cập nhật state và chạy tiếp (fall-through)
-            setAccounts((current) =>
-              current.map((item) => (item.id === refreshed.id ? refreshed : item)),
-            );
-          } else {
-            throw new Error("not-online");
-          }
-        } catch {
-          // Headless thất bại → tự mở Chrome để user đăng nhập lại
-          setUtilityView("accounts");
-          toast.info(
-            t(
-              "Cần đăng nhập lại — đang mở Chrome...",
-              "Re-login required — opening Chrome...",
-            ),
-          );
-          connectAccount(account);
-          return;
-        }
-      }
       if (account.credits != null && account.credits <= 0) {
         const message = t(
           "Hết tín dụng — không tạo được ảnh/video. Đồng bộ lại hoặc đợi tín dụng reset.",
@@ -1359,7 +1326,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     // Nếu pool toàn done (Tạo mới) hoặc single job → giữ nguyên danh sách.
     const initialJobs = showIncludeDone ? retryOnlyJobs : retryJobs;
     const selectedJob = initialJobs[0] || job;
-    const onlineAccounts = accounts.filter((account) => account.status === "online");
+    const onlineAccounts = accounts.filter(isFlowAccountConnected);
     const resolvedAccountId =
       (onlineAccounts.some((account) => account.id === selectedJob.accountId) ? selectedJob.accountId : "")
       || accounts.find((account) => account.id === selectedJob.accountId)?.id
@@ -1416,7 +1383,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const groups = retryTarget.groups.length === 1
       ? [{ ...retryTarget.groups[0], mode: retryTarget.mode, model: retryTarget.model, ratio: retryTarget.ratio, duration: retryTarget.duration, resolution: retryTarget.resolution, quality: retryTarget.quality, count: retryTarget.count, accountId: retryTarget.accountId }]
       : retryTarget.groups;
-    if (groups.some((group) => !group.accountId || (group.accountId !== "random" && !accounts.some((account) => account.id === group.accountId)))) {
+    if (groups.some((group) => !group.accountId || (group.accountId !== "random" && !accounts.some((account) => account.id === group.accountId && isFlowAccountConnected(account))))) {
       toast.error(t("Chọn tài khoản Flow còn online để chạy lại.", "Pick an online Flow account to retry."));
       return;
     }
@@ -1850,33 +1817,31 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const eventLabel = explainFlowEvent(entry.event);
     const title = t(eventLabel.titleVi, eventLabel.titleEn);
     const account = accounts.find((item) => item.id === entry.accountId);
+    const accountEmail = String(entry.details?.accountEmail || account?.email || "").trim();
+    const accountName = accountEmail
+      ? `${account?.label || entry.accountId} · ${accountEmail}`
+      : account?.label || entry.accountId;
     const explainedRaw = entry.message ? explainFlowError(entry.message) : null;
-    const explained = explainedRaw ? formatFlowExplain(explainedRaw, t) : null;
     const stage = entry.details?.stage != null ? flowStageLabel(String(entry.details.stage), t) : "";
     const model = entry.details?.model != null ? String(entry.details.model) : "";
     const kind = entry.details?.kind != null ? String(entry.details.kind) : "";
     const detailKeys = Object.keys(entry.details || {}).filter(
-      (key) => !["stage", "model", "kind"].includes(key),
+      (key) => !["stage", "model", "kind", "accountEmail"].includes(key),
     );
     const extraDetails = detailKeys.length
       ? Object.fromEntries(detailKeys.map((key) => [key, (entry.details || {})[key]]))
       : null;
     const context = [
       entry.jobId ? `job=${entry.jobId}` : "",
-      entry.accountId ? `account=${account?.label || entry.accountId}` : "",
+      entry.accountId ? `account=${accountName}` : "",
       stage ? `stage=${stage}` : "",
       kind ? `kind=${kind}` : "",
       model ? `model=${model}` : "",
       explainedRaw?.code ? `code=${explainedRaw.code}` : "",
     ].filter(Boolean).join(" ");
     const lines = [
-      `[${new Date(entry.createdAt * 1000).toISOString()}] [${entry.level.toUpperCase()}] ${title}${context ? ` ${context}` : ""}`,
+      `[${new Date(entry.createdAt * 1000).toISOString()}] [${entry.level.toUpperCase()}] ${title} event=${entry.event}${context ? ` ${context}` : ""}`,
     ];
-    if (explained) {
-      lines.push(`  ${explained.title}`);
-      lines.push(`  ${explained.summary}`);
-      lines.push(`  → ${explained.action}`);
-    }
     if (entry.message) {
       lines.push(`  raw: ${entry.message}`);
     }
@@ -2326,7 +2291,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               setTab("queue");
               writeFlowRoutePanel("queue");
             }}
-            accounts={accounts.map((acc) => ({
+            accounts={accounts.filter(isFlowAccountConnected).map((acc) => ({
               id: acc.id, label: acc.label, status: acc.status, plan: acc.plan,
               capabilityCatalog: acc.capabilityCatalog, capabilityStatus: acc.capabilityStatus,
             }))}
@@ -2803,9 +2768,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           );
                         })
                       }
-                      options={["random", ...accounts.map((account) => account.label)]}
+                      options={["random", ...accounts.filter(isFlowAccountConnected).map((account) => account.label)]}
                       optionLabels={accountOptionLabels}
-                      online
+                      online={Boolean(displayedAccount)}
+                      disabled={!accounts.some(isFlowAccountConnected)}
                       className="flow-select-account"
                     />
                   </div>
@@ -3417,15 +3383,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   const account = accounts.find(
                     (item) => item.id === entry.accountId,
                   );
-                  const explained = entry.message
-                    ? formatFlowExplain(explainFlowError(entry.message), t)
-                    : null;
-                  const explainMeta = entry.message ? explainFlowError(entry.message) : null;
+                  const accountEmail = String(entry.details?.accountEmail || account?.email || "").trim();
+                  const accountName = accountEmail
+                    ? `${account?.label || entry.accountId} · ${accountEmail}`
+                    : account?.label || entry.accountId;
+                  const explainMeta = entry.level === "error" && entry.message
+                    ? explainFlowError(entry.message) : null;
+                  const action = explainMeta ? formatFlowExplain(explainMeta, t).action : "";
                   const stageRaw = entry.details?.stage != null ? String(entry.details.stage) : "";
                   const model = entry.details?.model != null ? String(entry.details.model) : "";
                   const kind = entry.details?.kind != null ? String(entry.details.kind) : "";
                   const detailKeys = Object.keys(entry.details || {}).filter(
-                    (key) => !["stage", "model", "kind"].includes(key),
+                    (key) => !["stage", "model", "kind", "accountEmail"].includes(key),
                   );
                   const extraDetails = detailKeys.length
                     ? JSON.stringify(
@@ -3454,27 +3423,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </button>
                       </header>
                       <div className="flow-log-message">
-                        <strong>
-                          {explained?.title || logEventText(entry.event)}
-                        </strong>
-                        {explained ? (
-                          <>
-                            {explained.summary ? (
-                              <p className="flow-log-summary">{explained.summary}</p>
-                            ) : null}
-                            <p className="flow-log-action">
-                              <span>{t("Cách xử lý", "Next step")}:</span> {explained.action}
-                            </p>
-                          </>
-                        ) : entry.message ? (
-                          <p>{entry.message}</p>
-                        ) : null}
+                        <strong>{logEventText(entry.event)}</strong>
+                        {action && (
+                          <p className="flow-log-action">
+                            <span>{t("Cách xử lý", "Next step")}:</span> {action}
+                          </p>
+                        )}
                         <div className="flow-log-context">
                           {entry.jobId && <span>Job: {entry.jobId}</span>}
                           {entry.accountId && (
                             <span>
                               {t("Tài khoản", "Account")}:{" "}
-                              {account?.label || entry.accountId}
+                              {accountName}
                             </span>
                           )}
                           {stageRaw && (
@@ -3598,7 +3558,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             <FlowSelect label={t("Chế độ", "Mode")} value={group.mode} options={group.kind === "video" ? ["text", "frame"] : ["text", "edit", "reference"]} onChange={(mode) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, mode: mode as ImageMode | VideoMode } : item) } : current)} optionLabels={{ text: t("Văn bản", "Text"), frame: t("Khung hình", "Frames"), edit: t("Chỉnh sửa", "Edit"), reference: t("Tham chiếu", "Reference") }} disabled={group.jobs.some((item) => Boolean(item.seriesContext))} />
                             <FlowSelect label={t("Model", "Model")} value={group.model} options={models} onChange={(model) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, model } : item) } : current)} />
                             <FlowSelect label={t("Tỷ lệ", "Ratio")} value={group.ratio} options={ratios} onChange={(ratio) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, ratio } : item) } : current)} />
-                            <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={["random", ...accounts.filter((account) => account.status === "online").map((account) => account.id)]} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={{ random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"), ...Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}${account.suspendedUntil && account.suspendedUntil > Date.now() / 1000 ? ` · ⚠️ ${t("Tạm cách ly", "Suspended")}` : ""}`])) }} />
+                            <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={["random", ...accounts.filter(isFlowAccountConnected).map((account) => account.id)]} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={{ random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"), ...Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}${account.suspendedUntil && account.suspendedUntil > Date.now() / 1000 ? ` · ⚠️ ${t("Tạm cách ly", "Suspended")}` : ""}`])) }} />
                           </div>
                         </div>
                       );
@@ -3682,7 +3642,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   label={t("Tài khoản", "Account")}
                   value={retryTarget.accountId}
                   onChange={(accountId) => setRetryTarget((current) => current ? { ...current, accountId } : current)}
-                  options={["random", ...accounts.filter((account) => account.status === "online").map((account) => account.id)]}
+                  options={["random", ...accounts.filter(isFlowAccountConnected).map((account) => account.id)]}
                   optionLabels={{
                     random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
                     ...Object.fromEntries(accounts.map((account) => [

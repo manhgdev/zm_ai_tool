@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { explainFlowError, explainFlowEvent } from "../frontend/src/features/flow/flow.explain.ts";
+import { explainFlowError, explainFlowEvent, technicalFlowDetail } from "../frontend/src/features/flow/flow.explain.ts";
+
+test("technical account diagnostics remove nested error-code and UI-status duplicates", () => {
+  const detail = technicalFlowDetail(
+    "FLOW_AUTOMATION_BLOCKED: FLOW_AUTOMATION_BLOCKED: warning Không thành công We noticed some unusual activity. Please visit the Help Center.",
+  );
+  assert.equal(detail, "FLOW_AUTOMATION_BLOCKED: We noticed some unusual activity. Please visit the Help Center.");
+  assert.equal((detail.match(/FLOW_AUTOMATION_BLOCKED/g) || []).length, 1);
+});
 
 test("explains FLOW_RESULT_NOT_FOUND — raw detail as title, no summary, keeps action", () => {
   const explained = explainFlowError(
@@ -44,4 +52,21 @@ test("distinguishes Flow unusual-activity blocks from content rejection — raw 
   assert.equal(explained.summaryVi, "");
   // Action for unusual-activity path
   assert.match(explained.actionVi, /Chờ vài giây/i);
+});
+
+ test("technical detail preserves distinct nested codes and provider diagnostics", () => {
+  const raw = "FLOW_WORKER_FAILED: FLOW_PLAN_SYNC_FAILED: Page.goto: net::ERR_INTERNET_DISCONNECTED at https://flow.google.com/project/example";
+  assert.equal(technicalFlowDetail(raw), raw);
+  assert.equal(technicalFlowDetail("FLOW_QUOTA_EXHAUSTED: quota exceeded"), "FLOW_QUOTA_EXHAUSTED: quota exceeded");
+  assert.equal(technicalFlowDetail(""), "");
+  const repeated = "FLOW_AUTOMATION_BLOCKED: FLOW_AUTOMATION_BLOCKED: warning Không thành công We noticed some unusual activity.";
+  assert.equal(technicalFlowDetail(technicalFlowDetail(repeated)), technicalFlowDetail(repeated));
+});
+
+test("download failures explain existing media without automatic generation retry", () => {
+  const result = explainFlowError("FLOW_DOWNLOAD_FAILED: Locator.wait_for timeout");
+  assert.equal(result.titleVi, "Đã tạo video, tải file thất bại");
+  assert.equal(result.titleEn, "Video generated, download failed");
+  assert.match(result.actionVi, /Kết quả trên Flow được giữ lại/);
+  assert.match(result.actionEn, /result is preserved on Flow/);
 });

@@ -697,6 +697,9 @@ body.tts-dash-resizing iframe {
   cursor: pointer;
 }
 
+.tts-translation-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.tts-translation-toggle-row .tts-switch { width: auto; min-width: 78px; gap: 7px; color: var(--tts-ink); font-size: .75rem; font-weight: 700; }
+
 .tts-switch-track {
   position: relative;
   display: block;
@@ -1634,6 +1637,11 @@ html.dark .tts-btn-sm:hover:not(:disabled) {
   background: var(--tts-bg);
 }
 
+.tts-result-tabs { display: inline-flex; gap: 4px; margin: 4px 0 10px; padding: 3px; border: 1px solid var(--tts-line); border-radius: 9px; background: var(--tts-bg); }
+.tts-result-tabs button { border: 0; border-radius: 6px; padding: 5px 12px; background: transparent; color: var(--tts-muted); font-size: 0.72rem; font-weight: 800; cursor: pointer; }
+.tts-result-tabs button.active { background: var(--tts-blue); color: #fff; }
+.tts-result-tabs button:disabled { opacity: .45; cursor: not-allowed; }
+
 /* Preview + export row — full width */
 .tts-row2 {
   display: grid;
@@ -2194,8 +2202,8 @@ html.dark .tts-wave-box {
 
 .tts-transcribe-layout {
   display: grid;
-  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
-  gap: 12px;
+  grid-template-columns: minmax(300px, 0.78fr) minmax(0, 1.22fr);
+  gap: 16px;
   align-items: stretch;
 }
 
@@ -2205,6 +2213,59 @@ html.dark .tts-wave-box {
 
 .tts-transcribe-layout > .tts-card {
   min-width: 0;
+  padding: 18px;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 4%);
+}
+
+.tts-transcribe-source .tts-card-title,
+.tts-transcribe-result .tts-card-title { margin-bottom: 16px; }
+.tts-transcribe-source { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 16px; align-content: start; }
+.tts-transcribe-source > .tts-card-title,
+.tts-transcribe-source > .tts-transcribe-description,
+.tts-transcribe-source > .tts-drop,
+.tts-transcribe-source > .tts-transcribe-actions { grid-column: 1 / -1; }
+.tts-transcribe-source > .tts-card-title { grid-row: 1; }
+.tts-transcribe-source > .tts-transcribe-description { grid-row: 2; }
+.tts-transcribe-source > label.tts-field:nth-of-type(1) { grid-column: 1 / -1; grid-row: 3; }
+.tts-transcribe-source > label.tts-field:nth-of-type(2) { grid-column: 1; grid-row: 4; }
+.tts-transcribe-source > .tts-translation-toggle-row { grid-column: 1 / -1; grid-row: 5; }
+.tts-transcribe-source > label.tts-field:nth-of-type(3) { grid-column: 1; grid-row: 6; }
+.tts-transcribe-source > label.tts-field:nth-of-type(4) { grid-column: 2; grid-row: 6; }
+.tts-transcribe-source > label.tts-field:nth-of-type(5) { grid-column: 1 / -1; grid-row: 7; }
+.tts-transcribe-source > .tts-drop { grid-row: 8; }
+.tts-transcribe-source > .tts-transcribe-actions { grid-row: 9; }
+.tts-transcribe-source .tts-field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.tts-transcribe-source .tts-field > span { font-size: .73rem; font-weight: 600; }
+.tts-transcribe-source .tts-field select,
+.tts-srt-style-select { width: 100%; min-height: 36px; padding: 7px 11px; border: 1px solid var(--tts-line); border-radius: 9px; background: var(--tts-card); color: var(--tts-ink); font-size: .76rem; }
+.tts-transcribe-source .tts-translation-toggle-row { flex-direction: row; align-items: center; justify-content: space-between; padding: 4px 0; margin: 2px 0 10px; background: transparent; border: 0; border-radius: 0; }
+.tts-transcribe-source .tts-drop { flex: none; position: relative; padding: 0; margin: 12px 0 0; border-color: var(--tts-line); background: var(--tts-bg); }
+.tts-transcribe-source .tts-drop input[type='file'] { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.tts-transcribe-source .tts-drop:focus-within { outline: 2px solid var(--tts-blue); outline-offset: 3px; }
+.tts-transcribe-source .tts-drop label { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 16px; cursor: pointer; min-width: 0; }
+.tts-transcribe-source .tts-drop label svg { width: 26px; height: 26px; color: var(--tts-blue); }
+.tts-transcribe-source .tts-drop label strong { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .78rem; }
+.tts-transcribe-source .tts-drop label > span { color: var(--tts-muted); font-size: .69rem; }
+.tts-transcribe-result { display: flex; flex-direction: column; }
+.tts-result-panel { display: flex; flex: 1; flex-direction: column; gap: 8px; min-width: 0; }
+.tts-result-view-label { color: var(--tts-muted); font-size: .72rem; }
+.tts-transcribe-result .tts-result-srt { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.tts-transcribe-result .tts-result-tabs button:focus-visible { outline: 2px solid var(--tts-blue); outline-offset: 3px; }
+.tts-transcribe-result .tts-result-tabs { display: flex; flex-wrap: wrap; align-self: stretch; gap: 18px; margin: 0 0 12px; padding: 0 2px; border: 0; border-bottom: 1px solid var(--tts-line); border-radius: 0; background: transparent; }
+.tts-transcribe-result .tts-result-tabs button { min-height: 34px; padding: 4px 1px 8px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--tts-muted); font-weight: 650; font-size: .72rem; }
+.tts-transcribe-result .tts-result-tabs button.active { background: transparent; color: var(--tts-blue); border-bottom-color: var(--tts-blue); }
+.tts-transcribe-result .tts-srt-style-select { margin-bottom: 10px; }
+.tts-transcribe-result .tts-textarea { flex: 1; min-height: 280px; border-radius: 12px; padding: 14px; font-size: .78rem; line-height: 1.7; resize: vertical; }
+.tts-transcribe-layout .tts-transcribe-actions { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--tts-line); align-items: center; }
+.tts-transcribe-layout .tts-transcribe-actions .tts-btn { min-height: 36px; padding: 8px 12px; border-radius: 9px; font-size: .73rem; box-shadow: none; }
+.tts-transcribe-layout .tts-transcribe-actions .tts-btn:not(.tts-btn-blue):not(.tts-btn-primary) { background: var(--tts-card); color: var(--tts-ink); border: 1px solid var(--tts-line); }
+@media (max-width: 700px) {
+  .tts-transcribe-source { display: flex; flex-direction: column; }
+  .tts-transcribe-source > .tts-drop { order: 1; }
+  .tts-transcribe-source > .tts-transcribe-actions { order: 2; }
+  .tts-transcribe-source > .tts-drop,
+  .tts-transcribe-source > .tts-transcribe-actions { margin-top: 12px; }
 }
 
 .tts-transcribe-description {

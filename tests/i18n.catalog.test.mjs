@@ -1,4 +1,39 @@
 import test from 'node:test'
+test('Transcript SRT reflow explains original timing in both languages', () => {
+  const source = readFileSync(new URL('../frontend/src/features/tts/TtsTranscribePanel.tsx', import.meta.url), 'utf8')
+  const styles = readFileSync(new URL('../frontend/src/features/tts/lib/srt.ts', import.meta.url), 'utf8')
+  assert.ok(source.includes("t('Giữ cue gốc', 'Original cues')"))
+  assert.ok(source.includes('never estimates timing within a cue'))
+  assert.ok(source.includes("t('Đang xem:', 'Viewing:')"))
+  assert.ok(source.includes("t('Định dạng kết quả', 'Result format')"))
+  assert.ok(!styles.includes("id: 'whisper'"))
+  assert.ok(source.includes('Giữ nguyên từng cue và timecode CapCut cloud'))
+  assert.ok(source.includes('Keeps every CapCut cloud cue and timestamp'))
+  assert.ok(source.includes('Giữ nguyên nội dung và timecode nguồn.'))
+  assert.ok(source.includes('Keeps source content and timecodes unchanged.'))
+  assert.ok(source.includes('Chia cue và timecode bằng timestamp từng từ của Whisper.'))
+  assert.ok(source.includes('Splits cues and timecodes using Whisper word timestamps.'))
+  assert.ok(source.includes('Kiểu này cho cùng kết quả'))
+  assert.ok(source.includes('This style produces the same result'))
+  assert.ok(source.includes("srtPreviewLines(formatTranscriptSrt(resultSrt, 'original', 'capcut'))"))
+  assert.ok(source.includes('Chưa có SRT cho kết quả này.'))
+  assert.ok(source.includes('No SRT for this result yet.'))
+  assert.ok(!source.includes('t(option.label, option.label)'))
+})
+test('Transcription chooses a translation model locally with bilingual labels', () => {
+  const source = readFileSync(new URL('../frontend/src/features/tts/TtsTranscribePanel.tsx', import.meta.url), 'utf8')
+  assert.ok(source.includes("t('Chọn model dịch', 'Select translation model')"))
+  assert.ok(!source.includes('Model from Settings → Translation APIs'))
+  assert.ok(source.includes('translation.enabled && !translation.model'))
+  assert.ok(source.includes('model: e.target.value'))
+})
+test('Changing recognition source preserves transcript cache and selected file', () => {
+  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
+  assert.ok(source.includes('onEngineChange={handleTranscribeEngineChange}'))
+  assert.ok(source.includes('Existing transcript, SRT, translation and selected file stay available'))
+  assert.ok(!source.includes('Changing the source is a view/setting change, not a destructive cache action.\n    // Existing transcript, SRT, translation and selected file stay available until\n    // the user explicitly clears cache or a new recognition completes.\n    clearTranscribeResults()'))
+  assert.ok(!source.includes('onEngineChange={setTranscribeEngine}'))
+})
 test('Live Preview AI settings include bilingual model groups and credential gating', () => {
   const source = readFileSync(new URL('../frontend/src/features/project/TranslationReview.tsx', import.meta.url), 'utf8')
   assert.ok(source.includes("t('Model AI', 'AI model')"))
@@ -202,4 +237,17 @@ test('Clone and Live Preview share compact bilingual translation review controls
   assert.doesNotMatch(sidebar, /translation-review-card|translation-review-title/)
   const list = readFileSync(new URL('../frontend/src/features/project/SegmentList.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(list, /translation-review-hint/)
+})
+
+test('Flow logs use localized event titles and render diagnostic text only below', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
+  const labels = readFileSync(new URL('../frontend/src/features/flow/flow.explain.ts', import.meta.url), 'utf8')
+  assert.ok(source.includes('<strong>{logEventText(entry.event)}</strong>'))
+  assert.ok(!source.includes('explained?.title || logEventText(entry.event)'))
+  for (const pair of [
+    '["Đã chuyển sang tài khoản khác", "Switched to another account"]',
+    '["Tài khoản đã bị tạm cách ly", "Account temporarily quarantined"]',
+    '["Đã gỡ cách ly tài khoản", "Account suspension cleared"]',
+    '["Job thất bại", "Job failed"]',
+  ]) assert.ok(labels.includes(pair))
 })

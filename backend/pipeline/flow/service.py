@@ -295,6 +295,7 @@ _COOLDOWN_BOT_S       = 3 * 3600    # 3h  — AUTOMATION_BLOCKED
 _COOLDOWN_QUOTA_S     = 14 * 3600   # 14h — FLOW_QUOTA_EXHAUSTED (daily quota)
 _COOLDOWN_RATELIMIT_S = 60          # 1min — HTTP 429 / rate limit
 _COOLDOWN_CREDITS_S   = 24 * 3600   # 24h — FLOW_CREDITS_EMPTY (needs manual top-up)
+_COOLDOWN_OUTPUT_S    = 30 * 60    # 30m — Flow rendered an error/no media output
 # GENERATION_REJECTED — no suspension (content/prompt issue, not account issue)
 # FLOW_LOGIN_REQUIRED — no suspension (_ensure_shared_reconnect handles it)
 
@@ -1061,7 +1062,18 @@ class FlowService:
         return migrated
 
     def logs(self) -> list[dict[str, Any]]:
-        return sorted(store.list_rows("logs"), key=lambda row: row.get("createdAt", 0), reverse=True)[:FLOW_LOG_LIMIT]
+        rows = []
+        for row in store.list_rows("logs"):
+            item = dict(row)
+            details = dict(item.get("details") or {})
+            if not details.get("accountEmail") and item.get("accountId"):
+                account = store.get_row("accounts", str(item["accountId"])) or {}
+                email = str(account.get("email") or "").strip()
+                if email:
+                    details["accountEmail"] = email
+            item["details"] = details
+            rows.append(item)
+        return sorted(rows, key=lambda row: row.get("createdAt", 0), reverse=True)[:FLOW_LOG_LIMIT]
 
     def clear_logs(self) -> None:
         for row in store.list_rows("logs"):
@@ -1077,6 +1089,12 @@ class FlowService:
         message: str = "",
         details: dict[str, Any] | None = None,
     ) -> None:
+        log_details = dict(details or {})
+        if account_id and "accountEmail" not in log_details:
+            account = store.get_row("accounts", str(account_id)) or {}
+            email = str(account.get("email") or "").strip()
+            if email:
+                log_details["accountEmail"] = email
         store.put_row("logs", {
             "id": uuid.uuid4().hex[:16],
             "level": level,
@@ -1084,7 +1102,7 @@ class FlowService:
             "jobId": job_id,
             "accountId": account_id,
             "message": message,
-            "details": details or {},
+            "details": log_details,
             "createdAt": time.time(),
         })
         rows = store.list_rows("logs")
@@ -1191,6 +1209,13 @@ class FlowService:
                 duration_seconds = _COOLDOWN_RATELIMIT_S
             elif re.search(r"FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit", r, re.I):
                 duration_seconds = _COOLDOWN_CREDITS_S
+            elif re.search(
+                r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)|"
+                r"FLOW_RESULT_NOT_FOUND|FLOW_GENERATION_TIMEOUT",
+                r,
+                re.I,
+            ):
+                duration_seconds = _COOLDOWN_OUTPUT_S
             elif re.search(r"GENERATION_REJECTED|FLOW_GENERATION_REJECTED", r, re.I):
                 return account  # content/prompt issue — not an account fault, no suspension
             elif re.search(r"LOGIN_REQUIRED|FLOW_LOGIN_REQUIRED", r, re.I):
@@ -1987,6 +2012,11 @@ class FlowService:
 
     def _try_fallback_account(self, job_id: str, failed_account_id: str, reason: str) -> bool:
         """Attempt to fallback a failed/blocked job to another eligible online account."""
+        # Completed media belongs to its original account/project. Switching
+        # accounts here would regenerate it rather than retry the download.
+        existing = store.get_row("jobs", job_id) or {}
+        if existing.get("mediaIds") or existing.get("outputs"):
+            return False
         # Only suspend for errors that are genuinely account-level faults.
         # GENERATION_REJECTED / unknown reasons already return early in suspend_account.
         self.suspend_account(failed_account_id, reason)
@@ -1994,7 +2024,12 @@ class FlowService:
         job = store.get_row("jobs", job_id)
         if not job or job.get("status") in {"done", "cancelled"} or job_id in self._cancelled:
             return False
-        if not job.get("allowAccountFallback", bool(job.get("randomAccount"))):
+        if not job.get("allowAccountFallback", bool(job.get("randomAccount"))) and not re.search(
+            r"AUTOMATION_BLOCKED|FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)|"
+            r"FLOW_RESULT_NOT_FOUND|FLOW_GENERATION_TIMEOUT",
+            reason,
+            re.I,
+        ):
             return False
 
         kind = str(job.get("kind") or "image")
@@ -2053,6 +2088,20 @@ class FlowService:
             name=f"flow-job-{job_id}-fallback",
         ).start()
         return True
+
+    def _stop_account_after_automation_block(self, account_id: str, exclude_job_id: str) -> int:
+        """Cancel queued/running work on an account Flow has flagged as automated."""
+        stopped = 0
+        for row in store.list_rows("jobs"):
+            job_id = str(row.get("id") or "")
+            if (job_id == exclude_job_id or str(row.get("accountId") or "") != account_id
+                    or row.get("status") not in {"queued", "processing"}):
+                continue
+            self.cancel(job_id)
+            stopped += 1
+        with self._account_condition:
+            self._account_condition.notify_all()
+        return stopped
 
     def _verify_account_plan_before_enqueue(self, account_id: str) -> dict[str, Any]:
         """Refresh Flow entitlement before every generation entry point.
@@ -2163,7 +2212,11 @@ class FlowService:
         login_ok = False
         try:
             from .browser import BrowserManager, FLOW_BASE_URL
-            browser = BrowserManager(headless=False, profile_dir=store.profile_dir(account_id))
+            browser = BrowserManager(
+                headless=False,
+                profile_dir=store.profile_dir(account_id),
+                google_login_compat=True,
+            )
             await browser.start()
             page = await browser.page()
 
@@ -2726,6 +2779,8 @@ class FlowService:
             account = store.get_row("accounts", account_id) or {}
             if not account:
                 raise ValueError("Prompts and a valid Flow account are required")
+            if account.get("status") != "online" or not account.get("projectId"):
+                raise ValueError("FLOW_LOGIN_REQUIRED: Connect the selected Flow account before generating.")
             if self._account_quota_suspended(account_id):
                 if allow_fallback:
                     alt = self._pick_eligible_account(kind=kind, model=model, exclude_ids=[account_id])
@@ -3007,6 +3062,8 @@ class FlowService:
                 finished = store.get_row("jobs", job_id) or finished
                 project_error = (
                     finished.get("status") == "failed"
+                    and not finished.get("mediaIds")
+                    and not finished.get("outputs")
                     and "FLOW_PROJECT_NOT_FOUND" in str(finished.get("error") or "")
                 )
                 if not project_error:
@@ -3058,6 +3115,9 @@ class FlowService:
                     retry_count = 0
                 should_auto_retry = (
                     finished.get("status") == "failed"
+                    and not finished.get("submissionStartedAt")
+                    and not finished.get("mediaIds")
+                    and not finished.get("outputs")
                     and retry_count < _JOB_AUTO_RETRY_MAX
                     and (
                         rejected
@@ -3089,7 +3149,7 @@ class FlowService:
                     return
                 store.patch_row("jobs", job_id, {
                     "status": "queued", "stage": "queued", "progress": 0,
-                    "error": None, "outputs": [],
+                    "error": None,
                 })
                 runtime_profile2: Path | None = None
                 profile_ready = False
@@ -3170,9 +3230,24 @@ class FlowService:
                 err_msg = str(current_job.get("error") or "Unknown error")
                 if current_job.get("quotaModelFallbackApplied") and "FLOW_QUOTA_EXHAUSTED" in err_msg:
                     self.suspend_account(account_id, err_msg)
+                elif re.search(
+                    r"AUTOMATION_BLOCKED|abnormal activity|hoạt động bất thường|suspicious activity|"
+                    r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)|"
+                    r"FLOW_RESULT_NOT_FOUND|FLOW_GENERATION_TIMEOUT",
+                    err_msg,
+                    re.I,
+                ):
+                    self._stop_account_after_automation_block(account_id, job_id)
+                    self._try_fallback_account(job_id, account_id, err_msg)
                 elif current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
                     self._try_fallback_account(job_id, account_id, err_msg)
-                elif re.search(r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED", err_msg, re.I):
+                elif re.search(
+                    r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED|"
+                    r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)|"
+                    r"FLOW_RESULT_NOT_FOUND|FLOW_GENERATION_TIMEOUT",
+                    err_msg,
+                    re.I,
+                ):
                     self.suspend_account(account_id, err_msg)
 
     def _clone_runtime_profile(self, account_id: str, job_id: str) -> Path:
@@ -4385,6 +4460,15 @@ class FlowService:
                         body_text, re.I,
                     ):
                         raise RuntimeError(f"FLOW_AUTOMATION_BLOCKED: {body_text[:200]}")
+                    if re.search(
+                        r"something went wrong|couldn.t generate|could not generate|failed to generate|"
+                        r"không thể tạo|không tạo được|đã xảy ra lỗi khi tạo|lỗi khi tạo",
+                        body_text, re.I,
+                    ):
+                        raise RuntimeError(f"FLOW_OUTPUT_UNAVAILABLE: {body_text[:200]}")
+                    visible_error = _classify_visible_flow_error(body_text)
+                    if visible_error.startswith("FLOW_OUTPUT_UNAVAILABLE:"):
+                        raise RuntimeError(visible_error)
                 except RuntimeError:
                     raise
                 except Exception:
@@ -4422,6 +4506,41 @@ class FlowService:
 
 
     async def _download_video_via_flow_menu(
+        self, page, tile_index: int, output: Path, quality: str, *, job_id: str,
+    ) -> None:
+        """Retry only this media download; never re-enter generation."""
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        current = store.get_row("jobs", job_id) or {}
+        if str(output) in (current.get("outputs") or []) and self._outputs_exist([output]):
+            return
+        for attempt in range(1, 4):
+            self._check_cancel(job_id)
+            store.patch_row("jobs", job_id, {"stage": "downloading", "updatedAt": time.time()})
+            try:
+                await self._download_video_via_flow_menu_once(page, tile_index, output, quality)
+                error = self._output_validation_error([output])
+                if error:
+                    raise RuntimeError(error)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if isinstance(exc, PlaywrightTimeoutError) and attempt < 3:
+                    self._log("warning", "download_retry", job_id=job_id,
+                              account_id=str(current.get("accountId") or ""), message=str(exc),
+                              details={"stage": "downloading", "attempt": attempt,
+                                       "path": str(output), "quality": quality})
+                    await asyncio.sleep(1)
+                    continue
+                raise RuntimeError(f"FLOW_DOWNLOAD_FAILED: {exc}") from exc
+            # Persist each finished part before starting the next one.
+            saved = list((store.get_row("jobs", job_id) or {}).get("outputs") or [])
+            if str(output) not in saved:
+                saved.append(str(output))
+            store.patch_row("jobs", job_id, {"outputs": saved, "updatedAt": time.time()})
+            return
+
+    async def _download_video_via_flow_menu_once(
         self,
         page,
         tile_index: int,
@@ -4472,7 +4591,14 @@ class FlowService:
             async with page.expect_download(timeout=300_000) as dl_info:
                 await menu_items.nth(index).click()
             dl = await dl_info.value
-            await dl.save_as(str(output))
+            partial = output.with_name(output.name + ".part")
+            try:
+                await dl.save_as(str(partial))
+                if self._output_validation_error([partial]):
+                    raise RuntimeError("FLOW_OUTPUT_EMPTY: downloaded video is empty")
+                partial.replace(output)
+            finally:
+                partial.unlink(missing_ok=True)
         finally:
             try:
                 await page.keyboard.press("Escape")
@@ -4639,7 +4765,7 @@ class FlowService:
         for output_index, tile_index in enumerate(tile_indexes, 1):
             self._check_cancel(job_id)
             output = self._output_path(job, output_index, "mp4")
-            await self._download_video_via_flow_menu(page, tile_index, output, quality)
+            await self._download_video_via_flow_menu(page, tile_index, output, quality, job_id=job_id)
             outputs.append(str(output))
             self._log(
                 "success", "output_downloaded",
@@ -4685,7 +4811,7 @@ class FlowService:
     ) -> None:
         job = store.get_row("jobs", job_id)
         account = store.get_row("accounts", str(job.get("accountId"))) if job else None
-        if not job or not account:
+        if not job or not account or job.get("status") in {"done", "cancelled"}:
             return
         if job.get("forceNew"):
             # Create-new must never enter recovery. A completed job may still
@@ -4765,6 +4891,10 @@ class FlowService:
                 )
             )
             if submission_project_missing:
+                if job.get("mediaIds") or job.get("outputs"):
+                    raise RuntimeError(
+                        "FLOW_DOWNLOAD_FAILED: original project is unavailable; preserving generated media"
+                    )
                 # A result submitted to a deleted project cannot appear in the
                 # replacement project. Clear recovery identity and submit the
                 # same local job once, instead of pretending it is still at 84%.
@@ -4834,7 +4964,7 @@ class FlowService:
                             output = self._output_path(job, index, "mp4")
                             account_plan = str(account.get("plan") or "")
                             quality = _video_download_quality(settings, account_plan)
-                            await self._download_video_via_flow_menu(page, int(tile_index), output, quality)
+                            await self._download_video_via_flow_menu(page, int(tile_index), output, quality, job_id=job_id)
                             outputs.append(str(output))
                             self._log("success", "output_downloaded", job_id=job_id,
                                       account_id=account["id"], details={"outputIndex": index, "quality": quality})
@@ -5324,6 +5454,8 @@ class FlowService:
                 account = {}
         else:
             account = store.get_row("accounts", account_id) or {}
+            if account.get("status") != "online" or not account.get("projectId"):
+                raise ValueError("FLOW_LOGIN_REQUIRED: Connect the selected Flow account before retrying.")
             if account.get("plan") == "Free" and kind == "image" and model == "Nano Banana Pro":
                 alt = self._pick_eligible_account(kind=kind, model=model, exclude_ids=[account_id])
                 if alt:
@@ -5331,13 +5463,7 @@ class FlowService:
                     account_id = str(alt["id"])
 
         if not account:
-            # Stale/placeholder ids (e.g. leaked test "account") — fall back to an online account.
-            online = [row for row in store.list_rows("accounts") if row.get("status") == "online" and row.get("id")]
-            fallback = next((row for row in online if row.get("isDefault")), None) or (online[0] if online else None)
-            if not fallback:
-                raise ValueError("Flow account not found")
-            account = fallback
-            account_id = str(fallback["id"])
+            raise ValueError("FLOW_NO_ONLINE_ACCOUNTS: No eligible connected Flow account is available.")
         settings, _ = _normalize_catalog_settings(account, kind, settings)
         if existing.get("kind") == "video" and not _catalog_section(account, "video"):
             settings["model"] = _normalize_video_model(settings.get("model"))

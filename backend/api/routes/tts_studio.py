@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import shutil
 import subprocess
 import sys
@@ -72,6 +71,102 @@ from pipeline.tts import engines_status
 from pipeline.tts.text_split import normalize_tts_text
 
 router = APIRouter()
+
+
+def _transcript_rows_to_srt(rows: list[dict]) -> str:
+    """Serialize timed transcript rows without inventing inner timestamps.
+
+    A row is an indivisible timed cue. Any later reflow may combine complete
+    rows, but it must use the first row's start and the last row's end.
+    """
+    def stamp(value: Any) -> str:
+        millis = max(0, round(float(value or 0) * 1000))
+        hours, millis = divmod(millis, 3600000)
+        minutes, millis = divmod(millis, 60000)
+        seconds, millis = divmod(millis, 1000)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+    cues: list[str] = []
+    for index, seg in enumerate(rows or [], 1):
+        text = normalize_tts_text(str(seg.get("source") or seg.get("text") or "")).strip()
+        if not text:
+            continue
+        start = float(seg.get("start") or 0)
+        end = float(seg.get("end") or start)
+        cues.append(f"{index}\n{stamp(start)} --> {stamp(end)}\n{text}")
+    return "\n\n".join(cues).strip()
+
+
+def _transcript_rows_to_text(rows: list[dict], *, separator: str = "\n") -> str:
+    """Join transcript text without treating every timed cue as a sentence.
+
+    Keep one TXT line per source cue. SRT remains the source of truth for cue
+    boundaries and TXT mirrors those boundaries without adding timecodes.
+    """
+    parts: list[str] = []
+    for seg in rows or []:
+        piece = normalize_tts_text(str(seg.get("source") or seg.get("text") or "")).strip()
+        if piece:
+            parts.append(piece)
+    return separator.join(parts).strip()
+
+
+def _transcript_word_styles(rows: list[dict]) -> dict[str, str]:
+    """Split display styles only at validated Whisper word timestamps.
+
+    Reuse the TTS style splitters for text, never their proportional timing.
+    Omit an unsafe style instead of publishing invented or incomplete cues.
+    """
+    from bisect import bisect_left
+    from pipeline.export.srt import SRT_STYLES, _split_for_style, style_params
+
+    outputs: dict[str, str] = {}
+    for style in SRT_STYLES:
+        cues: list[dict] = []
+        for row in rows:
+            text = normalize_tts_text(str(row.get("source") or row.get("text") or ""))
+            if not text:
+                continue
+            pieces = _split_for_style(text, style_params(style))
+            if len(pieces) == 1:
+                cues.append(dict(row, source=text))
+                continue
+            words = row.get("words")
+            if not isinstance(words, list) or not words:
+                break
+            try:
+                source_start, source_end = round(float(row["start"]), 3), round(float(row["end"]), 3)
+                times = [(round(float(w["start"]), 3), round(float(w["end"]), 3)) for w in words]
+                tokens = ["".join(normalize_tts_text(str(w["word"])).split()) for w in words]
+            except (KeyError, TypeError, ValueError, OverflowError):
+                break
+            compact = "".join(text.split())
+            if (not all(tokens) or "".join(tokens) != compact
+                    or "".join("".join(piece.split()) for piece in pieces) != compact
+                    or not all(math.isfinite(s) and math.isfinite(e) and source_start <= s < e <= source_end
+                               and (i == 0 or s >= times[i - 1][1]) for i, (s, e) in enumerate(times))):
+                break
+            offsets: list[int] = []
+            count = 0
+            for token in tokens:
+                count += len(token)
+                offsets.append(count)
+            positions = [i for i, char in enumerate(text) if not char.isspace()]
+            consumed = first_word = first_char = 0
+            for piece in pieces:
+                consumed += len("".join(piece.split()))
+                last_word = bisect_left(offsets, consumed)
+                if last_word < first_word:
+                    continue
+                last_char = offsets[last_word]
+                cues.append({
+                    "start": times[first_word][0], "end": times[last_word][1],
+                    "source": text[positions[first_char]:positions[last_char - 1] + 1],
+                })
+                first_word, first_char = last_word + 1, last_char
+        else:
+            outputs[style] = _transcript_rows_to_srt(cues)
+    return outputs
 
 # Aliases matching original routes_all names
 _spawn = spawn
@@ -166,6 +261,10 @@ def api_tts_studio_synth(body: StudioSynthIn):
 async def api_tts_studio_transcribe(
     lang: str = "auto",
     engine: str = "whisper",
+    translate: bool = False,
+    target_lang: str = "vi",
+    translator: str = "google",
+    translation_model: str = "",
     file: UploadFile = File(...),
 ):
     """Chép lời → plain text for TTS Studio.
@@ -216,14 +315,6 @@ async def api_tts_studio_transcribe(
 
     source_lang = (lang or "auto").strip() or "auto"
 
-    def _join_text(rows: list) -> str:
-        parts: list[str] = []
-        for seg in rows or []:
-            piece = normalize_tts_text(str(seg.get("source") or seg.get("text") or ""))
-            if piece:
-                parts.append(piece)
-        return "\n".join(parts).strip()
-
     def _run() -> None:
         from pipeline.tts.studio import _jobs_lock, _running
 
@@ -237,19 +328,25 @@ async def api_tts_studio_transcribe(
 
                 rows = subtitle_segments(raw_path)
             elif eng == "capcut":
-                set_job_progress_pct(job_id, 12, "CapCut: đang gửi file…")
+                set_job_progress_pct(job_id, 5, "CapCut: đang chuẩn bị nhận dạng…")
                 from pipeline.capcut_stt import transcribe_and_translate
+                cap_progress = 5
 
                 def _cap_progress(message: str) -> None:
-                    set_job_progress_pct(job_id, 35, message or "CapCut: đang nhận dạng…")
+                    nonlocal cap_progress
+                    cap_progress = min(70, cap_progress + 4)
+                    set_job_progress_pct(job_id, cap_progress, message or "CapCut: đang nhận dạng…")
 
                 source_rows, _translated = transcribe_and_translate(
                     raw_path,
                     source_lang,
                     "vi",
                     require_translation=False,
+                    force_refresh=True,
                     progress=_cap_progress,
                 )
+                # Preserve timed cues as returned; a cue is not necessarily
+                # a sentence. Splitting inside one requires word timestamps.
                 rows = source_rows
             elif eng == "paddleocr":
                 set_job_progress_pct(job_id, 15, "Đang OCR chữ trên màn…")
@@ -271,10 +368,25 @@ async def api_tts_studio_transcribe(
 
                 rows = asr_whisper(wav_path, source_lang, workers=0)
 
-            text = _join_text(rows)
+            text = _transcript_rows_to_text(rows, separator="\n")
+            set_job_progress_pct(job_id, 85, "Đang chuẩn hóa các câu chép lời…")
+            srt = _transcript_rows_to_srt(rows)
             if not text:
                 raise RuntimeError("Không nhận dạng được lời thoại trong file")
-            set_job_complete(job_id, "Đã chép lời xong.", text=text)
+            payload = {"text": text, "srt": srt}
+            if eng == "whisper":
+                payload["srt_styles"] = _transcript_word_styles(rows)
+            if translate:
+                try:
+                    from pipeline.mt.api import translate_segments
+                    source_rows = [dict(row) for row in rows if normalize_tts_text(str(row.get("source") or row.get("text") or "")).strip()]
+                    source_texts = [normalize_tts_text(str(row.get("source") or row.get("text") or "")).strip() for row in source_rows]
+                    translated = translate_segments(source_texts, target_lang or "vi", source_lang=source_lang, translator=translator or "google", translation_model=translation_model or None, workers=2)
+                    payload["translated_text"] = "\n".join(normalize_tts_text(str(value)).strip() for value in translated if str(value).strip()).strip()
+                    payload["translated_srt"] = _transcript_rows_to_srt([dict(row, source=value) for row, value in zip(source_rows, translated)])
+                except Exception as translation_error:
+                    payload["translation_error"] = str(translation_error)
+            set_job_complete(job_id, "Đã chép lời xong.", **payload)
         except Exception as e:
             set_job_error(job_id, e, message="Chép lời thất bại.")
             import logging

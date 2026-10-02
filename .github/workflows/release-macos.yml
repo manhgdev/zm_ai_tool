@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
@@ -65,9 +66,17 @@ jobs:
             echo "Missing or empty macOS PKG: $PKG" >&2
             exit 1
           fi
+          PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]' | sed -n '2p' || true)
+          RANGE="${PREV_TAG:+$PREV_TAG..}$TAG"
+          NOTES=$(git log "$RANGE" --pretty=format:'%s' --no-merges \
+            | grep -v '^chore: release' \
+            | sed 's/^feat: /🚀 /; s/^fix: /🐛 /; s/^chore: /🔧 /; s/^perf: /⚡ /; s/^refactor: /♻️ /; s/^docs: /📝 /; s/^test: /✅ /' \
+            | awk '{print "- " $0}' \
+            || echo '- Cải tiến và sửa lỗi')
+          BODY=$(printf '## Thay đổi trong %s\n\n%s\n\n## Kiểm tra\n\nBản phát hành được build và xác minh bởi GitHub Actions.' "$TAG" "$NOTES")
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$PKG" --clobber
-          elif ! gh release create "$TAG" "$PKG" --generate-notes --title "ZM AI TOOL $TAG"; then
+          elif ! gh release create "$TAG" "$PKG" --notes "$BODY" --title "ZM AI TOOL $TAG"; then
             sleep 5
             gh release upload "$TAG" "$PKG" --clobber
           fi

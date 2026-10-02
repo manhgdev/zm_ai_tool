@@ -15,7 +15,13 @@ export function technicalFlowDetail(message: string | null | undefined): string 
   const raw = String(message || "").trim();
   if (!raw) return "";
   const code = codeOf(raw);
-  const detail = raw.replace(/^FLOW_[A-Z0-9_]+:\s*/i, "").replace(/\s+/g, " ").trim();
+  // Only remove repetitions of the outer code; keep distinct nested causes.
+  // codeOf returns a fixed identifier containing letters, digits and underscores.
+  const repeatedCode = new RegExp(`^(?:${code}:\\s*)+`, "i");
+  const detail = raw
+    .replace(repeatedCode, "")
+    .replace(/^(?:warning|error|info)\s+(?:không thành công|failed|error|success)\s+/i, "")
+    .replace(/\s+/g, " ").trim();
   // Keep the original cause for copy/paste; only collapse obvious UI dumps and cap size.
   const compact = detail.length > 1200 ? `${detail.slice(0, 1200)} …[truncated]` : detail;
   return `${code}: ${compact}`;
@@ -85,6 +91,24 @@ export function explainFlowError(message: string): FlowExplain {
     actionEn,
   });
 
+  if (/ERR_INTERNET_DISCONNECTED|ERR_CONNECTION_(?:RESET|TIMED_OUT)|ERR_NETWORK_CHANGED/i.test(raw)) {
+    return make(
+      "FLOW_NETWORK_DISCONNECTED",
+      "Không thể kết nối tới Flow. Kiểm tra mạng/VPN rồi chạy lại; không tiếp tục retry liên tục.",
+      "Flow could not be reached. Check the network/VPN and retry; do not keep retrying continuously.",
+    );
+  }
+
+  if (code === "FLOW_DOWNLOAD_FAILED") {
+    return {
+      code,
+      titleVi: "Đã tạo video, tải file thất bại",
+      titleEn: "Video generated, download failed",
+      summaryVi: "", summaryEn: "",
+      actionVi: "Kết quả trên Flow được giữ lại. Mở project Flow để tải video; Chạy lại sẽ tạo mới.",
+      actionEn: "The result is preserved on Flow. Open the Flow project to download it; Retry creates a new generation.",
+    };
+  }
   if (code === "FLOW_RESULT_NOT_FOUND") {
     return make(
       code,
@@ -234,10 +258,14 @@ export function explainFlowEvent(event: string): { titleVi: string; titleEn: str
     api_generation_complete: ["RPC báo tạo xong", "Generation RPC completed"],
     poll_generation_complete: ["Poll project thấy media xong", "Project poll found finished media"],
     ui_generation_fallback: ["Fallback chờ UI (không bắt được RPC)", "UI wait fallback (RPC not captured)"],
+    download_retry: ["Đang thử tải lại kết quả đã tạo", "Retrying download of generated media"],
     output_downloaded: ["Đã tải file output", "Output downloaded"],
     job_completed: ["Job hoàn thành", "Job completed"],
     job_cancel_requested: ["Đã yêu cầu hủy job", "Cancellation requested"],
     job_cancelled: ["Job đã hủy", "Job cancelled"],
+    account_fallback: ["Đã chuyển sang tài khoản khác", "Switched to another account"],
+    account_suspended: ["Tài khoản đã bị tạm cách ly", "Account temporarily quarantined"],
+    account_unsuspended: ["Đã gỡ cách ly tài khoản", "Account suspension cleared"],
     job_retry: ["Đưa job vào chạy lại", "Job queued for retry"],
     job_failed: ["Job thất bại", "Job failed"],
     capability_settings_migrated: ["Đã chỉnh settings theo catalog tài khoản", "Settings migrated to account catalog"],

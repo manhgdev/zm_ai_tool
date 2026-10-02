@@ -390,6 +390,7 @@ def _segments_from_whisper(seg: Any) -> list[dict[str, Any]]:
                 "source": g_text,
                 "translation": "",
                 "voice": "",
+                "words": [{"word": word, "start": start, "end": end} for start, end, word, _ in group],
             }
         )
     return out if out else [

@@ -23,7 +23,7 @@ class FlowRetryModeTests(unittest.TestCase):
             "sourceFiles": ["frame.png"],
             "seriesContext": {"seriesId": "series1", "artifact": "video"},
         }
-        account = {"id": "account1", "label": "Flow", "status": "online", "plan": "Pro"}
+        account = {"id": "account1", "label": "Flow", "status": "online", "plan": "Pro", "projectId": "project1"}
         patched: dict = {}
 
         def get_row(table: str, row_id: str):

@@ -69,12 +69,21 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 await manager.start()
                 self.assertTrue(launch.call_args.kwargs['chromium_sandbox'])
                 self.assertEqual(launch.call_args.kwargs['headless'], headless)
-                self.assertIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
+                self.assertNotIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
                 self.assertNotIn('--no-sandbox', launch.call_args.kwargs['args'])
-                context.add_init_script.assert_awaited_once_with(
+                context.add_init_script.assert_any_await(
                     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
                 )
                 await manager.stop()
+
+            manager = BrowserManager(
+                headless=False,
+                profile_dir=Path(raw) / 'login-profile',
+                google_login_compat=True,
+            )
+            await manager.start()
+            self.assertIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
+            await manager.stop()
 
     async def test_blocked_launch_stops_driver_without_disabling_sandbox(self):
         launch = AsyncMock(side_effect=RuntimeError('blocked by policy'))

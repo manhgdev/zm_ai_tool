@@ -167,11 +167,12 @@ def chrome_executable() -> Path | None:
 class BrowserManager:
     """Subset of flow-py's browser contract backed by installed Google Chrome."""
 
-    def __init__(self, *, headless: bool, profile_dir: Path, slow_mo: int = 0) -> None:
+    def __init__(self, *, headless: bool, profile_dir: Path, slow_mo: int = 0, google_login_compat: bool = False) -> None:
         self.cdp_url = None  # flow-py checks this optional upstream attribute.
         self.headless = headless
         self.profile_dir = Path(profile_dir)
         self.slow_mo = slow_mo
+        self.google_login_compat = google_login_compat
         self._pw: Playwright | None = None
         self._ctx: BrowserContext | None = None
         self._page: Page | None = None
@@ -198,6 +199,10 @@ class BrowserManager:
         try:
             self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
             visible_args = [] if self.headless else _visible_window_args()
+            launch_args = ["--lang=en-US"]
+            if self.google_login_compat:
+                launch_args.append("--disable-blink-features=AutomationControlled")
+            launch_args.extend(["--disable-infobars", *visible_args])
             self._ctx = await asyncio.wait_for(
                 self._pw.chromium.launch_persistent_context(
                     str(self.profile_dir),
@@ -209,8 +214,7 @@ class BrowserManager:
                     locale="en-US",
                     extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
                     chromium_sandbox=True,
-                    args=["--lang=en-US", "--disable-blink-features=AutomationControlled",
-                          "--disable-infobars"] + visible_args,
+                    args=launch_args,
                 ),
                 timeout=60,
             )

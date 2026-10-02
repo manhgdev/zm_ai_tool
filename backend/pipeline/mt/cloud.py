@@ -425,6 +425,7 @@ def translate_cloud(
     source_lang: str = "auto",
     batch_size: int = 8,
     workers: int = 2,
+    model_override: str | None = None,
 ) -> list[str]:
     """OpenAI / DeepSeek / OpenRouter (chat) hoặc Gemini generateContent."""
     from pipeline.core.app_config import provider_credentials, provider_api_keys
@@ -442,7 +443,7 @@ def translate_cloud(
             raise _cloud_error(pid, "API_KEY_MISSING") from None
         raise
     base_url = cred["baseUrl"]
-    model = _translation_model(pid, cred["model"])
+    model = str(model_override or _translation_model(pid, cred["model"]))
     out: list[str] = [""] * len(texts)
     if not texts:
         return out

@@ -349,17 +349,16 @@ export function normalizeFlowAccounts(rows: FlowAccount[]): FlowAccount[] {
   }));
 }
 
+export function isFlowAccountConnected(account: FlowAccount): boolean {
+  return account.status === "online" && Boolean(account.projectId);
+}
+
 export function selectedFlowAccount(accounts: FlowAccount[], accountLabel: string) {
-  if (accountLabel === "random") {
-    return accounts.find((a) => a.status === "online" && (a.plan === "Ultra" || a.plan === "Pro" || a.plan === "Plus"))
-      || accounts.find((a) => a.status === "online")
-      || accounts.find((a) => a.isDefault)
-      || accounts[0];
-  }
-  return accounts.find((a) => a.label === accountLabel)
-    || accounts.find((a) => a.isDefault)
-    || accounts.find((a) => a.status === "online")
-    || accounts[0];
+  const connected = accounts.filter(isFlowAccountConnected);
+  if (accountLabel !== "random") return connected.find((a) => a.label === accountLabel);
+  return connected.find((a) => a.plan === "Ultra" || a.plan === "Pro" || a.plan === "Plus")
+    || connected.find((a) => a.isDefault)
+    || connected[0];
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────

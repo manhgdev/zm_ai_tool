@@ -13,6 +13,7 @@ import datetime as dt
 import hashlib
 import hmac
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -46,6 +47,7 @@ CAPCUT_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 _CAPCUT_PROXY_TARGET_BYTES = 190 * 1024 * 1024
 _AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".wma"}
 _CAPCUT_CACHE_DIR = DATA / "cache" / "capcut-stt"
+_CAPCUT_RAW_DIR = DATA / "capcut-stt-raw"
 _CAPCUT_CHUNK_SECONDS = 15 * 60
 _CAPCUT_CHUNK_WORKERS = 2
 
@@ -123,6 +125,47 @@ def _write_cached_cues(md5: str, source_lang: str, target_lang: str, source: lis
     except OSError:
         # ponytail: cache must never make a successful CapCut result fail; retry next run if disk is unavailable.
         pass
+
+
+def _save_raw_payload(task: dict[str, Any], *, response: dict[str, Any], md5: str,
+                      source_lang: str, target_lang: str,
+                      request: dict[str, Any], filename: str) -> None:
+    """Archive the unfiltered result before parsing; never archive task tokens.
+
+    Each cloud completion (including each audio chunk) gets a separate file.
+    Keep payload strings unchanged, even when they contain invalid JSON.
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+    key = _cache_path(md5, source_lang, target_lang).stem
+    path = _CAPCUT_RAW_DIR / key / f"{now.strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex}.json"
+    temporary = path.with_suffix(".tmp")
+    # The query envelope is retained as returned, except the task token which
+    # is a credential for polling and must never be written to disk.
+    safe_response = json.loads(json.dumps(response, ensure_ascii=False))
+    for item in ((safe_response.get("data") or {}).get("tasks") or []):
+        if isinstance(item, dict):
+            item.pop("token", None)
+    record = {
+        "saved_at": now.isoformat(), "source_md5": md5, "filename": filename,
+        "source_lang": source_lang, "target_lang": target_lang,
+        "task_id": task.get("id"), "request": request,
+        "response": safe_response,
+        "payload": task.get("payload"),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+        logging.getLogger(__name__).info("CapCut raw payload saved: %s", path)
+    except OSError:
+        # ponytail: preserve the usable transcript on disk failure; report the
+        # archive failure rather than claiming the original was saved.
+        logging.getLogger(__name__).warning("Cannot save CapCut raw payload: %s", path, exc_info=True)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _hmac(key: str | bytes, value: str | bytes) -> bytes:
@@ -218,6 +261,7 @@ def _offset_cues(cues: list[dict[str, Any]], offset: float) -> list[dict[str, An
 
 def _transcribe_chunked_audio(
     path: Path, source_lang: str, target_lang: str, *, require_translation: bool = True,
+    force_refresh: bool = False,
     cancelled: Callable[[], bool] | None = None, progress: Callable[[str], None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run CapCut on short audio chunks and restore source-media timecodes."""
@@ -234,6 +278,7 @@ def _transcribe_chunked_audio(
                 progress(f"CapCut: đang nhận dạng đoạn {index + 1}/{len(chunks)}… / transcribing chunk {index + 1}/{len(chunks)}…")
             source, translated = transcribe_and_translate(
                 chunk, source_lang, target_lang, require_translation=require_translation,
+                force_refresh=force_refresh,
                 cancelled=cancelled, progress=progress,
             )
             return index, source, translated
@@ -469,19 +514,20 @@ def _task_status(query: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return task, status
 
 
-def transcribe_and_translate(path: Path, source_lang: str, target_lang: str, *, require_translation: bool = True, cancelled: Callable[[], bool] | None = None, progress: Callable[[str], None] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def transcribe_and_translate(path: Path, source_lang: str, target_lang: str, *, require_translation: bool = True, force_refresh: bool = False, cancelled: Callable[[], bool] | None = None, progress: Callable[[str], None] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Upload one video, ask CapCut STT to translate it, and return timed cues."""
     if not path.is_file():
         raise CapCutSttError("Không tìm thấy video để gửi CapCut")
     source_md5, _ = _file_hashes(path, cancelled)
     cached = _load_cached_cues(source_md5, source_lang, target_lang)
-    if cached and (not require_translation or cached[1]):
+    if cached and not force_refresh and (not require_translation or cached[1]):
         if progress:
             progress("CapCut: dùng kết quả đã lưu, không tải video lên…")
         return cached
     if path.stat().st_size > CAPCUT_MAX_UPLOAD_BYTES:
         source, translated = _transcribe_chunked_audio(
             path, source_lang, target_lang, require_translation=require_translation,
+            force_refresh=force_refresh,
             cancelled=cancelled, progress=progress,
         )
         _write_cached_cues(source_md5, source_lang, target_lang, source, translated)
@@ -493,7 +539,7 @@ def transcribe_and_translate(path: Path, source_lang: str, target_lang: str, *, 
         if progress:
             progress("CapCut: đang nhận dạng và dịch…")
         babi = {"feature_entrance": "editor", "feature_entrance_detail": "editor-elements-captions-subtitle_recognition", "feature_key": "subtitle_recognition", "scenario": "video_editor"}
-        cap_json = {"adjust_endtime": 200, "audio": vid, "audio_type": "vid", "caption_type": 0, "client_request_id": str(uuid.uuid4()), "duration": max(1, duration), "enable_cache": True, "enter_from": "asr", "language": _language(source_lang, default="auto"), "max_lines": 1, "md5": md5, "pack_options": {"need_attribute": True}, "songs_info": [{"end_time": max(1, duration) - 10.334, "id": "", "start_time": 0}], "translation_language": _language(target_lang, default="vi-VN"), "use_translation": True, "words_per_line": 15}
+        cap_json = {"adjust_endtime": 200, "audio": vid, "audio_type": "vid", "caption_type": 0, "client_request_id": str(uuid.uuid4()), "duration": max(1, duration), "enable_cache": not force_refresh, "enter_from": "asr", "language": _language(source_lang, default="auto"), "max_lines": 1, "md5": md5, "pack_options": {"need_attribute": True}, "songs_info": [{"end_time": max(1, duration) - 10.334, "id": "", "start_time": 0}], "translation_language": _language(target_lang, default="vi-VN"), "use_translation": True, "words_per_line": 15}
         created = _post_task(client, "/lv/v1/common_task/new", {"bind_id": str(uuid.uuid4()).upper(), "can_queue": True, "enter_from": "asr", "tasks": [{"context": str(uuid.uuid4()), "payload": compact_json({"cap_json": cap_json}), "req_key": "cc_audio_subtitle_asr", "task_version": "v3"}]}, device, babi=babi, appid=False)
         tasks = ((created.get("data") or {}).get("tasks") or [])
         if not tasks or not tasks[0].get("id") or not tasks[0].get("token"):
@@ -533,6 +579,10 @@ def transcribe_and_translate(path: Path, source_lang: str, target_lang: str, *, 
                 progress(_poll_progress_message(status, elapsed, polls, cloud_percent))
                 last_report_at, last_status, last_percent = elapsed, status, cloud_percent
             if status == "success":
+                _save_raw_payload(
+                    task, response=query, md5=source_md5, source_lang=source_lang, target_lang=target_lang,
+                    request=cap_json, filename=path.name,
+                )
                 source, translated = subtitle_cues(_task_payload(task))
                 if not source:
                     raise CapCutSttError("CapCut không trả câu phụ đề có timecode")

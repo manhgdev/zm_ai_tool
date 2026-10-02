@@ -107,7 +107,6 @@ class BrowserManager:
                 accept_downloads=True,
                 args=[
                     "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
                     "--disable-infobars",
                 ],
             )

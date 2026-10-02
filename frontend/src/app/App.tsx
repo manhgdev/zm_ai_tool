@@ -93,7 +93,8 @@ export default function App() {
   const [appMode, setAppMode] = useState<AppMode>(loadAppMode)
   const [srtImageInitialMediaFolder, setSrtImageInitialMediaFolder] = useState('')
   const [srtImageInitialCompose, setSrtImageInitialCompose] = useState<Record<string, unknown> | null>(null)
-  const tabPrev = useRef<AppMode[]>([])
+  const tabPrev = useRef<Array<{ mode: AppMode; search: string }>>([])
+  const modeSearch = useRef<Partial<Record<AppMode, string>>>({})
   const [hw, setHw] = useState<HardwareInfo>({ label: 'CPU', accel: 'cpu' })
   const [voices, setVoices] = useState<{ id: string; name: string; previewUrl?: string }[]>([
     { id: DEFAULT_CAPCUT_VOICE, name: 'CapCut · Cô Gái Hoạt Ngôn' },
@@ -291,9 +292,18 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
-  const navigateToMode = (mode: AppMode, fromBack = false) => {
-    if (mode !== appMode && !fromBack) tabPrev.current.push(appMode)
-    const destination = appModePath(mode) + (mode === 'flow' ? window.location.search : '')
+  const navigateToMode = (mode: AppMode, fromBack = false, restoreSearch = '') => {
+    if (mode !== appMode && !fromBack) {
+      modeSearch.current[appMode] = window.location.search
+      tabPrev.current.push({ mode: appMode, search: window.location.search })
+    }
+    const previous = tabPrev.current[tabPrev.current.length - 1]
+    const search = mode === 'flow'
+      ? window.location.search
+      : (fromBack && mode === 'tts'
+        ? restoreSearch || (previous?.mode === 'tts' ? previous.search : '')
+        : modeSearch.current[mode] || '')
+    const destination = appModePath(mode) + search
     if (fromBack) {
       window.history.replaceState({ appMode: mode }, '', destination)
     } else if (window.location.pathname !== destination) {
@@ -305,8 +315,8 @@ export default function App() {
 
   const goBackTab = () => {
     const prev = tabPrev.current.pop()
-    if (prev && prev !== appMode) {
-      navigateToMode(prev, true)
+    if (prev && prev.mode !== appMode) {
+      navigateToMode(prev.mode, true, prev.search)
       return
     }
     if (appMode !== 'clone') navigateToMode('clone', true)

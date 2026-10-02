@@ -32,6 +32,7 @@ import {
 import type { EngineStatus, HistoryItem, Voice } from './tts.types'
 import { voiceDisplayName, voiceEngineBucket, voiceMetadata } from './lib/voiceDisplay'
 import { SRT_STYLE_OPTIONS, looksLikeSrt, srtPreviewLines } from './lib/srt'
+import type { TranscriptTimedStyles } from './lib/transcriptSrt'
 import { downloadWavHref, triggerDownload as startDownload } from './lib/download'
 import { HISTORY_MAX, fmtDur, previewSampleFor } from './lib/format'
 import {
@@ -78,6 +79,26 @@ type TtsRealtimeProgress = {
   done?: boolean
   resultJobId?: string
   text?: string
+  srt?: string
+  srt_styles?: TranscriptTimedStyles['styles']
+  translated_text?: string
+  translated_srt?: string
+  translation_error?: string
+}
+
+const TRANSCRIBE_FILE_DB = 'zm-ai-tool-transcribe-file-v1'
+async function openTranscribeDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => { const r = indexedDB.open(TRANSCRIBE_FILE_DB, 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error) })
+}
+async function persistTranscribeFile(file: File | null) {
+  if (!('indexedDB' in window)) return
+  const db = await openTranscribeDb(); const value = file ? { name: file.name, type: file.type, bytes: await file.arrayBuffer() } : null
+  await new Promise<void>((resolve, reject) => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').put(value, 'selected'); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error) }); db.close()
+}
+async function loadTranscribeFile(): Promise<File | null> {
+  if (!('indexedDB' in window)) return null
+  const db = await openTranscribeDb(); const value = await new Promise<any>((resolve, reject) => { const r = db.transaction('files').objectStore('files').get('selected'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error) }); db.close()
+  return value ? new File([value.bytes], value.name, { type: value.type }) : null
 }
 
 export default function TtsStudio({
@@ -247,6 +268,20 @@ export default function TtsStudio({
       ttsWaitersRef.current.delete(jobId)
       resolve(progress)
     })
+    const poll = window.setInterval(() => {
+      void api.ttsStudioJobProgress(jobId).then((progress) => {
+        if (Number(progress.pct) > 0 && (!activeJobIdRef.current || activeJobIdRef.current === jobId)) {
+          setBusyProgress(Math.max(1, Number(progress.pct)))
+        }
+        if (progress.message && (!activeJobIdRef.current || activeJobIdRef.current === jobId)) {
+          setBusyCustomMessage(progress.message)
+        }
+        if (progress.done || progress.error) {
+          window.clearInterval(poll)
+          ttsWaitersRef.current.get(jobId)?.(progress)
+        }
+      }).catch(() => undefined)
+    }, 2000)
   }), [locale])
   const [duration, setDuration] = useState<number>(() => initialActiveJob?.duration || 0)
   const [playbackTime, setPlaybackTime] = useState(0)
@@ -264,8 +299,8 @@ export default function TtsStudio({
   const [cloneName, setCloneName] = useState('')
   const [cloneFile, setCloneFile] = useState<File | null>(null)
   const [transcribeFile, setTranscribeFile] = useState<File | null>(null)
-  const [transcribeLang, setTranscribeLang] = useState('auto')
-  const [transcribeEngine, setTranscribeEngine] = useState<TranscribeEngine>('whisper')
+  const [transcribeLang, setTranscribeLang] = useState(() => { try { return localStorage.getItem('zm-ai-tool:tts-transcribe-lang:v1') || 'auto' } catch { return 'auto' } })
+  const [transcribeEngine, setTranscribeEngine] = useState<TranscribeEngine>(() => { try { const value = localStorage.getItem('zm-ai-tool:tts-transcribe-engine:v1'); return value === 'capcut' || value === 'paddleocr' || value === 'subtitle' ? value : 'whisper' } catch { return 'whisper' } })
   const [transcribeResult, setTranscribeResult] = useState(() => {
     try {
       return localStorage.getItem(TTS_TRANSCRIBE_RESULT_LS_KEY) || ''
@@ -273,6 +308,44 @@ export default function TtsStudio({
       return ''
     }
   })
+  const [transcribeSrt, setTranscribeSrt] = useState(() => { try { return localStorage.getItem('zm-ai-tool:tts-transcribe-srt:v1') || '' } catch { return '' } })
+  const [transcribeTimedStyles, setTranscribeTimedStyles] = useState<TranscriptTimedStyles | null>(() => {
+    try { return JSON.parse(localStorage.getItem('zm-ai-tool:tts-transcribe-timed-styles:v1') || 'null') } catch { return null }
+  })
+  useEffect(() => {
+    try {
+      if (transcribeTimedStyles) localStorage.setItem('zm-ai-tool:tts-transcribe-timed-styles:v1', JSON.stringify(transcribeTimedStyles))
+      else localStorage.removeItem('zm-ai-tool:tts-transcribe-timed-styles:v1')
+    } catch { /* storage unavailable */ }
+  }, [transcribeTimedStyles])
+  const [clearTranscribeOpen, setClearTranscribeOpen] = useState(false)
+  const [transcribeTranslation, setTranscribeTranslation] = useState(() => { try { return JSON.parse(localStorage.getItem('zm-ai-tool:tts-transcribe-translation:v1') || 'null') || { enabled: false, targetLang: 'vi', translator: 'openai', model: '' } } catch { return { enabled: false, targetLang: 'vi', translator: 'openai', model: '' } } })
+  const [translatedResult, setTranslatedResult] = useState(() => localStorage.getItem('zm-ai-tool:tts-translated-text:v1') || '')
+  const [translatedSrt, setTranslatedSrt] = useState(() => localStorage.getItem('zm-ai-tool:tts-translated-srt:v1') || '')
+  const clearTranscribeResults = useCallback(() => {
+    setTranscribeResult('')
+    setTranscribeSrt('')
+    setTranscribeTimedStyles(null)
+    setTranslatedResult('')
+    setTranslatedSrt('')
+    try {
+      localStorage.removeItem(TTS_TRANSCRIBE_RESULT_LS_KEY)
+      localStorage.removeItem('zm-ai-tool:tts-transcribe-srt:v1')
+      localStorage.removeItem('zm-ai-tool:tts-transcribe-timed-styles:v1')
+      localStorage.removeItem('zm-ai-tool:tts-translated-text:v1')
+      localStorage.removeItem('zm-ai-tool:tts-translated-srt:v1')
+    } catch { /* storage unavailable */ }
+  }, [])
+  const handleTranscribeEngineChange = useCallback((engine: TranscribeEngine) => {
+    setTranscribeEngine(engine)
+    // Changing the source is a view/setting change, not a destructive cache action.
+    // Existing transcript, SRT, translation and selected file stay available until
+    // the user explicitly clears cache or a new recognition completes.
+  }, [])
+  useEffect(() => { try { localStorage.setItem('zm-ai-tool:tts-transcribe-translation:v1', JSON.stringify(transcribeTranslation)); localStorage.setItem('zm-ai-tool:tts-translated-text:v1', translatedResult); localStorage.setItem('zm-ai-tool:tts-translated-srt:v1', translatedSrt) } catch { /* storage unavailable */ } }, [transcribeTranslation, translatedResult, translatedSrt])
+  useEffect(() => { void loadTranscribeFile().then((file) => { if (file) setTranscribeFile(file) }).catch(() => undefined) }, [])
+  const onTranscribeFileChange = useCallback((file: File | null) => { setTranscribeFile(file); void persistTranscribeFile(file).catch(() => undefined) }, [])
+  useEffect(() => { try { localStorage.setItem('zm-ai-tool:tts-transcribe-lang:v1', transcribeLang); localStorage.setItem('zm-ai-tool:tts-transcribe-engine:v1', transcribeEngine); localStorage.setItem('zm-ai-tool:tts-transcribe-srt:v1', transcribeSrt) } catch { /* storage unavailable */ } }, [transcribeLang, transcribeEngine, transcribeSrt])
   const [cloneTags, setCloneTags] = useState<VoiceTagLabel[]>([])
   const [previewSample, setPreviewSample] = useState('')
   const [srtRaw, setSrtRaw] = useState(() => {
@@ -1001,7 +1074,7 @@ export default function TtsStudio({
     setError('')
     setProgressMinimized(false)
     try {
-      const started = await api.ttsStudioTranscribe(transcribeFile, transcribeLang, transcribeEngine)
+      const started = await api.ttsStudioTranscribe(transcribeFile, transcribeLang, transcribeEngine, transcribeTranslation)
       const jid = started.id || started.job_id
       activeJobIdRef.current = jid
       cancelledJobIdsRef.current.delete(jid)
@@ -1011,6 +1084,11 @@ export default function TtsStudio({
       const text = String(p.text || '').trim()
       if (!text) throw new Error(t('Không nhận dạng được lời thoại', 'Could not transcribe speech'))
       setTranscribeResult(text)
+      setTranscribeSrt(String(p.srt || ''))
+      setTranscribeTimedStyles(p.srt_styles ? { sourceSrt: String(p.srt || ''), styles: p.srt_styles } : null)
+      setTranslatedResult(String(p.translated_text || ''))
+      setTranslatedSrt(String(p.translated_srt || ''))
+      if (p.translation_error) toast.error(t('Chép lời xong nhưng dịch thất bại: ', 'Transcription complete but translation failed: ') + p.translation_error)
       setBusyProgress(100)
       setBusyCustomMessage(t('Đã chép lời xong!', 'Transcription complete!'))
       toast.success(t('Đã chép lời xong!', 'Transcription complete!'))
@@ -1766,21 +1844,41 @@ export default function TtsStudio({
             engine={transcribeEngine}
             busy={busy}
             resultText={transcribeResult}
-            onFileChange={setTranscribeFile}
+            resultSrt={transcribeSrt}
+            timedStyles={transcribeTimedStyles}
+            translation={transcribeTranslation}
+            onTranslationChange={setTranscribeTranslation}
+            translatedText={translatedResult}
+            translatedSrt={translatedSrt}
+            onTranslatedTextChange={setTranslatedResult}
+            onTranslatedSrtChange={setTranslatedSrt}
+            onFileChange={onTranscribeFileChange}
             onLangChange={setTranscribeLang}
-            onEngineChange={setTranscribeEngine}
+            onEngineChange={handleTranscribeEngineChange}
             onSubmit={() => void onTranscribe()}
             onResultChange={setTranscribeResult}
-            onApplyToTts={() => {
-              setText(transcribeResult)
+            onSrtChange={setTranscribeSrt}
+            onClearCache={() => setClearTranscribeOpen(true)}
+            onApplyToTts={(format, content) => {
+              setAutoSplit(true)
+              if (format === 'srt') {
+                setSrtRaw(content)
+                setKeepTimeline(true)
+                setInputMode('srt')
+              } else {
+                setText(content)
+                setInputMode('text')
+              }
               try {
-                localStorage.setItem(TTS_TEXT_LS_KEY, transcribeResult)
+                if (format === 'srt') localStorage.setItem(TTS_SRT_LS_KEY, content)
+                else localStorage.setItem(TTS_TEXT_LS_KEY, content)
               } catch {
                 /* ignore */
               }
               go('overview')
-              toast.success(t('Đã đưa lời vào Tạo giọng nói', 'Sent transcript to Create voice'))
+              toast.success(t(format === 'srt' ? 'Đã đưa SRT vào Tạo giọng nói' : 'Đã đưa lời vào Tạo giọng nói', format === 'srt' ? 'Sent SRT to Create voice' : 'Sent transcript to Create voice'))
             }}
+            onRewrite={(text) => { localStorage.setItem('zm-ai-tool:chat-prefill:v1', `${t('Viết lại nội dung sau cho tự nhiên, rõ ràng, giữ nguyên ý và ngôn ngữ. Chỉ trả về bản viết lại, không giải thích:', 'Rewrite the following naturally and clearly, preserving meaning and language. Return only the rewritten text, without explanation:')}\n\n${text}`); window.location.href = '/chat' }}
           />
         )}
 
@@ -2663,6 +2761,16 @@ export default function TtsStudio({
         </div>
       )}
 
+      <ConfirmDialog
+        open={clearTranscribeOpen}
+        title={t('Xóa cache chép lời', 'Clear transcription cache')}
+        message={t('Xóa kết quả chép lời và SRT cũ? File đã chọn sẽ được giữ lại.', 'Clear the old transcript and SRT? The selected file will be kept.')}
+        confirmLabel={t('Xóa cache', 'Clear cache')}
+        cancelLabel={t('Hủy', 'Cancel')}
+        danger
+        onCancel={() => setClearTranscribeOpen(false)}
+        onConfirm={() => { clearTranscribeResults(); setClearTranscribeOpen(false); toast.success(t('Đã xóa cache chép lời', 'Transcription cache cleared')) }}
+      />
       <ConfirmDialog
         open={deleteHistoryOpen}
         title={t('Xóa toàn bộ lịch sử tạo giọng?', 'Delete all generated voice history?')}

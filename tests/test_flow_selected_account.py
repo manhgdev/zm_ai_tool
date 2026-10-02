@@ -9,6 +9,38 @@ from pipeline.flow.service import FlowService
 
 
 class TestFlowSelectedAccount(unittest.TestCase):
+    def test_disconnected_accounts_are_rejected_for_create_retry_and_random(self):
+        for status, project in [("reconnect", "project"), ("connecting", "project"), ("online", "")]:
+            with self.subTest(status=status, project=project):
+                account = {"id": "a", "label": "A", "status": status, "projectId": project, "plan": "Pro", "credits": 100}
+                job = {"id": "j", "accountId": "a", "kind": "image", "settings": {}}
+                def get_row(table, row_id):
+                    return job if table == "jobs" else account
+                with patch("pipeline.flow.store.get_row", side_effect=get_row), patch(
+                    "pipeline.flow.store.list_rows", side_effect=lambda table: [account] if table == "accounts" else []
+                ), patch("pipeline.flow.store.put_rows") as put, patch("threading.Thread.start") as start:
+                    service = FlowService()
+                    with self.assertRaisesRegex(ValueError, "FLOW_LOGIN_REQUIRED"):
+                        service.enqueue({"prompts": ["scene"], "kind": "image", "accountId": "a"})
+                    with self.assertRaisesRegex(ValueError, "FLOW_LOGIN_REQUIRED"):
+                        service.retry("j")
+                    self.assertIsNone(service._pick_eligible_account())
+                    with self.assertRaisesRegex(ValueError, "FLOW_NO_ONLINE_ACCOUNTS"):
+                        service.retry("j", {"accountId": "random"})
+                    put.assert_not_called()
+                    start.assert_not_called()
+
+    def test_random_retry_does_not_bypass_eligibility_when_picker_is_empty(self):
+        job = {"id": "j", "accountId": "a", "kind": "image", "settings": {}}
+        with patch("pipeline.flow.store.get_row", return_value=job), patch.object(
+            FlowService, "_pick_eligible_account", return_value=None
+        ), patch("pipeline.flow.store.list_rows", return_value=[{"id": "a", "status": "online", "credits": 0}]), patch(
+            "threading.Thread.start"
+        ) as start:
+            with self.assertRaisesRegex(ValueError, "FLOW_NO_ONLINE_ACCOUNTS"):
+                FlowService().retry("j", {"accountId": "random"})
+            start.assert_not_called()
+
     def test_selected_quota_account_is_rejected_before_enqueue(self):
         import time
         service = FlowService()

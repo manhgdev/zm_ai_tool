@@ -264,6 +264,11 @@ def set_job_complete(
     *,
     result_job_id: str = "",
     text: str = "",
+    srt: str = "",
+    srt_styles: dict[str, str] | None = None,
+    translated_text: str = "",
+    translated_srt: str = "",
+    translation_error: str = "",
 ) -> None:
     """Publish completion for the request ID, including cache-hit requests."""
     if not job_id:
@@ -279,6 +284,16 @@ def set_job_complete(
         }
         if text:
             payload["text"] = text
+        if srt:
+            payload["srt"] = srt
+        if srt_styles is not None:
+            payload["srt_styles"] = srt_styles
+        if translated_text:
+            payload["translated_text"] = translated_text
+        if translated_srt:
+            payload["translated_srt"] = translated_srt
+        if translation_error:
+            payload["translation_error"] = translation_error
         _job_progress[job_id] = payload
         _running.pop(job_id, None)
     _publish_job_progress(job_id)

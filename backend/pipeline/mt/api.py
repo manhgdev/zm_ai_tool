@@ -29,6 +29,7 @@ def translate_segments(
     ollama_model: str = "minimax-m3:cloud",
     ollama_local_tier: str = "balanced",
     durations: list[float] | None = None,
+    translation_model: str | None = None,
 ) -> list[str]:
     """google | mymemory | tiktok | ollama | openai | gemini | deepseek | openrouter | grok | groq | nvidia.
 
@@ -157,6 +158,7 @@ def translate_segments(
             project_id=project_id,
             source_lang=source_lang,
             workers=w,
+            model_override=translation_model,
         )
         out = _clean_all(raw)
         if any(_needs_google_fallback(s, t, target_lang=target_lang) for s, t in zip(texts, out)):

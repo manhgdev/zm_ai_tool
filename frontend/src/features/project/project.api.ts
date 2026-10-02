@@ -327,10 +327,11 @@ export const api = {
       15_000,
     ),
 
-  ttsStudioTranscribe: async (file: File, lang = 'auto', engine = 'whisper') => {
+  ttsStudioTranscribe: async (file: File, lang = 'auto', engine = 'whisper', translation?: { enabled: boolean; targetLang: string; translator: string; model: string }) => {
     const fd = new FormData()
     fd.append('file', file)
     const q = new URLSearchParams({ lang, engine })
+    if (translation?.enabled) { q.set('translate', 'true'); q.set('target_lang', translation.targetLang); q.set('translator', translation.translator); q.set('translation_model', translation.model) }
     return fetchJson<{ id: string; job_id: string; running: boolean; engine?: string }>(
       `${base}/tts/studio/transcribe?${q.toString()}`,
       { method: 'POST', body: fd },

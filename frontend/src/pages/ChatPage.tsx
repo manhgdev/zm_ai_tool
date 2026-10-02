@@ -79,6 +79,10 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsError, setModelsError] = useState(false)
   const [input, setInput] = useState('')
+  useEffect(() => {
+    const prefill = localStorage.getItem('zm-ai-tool:chat-prefill:v1')
+    if (prefill) { setInput(prefill); localStorage.removeItem('zm-ai-tool:chat-prefill:v1') }
+  }, [])
   const [busy, setBusy] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [error, setError] = useState('')
