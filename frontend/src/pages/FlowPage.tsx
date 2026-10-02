@@ -473,6 +473,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     } catch { }
   }, [settings]);
   useEffect(() => {
+    const quotaFallback = jobs.find((job) =>
+      job.kind === "image"
+      && ((String(job.settings?.model || "") === "Nano Banana Pro"
+        && /FLOW_QUOTA_EXHAUSTED|hạn mức sử dụng|usage limit|generation limit|daily limit|monthly limit/i.test(String(job.error || "")))
+        || (job.quotaModelFallbackApplied === true && String(job.settings?.model || "") === "Nano Banana 2"))
+    );
+    if (!quotaFallback || settings.imageModel === "Nano Banana 2") return;
+    setSettings((current) => ({ ...current, imageModel: "Nano Banana 2", model: createKind === "image" ? "Nano Banana 2" : current.model }));
+  }, [createKind, jobs, settings.imageModel]);
+  useEffect(() => {
     try {
       localStorage.setItem(TAB_KEY, tab);
     } catch { }

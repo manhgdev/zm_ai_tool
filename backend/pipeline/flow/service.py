@@ -5126,6 +5126,23 @@ class FlowService:
                 classified_error = _classify_visible_flow_error(error)
                 if classified_error.startswith("FLOW_QUOTA_EXHAUSTED:"):
                     error = classified_error
+            quota_model_fallback = (
+                error.startswith("FLOW_QUOTA_EXHAUSTED:")
+                and str((current.get("settings") or {}).get("model") or "") == "Nano Banana Pro"
+                and str(current.get("kind") or "") == "image"
+                and not bool(current.get("quotaModelFallbackApplied"))
+            )
+            if quota_model_fallback:
+                fallback_settings = {**dict(current.get("settings") or {}), "model": "Nano Banana 2"}
+                store.patch_row("accounts", account["id"], {
+                    "preferredImageModel": "Nano Banana 2",
+                    "updatedAt": time.time(),
+                })
+                store.patch_row("jobs", job_id, {"quotaModelFallbackApplied": True})
+                with self._account_condition:
+                    self._running_jobs.discard(job_id)
+                self.retry(job_id, {"settings": fallback_settings, "accountId": account["id"]})
+                return
             action = "action_required" if needs_login else "failed"
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")
             store.patch_row("jobs", job_id, {"status": action, "stage": action, "error": error, "updatedAt": time.time()})

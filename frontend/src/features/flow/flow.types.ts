@@ -28,6 +28,7 @@ export type FlowJob = {
   accountId?: string;
   randomAccount?: boolean;
   error?: string | null;
+  quotaModelFallbackApplied?: boolean;
   seriesContext?: { seriesTitle?: string; episodeIndex?: number; sceneIndex?: number; artifact?: string };
   settings: {
     model: string;
