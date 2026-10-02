@@ -10,6 +10,17 @@ export type FlowExplain = {
   code: string;
 };
 
+/** Keep developer detail useful: remove Flow DOM dumps while retaining code and cause. */
+export function technicalFlowDetail(message: string | null | undefined): string {
+  const raw = String(message || "").trim();
+  if (!raw) return "";
+  const code = codeOf(raw);
+  const detail = raw.replace(/^FLOW_[A-Z0-9_]+:\s*/i, "").replace(/\s+/g, " ").trim();
+  // Keep the original cause for copy/paste; only collapse obvious UI dumps and cap size.
+  const compact = detail.length > 1200 ? `${detail.slice(0, 1200)} …[truncated]` : detail;
+  return `${code}: ${compact}`;
+}
+
 type LocaleFn = (vi: string, en: string) => string;
 
 const STAGE_LABELS: Record<string, [string, string]> = {

@@ -26,6 +26,7 @@ import {
   flowLimitPopupCopy,
   flowStageLabel,
   formatFlowExplain,
+  technicalFlowDetail,
   isFlowLimitError,
 } from "@/features/flow/flow.explain";
 import {
@@ -2226,14 +2227,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           {formatFlowExplain(explainFlowError(account.suspendReason), t).title}
                         </div>
                       )}
-                      <details><summary>{t("Chi tiết kỹ thuật", "Technical details")}</summary><pre style={{ whiteSpace: "pre-wrap" }}>{account.suspendReason}</pre></details>
+                      <details><summary>{t("Chi tiết để copy cho AI/dev", "Copy details for AI/dev")}</summary>
+                        <pre style={{ whiteSpace: "pre-wrap" }}>{technicalFlowDetail(account.suspendReason)}</pre>
+                        <button type="button" onClick={() => void copyText(technicalFlowDetail(account.suspendReason))}>{t("Copy lỗi", "Copy error")}</button>
+                      </details>
                     </div>
                   )}
 
                   {account.lastModelFallback && <details>
                     <summary>{t("Pro hết hạn mức → Nano Banana 2", "Pro quota reached → Nano Banana 2")}</summary>
                     <p>{t("Nano Banana Pro đã đạt hạn mức. Đã chuyển sang Nano Banana 2 và lên lịch tạo lại.", "Nano Banana Pro reached its quota. Switched to Nano Banana 2 and scheduled a retry.")}</p>
-                    <pre style={{ whiteSpace: "pre-wrap" }}>{account.lastModelFallback.rawError}</pre>
+                    <pre style={{ whiteSpace: "pre-wrap" }}>{technicalFlowDetail(account.lastModelFallback.rawError)}</pre>
+                    <button type="button" onClick={() => void copyText(technicalFlowDetail(account.lastModelFallback?.rawError))}>{t("Copy lỗi", "Copy error")}</button>
                   </details>}
                   <div className="flow-account-credits">
                     <div className="flow-account-credits-head">
