@@ -1180,7 +1180,7 @@ class FlowService:
             r = str(reason)
             if re.search(r"AUTOMATION_BLOCKED|FLOW_AUTOMATION_BLOCKED|abnormal activity", r, re.I):
                 duration_seconds = _COOLDOWN_BOT_S
-            elif re.search(r"FLOW_QUOTA_EXHAUSTED|quota|hết lượt|hết hạn mức|usage limit|generation limit|daily limit|monthly limit", r, re.I):
+            elif re.search(r"FLOW_QUOTA_EXHAUSTED|quota|hết lượt|hạn mức|usage limit|generation limit|daily limit|monthly limit", r, re.I):
                 duration_seconds = _COOLDOWN_QUOTA_S
             elif re.search(r"HTTP\s*429|rate.?limit|too many requests", r, re.I):
                 duration_seconds = _COOLDOWN_RATELIMIT_S
@@ -5121,9 +5121,14 @@ class FlowService:
                 )
                 return
             needs_login = _session_needs_login(exc)
+            error = str(exc)
+            if not needs_login and not error.startswith("FLOW_QUOTA_EXHAUSTED:"):
+                classified_error = _classify_visible_flow_error(error)
+                if classified_error.startswith("FLOW_QUOTA_EXHAUSTED:"):
+                    error = classified_error
             action = "action_required" if needs_login else "failed"
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")
-            store.patch_row("jobs", job_id, {"status": action, "stage": action, "error": str(exc), "updatedAt": time.time()})
+            store.patch_row("jobs", job_id, {"status": action, "stage": action, "error": error, "updatedAt": time.time()})
             if needs_login:
                 # Kick the single shared account login immediately — do not
                 # wait for the outer worker loop (Bearer missing = re-login).

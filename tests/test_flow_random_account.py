@@ -258,6 +258,19 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
             self.assertAlmostEqual(patched["suspendedUntil"], now + _COOLDOWN_QUOTA_S, delta=5)
             self.assertIn("QUOTA_EXHAUSTED", patched["suspendReason"])
 
+    def test_suspend_account_raw_usage_limit(self):
+        import time
+        acc = dict(self.mock_accounts[1])
+        with patch("pipeline.flow.store.get_row", return_value=acc), \
+             patch("pipeline.flow.store.patch_row") as mock_patch:
+            now = time.time()
+            self.service.suspend_account("acc_pro", "FLOW: bạn đã đạt đến hạn mức sử dụng")
+            mock_patch.assert_called_once()
+            self.assertAlmostEqual(
+                mock_patch.call_args[0][2]["suspendedUntil"],
+                now + _COOLDOWN_QUOTA_S, delta=5,
+            )
+
     def test_clear_account_suspension(self):
         acc = dict(self.mock_accounts[1], suspendedUntil=9999999999, suspendReason="Some error")
         with patch("pipeline.flow.store.get_row", return_value=acc), \
