@@ -9,6 +9,8 @@ export type ImageMode = "text" | "edit" | "reference";
 export type VideoMode = "text" | "frame";
 export type PromptInputType = "prompt" | "txt" | "csv" | "json";
 
+export type FlowModelFallback = { id: string; jobId: string; accountId: string; fromModel: string; toModel: string; rawError: string; createdAt: number };
+
 export type FlowJob = {
   id: string;
   index: number;
@@ -29,6 +31,7 @@ export type FlowJob = {
   randomAccount?: boolean;
   error?: string | null;
   quotaModelFallbackApplied?: boolean;
+  modelFallback?: FlowModelFallback;
   seriesContext?: { seriesTitle?: string; episodeIndex?: number; sceneIndex?: number; artifact?: string };
   settings: {
     model: string;
@@ -86,6 +89,7 @@ export type FlowAccount = {
   capabilityStatus?: "verified" | "stale" | "unknown";
   capabilitySyncedAt?: number | null;
   preferredImageModel?: string;
+  lastModelFallback?: FlowModelFallback;
   capabilityError?: string;
   suspendedUntil?: number | null;
   suspendReason?: string | null;

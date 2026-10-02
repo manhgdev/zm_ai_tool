@@ -660,11 +660,9 @@ def _normalize_catalog_settings(
     """Select only model/ratio/duration values verified for this account."""
     section = _catalog_section(account, kind)
     original_settings = settings
-    if (kind == "image" and account.get("preferredImageModel") == "Nano Banana 2"
-            and settings.get("model") in {"Nano Banana Pro", "Nano Banana 2"}):
-        settings = {**settings, "model": "Nano Banana 2"}
-        # A cached Pro-only catalog must not undo the quota fallback.
-        if not any(item.get("name") == "Nano Banana 2" for item in section.get("models", []) if isinstance(item, dict)):
+    if kind == "image" and settings.get("model") in _IMAGE_UI_MODELS:
+        # The live selector verifies known image models; a stale catalog must not replace them.
+        if not any(item.get("name") == settings.get("model") for item in section.get("models", []) if isinstance(item, dict)):
             section = {}
     models = [item for item in section.get("models", []) if isinstance(item, dict) and item.get("name")]
     if not models:
@@ -3170,7 +3168,9 @@ class FlowService:
                 self.retry(job_id, {"accountId": account_id})
             elif current_job.get("status") in {"failed", "action_required"}:
                 err_msg = str(current_job.get("error") or "Unknown error")
-                if current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
+                if current_job.get("quotaModelFallbackApplied") and "FLOW_QUOTA_EXHAUSTED" in err_msg:
+                    self.suspend_account(account_id, err_msg)
+                elif current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
                     self._try_fallback_account(job_id, account_id, err_msg)
                 elif re.search(r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED", err_msg, re.I):
                     self.suspend_account(account_id, err_msg)
@@ -5142,17 +5142,7 @@ class FlowService:
                 and not bool(current.get("quotaModelFallbackApplied"))
             )
             if quota_model_fallback:
-                fallback_settings = {**dict(current.get("settings") or {}), "model": "Nano Banana 2"}
-                store.patch_row("accounts", account["id"], {
-                    "preferredImageModel": "Nano Banana 2",
-                    "updatedAt": time.time(),
-                })
-                store.patch_row("jobs", job_id, {
-                    "quotaModelFallbackApplied": True,
-                    "settings": fallback_settings,
-                    "status": "processing", "stage": "model_fallback",
-                    "error": None, "updatedAt": time.time(),
-                })
+                self._apply_image_quota_fallback(job_id, error)
                 return
             action = "action_required" if needs_login else "failed"
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")
@@ -5193,6 +5183,36 @@ class FlowService:
         finally:
             if browser:
                 await browser.stop()
+
+    def _apply_image_quota_fallback(self, job_id: str, error: str) -> None:
+        with self._account_condition:
+            current = store.get_row("jobs", job_id) or {}
+            if not current or current.get("status") == "cancelled" or job_id in self._cancelled:
+                return
+            account_id = current["accountId"]
+            event = {
+                "id": uuid.uuid4().hex, "jobId": job_id, "accountId": account_id,
+                "randomAccount": bool(current.get("randomAccount")),
+                "fromModel": "Nano Banana Pro", "toModel": "Nano Banana 2",
+                "rawError": error, "createdAt": time.time(),
+            }
+            for row in store.list_rows("jobs"):
+                is_current = row["id"] == job_id
+                if not is_current and not (
+                    row.get("accountId") == account_id and row.get("status") == "queued"
+                    and row.get("kind") == "image"
+                    and (row.get("settings") or {}).get("model") == "Nano Banana Pro"
+                ):
+                    continue
+                patch = {"settings": {**dict(row.get("settings") or {}), "model": "Nano Banana 2"},
+                         "updatedAt": time.time()}
+                if is_current:
+                    patch.update({"quotaModelFallbackApplied": True, "modelFallback": event,
+                                  "status": "processing", "stage": "model_fallback", "error": None})
+                store.patch_row("jobs", row["id"], patch)
+            store.patch_row("accounts", account_id, {"lastModelFallback": event, "updatedAt": time.time()})
+            self._log("warning", "image_model_fallback", job_id=job_id, account_id=account_id,
+                      message=error, details=event)
 
     def _output_folder(self, job: dict[str, Any], *, create: bool = True) -> Path:
         """Return ``flow/<kind>/<user-name>`` without hidden job folders."""

@@ -151,6 +151,9 @@ function applyAccountCapabilities(
   const selected = models.find((item) => item.name === requestedModel)
     || models.find((item) => item.name === section?.defaultModel)
     || models[0];
+  if (kind === "image" && FLOW_IMAGE_MODELS.some((name) => name === requestedModel) && selected.name !== requestedModel) {
+    return settingsWithSelectedModel(current, kind, requestedModel);
+  }
   const ratioKey = kind === "image" ? "imageRatio" : "ratio";
   const ratio = selected.ratios.includes(current[ratioKey])
     ? current[ratioKey]
@@ -473,15 +476,20 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     } catch { }
   }, [settings]);
   useEffect(() => {
-    const quotaFallback = jobs.find((job) =>
-      job.kind === "image"
-      && ((String(job.settings?.model || "") === "Nano Banana Pro"
-        && /FLOW_QUOTA_EXHAUSTED|hạn mức sử dụng|usage limit|generation limit|daily limit|monthly limit/i.test(String(job.error || "")))
-        || (job.quotaModelFallbackApplied === true && String(job.settings?.model || "") === "Nano Banana 2"))
-    );
-    if (!quotaFallback || settings.imageModel === "Nano Banana 2") return;
-    setSettings((current) => ({ ...current, imageModel: "Nano Banana 2", model: createKind === "image" ? "Nano Banana 2" : current.model }));
-  }, [createKind, jobs, settings.imageModel]);
+    const events = [...jobs.map((job) => job.modelFallback), ...accounts.map((account) => account.lastModelFallback)]
+      .filter((event) => event?.id && event.fromModel === "Nano Banana Pro" && event.toModel === "Nano Banana 2");
+    try {
+      const key = "zm-flow-veo:model-fallback-seen:v1";
+      const seen = new Set<string>(JSON.parse(localStorage.getItem(key) || "[]"));
+      const fresh = events.filter((event) => event && !seen.has(event.id));
+      if (!fresh.length) return;
+      const next = { ...settings, imageModel: "Nano Banana 2", model: createKind === "image" ? "Nano Banana 2" : settings.model };
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      fresh.forEach((event) => { if (event) seen.add(event.id); });
+      localStorage.setItem(key, JSON.stringify([...seen]));
+      setSettings(next);
+    } catch { /* Storage unavailable: keep the explicit selection. */ }
+  }, [accounts, createKind, jobs, settings]);
   useEffect(() => {
     try {
       localStorage.setItem(TAB_KEY, tab);
@@ -521,11 +529,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   }, [accounts, settings.account, createKind]);
   useEffect(() => {
     const account = selectedFlowAccount(accounts, settings.account);
-    const preferredImageModel = String(account?.preferredImageModel || "");
-    if (createKind === "image" && preferredImageModel === "Nano Banana 2" && settings.imageModel !== preferredImageModel) {
-      setSettings((current) => ({ ...current, imageModel: preferredImageModel, model: preferredImageModel }));
-      return;
-    }
     if (!account?.capabilityCatalog || account.capabilityStatus !== "verified") return;
     setSettings((current) => applyAccountCapabilities(
       account,
@@ -2217,15 +2220,21 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       </div>
                       {account.suspendReason && (
                         <div
-                          title={account.suspendReason}
+                          title={formatFlowExplain(explainFlowError(account.suspendReason), t).action}
                           style={{ fontSize: 10, opacity: 0.8, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                         >
-                          {account.suspendReason}
+                          {formatFlowExplain(explainFlowError(account.suspendReason), t).title}
                         </div>
                       )}
+                      <details><summary>{t("Chi tiết kỹ thuật", "Technical details")}</summary><pre style={{ whiteSpace: "pre-wrap" }}>{account.suspendReason}</pre></details>
                     </div>
                   )}
 
+                  {account.lastModelFallback && <details>
+                    <summary>{t("Pro hết hạn mức → Nano Banana 2", "Pro quota reached → Nano Banana 2")}</summary>
+                    <p>{t("Nano Banana Pro đã đạt hạn mức. Đã chuyển sang Nano Banana 2 và lên lịch tạo lại.", "Nano Banana Pro reached its quota. Switched to Nano Banana 2 and scheduled a retry.")}</p>
+                    <pre style={{ whiteSpace: "pre-wrap" }}>{account.lastModelFallback.rawError}</pre>
+                  </details>}
                   <div className="flow-account-credits">
                     <div className="flow-account-credits-head">
                       <strong>

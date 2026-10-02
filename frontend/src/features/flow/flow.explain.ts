@@ -22,6 +22,7 @@ const STAGE_LABELS: Record<string, [string, string]> = {
   recovering: ["Đang tìm kết quả đã gửi", "Recovering submitted result"],
   downloading: ["Đang tải file", "Downloading"],
   retrying: ["Đang thử lại", "Retrying"],
+  model_fallback: ["Đang chuyển sang Nano Banana 2", "Switching to Nano Banana 2"],
   failed: ["Thất bại", "Failed"],
   cancelled: ["Đã hủy", "Cancelled"],
   action_required: ["Cần thao tác", "Action required"],
@@ -65,8 +66,8 @@ export function explainFlowError(message: string): FlowExplain {
     actionEn: string,
   ): FlowExplain => ({
     code: resolvedCode,
-    titleVi: detail,
-    titleEn: detail,
+    titleVi: ({ FLOW_QUOTA_EXHAUSTED: "Đã đạt hạn mức sử dụng", FLOW_AUTOMATION_BLOCKED: "Flow phát hiện hoạt động bất thường", FLOW_CREDITS_EMPTY: "Tài khoản hết tín dụng" } as Record<string, string>)[resolvedCode] || detail,
+    titleEn: ({ FLOW_QUOTA_EXHAUSTED: "Usage quota reached", FLOW_AUTOMATION_BLOCKED: "Flow detected unusual activity", FLOW_CREDITS_EMPTY: "Account has no credits" } as Record<string, string>)[resolvedCode] || detail,
     summaryVi: "",
     summaryEn: "",
     actionVi,

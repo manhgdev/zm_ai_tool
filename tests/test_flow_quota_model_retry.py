@@ -34,7 +34,7 @@ class QuotaModelRetryTest(unittest.TestCase):
             worker_settings, _ = _normalize_catalog_settings(account, "image", job["settings"])
             self.assertEqual(worker_settings["model"], "Nano Banana 2")
             queued_settings, changed = _normalize_catalog_settings(account, "image", {"model": "Nano Banana Pro"})
-            self.assertEqual(queued_settings["model"], "Nano Banana 2")
+            self.assertEqual(queued_settings["model"], "Nano Banana Pro")
             self.assertTrue(changed)
 
     def test_worker_releases_slot_before_retry(self):
@@ -66,3 +66,29 @@ class QuotaModelRetryTest(unittest.TestCase):
         for kind, model in [("video", "Veo 3.1 - Fast"), ("image", "Nano Banana 2 Lite")]:
             settings, _ = _normalize_catalog_settings(account, kind, {"model": model})
             self.assertEqual(settings["model"], model)
+
+    def test_random_fallback_only_changes_same_account_waiting_images(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            store._write("accounts", [{"id": "a"}, {"id": "b"}])
+            rows = []
+            for identifier, account, status, kind in [
+                ("failed", "a", "processing", "image"),
+                ("waiting", "a", "queued", "image"),
+                ("running", "a", "processing", "image"),
+                ("other", "b", "queued", "image"),
+                ("video", "a", "queued", "video"),
+            ]:
+                rows.append({"id": identifier, "accountId": account, "status": status,
+                             "kind": kind, "randomAccount": True, "settings": {"model": "Nano Banana Pro"}})
+            store._write("jobs", rows)
+            service = FlowService()
+            service._apply_image_quota_fallback("failed", "FLOW_QUOTA_EXHAUSTED: bạn đã đạt đến hạn mức sử dụng")
+            for identifier in ("failed", "waiting"):
+                row = store.get_row("jobs", identifier)
+                self.assertEqual(row["settings"]["model"], "Nano Banana 2")
+                self.assertEqual(row["accountId"], "a")
+            for identifier in ("running", "other", "video"):
+                self.assertEqual(store.get_row("jobs", identifier)["settings"]["model"], "Nano Banana Pro")
+            event = store.get_row("jobs", "failed")["modelFallback"]
+            self.assertEqual(event, store.get_row("accounts", "a")["lastModelFallback"])
+            self.assertTrue(event["randomAccount"])
