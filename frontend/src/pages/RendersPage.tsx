@@ -44,6 +44,8 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
   const [editingId, setEditingId] = useState<string | null>(null)
   const [nameDraft, setNameDraft] = useState('')
   const [openingId, setOpeningId] = useState<string | null>(null)
+  const [textDraft, setTextDraft] = useState<string | null>(null)
+  const [textSaving, setTextSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'all' | 'video' | 'image' | 'audio' | 'srt'>('all')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
@@ -94,6 +96,25 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [viewing, moveViewing])
+
+  useEffect(() => {
+    setTextDraft(null)
+    if (viewing?.type !== 'srt') return
+    void api.renderText(viewing.renderId).then((result) => setTextDraft(result.content)).catch(() => setTextDraft(''))
+  }, [viewing])
+
+  async function saveText() {
+    if (!viewing || viewing.type !== 'srt' || textDraft === null) return
+    setTextSaving(true)
+    try {
+      await api.updateRenderText(viewing.renderId, textDraft)
+      toast.success(t('Đã lưu phụ đề.', 'Subtitle saved.'))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('Không thể lưu phụ đề.', 'Could not save subtitle.'))
+    } finally {
+      setTextSaving(false)
+    }
+  }
 
   async function reveal(renderId: string) {
     try {
@@ -248,8 +269,8 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
               <button type="button" className="render-thumb" onClick={() => setViewing(item)} aria-label={`Xem video ${item.renderId}`}>
                 <img src={item.thumbnailUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true }} />
                 <span className="render-thumb-fallback">{getThumbIcon(item.type)}</span>
-                <span className="render-play">▶</span>
-                <time>{durationLabel(item.duration)}</time>
+                {item.type !== 'srt' && <span className="render-play">▶</span>}
+                {item.type !== 'srt' && <time>{durationLabel(item.duration)}</time>}
               </button>
               <div className="render-info">
                 {editingId === item.renderId ? (
@@ -349,6 +370,16 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
               }
             : null
         }
+        actions={viewing?.type === 'srt' ? [{ label: textSaving ? t('Đang lưu…', 'Saving…') : t('Lưu', 'Save'), onClick: saveText, disabled: textSaving || textDraft === null, primary: true }] : []}
+        children={viewing?.type === 'srt' && textDraft !== null ? (
+          <textarea
+            value={textDraft}
+            onChange={(event) => setTextDraft(event.target.value)}
+            spellCheck={false}
+            aria-label={t('Nội dung phụ đề', 'Subtitle content')}
+            style={{ width: 'min(900px, calc(100% - 64px))', minHeight: '60vh', margin: '0 auto', resize: 'vertical', padding: 24, boxSizing: 'border-box', whiteSpace: 'pre-wrap', textAlign: 'left', color: 'white', background: 'rgba(0,0,0,.25)', border: 0, outline: 'none', font: 'inherit' }}
+          />
+        ) : undefined}
         totalCount={filteredItems.length}
         currentIndex={currentViewingIndex}
         onPrevious={() => moveViewing(-1)}

@@ -28,6 +28,10 @@ class RenderRenameIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
+class RenderTextIn(BaseModel):
+    content: str
+
+
 def _export_media_paths() -> list[Path]:
     """All known completed Clone, Review and standalone-tool media."""
     paths: list[Path] = []
@@ -370,6 +374,23 @@ def api_render_video(render_id: str, download: bool = False):
     if download:
         return FileResponse(path, filename=path.name)
     return FileResponse(path, content_disposition_type="inline")
+
+
+@router.get("/api/renders/{render_id}/text")
+def api_render_text(render_id: str):
+    path = _render_path(render_id)
+    if path is None or path.suffix.lower() not in {".srt", ".vtt", ".txt"}:
+        raise HTTPException(404)
+    return {"content": path.read_text(encoding="utf-8", errors="replace"), "name": path.name}
+
+
+@router.put("/api/renders/{render_id}/text")
+def api_update_render_text(render_id: str, body: RenderTextIn):
+    path = _render_path(render_id)
+    if path is None or path.suffix.lower() not in {".srt", ".vtt", ".txt"}:
+        raise HTTPException(404)
+    path.write_text(body.content, encoding="utf-8")
+    return {"ok": True, "name": path.name}
 
 
 @router.get("/api/renders/{render_id}/thumbnail")

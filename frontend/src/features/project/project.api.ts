@@ -92,6 +92,14 @@ export const api = {
   revealRender: (renderId: string) =>
     fetchJson<{ ok: boolean; path: string }>(`${base}/renders/${renderId}/reveal`, { method: 'POST' }),
 
+  renderText: (renderId: string) =>
+    fetchJson<{ content: string; name: string }>(`${base}/renders/${renderId}/text`),
+
+  updateRenderText: (renderId: string, content: string) =>
+    fetchJson<{ ok: boolean; name: string }>(`${base}/renders/${renderId}/text`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }),
+    }),
+
   renameRender: (renderId: string, name: string) =>
     fetchJson<{ renderId: string; name: string }>(`${base}/renders/${renderId}`, {
       method: 'PUT',
