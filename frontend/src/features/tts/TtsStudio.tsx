@@ -70,6 +70,7 @@ type Props = {
   onSideOpenChange?: (open: boolean) => void
   /** Mở Cấu hình → Thiết lập (cài VieNeu / Whisper) */
   onOpenSetup?: () => void
+  onOpenChat?: () => void
 }
 
 type TtsRealtimeProgress = {
@@ -110,6 +111,7 @@ export default function TtsStudio({
   sideOpen: sideOpenProp,
   onSideOpenChange,
   onOpenSetup,
+  onOpenChat,
 }: Props) {
   const { locale } = useLocale()
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
@@ -1878,7 +1880,7 @@ export default function TtsStudio({
               go('overview')
               toast.success(t(format === 'srt' ? 'Đã đưa SRT vào Tạo giọng nói' : 'Đã đưa lời vào Tạo giọng nói', format === 'srt' ? 'Sent SRT to Create voice' : 'Sent transcript to Create voice'))
             }}
-            onRewrite={(text) => { localStorage.setItem('zm-ai-tool:chat-prefill:v1', `${t('Viết lại nội dung sau cho tự nhiên, rõ ràng, giữ nguyên ý và ngôn ngữ. Chỉ trả về bản viết lại, không giải thích:', 'Rewrite the following naturally and clearly, preserving meaning and language. Return only the rewritten text, without explanation:')}\n\n${text}`); window.location.href = '/chat' }}
+            onRewrite={(text) => { localStorage.setItem('zm-ai-tool:chat-prefill:v1', `${t('Viết lại nội dung sau cho tự nhiên, rõ ràng, giữ nguyên ý và ngôn ngữ. Chỉ trả về bản viết lại, không giải thích:', 'Rewrite the following naturally and clearly, preserving meaning and language. Return only the rewritten text, without explanation:')}\n\n${text}`); onOpenChat?.() }}
           />
         )}
 

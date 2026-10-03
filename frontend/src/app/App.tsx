@@ -275,8 +275,8 @@ export default function App() {
     persistAppMode(appMode)
     // Các thao tác nội bộ (ví dụ “Dùng trong Clone” từ Download) cũng đổi URL.
     // replaceState tránh tạo một lịch sử giả; click tab vẫn dùng pushState ở dưới.
-    const destination = appModePath(appMode) + (appMode === 'flow' ? window.location.search : '')
-    if (window.location.pathname !== destination) {
+    const destination = appModePath(appMode) + (appModeFromPath(window.location.pathname) === appMode ? window.location.search : '')
+    if (`${window.location.pathname}${window.location.search}` !== destination) {
       window.history.replaceState({ appMode }, '', destination)
     }
   }, [appMode])
@@ -935,6 +935,7 @@ export default function App() {
             setConfigSection('setup')
             setConfigOpen(true)
           }}
+          onOpenChat={() => navigateToMode('chat')}
         />
       ) : appMode === 'license' && !licenseBlocked ? (
         <LicensePage status={licenseStatus || EMPTY_LICENSE} onStatusChange={setLicenseStatus} />
@@ -990,7 +991,7 @@ export default function App() {
           navigateToMode('srt-image')
         }} />
       ) : appMode === 'chat' ? (
-        <ChatPage onOpenConfig={() => { setConfigSection('cloud'); setConfigOpen(true) }} />
+        <ChatPage onBack={goBackTab} onOpenConfig={() => { setConfigSection('cloud'); setConfigOpen(true) }} />
       ) : appMode === 'automation' ? (
         <AutomationPage onOpenCompose={async (jobId) => {
           const response = await fetch(`/api/automation/jobs/${encodeURIComponent(jobId)}/compose-inputs`)

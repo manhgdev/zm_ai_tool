@@ -21,6 +21,20 @@ const DEFAULT_PROVIDER = 'openrouter'
 const modelCache = new Map<string, ChatModel[]>()
 const modelRequests = new Map<string, Promise<ChatModel[]>>()
 
+async function responseError(response: Response): Promise<Error> {
+  const raw = await response.text()
+  try {
+    const data = JSON.parse(raw) as { detail?: unknown }
+    const detail = data?.detail
+    if (typeof detail === 'string') return new Error(detail)
+    if (detail && typeof detail === 'object') {
+      const item = detail as { message?: unknown; code?: unknown }
+      return new Error(String(item.message || item.code || response.statusText))
+    }
+  } catch { /* fall through to plain response text */ }
+  return new Error(raw || `${response.status} ${response.statusText}`)
+}
+
 function fetchChatModels(provider: string) {
   const pending = modelRequests.get(provider)
   if (pending) return pending
@@ -53,7 +67,7 @@ function MessageBody({ content }: { content: string }) {
       : text)}</span>)}</>
 }
 
-export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig: () => void }) {
+export default function ChatPage({ onOpenConfig: _onOpenConfig, onBack }: { onOpenConfig: () => void; onBack: () => void }) {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -118,6 +132,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
         : ''
   const errorText = (value: unknown) => {
     const code = String(value || '')
+    if (code.includes('Not Found')) return t('Không tìm thấy dịch vụ Chat (404). Hãy khởi động lại ứng dụng rồi thử lại. Bạn vẫn có thể quay lại Chép lời.', 'Chat service was not found (404). Restart the app and try again. You can still return to Transcription.')
     if (code.includes('CHAT_CHROME_REQUIRED')) return t('Không tìm thấy Google Chrome. Hãy cài Chrome như yêu cầu của FLOW‑VEO.', 'Google Chrome was not found. Install Chrome as required by FLOW‑VEO.')
     if (code.includes('CHATGPT_LOGIN_IN_PROGRESS')) return t('Cửa sổ đăng nhập ChatGPT Codex đang mở.', 'The ChatGPT Codex sign-in window is already open.')
     if (code.includes('CHAT_PROVIDER_KEY_MISSING')) return t('Provider chưa có API key trong Cấu hình → Cloud.', 'This provider has no API key in Settings → Cloud.')
@@ -147,10 +162,16 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
   const activeProvider = providers.find(item => item.id === provider)
   const providerReady = provider === 'chatgpt_web' ? accountReady : Boolean(activeProvider?.configured && activeProvider.status === 'ready')
 
-  const loadList = () => fetch(`${API}/conversations`).then(r => r.json()).then(setConversations)
+  const loadList = () => fetch(`${API}/conversations`).then(async response => {
+    if (!response.ok) throw await responseError(response)
+    return response.json() as Promise<Conversation[]>
+  }).then(setConversations)
   const openConversation = (id: string) => {
     setActive(id)
-    fetch(`${API}/conversations/${id}`).then(r => r.json()).then(data => {
+    fetch(`${API}/conversations/${id}`).then(async response => {
+      if (!response.ok) throw await responseError(response)
+      return response.json()
+    }).then(data => {
       setMessages(data.messages || [])
       const savedProvider = data.provider_id || (data.account_id === accounts[0]?.id ? 'chatgpt_web' : (data.account_id === 'openai_api' ? 'openai' : data.account_id))
       if (savedProvider) setProvider(savedProvider)
@@ -207,11 +228,24 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
     }).catch(() => undefined).finally(() => { healthInFlight.current = false })
   }
   useEffect(() => {
+    const readResponse = async (response: Response) => {
+      const raw = await response.text()
+      let data: unknown = raw
+      try { data = raw ? JSON.parse(raw) : null } catch { /* keep text */ }
+      if (!response.ok) {
+        const detail = typeof data === 'object' && data && 'detail' in data ? (data as { detail?: unknown }).detail : data
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail || response.statusText))
+      }
+      return data
+    }
     void Promise.all([
       refreshAccounts(),
       refreshProviders(),
-      fetch(`${API}/conversations`).then(r => r.json()).then((items: Conversation[]) => { setConversations(items); if (items[0]) openConversation(items[0].id) }),
-    ])
+      fetch(`${API}/conversations`).then(readResponse).then((items) => {
+        const list = Array.isArray(items) ? items as Conversation[] : []
+        setConversations(list); if (list[0]) openConversation(list[0].id)
+      }),
+    ]).catch(reason => setError(errorText(reason instanceof Error ? reason.message : reason)))
   }, [])
   useEffect(() => {
     localStorage.setItem(LAST_ACCOUNT, account)
@@ -304,7 +338,8 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
     }
   }
   const consume = async (response: Response) => {
-    if (!response.ok || !response.body) throw new Error((await response.text()) || `HTTP ${response.status}`)
+    if (!response.ok) throw await responseError(response)
+    if (!response.body) throw new Error(t('Máy chủ Chat không trả luồng phản hồi.', 'The Chat server returned no response stream.'))
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let assistantId = ''; let terminal = false
     while (true) {
       const { done, value } = await reader.read(); if (done) break
@@ -340,7 +375,13 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
     if (!providerReady) { setError(provider === 'chatgpt_web' ? (activeAccount ? accountError(activeAccount) || t('Hãy đăng nhập ChatGPT Codex trước khi gửi.', 'Sign in to ChatGPT Codex before sending a message.') : t('Hãy đăng nhập ChatGPT Codex trước khi gửi.', 'Sign in to ChatGPT Codex before sending a message.')) : t('Provider chưa sẵn sàng hoặc không có model khả dụng.', 'The provider is not ready or has no available model.')); return }
     const storedProvider = provider === 'chatgpt_web' ? account : provider
     let id = active
-    if (!id) { const r = await fetch(`${API}/conversations`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: content.slice(0, 60), provider, accountId: storedProvider, model }) }); id = (await r.json()).id; setActive(id) }
+    if (!id) {
+      const r = await fetch(`${API}/conversations`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: content.slice(0, 60), provider, accountId: storedProvider, model }) })
+      if (!r.ok) throw await responseError(r)
+      id = String((await r.json()).id || '')
+      if (!id) throw new Error(t('Máy chủ Chat không trả mã cuộc trò chuyện.', 'The Chat server did not return a conversation id.'))
+      setActive(id)
+    }
     setInput(''); setError(''); setNotice(''); setStopping(false); setBusy(true); setMessages(cur => [...cur, { id: `local-${Date.now()}`, role: 'user', content, status: 'completed' }])
     try {
       // Keep the value shown in the composer authoritative for older
@@ -533,7 +574,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig }: { onOpenConfig
       </section>
     </aside>
     <section className="chat-main">
-      <header className="chat-toolbar"><button type="button" className="chat-rail-open" onClick={() => setRailOpen(true)} aria-label={t('Mở lịch sử', 'Open history')}>☰</button></header>
+      <header className="chat-toolbar"><button type="button" className="chat-back" onClick={onBack}>{t('Quay lại', 'Go back')}</button><button type="button" className="chat-rail-open" onClick={() => setRailOpen(true)} aria-label={t('Mở lịch sử', 'Open history')}>☰</button></header>
       <div className="chat-modes" role="toolbar" aria-label={t('Chế độ AI', 'AI mode')}>{([['chat','Chat'],['search',t('Tìm kiếm web','Web search')],['research',t('Nghiên cứu sâu','Deep research')],['image',t('Tạo ảnh','Create image')]] as [ChatMode,string][]).map(([id,label]) => { const enabled = id === 'chat'; return <button type="button" key={id} className={mode === id ? 'active' : ''} aria-pressed={mode === id} disabled={!enabled} title={!enabled ? t('Chế độ này chưa khả dụng qua ChatGPT Codex.', 'This mode is not available through ChatGPT Codex.') : undefined} onClick={() => setMode(id)}>{label}</button> })}</div>
       <div className="chat-messages" ref={scrollRef} onScroll={e => { const el = e.currentTarget; autoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80 }}>
         {!messages.length && <div className="chat-empty"><h1>{t('Tôi có thể giúp gì?', 'How can I help?')}</h1><p>{t('Chat nhiều lượt với provider bạn đã chọn; model khả dụng được lọc tự động.', 'Multi-turn chat with your selected provider; available models are filtered automatically.')}</p></div>}

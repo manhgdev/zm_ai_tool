@@ -9,6 +9,7 @@ type Props = {
   sideOpen?: boolean
   onSideOpenChange?: (open: boolean) => void
   onOpenSetup?: () => void
+  onOpenChat?: () => void
 }
 
 export default function TtsPage({
@@ -20,6 +21,7 @@ export default function TtsPage({
   sideOpen,
   onSideOpenChange,
   onOpenSetup,
+  onOpenChat,
 }: Props) {
   return (
     <TtsStudio
@@ -31,6 +33,7 @@ export default function TtsPage({
       sideOpen={sideOpen}
       onSideOpenChange={onSideOpenChange}
       onOpenSetup={onOpenSetup}
+      onOpenChat={onOpenChat}
     />
   )
 }

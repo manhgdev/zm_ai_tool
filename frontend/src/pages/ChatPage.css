@@ -43,12 +43,11 @@
 .chat-message-actions{display:flex;gap:6px;margin-top:10px}.chat-message-actions button{border:1px solid var(--border);border-radius:6px;padding:5px 8px;background:transparent;color:var(--muted-foreground);font:600 .7rem/1 var(--font);cursor:pointer}.chat-message-actions button:hover,.chat-message-actions button:focus-visible{border-color:var(--primary);color:var(--primary);outline:0}
 .chat-interrupted{margin:10px 0 0;color:var(--muted-foreground);font-size:.78rem}
 
-/* Keep the mode switcher at the top of the chat viewport. The desktop
-   toolbar has no controls after the account dock moved to the sidebar, so a
-   reserved 40px row only pushes messages and the composer down. */
+/* Keep navigation visible on desktop as well as mobile. */
+.chat-back{padding:6px 12px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--foreground);cursor:pointer}
 @media(min-width:641px){
-  .chat-main{grid-template-rows:0 auto minmax(0,1fr) auto auto auto}
-  .chat-toolbar{height:0;min-height:0;padding:0;overflow:hidden;border:0}
+  .chat-main{grid-template-rows:40px auto minmax(0,1fr) auto auto auto}
+  .chat-toolbar{height:auto;min-height:40px;padding:4px 14px;border:0}
   .chat-modes{min-height:34px;padding:2px 12px 0;align-items:center}
   .chat-messages{padding-top:16px}
 }

@@ -2882,6 +2882,7 @@ class FlowService:
                 "seriesContext": series_context,
                 "status": "queued", "stage": "queued", "progress": 0, "mediaIds": [], "outputs": [],
                 "generationRejectRetryCount": 0,
+                "generationToken": uuid.uuid4().hex,
                 "autoRetryCount": 0,
                 "allowAccountFallback": allow_fallback,
                 "randomAccount": is_random,
@@ -2915,6 +2916,7 @@ class FlowService:
                 return
             self._running_jobs.add(job_id)
         account_id = str(job["accountId"])
+        generation_token = str(job.get("generationToken") or "")
         concurrency = _job_concurrency(job.get("settings") or {})
         order = int(job.get("queueOrder", job.get("inputIndex", 0)))
         with self._account_condition:
@@ -3040,7 +3042,7 @@ class FlowService:
             try:
                 runtime_profile = self._clone_runtime_profile(account_id, job_id)
                 profile_ready = True
-                asyncio.run(self._run(job_id, profile_dir=runtime_profile))
+                asyncio.run(self._run(job_id, profile_dir=runtime_profile, generation_token=generation_token))
             finally:
                 if runtime_profile is not None:
                     shutil.rmtree(runtime_profile, ignore_errors=True)
@@ -3094,7 +3096,7 @@ class FlowService:
                     # Respect the job's explicit browser-mode choice on every
                     # attempt. Retries are sequential, so a headed job reuses
                     # the same user expectation without creating a window storm.
-                    asyncio.run(self._run(job_id, profile_dir=runtime_profile2))
+                    asyncio.run(self._run(job_id, profile_dir=runtime_profile2, generation_token=generation_token))
                 finally:
                     if runtime_profile2 is not None:
                         shutil.rmtree(runtime_profile2, ignore_errors=True)
@@ -3156,7 +3158,7 @@ class FlowService:
                 try:
                     runtime_profile2 = self._clone_runtime_profile(account_id, job_id)
                     profile_ready = True
-                    asyncio.run(self._run(job_id, profile_dir=runtime_profile2))
+                    asyncio.run(self._run(job_id, profile_dir=runtime_profile2, generation_token=generation_token))
                 finally:
                     if runtime_profile2 is not None:
                         shutil.rmtree(runtime_profile2, ignore_errors=True)
@@ -3224,7 +3226,10 @@ class FlowService:
                 self._account_condition.notify_all()
 
             current_job = store.get_row("jobs", job_id) or {}
-            if current_job.get("stage") == "model_fallback" and job_id not in self._cancelled:
+            current_token = str(current_job.get("generationToken") or "")
+            if current_token != generation_token and current_job.get("status") == "queued":
+                threading.Thread(target=self._run_sync, args=(job_id,), daemon=True, name=f"flow-job-retry-{job_id}").start()
+            elif current_job.get("stage") == "model_fallback" and job_id not in self._cancelled:
                 self.retry(job_id, {"accountId": account_id})
             elif current_job.get("status") in {"failed", "action_required"}:
                 err_msg = str(current_job.get("error") or "Unknown error")
@@ -4808,10 +4813,13 @@ class FlowService:
         *,
         profile_dir: Path | None = None,
         headless_override: bool | None = None,
+        generation_token: str = "",
     ) -> None:
         job = store.get_row("jobs", job_id)
         account = store.get_row("accounts", str(job.get("accountId"))) if job else None
         if not job or not account or job.get("status") in {"done", "cancelled"}:
+            return
+        if generation_token and str(job.get("generationToken") or "") != generation_token:
             return
         if job.get("forceNew"):
             # Create-new must never enter recovery. A completed job may still
@@ -5240,13 +5248,20 @@ class FlowService:
             output_error = self._output_validation_error(outputs)
             if output_error:
                 raise RuntimeError(output_error)
+            current = store.get_row("jobs", job_id) or {}
+            if generation_token and str(current.get("generationToken") or "") != generation_token:
+                return
+            if current.get("status") == "cancelled" or job_id in self._cancelled:
+                return
             store.patch_row("jobs", job_id, {"status": "done", "stage": "done", "progress": 100, "outputs": outputs, "updatedAt": time.time()})
             if job.get("seriesContext"):
                 from . import series
                 series.mark_job_complete(job, outputs)
             self._log("success", "job_completed", job_id=job_id, account_id=account["id"], details={"outputCount": len(outputs)})
         except asyncio.CancelledError:
-            store.patch_row("jobs", job_id, {"status": "cancelled", "stage": "cancelled", "progress": 0, "updatedAt": time.time()})
+            current = store.get_row("jobs", job_id) or {}
+            if not generation_token or str(current.get("generationToken") or "") == generation_token:
+                store.patch_row("jobs", job_id, {"status": "cancelled", "stage": "cancelled", "progress": 0, "updatedAt": time.time()})
             self._log("warning", "job_cancelled", job_id=job_id, account_id=account["id"])
         except Exception as exc:
             current = store.get_row("jobs", job_id) or {}
@@ -5490,6 +5505,7 @@ class FlowService:
                 "status": "queued", "stage": "queued", "progress": 0,
                 "queueOrder": order, "error": None, "outputs": [], "updatedAt": time.time(),
                 "accountId": account_id, "settings": settings,
+                "generationToken": uuid.uuid4().hex,
                 "mode": mode,
                 "generationRejectRetryCount": 0,
                 "autoRetryCount": 0,
