@@ -104,6 +104,11 @@ export default function Header({
   const [hardwareBusy, setHardwareBusy] = useState(false)
   const chooseHardware = async (value: 'cpu' | 'gpu') => {
     if (hardwareBusy) return
+    const current = hardware.accel === 'cpu' ? 'cpu' : 'gpu'
+    if (value === current) {
+      if (hardwareRef.current) hardwareRef.current.open = false
+      return
+    }
     setHardwareBusy(true)
     try { await onHardwareChange?.(value) }
     finally {
