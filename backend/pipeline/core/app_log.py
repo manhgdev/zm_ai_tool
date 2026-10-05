@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import sys
 import threading
 import time
@@ -11,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 _lock = threading.Lock()
-APP_LOG_LIMIT = 50
+APP_LOG_LIMIT = 300
 _ring: deque[str] = deque(maxlen=APP_LOG_LIMIT)
 _hooks_installed = False
+_logging_handler: logging.Handler | None = None
 
 
 def log_path() -> Path:
@@ -56,6 +58,20 @@ def append_exception(prefix: str, exc: BaseException | None = None) -> None:
     else:
         tb = traceback.format_exc()
     append_log(f"{prefix}\n{tb}".rstrip())
+
+
+class _AppLogHandler(logging.Handler):
+    """Forward caught job/API errors into the same copyable diagnostic log."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            if record.exc_info:
+                message = f"{message}\n{''.join(traceback.format_exception(*record.exc_info))}".rstrip()
+            append_log(f"[logging:{record.name}] {message}", also_print=False)
+        except Exception:
+            # Logging must never break the request or the worker that emitted it.
+            pass
 
 
 def read_log(*, tail: int = APP_LOG_LIMIT, max_chars: int = 400_000) -> dict[str, Any]:
@@ -102,7 +118,7 @@ def clear_log() -> dict[str, Any]:
 
 def install_process_hooks() -> None:
     """sys/threading excepthook → app.log. Gọi 1 lần từ app lifespan / launcher."""
-    global _hooks_installed
+    global _hooks_installed, _logging_handler
     if _hooks_installed:
         return
     _hooks_installed = True
@@ -181,4 +197,8 @@ def install_process_hooks() -> None:
             pass
 
     sys.excepthook = _sys_hook
+    handler = _AppLogHandler(level=logging.ERROR)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    logging.getLogger().addHandler(handler)
+    _logging_handler = handler
     append_log("[app] log hooks installed", also_print=False)

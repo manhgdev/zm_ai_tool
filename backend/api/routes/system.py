@@ -2108,7 +2108,7 @@ def api_update_apply():
 
 
 @router.get("/api/system/logs")
-def api_system_logs(tail: int = 50):
+def api_system_logs(tail: int = 200):
     """Log app (job lỗi, crash hook) — tab Cấu hình → Log."""
     from pipeline.core.app_log import read_log
 

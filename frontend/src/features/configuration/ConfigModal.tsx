@@ -353,7 +353,7 @@ export default function ConfigModal({
     setLogLoading(true)
     setLogErr('')
     void api
-      .getAppLogs(50)
+      .getAppLogs(200)
       .then((r) => {
         setLogText(r.text || '(trống)')
         setLogPath(r.path || '')

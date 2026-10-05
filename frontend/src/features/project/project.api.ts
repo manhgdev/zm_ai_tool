@@ -241,7 +241,7 @@ export const api = {
   /** Log app (job lỗi, crash) — tab Cấu hình → Log */
   getAppLogs: (tail = 50) =>
     fetchJson<{ path: string; text: string; lines: number; desktop?: boolean }>(
-      `${base}/system/logs?tail=${Math.max(1, Math.min(50, tail))}`,
+      `${base}/system/logs?tail=${Math.max(1, Math.min(200, tail))}`,
       undefined,
       15_000,
     ),

@@ -1152,6 +1152,22 @@ def install_ai_runtime() -> dict[str, Any]:
     _invalidate_checks_cache()
     if getattr(sys, "frozen", False):
         _verify_frozen_runtime_install()
+    else:
+        # A successful pip process is not enough: the setup gate must see the
+        # same imports after installation, otherwise the UI can say "complete"
+        # while still reporting torch/torchaudio as missing.
+        remaining = [name for name in _AI_RUNTIME_MODULES if not _mod_ok(name)[0]]
+        if remaining:
+            detail = ", ".join(remaining)
+            if _install_log_fn:
+                _install_log_fn(
+                    f"\n=== Xác minh thất bại / Verification failed ===\n"
+                    f"Thiếu hoặc import lỗi sau khi cài: {detail}\n"
+                )
+            raise RuntimeError(
+                "Cài package chưa hoàn tất; sau khi cài vẫn thiếu hoặc không import được: "
+                + detail
+            )
     return {
         "ok": True,
         "message": "Đã cài gói AI",
