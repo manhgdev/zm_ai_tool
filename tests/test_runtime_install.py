@@ -16,6 +16,63 @@ from pipeline.core.runtime_active import active_runtime_dir
 from pipeline.core.system_check import install
 
 
+class AudioCompatibilityTests(unittest.TestCase):
+    def test_whisper_reads_wav_as_samples_without_pyav(self):
+        import numpy as np
+        import soundfile as sf
+        from pipeline.asr import whisper
+
+        with tempfile.TemporaryDirectory() as raw:
+            wav = Path(raw) / 'audio.wav'
+            sf.write(wav, np.full((1600, 1), 0.25, np.float32), 16000, subtype='FLOAT')
+            with patch('av.open', side_effect=TypeError("open() got an unexpected keyword argument 'metadata_errors'")):
+                audio = whisper._whisper_audio(wav)
+                with patch.object(whisper, 'get_whisper') as get_model, patch.object(whisper, '_mlx_whisper_available', return_value=False):
+                    get_model.return_value.transcribe.return_value = (iter([]), None)
+                    self.assertEqual(whisper.asr_whisper_inprocess(wav, 'auto'), [])
+                    model_audio = get_model.return_value.transcribe.call_args.args[0]
+            self.assertEqual(audio.dtype, np.float32)
+            self.assertEqual(audio.shape, (1600,))
+            np.testing.assert_allclose(model_audio, audio)
+
+    def test_whisper_downmixes_and_resamples_without_changing_duration(self):
+        import numpy as np
+        import soundfile as sf
+        from pipeline.asr.whisper import _whisper_audio
+
+        with tempfile.TemporaryDirectory() as raw:
+            wav = Path(raw) / 'stereo.wav'
+            stereo = np.tile(np.array([0.25, 0.75], np.float32), (4800, 1))
+            sf.write(wav, stereo, 48000, subtype='FLOAT')
+            audio = _whisper_audio(wav)
+        self.assertEqual(audio.dtype, np.float32)
+        self.assertEqual(audio.shape, (1600,))
+        np.testing.assert_allclose(audio[100:-100], 0.5, atol=0.001)
+
+    def test_whisper_rejects_empty_and_invalid_audio(self):
+        import numpy as np
+        import soundfile as sf
+        from pipeline.asr.whisper import _whisper_audio
+
+        with tempfile.TemporaryDirectory() as raw:
+            wav = Path(raw) / 'empty.wav'
+            sf.write(wav, np.empty(0, np.float32), 16000)
+            with self.assertRaisesRegex(ValueError, 'ASR_EMPTY_AUDIO'):
+                _whisper_audio(wav)
+            wav.write_bytes(b'not audio')
+            with self.assertRaises(sf.LibsndfileError):
+                _whisper_audio(wav)
+
+    def test_importable_pyav_outside_pin_is_repaired(self):
+        from pipeline.core.system_check import probe
+
+        for version in ('15.0.0', '16.0.1', '18.1.0'):
+            with self.subTest(version=version), patch('importlib.metadata.version', return_value=version):
+                self.assertEqual(probe._mod_ok('av')[0], version == '16.0.1')
+        self.assertIn('av==16.0.1', install._PKG_WHISPER)
+        self.assertEqual(install._frozen_runtime_package_specs(['av']), ['av==16.0.1'])
+
+
 class HardwareTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

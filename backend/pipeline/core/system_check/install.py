@@ -10,7 +10,6 @@ import threading
 import tempfile
 import time
 import urllib.request
-import importlib.metadata
 from pathlib import Path
 from typing import Any
 
@@ -308,7 +307,7 @@ def _pip_stream(
 
 _AI_RUNTIME_PACKAGES = (
     "faster-whisper>=1.1.0",
-    "av>=16.0.1",
+    "av==16.0.1",
     "rapidocr-onnxruntime>=1.3.20",
     "pillow",
     "opencv-python-headless",
@@ -326,7 +325,7 @@ _AI_RUNTIME_PACKAGES = (
 )
 
 # 3 nhóm riêng — mỗi nhóm cài 1 pip call với --no-deps, có header log riêng.
-_PKG_WHISPER = ("faster-whisper>=1.1.0", "av>=16.0.1", "soundfile", "cffi", "pycparser", "soxr", "tokenizers")
+_PKG_WHISPER = ("faster-whisper>=1.1.0", "av==16.0.1", "soundfile", "cffi", "pycparser", "soxr", "tokenizers")
 _PKG_DIARIZATION = ("sherpa-onnx>=1.12.0", "sherpa-onnx-bin>=1.12.0", "soundfile")
 _PKG_OCR     = ("rapidocr-onnxruntime>=1.3.20", "pillow", "opencv-python-headless<5.0")
 _PKG_VIENEU  = (
@@ -349,7 +348,7 @@ _SHERPA_CUDA_INDEX = "https://k2-fsa.github.io/sherpa/onnx/cuda.html"
 # locally-installed wheels that have no newer index release.
 _FROZEN_PACKAGE_MODULES: dict[str, tuple[str, ...]] = {
     "faster-whisper>=1.1.0": ("faster_whisper",),
-    "av>=16.0.1": ("av",),
+    "av==16.0.1": ("av",),
     "rapidocr-onnxruntime>=1.3.20": ("rapidocr_onnxruntime",),
     "pillow": ("PIL",),
     "opencv-python-headless": ("cv2",),
@@ -481,7 +480,7 @@ def _runtime_ort_accel() -> str:
 # cài đúng gói thiếu (không --upgrade cả lô). Frozen dùng base_cmd đủ bộ.
 _MODULE_TO_PACKAGE: dict[str, str] = {
     "faster_whisper": "faster-whisper>=1.1.0",
-    "av": "av>=16.0.1",
+    "av": "av==16.0.1",
     "rapidocr_onnxruntime": "rapidocr-onnxruntime>=1.3.20",
     "PIL": "pillow",
     "cv2": "opencv-python-headless",
@@ -905,16 +904,6 @@ def install_ai_runtime() -> dict[str, Any]:
                 f"--index-url {idx}"
             )
         missing = [name for name in _AI_RUNTIME_MODULES if not _mod_ok(name)[0]]
-        # An old PyAV can import cleanly but is incompatible with the
-        # metadata_errors keyword used by faster-whisper.
-        if "av" not in missing:
-            try:
-                installed_av = importlib.metadata.version("av")
-                match = re.match(r"^[0-9]+(?:\.[0-9]+)*", installed_av)
-                if not match or tuple(int(p) for p in match.group(0).split(".")) < (16, 0, 1):
-                    missing.append("av")
-            except (importlib.metadata.PackageNotFoundError, ValueError):
-                missing.append("av")
         # The fast setup check and the installer must share the same source of
         # truth. A missing module always requires the torch stage, even when
         # a stale import/cache makes the accelerator probe look ready.
@@ -1026,18 +1015,7 @@ def install_ai_runtime() -> dict[str, Any]:
             mod = _PKG_MOD.get(_pkg_base(spec))
             if mod is None:
                 return True  # không biết → cài cho chắc
-            if not _mod_ok(mod)[0]:
-                return True
-            if _pkg_base(spec) == "av":
-                # faster-whisper passes metadata_errors= to av.open(); an old
-                # PyAV imports successfully but fails only when decoding.
-                try:
-                    installed = importlib.metadata.version("av")
-                    match = re.match(r"^[0-9]+(?:\.[0-9]+)*", installed)
-                    return not match or tuple(int(p) for p in match.group(0).split(".")) < (16, 0, 1)
-                except (AttributeError, ValueError, importlib.metadata.PackageNotFoundError):
-                    return True
-            return False
+            return not _mod_ok(mod)[0]
 
         def _pip_group(label: str, *pkgs: str) -> None:
             """Cài các pkg chưa import được, --no-deps, in header vào log."""

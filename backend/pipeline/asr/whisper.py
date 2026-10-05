@@ -559,6 +559,20 @@ Path(sys.argv[3]).write_text(json.dumps(rows, ensure_ascii=False), encoding="utf
     return _run()
 
 
+def _whisper_audio(wav: Path) -> Any:
+    """Decode the extracted WAV without faster-whisper's PyAV API dependency."""
+    import soundfile as sf
+    import soxr
+
+    samples, rate = sf.read(str(wav), dtype="float32", always_2d=True)
+    if not samples.size:
+        raise ValueError("ASR_EMPTY_AUDIO: Audio rỗng / Audio is empty")
+    audio = samples.mean(axis=1)
+    if rate != 16000:
+        audio = soxr.resample(audio, rate, 16000)
+    return audio
+
+
 def asr_whisper_inprocess(
     wav: Path,
     source_lang: str,
@@ -647,8 +661,11 @@ def asr_whisper_inprocess(
             ),
             running=True,
         )
+    check_cancel(project_id)
+    audio = _whisper_audio(wav)
+    check_cancel(project_id)
     segments, _info = model.transcribe(
-        str(wav),
+        audio,
         language=lang,
         # VAD OFF: video anime có nhạc nền → VAD bỏ sót câu ngắn.
         # Word-split (_SPLIT_GAP) tách segment dài thay VAD.
