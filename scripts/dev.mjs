@@ -10,6 +10,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const backendDir = path.join(root, 'backend')
 const frontendDir = path.join(root, 'frontend')
 const isWin = process.platform === 'win32'
+// Public/LAN development by default; override with ZM_AI_TOOL_HOST=127.0.0.1 when needed.
+const bindHost = process.env.ZM_AI_TOOL_HOST || '0.0.0.0'
 const PORTS = [5173, 8787]
 const lockPath = path.join(
   tmpdir(),
@@ -196,7 +198,7 @@ if (!py) {
   const viteBin = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js')
   const webCmd = process.execPath
   // ponytail: chạy thẳng Vite, tránh cmd/npm wrapper còn sống sau khi terminal dừng.
-  const webArgs = [viteBin, '--config', path.join(frontendDir, 'vite.config.ts'), '--strictPort']
+  const webArgs = [viteBin, '--config', path.join(frontendDir, 'vite.config.ts'), '--strictPort', '--host', bindHost]
 
   /** @type {Map<string, import('node:child_process').ChildProcess>} */
   const children = new Map()
@@ -295,8 +297,8 @@ if (!py) {
     process.exit(1)
   }
 
-  console.log(`API  → http://127.0.0.1:8787  (${py} uvicorn)`)
-  console.log('Web  → http://127.0.0.1:5173  (Vite)')
+  console.log(`API  → http://${bindHost}:8787  (${py} uvicorn)`)
+  console.log(`Web  → http://${bindHost}:5173  (Vite)`)
   console.log('Ctrl+C để dừng API + Vite.\n')
 
   // Reload làm chậm boot (2 process) + hay miss worker trên Windows.
@@ -311,11 +313,11 @@ if (!py) {
         '--reload-dir', path.join(backendDir, 'api'),
         '--reload-dir', path.join(backendDir, 'pipeline'),
         '--host',
-        '127.0.0.1',
+        bindHost,
         '--port',
         '8787',
       ]
-    : ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8787']
+    : ['-m', 'uvicorn', 'main:app', '--host', bindHost, '--port', '8787']
 
   spawnOne('api', py, apiArgs, backendDir)
   if (!wantReload) {
