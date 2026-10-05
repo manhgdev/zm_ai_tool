@@ -152,5 +152,100 @@ class FrozenTtsPathTest(unittest.TestCase):
             self.assertEqual(accel._tts_vram_hard_cap(), 1)
 
 
+class OnnxSnapshotPathTest(unittest.TestCase):
+    def make_snapshot(self, root):
+        root = Path(root)
+        snapshot = root / 'snapshots' / 'revision' / 'onnx_update'
+        snapshot.mkdir(parents=True)
+        for name, blob, content in [
+            ('vieneu_prefill.onnx', '8b/model', b'graph'),
+            ('vieneu_backbone_shared.data', '5c/data', b'weights'),
+        ]:
+            source = root / 'blobs' / blob
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(content)
+            (snapshot / name).symlink_to(source)
+        return snapshot
+
+    def test_materializes_split_blob_symlinks_and_reuses_hardlinks(self):
+        from pipeline.tts.engines.vieneu_frozen import _materialize_onnx_files
+        with tempfile.TemporaryDirectory() as root:
+            snapshot = self.make_snapshot(root)
+            files = ['vieneu_prefill.onnx', 'vieneu_backbone_shared.data']
+            target = _materialize_onnx_files(snapshot, files)
+            for name in files:
+                self.assertFalse((target / name).is_symlink())
+                self.assertEqual((target / name).resolve().parent, target.resolve())
+                self.assertTrue((snapshot / name).is_symlink())
+                self.assertTrue((target / name).samefile(snapshot / name))
+            with mock.patch('os.link', side_effect=AssertionError('cache must be reused')):
+                self.assertEqual(_materialize_onnx_files(snapshot, files), target)
+
+    def test_copy_fallback_and_parallel_publication(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from pipeline.tts.engines.vieneu_frozen import _materialize_onnx_files
+        with tempfile.TemporaryDirectory() as root:
+            snapshot = self.make_snapshot(root)
+            files = ['vieneu_prefill.onnx', 'vieneu_backbone_shared.data']
+            with mock.patch('os.link', side_effect=OSError('hardlinks unavailable')), ThreadPoolExecutor(4) as pool:
+                targets = list(pool.map(lambda _: _materialize_onnx_files(snapshot, files), range(4)))
+            self.assertEqual(len(set(targets)), 1)
+            self.assertEqual((targets[0] / files[1]).read_bytes(), b'weights')
+            self.assertFalse(any(p.name.startswith('.pending-') for p in targets[0].iterdir()))
+
+    def test_regular_local_bundle_does_not_need_materialization(self):
+        from pipeline.tts.engines.vieneu_frozen import _materialize_onnx_files
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            (directory / 'model.onnx').write_bytes(b'graph')
+            self.assertEqual(_materialize_onnx_files(directory, ['model.onnx', 'optional.json']), directory)
+            with self.assertRaises(ValueError):
+                _materialize_onnx_files(directory, ['../outside'])
+
+    def test_real_onnx_session_loads_external_data_from_materialized_bundle(self):
+        try:
+            import numpy as np
+            import onnxruntime as ort
+        except ImportError:
+            self.skipTest('ONNX Runtime is not installed')
+        from pipeline.tts.engines.vieneu_frozen import _materialize_onnx_files
+        # ONNX IR8/opset13: Identity(x -> y), float[1] initializer x stored
+        # externally in vieneu_backbone_shared.data. No onnx dependency/download.
+        graph = bytes.fromhex(
+            '08083a610a100a017812017922084964656e74697479120865787465726e616c'
+            '2a32080110014201786a270a086c6f636174696f6e121b7669656e65755f6261'
+            '636b626f6e655f7368617265642e646174617001620f0a0179120a0a080801'
+            '12040a0208014202100d'
+        )
+        with tempfile.TemporaryDirectory() as root:
+            snapshot = self.make_snapshot(root)
+            (snapshot / 'vieneu_prefill.onnx').resolve().write_bytes(graph)
+            (snapshot / 'vieneu_backbone_shared.data').resolve().write_bytes(np.array([2], np.float32).tobytes())
+            target = _materialize_onnx_files(snapshot, ['vieneu_prefill.onnx', 'vieneu_backbone_shared.data'])
+            session = ort.InferenceSession(str(target / 'vieneu_prefill.onnx'), providers=['CPUExecutionProvider'])
+            np.testing.assert_array_equal(session.run(None, {})[0], [2])
+
+    def test_fetch_hook_is_idempotent_and_included_in_worker(self):
+        from types import SimpleNamespace
+        from pipeline.tts.engines import vieneu_frozen
+        class Engine:
+            _fetch = staticmethod(mock.Mock())
+        original = Engine._fetch
+        original._zm_ai_onnx_paths = False
+        module = SimpleNamespace(OnnxV3LiteEngine=Engine)
+        with tempfile.TemporaryDirectory() as root:
+            original.return_value = self.make_snapshot(root)
+            with mock.patch.dict(sys.modules, {'vieneu._v3_turbo_engine.onnx_runtime_lite': module}):
+                vieneu_frozen._enable_onnx_snapshot_paths()
+                patched = Engine._fetch
+                vieneu_frozen._enable_onnx_snapshot_paths()
+                self.assertIs(Engine._fetch, patched)
+                directory = Engine._fetch('repo', ['vieneu_prefill.onnx', 'vieneu_backbone_shared.data'], 'onnx_update')
+                self.assertFalse((directory / 'vieneu_prefill.onnx').is_symlink())
+                original.assert_called_once_with('repo', ['vieneu_prefill.onnx', 'vieneu_backbone_shared.data'], 'onnx_update')
+        self.assertTrue(vieneu_frozen._WORKER_SCRIPT.startswith(vieneu_frozen._ONNX_CACHE_SCRIPT))
+        compile(vieneu_frozen._WORKER_SCRIPT, '<vieneu-worker>', 'exec')
+
+
 if __name__ == "__main__":
     unittest.main()

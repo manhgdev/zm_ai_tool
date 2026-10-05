@@ -73,6 +73,42 @@ class DriverApiTests(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 system._cpu_resume_kind()
 
+    def test_gpu_package_errors_offer_cpu_without_driver_update(self):
+        for code in ('DOWNLOAD_FAILED', 'DEPENDENCY_INSTALL_FAILED', 'RUNTIME_PROBE_FAILED', 'DISK_FULL'):
+            with self.subTest(code=code), patch.object(sys, 'platform', 'win32'), patch(
+                'pipeline.core.runtime_active.cpu_mode_enabled', return_value=False
+            ):
+                system._install_state.update(errorCode=code, error=code, runtimeProfile='nvidia-cu124')
+                status = system.api_install_status()
+                self.assertTrue(status['cpuRuntimeAvailable'])
+                self.assertFalse(status['driverRepairAvailable'])
+                self.assertEqual(system._cpu_resume_kind(), 'ai_runtime')
+                with self.assertRaises(HTTPException):
+                    system._driver_kind('update')
+                token = system.api_driver_confirmation(self.request(), 'cpu')['token']
+                with patch.object(system, '_start_install_job', return_value={'running': True}) as start:
+                    system.api_install_cpu_runtime(self.request(), system.CpuRuntimeIn(token=token))
+                    self.assertEqual(start.call_args.args[0], 'cpu_runtime')
+
+    def test_failure_before_profile_selection_requires_physical_gpu(self):
+        system._install_state.update(errorCode='HARDWARE_UNSUPPORTED', runtimeProfile='')
+        for has_gpu in (False, True):
+            with self.subTest(has_gpu=has_gpu), patch.object(sys, 'platform', 'win32'), patch(
+                'pipeline.core.runtime_active.cpu_mode_enabled', return_value=not has_gpu
+            ), patch('pipeline.core.media.detect_device', return_value={'hasGpu': has_gpu}):
+                status = system.api_install_status()
+                self.assertEqual(status['cpuRuntimeAvailable'], has_gpu)
+                self.assertFalse(status['driverRepairAvailable'])
+
+    def test_cpu_failure_success_and_running_job_do_not_offer_gpu_recovery(self):
+        for changes in ({'runtimeProfile': 'cpu', 'errorCode': 'DOWNLOAD_FAILED'},
+                        {'runtimeProfile': 'nvidia-cu124', 'errorCode': ''},
+                        {'runtimeProfile': 'nvidia-cu124', 'errorCode': 'DOWNLOAD_FAILED', 'running': True}):
+            with self.subTest(changes=changes), patch.dict(system._install_state, changes), patch.object(sys, 'platform', 'win32'):
+                status = system.api_install_status()
+                self.assertFalse(status['cpuRuntimeAvailable'])
+                self.assertFalse(status['driverRepairAvailable'])
+
     def test_cpu_endpoint_consumes_token_and_rejects_extra_fields(self):
         request = self.request()
         with patch.object(sys, 'platform', 'win32'), patch.object(system, '_start_install_job', return_value={'running': True}) as start:

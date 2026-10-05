@@ -37,7 +37,7 @@ def active_runtime_dir() -> Path:
 
 
 @lru_cache(maxsize=1)
-def _linux_cpu_only() -> bool:
+def _hardware_cpu_only() -> bool:
     """Cache physical inventory per worker, not user mode or GPU readiness."""
     from .media import detect_device
 
@@ -48,18 +48,18 @@ def _linux_cpu_only() -> bool:
 
 
 def cpu_mode_enabled() -> bool:
-    """Shared CPU-only state: saved choice on any OS, or a CPU-only Linux host."""
+    """Shared CPU-only state: saved choice or no accelerator on any OS."""
     try:
         data = json.loads((runtime_home() / 'runtime/current.json').read_text(encoding='utf-8'))
         if data.get('computeMode') == 'cpu':
             return True
     except (OSError, ValueError, AttributeError):
         pass
-    return sys.platform.startswith('linux') and _linux_cpu_only()
+    return _hardware_cpu_only()
 
 
 def clear_compute_caches() -> None:
-    _linux_cpu_only.cache_clear()
+    _hardware_cpu_only.cache_clear()
     from .accel import _cache, _lock
     with _lock:
         _cache.clear()

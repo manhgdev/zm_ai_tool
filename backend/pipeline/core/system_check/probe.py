@@ -190,9 +190,9 @@ def _invalidate_probe_caches() -> None:
     _DEMUCS_PY_CACHE = None
     from pipeline.tts.engines import vieneu_frozen
     from pipeline.core import accel
-    from pipeline.core.runtime_active import _linux_cpu_only
+    from pipeline.core.runtime_active import _hardware_cpu_only
 
-    _linux_cpu_only.cache_clear()
+    _hardware_cpu_only.cache_clear()
 
     vieneu_frozen._CUDA_READY = None
     with accel._lock:

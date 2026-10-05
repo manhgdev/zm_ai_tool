@@ -1276,6 +1276,16 @@ def _cpu_resume_kind() -> str:
         raise HTTPException(409, 'RUNTIME_BUSY')
     if state.get('kind') in driver.KINDS and state.get('errorCode') in driver.REPAIRABLE:
         return state['kind']
+    if state.get('kind') in driver.KINDS and state.get('errorCode'):
+        from pipeline.core.runtime_active import cpu_mode_enabled
+        from pipeline.core.media import detect_device
+        # Package/network/probe failures are not proof of an outdated driver.
+        # Offer an explicit CPU switch only when this was a GPU setup attempt.
+        profile = state.get('runtimeProfile') or state.get('runtimePack')
+        if profile != 'cpu' and not cpu_mode_enabled() and (
+                profile in ('nvidia-cu124', 'nvidia-cu128', 'directml')
+                or detect_device().get('hasGpu')):
+            return state['kind']
     saved = driver.snapshot()
     if saved.get('phase') == 'driver_failed' and saved.get('resumeKind') in driver.KINDS:
         return saved['resumeKind']

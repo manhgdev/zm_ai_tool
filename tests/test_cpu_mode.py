@@ -14,10 +14,56 @@ from pipeline.core import media
 
 class CpuModeTests(unittest.TestCase):
     def setUp(self):
-        runtime_active._linux_cpu_only.cache_clear()
-        self.addCleanup(runtime_active._linux_cpu_only.cache_clear)
+        runtime_active._hardware_cpu_only.cache_clear()
+        self.addCleanup(runtime_active._hardware_cpu_only.cache_clear)
 
-    def test_linux_cpu_only_bypasses_gpu_probes_and_overrides(self):
+    def test_no_gpu_forces_cpu_on_every_platform_and_skips_video_gpu(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {
+            'ZM_AI_TOOL_HOME': root, 'TORCH_DEVICE': 'cuda'
+        }), patch.object(media, 'detect_device', return_value={'gpuKind': 'none', 'accel': 'cpu'}), patch.object(
+            media, '_h264_encoder_available', side_effect=AssertionError('must not probe GPU')
+        ), patch.object(media.subprocess, 'run', side_effect=AssertionError('must not decode on GPU')):
+            for platform in ('win32', 'darwin', 'linux'):
+                with self.subTest(platform=platform), patch.object(sys, 'platform', platform):
+                    self.assertTrue(runtime_active.cpu_mode_enabled())
+                    self.assertEqual(accel.preferred_torch_device(), 'cpu')
+                    self.assertIsNone(media.h264_hardware_encoder())
+                    self.assertFalse(media.nvenc_available())
+                    self.assertFalse(media.nvdec_available(Path('video.mp4')))
+                    self.assertIn('libx264', media.h264_encoder_args())
+
+    def test_supported_gpu_is_not_disabled_by_unready_packages(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {'ZM_AI_TOOL_HOME': root}):
+            for kind, backend in [('nvidia', 'cpu'), ('apple', 'metal'), ('amd', 'directml'), ('intel', 'directml')]:
+                runtime_active._hardware_cpu_only.cache_clear()
+                with self.subTest(kind=kind), patch.object(media, 'detect_device', return_value={
+                    'gpuKind': kind, 'accel': backend
+                }):
+                    self.assertFalse(runtime_active.cpu_mode_enabled())
+
+    def test_windows_display_only_adapter_does_not_enable_directml(self):
+        with patch.object(media, '_nvidia_gpus', return_value=[]), patch.object(
+            media, '_windows_video_controllers', return_value=[{'Name': 'Virtual display adapter'}]
+        ), patch.object(media.platform, 'system', return_value='Windows'), patch.object(
+            media.platform, 'machine', return_value='AMD64'
+        ):
+            device = media.detect_device()
+        self.assertFalse(device['hasGpu'])
+        self.assertEqual(device['accel'], 'cpu')
+        self.assertEqual(device['install']['ocr'], '')
+
+    def test_saved_cpu_mode_overrides_already_cached_video_gpu(self):
+        with patch.object(runtime_active, 'cpu_mode_enabled', return_value=False), patch.object(
+            media.subprocess, 'run', return_value=CompletedProcess([], 0)
+        ):
+            media._h264_encoder_available.cache_clear()
+            self.addCleanup(media._h264_encoder_available.cache_clear)
+            self.assertTrue(media.nvenc_available())
+        with patch.object(runtime_active, 'cpu_mode_enabled', return_value=True):
+            self.assertFalse(media.nvenc_available())
+            self.assertIsNone(media.h264_hardware_encoder())
+
+    def test_cpu_only_bypasses_gpu_probes_and_overrides(self):
         from pipeline.core.system_check import probe, install
         from pipeline.export.stem import _demucs_backend_wanted, _torch_device
         from pipeline.asr.speaker import preferred_diarization_provider
@@ -59,7 +105,7 @@ class CpuModeTests(unittest.TestCase):
     def test_saved_cpu_mode_is_read_on_linux(self):
         with tempfile.TemporaryDirectory() as root, patch.object(sys, 'platform', 'linux'), patch.dict(
             os.environ, {'ZM_AI_TOOL_HOME': root}
-        ), patch.object(runtime_active, '_linux_cpu_only', side_effect=AssertionError('must use metadata')):
+        ), patch.object(runtime_active, '_hardware_cpu_only', side_effect=AssertionError('must use metadata')):
             pointer = Path(root) / 'runtime/current.json'
             pointer.parent.mkdir()
             pointer.write_text(json.dumps({'computeMode': 'cpu'}))

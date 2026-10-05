@@ -1607,7 +1607,11 @@ export default function ConfigModal({
           running={Boolean(installing)}
           title={
             gpuChoice && !installing
-              ? t('Chưa thể sử dụng GPU', 'GPU is not ready')
+              ? driverStatus.kind === 'cpu_runtime'
+                ? t('Cài runtime CPU thất bại', 'CPU runtime setup failed')
+                : driverStatus.errorCode === 'DRIVER_TOO_OLD'
+                ? t('Driver GPU quá cũ', 'GPU driver is outdated')
+                : t('Lỗi cài package GPU', 'GPU package setup failed')
               : driverWaiting
               ? t('Cập nhật driver đồ họa', 'Graphics driver update')
               : installPopupError
@@ -1640,17 +1644,29 @@ export default function ConfigModal({
           error={installPopupError || null}
           log={installLog || undefined}
           details={<>
+            {gpuChoice && !installing && driverStatus.kind !== 'cpu_runtime' && <p className="mb-3 text-sm text-muted-foreground">
+              {driverStatus.errorCode === 'DRIVER_TOO_OLD'
+                ? t('Driver hiện tại thấp hơn phiên bản tối thiểu. Cập nhật driver hoặc chọn chạy toàn bộ bằng CPU.', 'The driver is below the minimum version. Update it or run everything on the CPU.')
+                : t('Chưa có bằng chứng driver quá cũ. Xem log, thử lại hoặc chuyển sang CPU. Lỗi mạng hay dung lượng ổ đĩa vẫn cần được xử lý khi dùng CPU.', 'There is no evidence that the driver is outdated. Check the log, retry, or switch to CPU. Network or disk-space errors still need to be resolved in CPU mode.')}
+            </p>}
             {gpuChoice && <div className="mb-4 grid grid-cols-1 min-[600px]:grid-cols-2 gap-3">
-              <div>
+              {driverStatus.kind !== 'cpu_runtime' && <div>
+                {driverStatus.driverRepairAvailable ? <>
                 <button type="button" disabled={Boolean(installing || driverSubmitting || !driverStatus.driverRepairAvailable)}
                   className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
                   onClick={() => setDriverConfirm('update')}>{t('Cập nhật driver và tiếp tục', 'Update driver and continue')}</button>
                 <p className="mt-2 text-xs text-muted-foreground">{t('App tự tìm driver phù hợp. Xác nhận quyền khi Windows hỏi.', 'The app finds a compatible driver. Approve permission when Windows asks.')}</p>
-              </div>
+                </> : <>
+                  <button type="button" disabled={Boolean(installing || driverSubmitting)}
+                    className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                    onClick={() => void installAction(driverStatus.kind as InstallKind)}>{t('Thử cài lại package GPU', 'Retry GPU package setup')}</button>
+                  <p className="mt-2 text-xs text-muted-foreground">{t('Giữ GPU và thử lại bước cài đặt. Không tự cập nhật driver.', 'Keep GPU mode and retry installation. No automatic driver update.')}</p>
+                </>}
+              </div>}
               <div>
                 <button type="button" disabled={Boolean(installing || driverSubmitting || !driverStatus.cpuRuntimeAvailable)}
                   className="w-full rounded-md border border-border px-3 py-2 text-sm font-medium disabled:opacity-50"
-                  onClick={() => void runDriverAction('cpu')}>{t('Bỏ qua GPU và tiếp tục', 'Skip GPU and continue')}</button>
+                  onClick={() => void runDriverAction('cpu')}>{driverStatus.kind === 'cpu_runtime' ? t('Thử cài lại runtime CPU', 'Retry CPU runtime setup') : t('Bỏ qua GPU và tiếp tục', 'Skip GPU and continue')}</button>
                 <p className="mt-2 text-xs text-muted-foreground">{t('Dùng CPU, không cập nhật driver. Các tác vụ AI có thể chậm hơn.', 'Use the CPU without updating the driver. AI tasks may run slower.')}</p>
               </div>
             </div>}
@@ -1665,13 +1681,17 @@ export default function ConfigModal({
             </details>
           ) : null}</>}
           actions={!installing && (gpuChoice || driverWaiting || driverStatus.kind === 'nvidia_driver' || driverStatus.kind === 'cpu_runtime') ? <>
+            {driverStatus.driverRepairAvailable && driverStatus.errorCode !== 'DRIVER_TOO_OLD'
+              && ['ai_runtime', 'ocr_cuda', 'demucs_cuda'].includes(driverStatus.kind || '') && <button type="button"
+                disabled={driverSubmitting} className="text-xs disabled:opacity-50"
+                onClick={() => void installAction(driverStatus.kind as InstallKind)}>{t('Thử cài lại package GPU', 'Retry GPU package setup')}</button>}
             {driverWaiting && <button type="button" disabled={driverSubmitting}
               className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-50"
               onClick={() => setDriverConfirm(driverStatus.rebootRequired ? 'reboot' : driverStatus.stage === 'driver_eula' ? 'accept_eula' : 'update')}>
               {driverStatus.rebootRequired ? t('Khởi động lại máy', 'Restart computer') : t('Chấp nhận và tiếp tục', 'Accept and continue')}
             </button>}
             <button type="button" className="text-xs" onClick={() => driverWaiting ? setInstallProgressMinimized(true) : setInstallPopupError('')}>{t('Để sau', 'Later')}</button>
-            {(driverStatus.driverCheck || driverStatus.kind === 'nvidia_driver') && <button type="button" className="text-xs"
+            {(gpuChoice || driverStatus.driverCheck || driverStatus.kind === 'nvidia_driver') && <button type="button" className="text-xs"
               onClick={() => void copyText(JSON.stringify({ ...driverStatus, log: installLog }, null, 2))}>
               {t('Sao chép chẩn đoán', 'Copy diagnostics')}
             </button>}

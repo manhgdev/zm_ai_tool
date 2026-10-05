@@ -210,7 +210,7 @@ def _windows_gpu_inventory(nvidia: list[dict[str, Any]]) -> list[dict[str, Any]]
             "kind": kind,
             "vramMb": ram // (1024 * 1024) if ram > 0 else None,
             "driver": str(controller.get("DriverVersion") or ""),
-            "accel": "directml",
+            "accel": "cuda" if kind == "nvidia" else "directml" if kind in ("amd", "intel") else "cpu",
             "source": "windows-cim",
             "deviceInstanceId": instance,
             "deviceProblemCode": controller.get("ConfigManagerErrorCode"),
@@ -280,22 +280,10 @@ def atempo_chain(ratio: float) -> str:
     return ",".join(parts) if parts else "anull"
 
 
-@lru_cache(maxsize=1)
 def nvenc_available() -> bool:
     """Probe the encoder, not just ffmpeg's compiled encoder list."""
-    try:
-        return subprocess.run(
-            [
-                _ff_bin("ffmpeg"), "-hide_banner", "-loglevel", "error",
-                "-f", "lavfi", "-i", "color=size=256x256:rate=1",
-                "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        ).returncode == 0
-    except (FileNotFoundError, subprocess.SubprocessError, OSError):
-        return False
+    from .runtime_active import cpu_mode_enabled
+    return not cpu_mode_enabled() and _h264_encoder_available('h264_nvenc')
 
 
 @lru_cache(maxsize=None)
@@ -318,6 +306,9 @@ def _h264_encoder_available(codec: str) -> bool:
 
 def h264_hardware_encoder() -> str | None:
     """Best available native H.264 encoder for the active machine."""
+    from .runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return None
     if nvenc_available():
         return "h264_nvenc"
     # Apple Silicon / Intel Macs use the platform VideoToolbox encoder.
@@ -343,6 +334,9 @@ def h264_hardware_encoder() -> str | None:
 
 def nvdec_available(path: Path) -> bool:
     """Probe CUDA/NVDEC against the actual input codec."""
+    from .runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return False
     try:
         return subprocess.run(
             [

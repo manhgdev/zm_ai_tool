@@ -17,8 +17,66 @@ from pathlib import Path
 
 _CUDA_READY: bool | None = None
 
+# Shared with in-process VieNeu; worker Python cannot import the frozen app.
+_ONNX_CACHE_SCRIPT = r"""
+def _materialize_onnx_files(directory, filenames):
+    import hashlib, os, shutil, tempfile
+    from pathlib import Path
+
+    directory = Path(directory)
+    files = []
+    for name in filenames:
+        if Path(name).name != name or name in (".", ".."):
+            raise ValueError("Invalid VieNeu artifact filename")
+        source = directory / name
+        if source.is_file():
+            files.append((name, source))
+    if not any(source.is_symlink() for _, source in files):
+        return directory
+    # HF snapshots are immutable. Include blob paths in the key so different
+    # revisions never reuse a graph/weight combination from an older snapshot.
+    key = "\n".join(f"{name}:{source.resolve()}" for name, source in files)
+    target = directory / ".zm-ai-onnx" / hashlib.sha256(key.encode()).hexdigest()
+    target.mkdir(parents=True, exist_ok=True)
+    for name, source in files:
+        destination = target / name
+        if destination.is_file() and not destination.is_symlink() and destination.stat().st_size == source.stat().st_size:
+            continue
+        # Publish complete files atomically across parallel TTS workers.
+        # Hardlinks retain the original blobs and avoid duplicating large data.
+        with tempfile.TemporaryDirectory(prefix=".pending-", dir=target) as staging:
+            temporary = Path(staging) / name
+            try:
+                os.link(source.resolve(), temporary)
+            except OSError:
+                shutil.copyfile(source, temporary)
+            try:
+                os.replace(temporary, destination)
+            except OSError:
+                # Windows can prevent replacement while another worker reads it.
+                if not (destination.is_file() and not destination.is_symlink()
+                        and destination.stat().st_size == source.stat().st_size):
+                    raise
+    return target
+
+
+def _enable_onnx_snapshot_paths():
+    # ponytail: the pinned SDK factory does not expose codec_dir; adapt only
+    # its bundle fetch until the factory supports safe local graph/codec paths.
+    from vieneu._v3_turbo_engine.onnx_runtime_lite import OnnxV3LiteEngine
+
+    original = OnnxV3LiteEngine._fetch
+    if getattr(original, "_zm_ai_onnx_paths", False):
+        return
+    def fetch(repo, files, subfolder):
+        return _materialize_onnx_files(original(repo, files, subfolder), files)
+    fetch._zm_ai_onnx_paths = True
+    OnnxV3LiteEngine._fetch = staticmethod(fetch)
+"""
+exec(_ONNX_CACHE_SCRIPT)
+
 # Worker: 1 dòng JSON request → 1 dòng JSON response; model load 1 lần
-_WORKER_SCRIPT = r"""
+_WORKER_SCRIPT = _ONNX_CACHE_SCRIPT + r"""
 import json, os, sys, traceback
 from pathlib import Path
 
@@ -122,6 +180,8 @@ def main():
                     actual_backend = "onnx"
                     actual_device = "cpu"
                 else:
+                    if backend == "onnx":
+                        _enable_onnx_snapshot_paths()
                     client = Vieneu(mode="v3turbo", backend=backend, device=device)
                     actual_backend = str(client.backend)
                     actual_device = str(getattr(client.engine.device, "type", client.engine.device))

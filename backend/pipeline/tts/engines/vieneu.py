@@ -537,6 +537,10 @@ def get_client() -> Any:
                     pass
             _prepare_cuda_weight_load(backend, device)
             mode = current_mode()
+            if mode != MODE_NANO and backend == "onnx":
+                from .vieneu_frozen import _enable_onnx_snapshot_paths
+
+                _enable_onnx_snapshot_paths()
             kwargs: dict[str, Any] = {"mode": mode}
             if mode == MODE_NANO:
                 # Nano is ONNX/CPU only — ignore pytorch backend kwargs

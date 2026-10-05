@@ -36,6 +36,17 @@ test('NVIDIA repair actions and error states are bilingual', () => {
     assert.match(status, new RegExp(`${code}: \\[\\s*'[^']+',\\s*'[^']+'\\s*\\]`))
   }
 })
+test('GPU package failures are distinct from outdated drivers in both languages', () => {
+  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
+  for (const pair of [
+    ['Driver GPU quá cũ', 'GPU driver is outdated'],
+    ['Lỗi cài package GPU', 'GPU package setup failed'],
+    ['Thử cài lại package GPU', 'Retry GPU package setup'],
+  ]) assert.ok(modal.includes(`t('${pair[0]}', '${pair[1]}')`))
+  assert.ok(modal.includes("driverStatus.errorCode === 'DRIVER_TOO_OLD'"))
+  assert.ok(modal.includes('Network or disk-space errors still need to be resolved in CPU mode.'))
+  assert.ok(modal.includes('Lỗi mạng hay dung lượng ổ đĩa vẫn cần được xử lý khi dùng CPU.'))
+})
 test('Transcript SRT reflow explains original timing in both languages', () => {
   const source = readFileSync(new URL('../frontend/src/features/tts/TtsTranscribePanel.tsx', import.meta.url), 'utf8')
   const styles = readFileSync(new URL('../frontend/src/features/tts/lib/srt.ts', import.meta.url), 'utf8')

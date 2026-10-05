@@ -100,9 +100,9 @@ def _probe_torch_device_in(python: str) -> TorchDevice:
 
 def preferred_torch_device(*, refresh: bool = False) -> TorchDevice:
     """Preferred target; use a runtime compute probe to determine CUDA readiness."""
-    from .runtime_active import cpu_mode_enabled, _linux_cpu_only
+    from .runtime_active import cpu_mode_enabled, _hardware_cpu_only
     if refresh:
-        _linux_cpu_only.cache_clear()
+        _hardware_cpu_only.cache_clear()
     if cpu_mode_enabled():
         return 'cpu'
     with _lock:
