@@ -105,11 +105,6 @@ export default function ConfigModal({
   const [installMessage, setInstallMessage] = useState('')
   const [pendingRestart, setPendingRestart] = useState(false)
   const [restarting, setRestarting] = useState(false)
-  const [logText, setLogText] = useState('')
-  const [logPath, setLogPath] = useState('')
-  const [logLoading, setLogLoading] = useState(false)
-  const [logErr, setLogErr] = useState('')
-  const [logCopied, setLogCopied] = useState(false)
   const [updateChecking, setUpdateChecking] = useState(false)
   const [updateDialog, setUpdateDialog] = useState<UpdateDialog | null>(null)
   const autoSetupLock = useRef(false)
@@ -349,22 +344,6 @@ export default function ConfigModal({
     return () => { cancelled = true; window.clearTimeout(timer) }
   }, [applyUpdate, updateDialog?.kind])
 
-  const loadLogs = useCallback(() => {
-    setLogLoading(true)
-    setLogErr('')
-    void api
-      .getAppLogs(200)
-      .then((r) => {
-        setLogText(r.text || '(trống)')
-        setLogPath(r.path || '')
-      })
-      .catch((e: Error) => {
-        setLogErr(e.message || 'Không đọc được log')
-        setLogText('')
-      })
-      .finally(() => setLogLoading(false))
-  }, [])
-
   const loadChecks = useCallback((refresh = false, deep = false) => {
     setChecksLoading(true)
     setChecksErr('')
@@ -465,8 +444,7 @@ export default function ConfigModal({
   useEffect(() => {
     if (!open) return
     if (section === 'setup' || forceSetup) loadChecks(false, false)
-    if (section === 'logs') loadLogs()
-  }, [open, section, forceSetup, loadChecks, loadLogs])
+  }, [open, section, forceSetup, loadChecks])
 
   useEffect(() => {
     if (!open || (section !== 'setup' && section !== 'logs')) return
@@ -1506,56 +1484,8 @@ export default function ConfigModal({
               {t('Sao chép log cài đặt', 'Copy installation log')}
             </button>
             <p className="cfg-hint">
-              {t(
-                'Lỗi job (Dịch / Lồng tiếng / Xuất), warm-models, crash hook. Copy gửi AI để sửa.',
-                'Job errors (translation, dubbing, export), warm-models, and crash hooks. Copy this for AI troubleshooting.',
-              )}
-              {logPath ? (
-                <>
-                  {' '}
-                  File: <code className="cfg-log-path">{logPath}</code>
-                </>
-              ) : null}
+              {t('Chỉ hiển thị log tải và cài package AI.', 'Only AI package download and installation logs are shown.')}
             </p>
-            {logErr ? <p className="cfg-msg cfg-msg-err">{logErr}</p> : null}
-            <pre className="cfg-log-pre" tabIndex={0}>
-              {logLoading ? t('Đang tải…', 'Loading…') : logText || t('(trống)', '(empty)')}
-            </pre>
-            <div className="cfg-log-actions">
-              <button type="button" className="cfg-secondary" disabled={logLoading} onClick={() => loadLogs()}>
-                {logLoading ? t('Đang tải…', 'Loading…') : t('Tải lại', 'Reload')}
-              </button>
-              <button
-                type="button"
-                className="cfg-secondary"
-                disabled={!logText || logLoading}
-                onClick={() => {
-                  void copyText(logText).then(() => {
-                    setLogCopied(true)
-                    window.setTimeout(() => setLogCopied(false), 1600)
-                  })
-                }}
-              >
-                {logCopied ? t('Đã copy', 'Copied') : 'Copy log'}
-              </button>
-              <button
-                type="button"
-                className="cfg-secondary"
-                disabled={logLoading}
-                onClick={() => {
-                  if (!window.confirm(t('Xóa toàn bộ file log?', 'Delete all log files?'))) return
-                  void api.clearAppLogs().then(() => {
-                    loadLogs()
-                    toast.success(t('Đã xóa log.', 'Logs deleted.'))
-                  }).catch((e: Error) => {
-                    setLogErr(e.message)
-                    toast.error(e.message)
-                  })
-                }}
-              >
-                {t('Xóa log', 'Delete logs')}
-              </button>
-            </div>
           </div>
         ) : null}
 

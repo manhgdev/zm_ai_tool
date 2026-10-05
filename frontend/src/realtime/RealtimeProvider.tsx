@@ -17,6 +17,8 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
   const handlersRef = useRef(new Map<string, Set<RealtimeHandler>>())
   const lastIdRef = useRef('')
   const connectRef = useRef<() => void>(() => undefined)
+  const enabledRef = useRef(enabled)
+  enabledRef.current = enabled
 
   const dispatch = useCallback((event: RealtimeEvent) => {
     if (event.id && (!lastIdRef.current || Number(event.id) > Number(lastIdRef.current))) {
@@ -63,6 +65,7 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
   }, [])
 
   const connect = useCallback(() => {
+    if (!enabledRef.current) return
     sourceRef.current?.close()
     const topics = [...topicsRef.current]
     const params = new URLSearchParams()
@@ -101,7 +104,9 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
     handlersRef.current.set(topic, handlers)
     const hadTopic = topicsRef.current.has(topic)
     topicsRef.current.add(topic)
-    if (!sourceRef.current || sourceRef.current.readyState === EventSource.CLOSED || !hadTopic) connectRef.current()
+    if (enabledRef.current && (!sourceRef.current || sourceRef.current.readyState === EventSource.CLOSED || !hadTopic)) {
+      connectRef.current()
+    }
     return () => {
       handlers.delete(handler)
       if (!handlers.size) {

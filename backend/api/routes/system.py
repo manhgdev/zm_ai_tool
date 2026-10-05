@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -950,6 +951,7 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                 "\n=== Cài đặt thất bại / Installation failed ===\n"
                 + str(e)
                 + "\n"
+                + traceback.format_exc()
             )
         finally:
             _sc._install_log_fn = None

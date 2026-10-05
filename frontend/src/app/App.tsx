@@ -33,7 +33,7 @@ import DrawingPage from '@/pages/DrawingPage'
 import ChatPage from '@/pages/ChatPage'
 import AutomationPage from '@/pages/AutomationPage'
 import LicensePage from '@/features/license/LicensePage'
-import { licenseApi, readCachedStatus, type LicenseStatus } from '@/features/license/license.api'
+import { licenseApi, type LicenseStatus } from '@/features/license/license.api'
 import { ExportSuccessModal } from '@/features/editor/ExportSuccessModal'
 import { api } from '@/features/project/project.api'
 import { expandSegmentsForList } from '@/features/project/expandCompound'
@@ -112,8 +112,9 @@ export default function App() {
   /** Backend checks done once — không chặn UI sau khi đã qua cổng thiết lập. */
   const [setupChecked, setSetupChecked] = useState(false)
   const [setupMissingRequired, setSetupMissingRequired] = useState(false)
-  // ponytail: init từ sessionStorage cache → không flash LicensePage mỗi lần mở app
-  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(readCachedStatus)
+  // Never treat a session cache as authorization for background API streams.
+  // The first status must come from the backend that will gate those requests.
+  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null)
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth)
   const sidebarWidthRef = useRef(sidebarWidth)
   const sidebarDrag = useRef<{ startX: number; startW: number } | null>(null)
@@ -337,7 +338,7 @@ export default function App() {
   useEffect(() => {
     if (!setupGatePassed) return
     let cancelled = false
-    const refresh = () => licenseApi.status()
+    const refresh = () => licenseApi.status(true)
       .then((next) => { if (!cancelled) setLicenseStatus(next) })
       .catch((error) => {
         if (!cancelled) setLicenseStatus({
@@ -864,8 +865,9 @@ export default function App() {
   // Chỉ sau Bắt đầu / đã lưu cổng — tránh Header+Modal+workspace cùng chiếm CSS grid → trắng.
   const firstRunBlocked = !setupGatePassed
   const appUsable = setupGatePassed
-  // ponytail: null = đang loading → không block; chỉ block khi đã load xong và invalid
-  const licenseBlocked = appUsable && licenseStatus != null && !licenseStatus.valid
+  // Do not mount workspace pages until the backend has confirmed the license;
+  // their startup polling would otherwise create background 403 requests.
+  const licenseBlocked = appUsable && (!licenseStatus || !licenseStatus.valid)
   const configModalOpen = configOpen || firstRunBlocked
 
   return (

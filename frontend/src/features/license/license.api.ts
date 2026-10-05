@@ -32,9 +32,11 @@ function cacheStatus(status: LicenseStatus): LicenseStatus {
   return status
 }
 
-function getStatus(): Promise<LicenseStatus> {
-  const cached = readCachedStatus()
-  if (cached) return Promise.resolve(cached)
+function getStatus(force = false): Promise<LicenseStatus> {
+  if (!force) {
+    const cached = readCachedStatus()
+    if (cached) return Promise.resolve(cached)
+  }
   if (statusInFlight) return statusInFlight
   statusInFlight = fetchJson<LicenseStatus>('/api/license/status', undefined, 35_000)
     .then(cacheStatus)
@@ -43,7 +45,7 @@ function getStatus(): Promise<LicenseStatus> {
 }
 
 export const licenseApi = {
-  status: getStatus,
+  status: (force = false) => getStatus(force),
   activate: (key: string) =>
     fetchJson<LicenseStatus>('/api/license/activate', {
       method: 'POST',

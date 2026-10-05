@@ -85,6 +85,12 @@ def _runtime_modules_batch_ok(names: list[str]) -> dict[str, tuple[bool, str]]:
         "for n in names:\n"
         "  try:\n"
         "    m = __import__(n)\n"
+        "    if n == 'av':\n"
+        "      from importlib.metadata import version\n"
+        "      raw = version('av')\n"
+        "      parts = tuple(int(p) for p in raw.split('+', 1)[0].split('.') if p.isdigit())\n"
+        "      if parts < (16, 0, 1):\n"
+        "        raise RuntimeError('PyAV too old: ' + raw + ' (need >=16.0.1)')\n"
         "    if n == 'cv2' and not getattr(m, 'VideoCapture', None):\n"
         "      raise ImportError('cv2 thiếu VideoCapture')\n"
         "    if n == 'transformers':\n"
@@ -154,6 +160,7 @@ _DEMUCS_PY_TTL = 300.0
 
 _AI_RUNTIME_MODULES = (
     "faster_whisper",
+    "av",
     "rapidocr_onnxruntime",
     "PIL",
     "cv2",

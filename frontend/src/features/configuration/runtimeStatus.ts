@@ -73,7 +73,11 @@ export function runtimeStatusText(status: InstallStatus, locale: Locale): string
   const profile = status.runtimeProfile || status.runtimePack
   // Package commands and versions are already present in the diagnostic log.
   const active = ['download_packages', 'download', 'install', 'resolve'].includes(status.stage || '') ? status.currentPackage : ''
-  const bytes = status.downloadedBytes == null ? '' : `${(status.downloadedBytes / 1048576).toFixed(1)}${status.totalBytes == null ? '' : '/' + (status.totalBytes / 1048576).toFixed(1)} MiB`
+  const downloadedBytes = Number(status.downloadedBytes)
+  const totalBytes = Number(status.totalBytes)
+  const bytes = Number.isFinite(downloadedBytes) && Number.isFinite(totalBytes) && (downloadedBytes > 0 || totalBytes > 0)
+    ? `${(downloadedBytes / 1048576).toFixed(1)}/${(totalBytes / 1048576).toFixed(1)} MiB`
+    : ''
   const speed = status.speedBytesPerSecond ? `${(status.speedBytesPerSecond / 1048576).toFixed(1)} MiB/s` : ''
   const eta = status.etaSeconds == null ? '' : `${localize(locale, 'Còn khoảng', 'About')} ${Math.ceil(status.etaSeconds / 60)} ${localize(locale, 'phút', 'min')}`
   return [localize(locale, ...stage), profile, active, bytes, speed, eta].filter(Boolean).join(' · ')

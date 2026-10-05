@@ -244,6 +244,9 @@ export default function TtsStudio({
     if (!raw || typeof raw !== 'object') return
     const progress = raw as TtsRealtimeProgress
     const progressId = event.entityId || activeId
+    // A cancelled job may still publish its final backend event. Do not reopen
+    // the popup or overwrite the user's cancelled state with that late error.
+    if (progressId && cancelledJobIdsRef.current.has(progressId)) return
     if (progressId) ttsProgressRef.current.set(progressId, progress)
     if (Number(progress.pct) > 0 && (!activeId || progressId === activeId)) setBusyProgress(Number(progress.pct))
     if (progress.message) setBusyCustomMessage(progress.message)
@@ -271,6 +274,13 @@ export default function TtsStudio({
       resolve(progress)
     })
     const poll = window.setInterval(() => {
+      if (cancelledJobIdsRef.current.has(jobId)) {
+        window.clearInterval(poll)
+        ttsWaitersRef.current.delete(jobId)
+        window.clearTimeout(timer)
+        resolve({ error: 'cancelled' })
+        return
+      }
       void api.ttsStudioJobProgress(jobId).then((progress) => {
         if (Number(progress.pct) > 0 && (!activeJobIdRef.current || activeJobIdRef.current === jobId)) {
           setBusyProgress(Math.max(1, Number(progress.pct)))
@@ -543,6 +553,7 @@ export default function TtsStudio({
   )
   const selectedVoice = useMemo(() => voices.find((v) => v.id === voice), [voices, voice])
   const isVieneuVoice = selectedVoice ? voiceEngineBucket(selectedVoice) === 'vieneu' : false
+  const selectedVoiceEngine = selectedVoice ? voiceEngineBucket(selectedVoice) : null
 
   useEffect(() => {
     setSelectedVoiceIds(new Set())
@@ -748,7 +759,11 @@ export default function TtsStudio({
       await loadStatus()
       await loadHistory()
       if (cancelled) return
-      // Warm once per mount; backend no-ops when model already ready.
+      // CapCut/ElevenLabs/System are remote/system engines; warming VieNeu for
+      // them made the UI show a local model load unrelated to the selected voice.
+      const needsLocalModel = selectedVoiceEngine === 'vieneu' || selectedVoiceEngine === 'zmai' || selectedVoiceEngine === 'clone'
+      if (!needsLocalModel) return
+      // Warm once for a local voice; backend no-ops when model already ready.
       try {
         const warm = await api.ttsWarm()
         if (!cancelled && warm.loadState !== 'ready') {
@@ -761,7 +776,7 @@ export default function TtsStudio({
       }
     })()
     return () => { cancelled = true }
-  }, [loadStatus, loadHistory])
+  }, [loadStatus, loadHistory, selectedVoiceEngine])
 
   const vieneu = status.vieneu
   const vieneuLoadState = String(vieneu?.loadState || '')
@@ -916,7 +931,16 @@ export default function TtsStudio({
     setBusyKind('synth')
     setBusy(true)
     setBusyProgress(2)
-    setBusyCustomMessage(useSrt ? 'Đang chuẩn bị tạo giọng từ SRT…' : 'Đang chuẩn bị tạo giọng nói…')
+    const preparationMessage = useSrt
+      ? t('Đang chuẩn bị tạo giọng từ SRT…', 'Preparing voice generation from SRT…')
+      : selectedVoiceEngine === 'capcut'
+        ? t('Đang kết nối CapCut để tạo giọng…', 'Connecting to CapCut to create the voice…')
+        : selectedVoiceEngine === 'eleven'
+          ? t('Đang kết nối ElevenLabs để tạo giọng…', 'Connecting to ElevenLabs to create the voice…')
+          : selectedVoiceEngine === 'vieneu' || selectedVoiceEngine === 'zmai' || selectedVoiceEngine === 'clone'
+            ? t('Đang chuẩn bị model VieNeu cục bộ…', 'Preparing the local VieNeu model…')
+            : t('Đang chuẩn bị tạo giọng hệ thống…', 'Preparing system voice generation…')
+    setBusyCustomMessage(preparationMessage)
     setError('')
     const requestJobId = crypto.randomUUID().replaceAll('-', '').slice(0, 12)
     activeJobIdRef.current = requestJobId
@@ -1051,7 +1075,10 @@ export default function TtsStudio({
       setBusy(false)
       setBusyKind(null)
       setBusyProgress(0)
+      setBusyCustomMessage('')
+      setProgressMinimized(false)
       setError('Đã hủy')
+      ttsWaitersRef.current.delete(runningJobId)
       try {
         await api.ttsStudioCancel(runningJobId)
       } catch {
@@ -1496,9 +1523,13 @@ export default function TtsStudio({
         ? t('Đang nhận dạng…', 'Transcribing…')
         : srtRaw.trim()
           ? t('Đang tạo giọng từ SRT…', 'Creating voice from SRT…')
-          : isVieneuVoice
-            ? t('Đang tạo giọng VieNeu (lần đầu có thể nạp model)…', 'Creating VieNeu voice (first run may load the model)…')
-            : t('Đang tạo giọng nói…', 'Creating voice…'))
+          : selectedVoiceEngine === 'capcut'
+            ? t('Đang tạo giọng bằng CapCut…', 'Creating voice with CapCut…')
+            : selectedVoiceEngine === 'eleven'
+              ? t('Đang tạo giọng bằng ElevenLabs…', 'Creating voice with ElevenLabs…')
+              : selectedVoiceEngine === 'vieneu' || selectedVoiceEngine === 'zmai' || selectedVoiceEngine === 'clone'
+                ? t('Đang tạo giọng VieNeu (lần đầu có thể nạp model)…', 'Creating VieNeu voice (first run may load the model)…')
+                : t('Đang tạo giọng hệ thống…', 'Creating system voice…'))
 
   const historyPanel = (
     <TtsHistoryPanel

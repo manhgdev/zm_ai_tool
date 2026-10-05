@@ -1010,6 +1010,8 @@ def _synthesize_once(
         if on_progress:
             on_progress(0.02)
         get_client()  # prepares PyTorch/MPS or CUDA before resolving the worker
+        if cancel_check and cancel_check():
+            raise RuntimeError("Job đã hủy")
         if on_progress:
             on_progress(0.08)
         backend, device = vieneu_frozen.resolve_backend()
@@ -1045,6 +1047,11 @@ def _synthesize_once(
     if on_progress:
         on_progress(0.02)
     client = get_client()
+    # Model construction is synchronous and cannot be interrupted safely, but
+    # the cancel request must stop before any voice registration or inference
+    # starts once that load returns.
+    if cancel_check and cancel_check():
+        raise RuntimeError("Job đã hủy")
     if on_progress:
         on_progress(0.08)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
