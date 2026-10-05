@@ -468,7 +468,7 @@ export default function ConfigModal({
   }, [open, section, forceSetup, loadChecks, loadLogs])
 
   useEffect(() => {
-    if (!open || section !== 'setup') return
+    if (!open || (section !== 'setup' && section !== 'logs')) return
     let cancelled = false
     let errCount = 0
     let timerId: number
@@ -479,6 +479,7 @@ export default function ConfigModal({
         if (cancelled) return
         errCount = 0  // reset on success
         setDriverStatus(st)
+        if (st.log) setInstallLog(st.log)
         setInstallStatusReady(true)
         if (st.running && st.kind) {
           setInstalling(st.kind)
@@ -967,15 +968,15 @@ export default function ConfigModal({
               >
                 {t('Thư mục đầu ra', 'Output folder')}
               </button>
-              <button
-                type="button"
-                className={section === 'logs' ? 'active' : undefined}
-                onClick={() => setSection('logs')}
-              >
-                Log
-              </button>
             </>
           ) : null}
+          <button
+            type="button"
+            className={section === 'logs' ? 'active' : undefined}
+            onClick={() => setSection('logs')}
+          >
+            {t('Log cài đặt', 'Install log')}
+          </button>
         </div>
 
         {section === 'cloud' && (
@@ -1495,6 +1496,14 @@ export default function ConfigModal({
           licenseStatus && onLicenseStatusChange ? <LicensePage status={licenseStatus} embedded onStatusChange={onLicenseStatusChange} /> : null
         ) : section === 'logs' ? (
           <div className="cfg-log-panel">
+            <h3>{t('Log cài đặt package', 'Package installation log')}</h3>
+            <pre className="cfg-log-pre" tabIndex={0}>
+              {[installLog, installPopupError || checksErr].filter(Boolean).join('\n') || t('Chưa có log cài đặt.', 'No installation log yet.')}
+            </pre>
+            <button type="button" className="cfg-secondary" disabled={!installLog && !checksErr && !installPopupError}
+              onClick={() => void copyText([installLog, installPopupError || checksErr].filter(Boolean).join('\n'))}>
+              {t('Sao chép log cài đặt', 'Copy installation log')}
+            </button>
             <p className="cfg-hint">
               {t(
                 'Lỗi job (Dịch / Lồng tiếng / Xuất), warm-models, crash hook. Copy gửi AI để sửa.',
@@ -1574,7 +1583,7 @@ export default function ConfigModal({
               <button
                 type="button"
                 className="cfg-primary"
-                disabled={checksLoading || !checks?.ok}
+                disabled={checksLoading || !!installing}
                 onClick={() => {
                   if (checks?.ok) onSetupReady?.()
                   else loadChecks(true, false)
