@@ -21,10 +21,11 @@ from typing import Callable
 
 
 class RuntimeInstallError(RuntimeError):
-    def __init__(self, code: str, message: str, *, retryable: bool = True, diagnostics: str = ''):
+    def __init__(self, code: str, message: str, *, retryable: bool = True, diagnostics: str = '', driver_check: dict | None = None):
         super().__init__(message)
         self.code, self.retryable = code, retryable
         self.diagnostics = redact(diagnostics or message)
+        self.driver_check = driver_check
 
 
 def redact(value: str) -> str:

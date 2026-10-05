@@ -180,6 +180,9 @@ def _apple_silicon() -> bool:
 
 def _demucs_backend_wanted() -> str:
     """cuda | rocm | mlx | cpu — backend tách lời tối ưu theo máy."""
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return 'cpu'
     if _nvidia_smi_ok():
         return "cuda"
     if _apple_silicon():
@@ -197,6 +200,9 @@ def _demucs_backend_wanted() -> str:
 
 def _torch_device(exe: Path) -> str:
     """cuda | mps | cpu — probe torch trong venv (không gồm mlx)."""
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return 'cpu'
     if not exe.is_file():
         return "cpu"
     try:

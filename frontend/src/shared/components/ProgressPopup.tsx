@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@/shared/lib/cn'
 
 import { localize, useLocale } from '@/app/i18n'
@@ -25,6 +25,10 @@ export type ProgressPopupProps = {
   /** Huỷ job (tuỳ chọn) */
   onCancel?: () => void
   className?: string
+  actions?: ReactNode
+  details?: ReactNode
+  wide?: boolean
+  collapseLog?: boolean
 }
 
 function clampPct(n: number) {
@@ -88,6 +92,10 @@ export default function ProgressPopup({
   onRestore,
   onCancel,
   className,
+  actions,
+  details,
+  wide = false,
+  collapseLog = false,
 }: ProgressPopupProps) {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
@@ -183,7 +191,7 @@ export default function ProgressPopup({
       aria-modal="true"
       aria-label={title}
     >
-      <div className="w-full max-w-sm rounded-lg border border-border bg-background shadow-xl">
+      <div className={cn('w-full rounded-lg border border-border bg-background shadow-xl', wide ? 'max-w-[720px]' : 'max-w-sm')}>
         <div className="flex items-start gap-2 border-b border-border px-4 py-3">
           <div className="min-w-0 flex-1">
             <h3 className="text-sm font-semibold text-foreground">{title}</h3>
@@ -224,7 +232,8 @@ export default function ProgressPopup({
               style={{ width: `${Math.max(pct, running && !failed ? 4 : 0)}%` }}
             />
           </div>
-          {log && (
+          {details}
+          {log && collapseLog ? <details className="text-xs"><summary>{t('Chi tiết lỗi', 'Error details')}</summary><pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{log}</pre></details> : log && (
             <pre
               ref={logRef}
               className="mt-1 max-h-40 cursor-text select-text overflow-y-auto rounded bg-black/85 p-2 text-[10px] leading-relaxed text-green-400 font-mono whitespace-pre-wrap break-all"
@@ -232,8 +241,8 @@ export default function ProgressPopup({
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
-          {failed ? (
+        <div className={cn('flex items-center justify-end gap-2 border-t border-border px-4 py-3', actions && 'flex-wrap')}>
+          {actions ?? (failed ? (
             <>
               <button
                 type="button"
@@ -270,7 +279,7 @@ export default function ProgressPopup({
                 </button>
               ) : null}
             </>
-          )}
+          ))}
         </div>
       </div>
     </div>

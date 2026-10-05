@@ -250,6 +250,9 @@ def _torch_cuda_ready() -> bool:
 
 def _nvidia_present() -> bool:
     """GPU vật lý có (không cần torch) — để báo thiếu PyTorch CUDA."""
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return False
     try:
         import shutil
         import subprocess

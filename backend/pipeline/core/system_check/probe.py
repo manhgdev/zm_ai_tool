@@ -208,6 +208,9 @@ def _ocr_cuda_check_cached(*, refresh: bool = False) -> tuple[bool, str]:
 
 
 def _nvidia_present() -> bool:
+    from ..runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return False
     from ..accel import _nvidia_smi
 
     return _nvidia_smi()
@@ -509,7 +512,8 @@ def _demucs_check_uncached() -> tuple[bool, str]:
     - NVIDIA → torch CUDA
     - Không GPU → torch CPU cũng ok
     """
-    want_cuda = bool(_which("nvidia-smi"))
+    from ..runtime_active import cpu_mode_enabled
+    want_cuda = not cpu_mode_enabled() and bool(_which("nvidia-smi"))
     want_mlx = _apple_silicon()
     py = _demucs_venv_python()
     if not py:

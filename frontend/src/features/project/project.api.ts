@@ -14,6 +14,14 @@ import { fetchJson } from '@/shared/api/fetchJson'
 const base = '/api'
 
 export type InstallStatus = {
+  cpuRuntimeAvailable?: boolean
+  computeMode?: 'cpu' | 'auto'
+  operationId?: string
+  driverRepairAvailable?: boolean
+  rebootRequired?: boolean
+  resumeKind?: string
+  eula?: string[]
+  driverCheck?: { reason?: string; minimumVersion?: string; gpus?: Array<{ name?: string; driver?: string; deviceInstanceId?: string; deviceStatus?: string }> } | null
   running: boolean
   kind?: string
   ok?: boolean
@@ -25,7 +33,7 @@ export type InstallStatus = {
   progress?: number
   startedAt?: number
   updatedAt?: number
-  stage?: 'detect_hardware' | 'prepare_python' | 'resolve' | 'download' | 'install' | 'download_packages' | 'install_packages' | 'probe' | 'activate' | 'rollback' | ''
+  stage?: 'detect_hardware' | 'prepare_python' | 'resolve' | 'download' | 'install' | 'download_packages' | 'install_packages' | 'probe' | 'activate' | 'rollback' | '' | `driver_${string}`
   runtimeProfile?: string
   currentPackage?: string
   runtimePack?: string
@@ -152,6 +160,14 @@ export const api = {
 
   installStatus: () =>
     fetchJson<InstallStatus>(`${base}/system/install/status`, undefined, 30_000),
+
+  updateNvidiaDriver: async (action: 'update' | 'accept_eula' | 'resume' | 'reboot' | 'cpu') => {
+    const headers = { 'X-ZM-Driver-Request': '1', 'Content-Type': 'application/json' }
+    const { token } = await fetchJson<{ token: string }>(`${base}/system/install/nvidia_driver/confirmation?action=${action}`, { headers })
+    return fetchJson<InstallStatus>(`${base}/system/install/${action === 'cpu' ? 'cpu_runtime' : 'nvidia_driver'}`, {
+      method: 'POST', headers, body: JSON.stringify(action === 'cpu' ? { token } : { action, token }),
+    }, 30_000)
+  },
 
   rollbackAiRuntime: () => pollInstall(`${base}/system/install/rollback`),
 

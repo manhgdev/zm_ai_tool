@@ -154,12 +154,16 @@ def whisper_loaded() -> bool:
 def get_whisper(workers: int = 2):
     """Load 1 lần / process — không reload khi đổi workers."""
     global _whisper, _whisper_threads
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    explicit_cpu = cpu_mode_enabled()
     thr = _resolve_asr_workers(workers)
     with _whisper_lock:
+        if explicit_cpu and _whisper is not None and getattr(_whisper, '_vc_device', '') != 'cpu':
+            _whisper = None
         if _whisper is not None:
             return _whisper
 
-        cpu_only = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() == "-1"
+        cpu_only = explicit_cpu or os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() == "-1"
         device = "cpu"
         compute = "int8"
         try:

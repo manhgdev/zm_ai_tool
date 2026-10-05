@@ -128,6 +128,8 @@ def begin_job(project_id: str) -> int:
     rồi request_cancel set). arm_job luôn reset event sạch trước mỗi job mới
     nên cancel của lần trước không dính.
     """
+    from .nvidia_driver import assert_available
+    assert_available()
     with _lock:
         gen = int(_job_gen.get(project_id, 0)) + 1
         _job_gen[project_id] = gen
@@ -153,6 +155,8 @@ def arm_job(project_id: str) -> int:
 
     Luôn tạo event sạch (bỏ cancelled của job trước).
     """
+    from .nvidia_driver import assert_available
+    assert_available()
     with _lock:
         _job_gen.setdefault(project_id, 0)
         _cancel_flags[project_id] = threading.Event()

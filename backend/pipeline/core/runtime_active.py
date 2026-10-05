@@ -35,6 +35,33 @@ def active_runtime_dir() -> Path:
     return home / ".venv-runtime"
 
 
+def cpu_mode_enabled() -> bool:
+    """Explicit user choice, not physical GPU inventory; read fresh in every worker."""
+    if sys.platform != 'win32':
+        return False
+    try:
+        data = json.loads((runtime_home() / 'runtime/current.json').read_text(encoding='utf-8'))
+        return data.get('computeMode') == 'cpu'
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def clear_compute_caches() -> None:
+    from .accel import _cache, _lock
+    with _lock:
+        _cache.clear()
+    for module_name, names in {
+        'pipeline.ocr.extract_parts.runtime': ('_rapidocr_gpu_kwargs',),
+        'pipeline.core.system_check.checks': ('_invalidate_checks_cache',),
+    }.items():
+        module = sys.modules.get(module_name)
+        if module:
+            for name in names:
+                fn = getattr(module, name, None)
+                if fn:
+                    getattr(fn, 'cache_clear', fn)()
+
+
 def runtime_python() -> Path:
     root = active_runtime_dir()
     return root / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")

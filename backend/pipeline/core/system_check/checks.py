@@ -267,8 +267,10 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
     )
 
     dist = None if fast else _pkg_distributions()
-    nvidia = device.get("gpuKind") == "nvidia"
-    directml = device.get("accel") == "directml"
+    from ..runtime_active import cpu_mode_enabled
+    cpu_mode = cpu_mode_enabled()
+    nvidia = not cpu_mode and device.get("gpuKind") == "nvidia"
+    directml = not cpu_mode and device.get("accel") == "directml"
     if fast:
         demucs_ok, demucs_detail = _demucs_venv_fast()
         cuda_ok, cuda_detail = (

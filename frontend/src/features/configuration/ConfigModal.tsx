@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { AppConfig, CloudProviderId, SystemChecks } from '@/features/project/project.types'
 import { api, type InstallStatus } from '@/features/project/project.api'
 import ProgressPopup from '@/shared/components/ProgressPopup'
+import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import LicensePage from '@/features/license/LicensePage'
 import type { LicenseStatus } from '@/features/license/license.api'
 import { localize, useLocale } from '@/app/i18n'
@@ -92,6 +93,13 @@ export default function ConfigModal({
   const [installing, setInstalling] = useState<string | null>(null)
   const [installProgressMinimized, setInstallProgressMinimized] = useState(false)
   const [installPopupError, setInstallPopupError] = useState('')
+  const [driverStatus, setDriverStatus] = useState<InstallStatus>({ running: false })
+  const [driverConfirm, setDriverConfirm] = useState<'update' | 'accept_eula' | 'reboot' | null>(null)
+  const [driverSubmitting, setDriverSubmitting] = useState(false)
+  const [installStatusReady, setInstallStatusReady] = useState(false)
+  const observedDriverDone = useRef('')
+  const driverWaiting = driverStatus.stage === 'driver_eula' || driverStatus.rebootRequired
+  const gpuChoice = Boolean(driverStatus.driverRepairAvailable || driverStatus.cpuRuntimeAvailable)
   const [installLog, setInstallLog] = useState('')
   const [installProgress, setInstallProgress] = useState(0)
   const [installMessage, setInstallMessage] = useState('')
@@ -470,6 +478,8 @@ export default function ConfigModal({
         const st = await api.installStatus()
         if (cancelled) return
         errCount = 0  // reset on success
+        setDriverStatus(st)
+        setInstallStatusReady(true)
         if (st.running && st.kind) {
           setInstalling(st.kind)
           setInstallProgress(Number(st.progress) || 1)
@@ -478,6 +488,18 @@ export default function ConfigModal({
           if (st.diagnostics) setInstallLog((previous) => previous.includes(st.diagnostics!) ? previous : `${previous}${previous ? '\n' : ''}${st.diagnostics}`)
         } else {
           setInstalling(null)
+          if ((st.kind === 'nvidia_driver' || st.kind === 'cpu_runtime') && !st.error) {
+            setInstallPopupError('')
+            setInstallMessage(runtimeStatusText(st, locale))
+            if (st.needsRestart) setPendingRestart(true)
+            const completionId = st.operationId || String(st.startedAt || '')
+            if (st.ok && !st.rebootRequired && st.stage !== 'driver_eula' && observedDriverDone.current !== completionId) {
+              observedDriverDone.current = completionId
+              setChecksErr('')
+              setMsg(st.computeMode === 'cpu' ? localize(locale, 'Cài đặt hoàn tất. Đang dùng CPU.', 'Installation complete. Using CPU.') : localize(locale, 'Cài đặt hoàn tất.', 'Installation complete.'))
+              loadChecks(true, false)
+            }
+          }
           if (st.error && st.error !== observedInstallError.current) {
             observedInstallError.current = st.error
             setInstallPopupError(runtimeErrorText(st, locale))
@@ -501,7 +523,32 @@ export default function ConfigModal({
       cancelled = true
       window.clearTimeout(timerId)
     }
-  }, [open, section, locale])
+  }, [open, section, locale, loadChecks])
+
+  const runDriverAction = async (direct?: 'cpu') => {
+    const action = direct || driverConfirm
+    if (!action || driverSubmitting) return
+    setDriverConfirm(null)
+    setDriverSubmitting(true)
+    try {
+      const status = await api.updateNvidiaDriver(action)
+      setDriverStatus(status)
+      setInstallPopupError('')
+      setChecksErr('')
+      observedInstallError.current = ''
+      setInstallProgressMinimized(false)
+      if (status.running) {
+        setInstalling(action === 'cpu' ? 'cpu_runtime' : 'nvidia_driver')
+        setInstallProgress(1)
+        setInstallMessage(action === 'cpu' ? t('Đang cài runtime CPU…', 'Installing the CPU runtime…') : t('Đang kiểm tra driver đồ họa…', 'Checking the graphics driver…'))
+      }
+    } catch (error) {
+      const code = error instanceof Error ? error.message : 'DRIVER_UPDATE_FAILED'
+      setInstallPopupError(runtimeErrorText({ running: false, errorCode: code }, localeRef.current))
+    } finally {
+      setDriverSubmitting(false)
+    }
+  }
 
   const cur = draft[tab]
   const canClose = !forceSetup || !!checks?.ok
@@ -518,6 +565,7 @@ export default function ConfigModal({
     setChecksErr('')
     let lastInstallError = ''
     const onStatus = (status: InstallStatus) => {
+      setDriverStatus(status)
       if (status.log) setInstallLog(status.log)
       if (status.error && !status.diagnostics) setInstallLog((previous) => previous.includes(status.error!) ? previous : previous + '\n' + status.error)
       if (typeof status.progress === 'number') setInstallProgress(status.progress)
@@ -593,7 +641,7 @@ export default function ConfigModal({
 
   useEffect(() => {
     if (!open || section !== 'setup') return
-    if (checksLoading || installing || restarting || !checks) return
+    if (checksLoading || installing || restarting || !checks || !installStatusReady || driverWaiting || driverStatus.error || driverStatus.kind === 'nvidia_driver' || driverStatus.kind === 'cpu_runtime') return
     if (autoSetupLock.current) return
     const shouldAuto = forceSetup || !checks.ok
     if (!shouldAuto) return
@@ -625,6 +673,9 @@ export default function ConfigModal({
     installing,
     restarting,
     pendingRestart,
+    driverStatus,
+    driverWaiting,
+    installStatusReady,
     installAction,
     onSetupReady,
   ])
@@ -1555,16 +1606,26 @@ export default function ConfigModal({
       </div>
       <div onClick={(e) => e.stopPropagation()}>
         <ProgressPopup
-          active={Boolean(installing || installPopupError)}
+          wide={gpuChoice || driverStatus.kind === 'cpu_runtime' || driverStatus.kind === 'nvidia_driver'}
+          collapseLog={gpuChoice || driverStatus.kind === 'cpu_runtime' || driverStatus.kind === 'nvidia_driver'}
+          active={Boolean(installing || installPopupError || driverWaiting)}
           minimized={installProgressMinimized}
           running={Boolean(installing)}
           title={
-            installPopupError
+            gpuChoice && !installing
+              ? t('Chưa thể sử dụng GPU', 'GPU is not ready')
+              : driverWaiting
+              ? t('Cập nhật driver đồ họa', 'Graphics driver update')
+              : installPopupError
               ? t('Cài đặt thất bại', 'Installation failed')
               : installing === 'rollback'
                 ? t('Khôi phục runtime trước', 'Restoring previous runtime')
               : installing === 'ai_runtime'
                 ? t('Đang cài gói AI', 'Installing AI packages')
+                : installing === 'cpu_runtime'
+                  ? t('Đang cài runtime CPU', 'Installing the CPU runtime')
+                : installing === 'nvidia_driver'
+                  ? t('Đang cập nhật driver đồ họa', 'Updating the graphics driver')
                 : installing === 'ocr_cuda'
                   ? t('Đang cài GPU OCR', 'Installing OCR GPU')
                   : installing === 'demucs_cuda'
@@ -1572,7 +1633,9 @@ export default function ConfigModal({
                     : t('Đang cài NVM + Node.js LTS', 'Installing NVM + Node.js LTS')
           }
           message={
-            installing
+            driverWaiting
+              ? runtimeStatusText(driverStatus, locale)
+              : installing
               ? installMessage || t(
                 `Đang cài ${installLabel(installing)}. Vui lòng không tắt ứng dụng.`,
                 `Installing ${installLabel(installing)}. Please keep the app open.`,
@@ -1582,12 +1645,60 @@ export default function ConfigModal({
           progress={installProgress}
           error={installPopupError || null}
           log={installLog || undefined}
+          details={<>
+            {gpuChoice && <div className="mb-4 grid grid-cols-1 min-[600px]:grid-cols-2 gap-3">
+              <div>
+                <button type="button" disabled={Boolean(installing || driverSubmitting || !driverStatus.driverRepairAvailable)}
+                  className="w-full rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                  onClick={() => setDriverConfirm('update')}>{t('Cập nhật driver và tiếp tục', 'Update driver and continue')}</button>
+                <p className="mt-2 text-xs text-muted-foreground">{t('App tự tìm driver phù hợp. Xác nhận quyền khi Windows hỏi.', 'The app finds a compatible driver. Approve permission when Windows asks.')}</p>
+              </div>
+              <div>
+                <button type="button" disabled={Boolean(installing || driverSubmitting || !driverStatus.cpuRuntimeAvailable)}
+                  className="w-full rounded-md border border-border px-3 py-2 text-sm font-medium disabled:opacity-50"
+                  onClick={() => void runDriverAction('cpu')}>{t('Bỏ qua GPU và tiếp tục', 'Skip GPU and continue')}</button>
+                <p className="mt-2 text-xs text-muted-foreground">{t('Dùng CPU, không cập nhật driver. Các tác vụ AI có thể chậm hơn.', 'Use the CPU without updating the driver. AI tasks may run slower.')}</p>
+              </div>
+            </div>}
+            {driverStatus.driverCheck || driverStatus.eula?.length ? (
+            <details className="max-h-60 overflow-auto text-xs whitespace-pre-wrap">
+              <summary>{t('Thông tin GPU và điều khoản', 'GPU details and terms')}</summary>
+              {driverStatus.driverCheck?.gpus?.map((gpu, index) => (
+                <p key={gpu.deviceInstanceId || index}>{gpu.name || 'NVIDIA'} · {t('Driver', 'Driver')}: {gpu.driver || t('Chưa đọc được', 'Unavailable')}</p>
+              ))}
+              {driverStatus.driverCheck?.minimumVersion && <p>{t('Driver tối thiểu', 'Minimum driver')}: {driverStatus.driverCheck.minimumVersion}</p>}
+              {driverStatus.eula?.map((text, index) => <p key={index}>{text}</p>)}
+            </details>
+          ) : null}</>}
+          actions={!installing && (gpuChoice || driverWaiting || driverStatus.kind === 'nvidia_driver' || driverStatus.kind === 'cpu_runtime') ? <>
+            {driverWaiting && <button type="button" disabled={driverSubmitting}
+              className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-50"
+              onClick={() => setDriverConfirm(driverStatus.rebootRequired ? 'reboot' : driverStatus.stage === 'driver_eula' ? 'accept_eula' : 'update')}>
+              {driverStatus.rebootRequired ? t('Khởi động lại máy', 'Restart computer') : t('Chấp nhận và tiếp tục', 'Accept and continue')}
+            </button>}
+            <button type="button" className="text-xs" onClick={() => driverWaiting ? setInstallProgressMinimized(true) : setInstallPopupError('')}>{t('Để sau', 'Later')}</button>
+            {(driverStatus.driverCheck || driverStatus.kind === 'nvidia_driver') && <button type="button" className="text-xs"
+              onClick={() => void copyText(JSON.stringify({ ...driverStatus, log: installLog }, null, 2))}>
+              {t('Sao chép chẩn đoán', 'Copy diagnostics')}
+            </button>}
+          </> : undefined}
           onMinimize={() => {
-            if (installing) setInstallProgressMinimized(true)
+            if (installing || driverWaiting) setInstallProgressMinimized(true)
             else setInstallPopupError('')
           }}
           onRestore={() => setInstallProgressMinimized(false)}
         />
+        <ConfirmDialog open={driverConfirm !== null}
+          scrollMessage={driverConfirm === 'accept_eula'}
+          title={driverConfirm === 'reboot' ? t('Khởi động lại Windows?', 'Restart Windows?') : t('Cập nhật driver NVIDIA?', 'Update the NVIDIA driver?')}
+          message={driverConfirm === 'reboot'
+            ? t('Hãy lưu công việc đang mở. Khi mở lại app sau khi khởi động máy, app sẽ kiểm tra và tiếp tục cài gói AI.', 'Save your open work. When you reopen the app after restarting, it will verify the driver and resume AI installation.')
+            : driverConfirm === 'accept_eula'
+              ? t('Bạn đồng ý với điều khoản driver hiển thị bên dưới và cho phép tiếp tục cài đặt?', 'Do you accept the driver terms shown below and allow installation to continue?') + '\n\n' + (driverStatus.eula || []).join('\n\n')
+              : t('App sẽ tự tìm và cài driver NVIDIA qua Windows Update. Màn hình có thể nháy. Hãy xác nhận quyền quản trị khi Windows hỏi; app không tự khởi động lại máy.', 'The app will find and install an NVIDIA driver through Windows Update. Your screen may flicker. Approve the Windows administrator prompt; the app will not restart your PC automatically.')}
+          confirmLabel={driverConfirm === 'reboot' ? t('Khởi động lại máy', 'Restart computer') : t('Xác nhận', 'Confirm')}
+          cancelLabel={t('Để sau', 'Later')}
+          onConfirm={() => void runDriverAction()} onCancel={() => setDriverConfirm(null)} />
       </div>
       {updateDialog ? (
         <div

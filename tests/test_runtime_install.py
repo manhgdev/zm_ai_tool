@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -100,9 +101,13 @@ class HardwareTests(unittest.TestCase):
                 runtime._prepare('uv', Path(raw) / 'candidate')
 
     def detect(self, device, output='', code=0):
+        def query(command, **_kwargs):
+            rows = [row.split(',') for row in output.splitlines() if row]
+            value = '\n'.join(f'GPU-{i}, NVIDIA Test, {row[0]}' for i, row in enumerate(rows)) if 'uuid,name,driver_version' in command[1] else '\n'.join(f'GPU-{i}, {row[1]}' for i, row in enumerate(rows))
+            return subprocess.CompletedProcess(command, code, value, 'bad driver')
         with patch('platform.machine', return_value='AMD64'), patch('pipeline.core.media.detect_device', return_value=device), patch(
             'pipeline.core.accel.nvidia_smi_executable', return_value='nvidia-smi'
-        ), patch('subprocess.run', return_value=subprocess.CompletedProcess([], code, output, 'bad driver')):
+        ), patch('subprocess.run', side_effect=query):
             return runtime.detect_profile()
 
     def test_hardware_profiles(self):
@@ -164,6 +169,7 @@ class TransactionTests(unittest.TestCase):
         self.pointer = {'path': 'old', 'runtimePack': 'cpu'}
         (self.root / 'current.json').write_text(json.dumps(self.pointer))
         for patcher in [patch.dict(os.environ, {'ZM_AI_TOOL_HOME': str(self.home)}),
+                        patch('pipeline.core.nvidia_driver.driver_mutex', side_effect=lambda: nullcontext()),
                         patch.object(runtime.sys, 'platform', 'win32'),
                         patch.object(runtime, 'detect_profile', return_value='cpu'),
                         patch.object(install, '_find_uv', return_value='uv'),
@@ -188,6 +194,25 @@ class TransactionTests(unittest.TestCase):
             result = runtime.install_runtime()
         self.assertFalse(result['needsRestart'])
         prepare.assert_not_called()
+
+    def test_explicit_cpu_commits_only_after_probe_and_retains_mode(self):
+        with patch.object(runtime, 'detect_profile', side_effect=AssertionError('Must not detect GPU')), patch.object(
+            runtime, '_prepare', side_effect=lambda uv, root: self.make_python(root)
+        ), patch.object(runtime, '_install_packages'), patch.object(runtime, '_probe', return_value='CPU OK'):
+            result = runtime.install_runtime(compute_mode='cpu')
+            self.assertEqual(result['computeMode'], 'cpu')
+            self.assertEqual(json.loads((self.root / 'current.json').read_text())['computeMode'], 'cpu')
+            self.assertEqual(runtime.install_runtime()['computeMode'], 'cpu')
+            runtime.rollback_runtime()
+            self.assertNotIn('computeMode', json.loads((self.root / 'current.json').read_text()))
+
+    def test_failed_cpu_probe_does_not_commit_mode(self):
+        with patch.object(runtime, '_prepare', side_effect=lambda uv, root: self.make_python(root)), patch.object(
+            runtime, '_install_packages'
+        ), patch.object(runtime, '_probe', side_effect=runtime.RuntimeInstallError('RUNTIME_PROBE_FAILED', 'bad CPU')):
+            with self.assertRaises(runtime.RuntimeInstallError):
+                runtime.install_runtime(compute_mode='cpu')
+        self.assertEqual(json.loads((self.root / 'current.json').read_text()), self.pointer)
 
     def test_success_keeps_candidate_path_and_old_rollback(self):
         seen = []

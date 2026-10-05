@@ -16,11 +16,12 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from api.deps import (
     AppConfigIn,
@@ -744,6 +745,9 @@ try {
 def _start_checks_warm() -> None:
     """Populate the first-run cache once; polling requests must not spawn a thread each."""
     global _checks_warming
+    from pipeline.core.nvidia_driver import pending
+    if pending():
+        return
     with _checks_warm_lock:
         if _checks_warming:
             return
@@ -795,6 +799,9 @@ def _set_install_progress(
         if not _install_state["running"]:
             return
         current = int(_install_state.get("progress") or 0)
+        if (_install_state.get('kind') == 'nvidia_driver' and fields and fields.get('stage')
+                and not str(fields['stage']).startswith('driver_')):
+            value = 80 + round(value * 0.19)
         if value < current:
             return
         _install_state["progress"] = value
@@ -803,6 +810,7 @@ def _set_install_progress(
         for key in (
             "stage", "runtimeProfile", "currentPackage", "runtimePack", "downloadedBytes", "totalBytes",
             "requiredDiskBytes", "diagnostics", "speedBytesPerSecond", "etaSeconds", "cacheHit", "downloadItems", "freeDiskBytes", "diskDrive", "retryAttempt", "retryAfterSeconds",
+            "operationId", "driverCheck", "rebootRequired", "resumeKind", "eula",
         ):
             if fields and key in fields:
                 _install_state[key] = fields[key]
@@ -827,10 +835,16 @@ def _mark_setup_gate() -> None:
 
 
 def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str, Any]:
+    from pipeline.core.nvidia_driver import assert_available
+    if kind != 'nvidia_driver':
+        try:
+            assert_available()
+        except RuntimeError as exc:
+            raise HTTPException(409, 'RUNTIME_BUSY') from exc
     started_at = time.time()
     with _install_lock:
         if _install_state["running"]:
-            if kind == 'rollback' or _install_state.get('kind') == 'rollback':
+            if kind in ('rollback', 'nvidia_driver', 'cpu_runtime') or _install_state.get('kind') in ('rollback', 'nvidia_driver', 'cpu_runtime'):
                 raise HTTPException(status_code=409, detail='RUNTIME_BUSY')
             return {
                 "ok": True,
@@ -862,6 +876,8 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
             errorCode="",
             retryable=False,
             diagnostics="",
+            operationId="", driverCheck=None, rebootRequired=False, resumeKind="", eula=[],
+            computeMode=None,
         )
 
     def work() -> None:
@@ -877,9 +893,9 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
             with _install_lock:
                 _install_state["result"] = result
                 _install_state["message"] = str(result.get("message") or "")
-                _install_state["progress"] = 100
+                _install_state["progress"] = 95 if result.get('stage') in ('driver_eula', 'driver_reboot') else 100
                 _install_state["needsRestart"] = bool(result.get("needsRestart"))
-                for key in ("runtimePack", "runtimeProfile", "diagnostics"):
+                for key in ("runtimePack", "runtimeProfile", "diagnostics", "driverCheck", "operationId", "rebootRequired", "resumeKind", "eula", "stage"):
                     if key in result:
                         _install_state[key] = result[key]
                 _install_state["updatedAt"] = time.time()
@@ -892,8 +908,10 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                     _install_state["errorCode"] = e.code
                     _install_state["retryable"] = e.retryable
                     _install_state["diagnostics"] = e.diagnostics
-                elif kind in ("ai_runtime", "ocr_cuda", "demucs_cuda"):
-                    _install_state["errorCode"] = "RUNTIME_PROBE_FAILED"
+                    if e.driver_check:
+                        _install_state["driverCheck"] = e.driver_check
+                elif kind in ("ai_runtime", "ocr_cuda", "demucs_cuda", "nvidia_driver", "cpu_runtime"):
+                    _install_state["errorCode"] = "DRIVER_UPDATE_FAILED" if kind == 'nvidia_driver' else "RUNTIME_PROBE_FAILED"
                     _install_state["retryable"] = True
                     _install_state["diagnostics"] = repr(e)
                 _install_state["message"] = "Cài đặt thất bại / Installation failed"
@@ -1186,10 +1204,163 @@ def api_ollama_signin():
     return {"ok": True, "message": "Đã mở Ollama Sign in"}
 
 
+class DriverActionIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    action: Literal['update', 'accept_eula', 'resume', 'reboot']
+    token: str
+
+
+class CpuRuntimeIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    token: str
+
+
+def _cpu_resume_kind() -> str:
+    from pipeline.core import nvidia_driver as driver
+    if driver.pending():
+        raise HTTPException(409, 'RUNTIME_BUSY')
+    with _install_lock:
+        state = dict(_install_state)
+    if state.get('running'):
+        raise HTTPException(409, 'RUNTIME_BUSY')
+    if state.get('kind') in driver.KINDS and state.get('errorCode') in driver.REPAIRABLE:
+        return state['kind']
+    saved = driver.snapshot()
+    if saved.get('phase') == 'driver_failed' and saved.get('resumeKind') in driver.KINDS:
+        return saved['resumeKind']
+    if state.get('kind') == 'cpu_runtime' and state.get('resumeKind') in driver.KINDS and state.get('errorCode'):
+        return state['resumeKind']
+    raise HTTPException(409, 'DRIVER_CONFIRMATION_EXPIRED')
+
+
+@router.post('/api/system/install/cpu_runtime')
+def api_install_cpu_runtime(request: Request, payload: CpuRuntimeIn):
+    from pipeline.core import nvidia_driver as driver
+    from pipeline.core.runtime_install import install_runtime
+    _require_driver_origin(request)
+    kind = _cpu_resume_kind()
+    try:
+        with _install_lock:
+            driver.consume(payload.token, 'cpu', driver.binding(_install_state))
+        def work():
+            # This request is excluded from ordinary activity counting; all other
+            # mutating requests and queued/running jobs still prevent the switch.
+            _set_install_progress(2, '', {'resumeKind': kind})
+            with driver.cpu_maintenance():
+                return install_runtime(_set_install_progress, demucs=kind == 'demucs_cuda', compute_mode='cpu')
+        return _start_install_job('cpu_runtime', work)
+    except driver.RuntimeInstallError as exc:
+        raise HTTPException(409, exc.code) from exc
+
+
+def _require_driver_origin(request: Request) -> None:
+    port = int(os.environ.get('ZM_AI_TOOL_PORT') or 8787)
+    allowed = {f'http://127.0.0.1:{port}', f'http://localhost:{port}'}
+    origin = request.headers.get('origin')
+    if not origin:
+        referer = urlsplit(request.headers.get('referer', ''))
+        origin = f'{referer.scheme}://{referer.netloc}'
+    if (sys.platform != 'win32' or os.environ.get('ZM_AI_TOOL_DESKTOP') != '1'
+            or not request.client or request.client.host not in ('127.0.0.1', '::1')
+            or str(request.base_url).rstrip('/') not in allowed or origin not in allowed
+            or request.headers.get('x-zm-driver-request') != '1'):
+        raise HTTPException(403, 'DRIVER_UPDATE_UNAVAILABLE')
+
+
+def _driver_kind(action: str) -> str:
+    from pipeline.core import nvidia_driver as driver
+    saved = driver.snapshot()
+    with _install_lock:
+        current = dict(_install_state)
+    if current.get('running'):
+        raise HTTPException(409, 'RUNTIME_BUSY')
+    if action == 'update':
+        if current.get('kind') in driver.KINDS and current.get('errorCode') in driver.REPAIRABLE:
+            return current['kind']
+        if saved.get('phase') == 'driver_failed' and saved.get('resumeKind') in driver.KINDS:
+            return saved['resumeKind']
+        if (current.get('kind') == 'nvidia_driver' and current.get('resumeKind') in driver.KINDS
+                and current.get('errorCode') and saved.get('phase') in (None, *driver.TERMINAL)):
+            return current['resumeKind']
+    elif saved.get('resumeKind') in driver.KINDS and saved.get('phase') not in (None, *driver.TERMINAL):
+        return saved['resumeKind']
+    raise HTTPException(409, 'DRIVER_CONFIRMATION_EXPIRED')
+
+
+def _start_driver_job(kind: str, action: str):
+    from pipeline.core import nvidia_driver as driver
+
+    def work():
+        _set_install_progress(2, '', {'stage': 'driver_check', 'resumeKind': kind})
+        state = driver.reserve(kind, action)
+        def emit(st):
+            fields = driver.public_status(st)
+            fields.pop('running', None)
+            progress = {'driver_check': 2, 'driver_uac': 5, 'driver_search': 10,
+                        'driver_download': 25, 'driver_install': 55, 'driver_verify': 75,
+                        'driver_resume': 80, 'driver_eula': 10, 'driver_reboot': 90}.get(st['phase'], 2)
+            _set_install_progress(progress, '', fields)
+        def resume(resume_kind):
+            from pipeline.core import system_check
+            return {'ai_runtime': system_check.install_ai_runtime,
+                    'ocr_cuda': system_check.install_ocr_cuda,
+                    'demucs_cuda': system_check.install_demucs_cuda}[resume_kind]()
+        emit(state)
+        return driver.run(state, action, emit, resume)
+    return _start_install_job('nvidia_driver', work)
+
+
+@router.get('/api/system/install/nvidia_driver/confirmation')
+def api_driver_confirmation(request: Request, action: Literal['update', 'accept_eula', 'resume', 'reboot', 'cpu']):
+    from pipeline.core import nvidia_driver as driver
+    _require_driver_origin(request)
+    _cpu_resume_kind() if action == 'cpu' else _driver_kind(action)
+    with _install_lock:
+        binding = driver.binding(_install_state)
+    return {'token': driver.confirmation(action, binding)}
+
+
+@router.post('/api/system/install/nvidia_driver')
+def api_install_nvidia_driver(request: Request, payload: DriverActionIn):
+    from pipeline.core import nvidia_driver as driver
+    _require_driver_origin(request)
+    kind = _driver_kind(payload.action)
+    try:
+        with _install_lock:
+            driver.consume(payload.token, payload.action, driver.binding(_install_state))
+        if payload.action == 'reboot':
+            driver.reboot()
+            return {'ok': True, 'rebootRequired': True, 'running': False}
+        return _start_driver_job(kind, payload.action)
+    except driver.RuntimeInstallError as exc:
+        raise HTTPException(409, exc.code) from exc
+
+
 @router.get("/api/system/install/status")
 def api_install_status():
     with _install_lock:
         st = dict(_install_state)
+    if sys.platform == 'win32' and not st.get('running'):
+        from pipeline.core import nvidia_driver as driver
+        saved = driver.snapshot()
+        if saved.get('phase') == 'driver_failed' and not st.get('startedAt'):
+            return {**driver.public_status(saved), 'driverRepairAvailable': True, 'cpuRuntimeAvailable': True}
+        if saved.get('phase') not in (None, *driver.TERMINAL):
+            restored = driver.public_status(saved)
+            try:
+                if saved.get('phase') != 'driver_eula' and saved.get('resumeKind') in driver.KINDS:
+                    # Reconnect/resume only verifies; it never elevates or reinstalls drivers.
+                    with driver.driver_mutex():
+                        ready = saved.get('phase') != 'driver_reboot' or saved.get('bootId') != driver._boot_id()
+                    if ready:
+                        driver.assert_idle()
+                        return _start_driver_job(saved['resumeKind'], 'resume')
+            except driver.RuntimeInstallError as exc:
+                if exc.code == 'RUNTIME_BUSY':
+                    restored.update(running=True, stage='driver_reconnect', error='')
+                else:
+                    restored.update(error=exc.code, errorCode=exc.code)
+            return restored
     out: dict[str, Any] = {
         "running": bool(st.get("running")),
         "kind": st.get("kind") or "",
@@ -1198,11 +1369,25 @@ def api_install_status():
         "startedAt": float(st.get("startedAt") or 0),
         "updatedAt": float(st.get("updatedAt") or 0),
     }
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    out['computeMode'] = 'cpu' if cpu_mode_enabled() else 'auto'
+    try:
+        _cpu_resume_kind()
+        out['cpuRuntimeAvailable'] = sys.platform == 'win32' and os.environ.get('ZM_AI_TOOL_DESKTOP') == '1'
+    except HTTPException:
+        out['cpuRuntimeAvailable'] = False
     for key in (
         "stage", "runtimeProfile", "currentPackage", "runtimePack", "downloadedBytes", "totalBytes",
         "requiredDiskBytes", "errorCode", "retryable", "diagnostics", "speedBytesPerSecond", "etaSeconds", "cacheHit", "downloadItems", "freeDiskBytes", "diskDrive", "retryAttempt", "retryAfterSeconds",
+        "operationId", "driverCheck", "rebootRequired", "resumeKind", "eula",
     ):
         out[key] = st.get(key)
+    from pipeline.core import nvidia_driver as driver
+    out['driverRepairAvailable'] = (sys.platform == 'win32' and os.environ.get('ZM_AI_TOOL_DESKTOP') == '1'
+        and not st.get('running') and (
+            st.get('kind') in driver.KINDS and st.get('errorCode') in driver.REPAIRABLE
+            or st.get('kind') == 'nvidia_driver' and st.get('resumeKind') in driver.KINDS
+            and st.get('errorCode') and driver.snapshot().get('phase') in (None, *driver.TERMINAL)))
     if st.get("log"):
         # Trả 30 dòng cuối để tránh payload quá lớn.
         out["log"] = "\n".join(st["log"].splitlines()[-30:])

@@ -239,6 +239,9 @@ def diarization_provider_for_device(device: dict[str, Any]) -> str:
 
 
 def preferred_diarization_provider() -> str:
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return 'cpu'
     forced = os.getenv("SPEAKER_DIARIZATION_PROVIDER", "auto").strip().lower()
     if forced in ("cpu", "cuda", "coreml"):
         return forced

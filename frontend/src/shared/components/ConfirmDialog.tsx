@@ -10,6 +10,7 @@ type ConfirmDialogProps = {
   onConfirm: () => void
   onCancel: () => void
   danger?: boolean
+  scrollMessage?: boolean
 }
 
 /** Small in-app confirmation surface shared by destructive actions. */
@@ -22,6 +23,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   danger = false,
+  scrollMessage = false,
 }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement>(null)
 
@@ -49,7 +51,7 @@ export function ConfirmDialog({
           <strong id="app-confirm-title">{title}</strong>
           <button type="button" onClick={onCancel} aria-label={cancelLabel}>×</button>
         </header>
-        <p>{message}</p>
+        <p style={scrollMessage ? { maxHeight: '50vh', overflowY: 'auto', whiteSpace: 'pre-wrap' } : undefined}>{message}</p>
         <footer>
           <button ref={cancelRef} type="button" onClick={onCancel}>{cancelLabel}</button>
           <button type="button" className={danger ? 'is-danger' : ''} onClick={onConfirm}>{confirmLabel}</button>
@@ -58,4 +60,3 @@ export function ConfirmDialog({
     </div>
   )
 }
-

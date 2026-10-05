@@ -48,40 +48,61 @@ SOURCE_ALLOWED = ('demucs', 'dora-search', 'julius', 'antlr4-python3-runtime')
 
 def detect_profile() -> str:
     from .media import detect_device
-    from .accel import nvidia_smi_executable
+    from .accel import nvidia_smi_executable, _safe_subprocess_env
 
     if platform.machine().lower() not in ('amd64', 'x86_64'):
         raise RuntimeInstallError('HARDWARE_UNSUPPORTED', 'Windows x64 required', retryable=False)
     device = detect_device()
     kind = device.get('gpuKind')
     if kind == 'nvidia':
-        try:
-            result = subprocess.run(
-                [nvidia_smi_executable(), '--query-gpu=driver_version,compute_cap', '--format=csv,noheader,nounits'],
-                capture_output=True, text=True, timeout=15,
-                creationflags=int(getattr(subprocess, 'CREATE_NO_WINDOW', 0)),
-            )
+        check = {'gpus': device.get('gpus') or [{'name': device.get('gpuName', ''), 'kind': 'nvidia'}]}
+        def fail(code, detail, *, retryable=False):
+            check['reason'] = code
+            raise RuntimeInstallError(code, detail, retryable=retryable,
+                                      diagnostics=detail, driver_check=check)
+        def query(fields):
+            try:
+                result = subprocess.run(
+                    [nvidia_smi_executable(), '--query-gpu=' + fields, '--format=csv,noheader,nounits'],
+                    capture_output=True, text=True, timeout=15, env=_safe_subprocess_env(),
+                    creationflags=int(getattr(subprocess, 'CREATE_NO_WINDOW', 0)),
+                )
+            except FileNotFoundError:
+                fail('NVIDIA_SMI_NOT_FOUND', 'NVIDIA management tool was not found')
+            except subprocess.TimeoutExpired:
+                fail('GPU_PROBE_FAILED', 'NVIDIA query timed out', retryable=True)
+            except OSError as exc:
+                fail('NVIDIA_DRIVER_UNAVAILABLE', str(exc))
             if result.returncode:
-                raise ValueError(result.stderr or result.stdout)
-            rows = [line.split(',') for line in result.stdout.splitlines() if line.strip()]
-            drivers = [tuple(int(n) for n in row[0].strip().split('.')) for row in rows]
-            caps = [float(row[1]) for row in rows]
-            if not caps:
+                fail('GPU_PROBE_FAILED' if fields == 'uuid,compute_cap' else 'NVIDIA_DRIVER_UNAVAILABLE',
+                     (result.stderr or result.stdout or 'NVIDIA query failed').strip())
+            return [line.split(',') for line in result.stdout.splitlines() if line.strip()]
+        try:
+            rows = query('uuid,name,driver_version')
+            if not rows:
                 raise ValueError('nvidia-smi returned no GPU')
-        except (OSError, ValueError, IndexError, subprocess.SubprocessError) as exc:
-            raise RuntimeInstallError('DRIVER_TOO_OLD', 'Cannot validate NVIDIA driver', retryable=False, diagnostics=str(exc)) from exc
+            check['gpus'] = [{'id': row[0].strip(), 'name': row[1].strip(), 'driver': row[2].strip(), 'kind': 'nvidia'} for row in rows]
+            if any(not re.fullmatch(r'\d+\.\d+(?:\.\d+)*', gpu['driver']) for gpu in check['gpus']):
+                raise ValueError('Invalid NVIDIA driver version')
+            drivers = [tuple(map(int, gpu['driver'].split('.'))) for gpu in check['gpus']]
+            capability = {row[0].strip(): float(row[1]) for row in query('uuid,compute_cap')}
+            caps = [capability[gpu['id']] for gpu in check['gpus']]
+            if any(not (0 < cap < 100) for cap in caps):
+                raise ValueError('Invalid NVIDIA compute capability')
+        except (ValueError, IndexError, KeyError) as exc:
+            fail('GPU_PROBE_FAILED', str(exc), retryable=True)
         modern = any(cap >= 10 for cap in caps)
         # CUDA 12.x minor compatibility on Windows starts at 528.33.
         # 551.78 is the driver bundled with CUDA 12.4 Update 1, not its
         # compatibility floor. Actual CUDA/ORT probes still gate activation.
         # https://docs.nvidia.com/cuda/archive/12.4.1/cuda-toolkit-release-notes/
         minimum = (570, 65) if modern else (528, 33)
+        check['minimumVersion'] = f'{minimum[0]}.{minimum[1]}'
         if min(caps) < 5 or (modern and min(caps) < 7):
             raise RuntimeInstallError('HARDWARE_UNSUPPORTED', 'No common CUDA profile for these GPUs', retryable=False)
         if any(driver < minimum for driver in drivers):
             detected = ', '.join('.'.join(map(str, driver)) for driver in drivers)
-            raise RuntimeInstallError('DRIVER_TOO_OLD', f'NVIDIA requires driver >= {minimum[0]}.{minimum[1]}',
-                                      retryable=False, diagnostics=f'Detected NVIDIA driver: {detected}; minimum: {minimum[0]}.{minimum[1]}')
+            fail('DRIVER_TOO_OLD', f'Detected NVIDIA driver: {detected}; minimum: {minimum[0]}.{minimum[1]}')
         return 'nvidia-cu128' if modern else 'nvidia-cu124'
     if kind in ('amd', 'intel') and device.get('accel') == 'directml':
         return 'directml'
@@ -92,12 +113,17 @@ def detect_profile() -> str:
 
 @contextlib.contextmanager
 def transaction():
+    from .nvidia_driver import assert_available, driver_mutex
+    assert_available()
     # Reject concurrent install/rollback instead of queuing stale selections.
     if not _LOCK.acquire(blocking=False):
         raise RuntimeInstallError('RUNTIME_BUSY', 'Runtime installation/rollback already running')
     handle = None
     locked = False
+    maintenance = contextlib.ExitStack()
     try:
+        maintenance.enter_context(driver_mutex())
+        assert_available()
         # OS lock also protects two independently launched desktop processes.
         if os.name == 'nt':
             import msvcrt
@@ -124,6 +150,7 @@ def transaction():
                 finally:
                     handle.close()
         finally:
+            maintenance.close()
             _LOCK.release()
 
 
@@ -420,8 +447,11 @@ def _write_pointer(root: Path, name: str, data: dict[str, Any]) -> None:
             pass
 
 
-def install_runtime(progress: Progress | None = None, *, demucs: bool = False) -> dict[str, Any]:
+def install_runtime(progress: Progress | None = None, *, demucs: bool = False, compute_mode: str | None = None) -> dict[str, Any]:
     from .system_check.install import _find_uv
+    from .runtime_active import cpu_mode_enabled, clear_compute_caches
+    if compute_mode not in (None, 'cpu'):
+        raise ValueError('Unsupported compute mode')
     if sys.platform != 'win32':
         raise RuntimeInstallError('HARDWARE_UNSUPPORTED', 'Windows installer only', retryable=False)
     with transaction():
@@ -431,18 +461,20 @@ def install_runtime(progress: Progress | None = None, *, demucs: bool = False) -
                                     'runtimePack': profile, 'currentPackage': '', **fields})
         profile = ''
         emit(2, 'detect_hardware')
-        profile = detect_profile()
+        explicit_cpu = compute_mode == 'cpu' or cpu_mode_enabled()
+        profile = 'cpu' if explicit_cpu else detect_profile()
         root = runtime_home() / 'runtime'
         current = active_runtime_dir()
         metadata = _metadata(root / 'current.json')
         # Keep existing optional features on AI/OCR reinstall.
         demucs = demucs or 'demucs' in metadata.get('features', []) or bool(list((current / 'Lib/site-packages').glob('demucs-*.dist-info')))
         emit(5, 'probe')
-        if _python(current).is_file():
+        if _python(current).is_file() and (not explicit_cpu or metadata.get('computeMode') == 'cpu'):
             try:
                 diagnostics = _probe(current, profile, demucs)
                 return {'ok': True, 'message': 'Runtime ready', 'runtimeProfile': profile,
-                        'runtimePack': profile, 'diagnostics': diagnostics, 'needsRestart': False}
+                        'runtimePack': profile, 'diagnostics': diagnostics, 'needsRestart': False,
+                        'computeMode': 'cpu' if explicit_cpu else 'auto'}
             except RuntimeInstallError:
                 pass
         uv = _find_uv()
@@ -467,16 +499,19 @@ def install_runtime(progress: Progress | None = None, *, demucs: bool = False) -
             _write_pointer(root, 'current.json', {
                 'schemaVersion': 1, 'recipeVersion': RECIPE_VERSION, 'path': candidate.name,
                 'runtimeProfile': profile, 'runtimePack': profile,
+                'computeMode': 'cpu' if explicit_cpu else 'auto',
                 'features': ['demucs'] if demucs else [], 'activatedAt': time.time(),
             })
         except Exception:
             # No active runtime is modified, including on antivirus/file lock.
             shutil.rmtree(candidate, ignore_errors=True)
             raise
+        clear_compute_caches()
         emit(100, 'activate')
         _prune(root)
         return {'ok': True, 'message': 'Runtime installed', 'needsRestart': True,
-                'runtimeProfile': profile, 'runtimePack': profile, 'diagnostics': diagnostics}
+                'runtimeProfile': profile, 'runtimePack': profile, 'diagnostics': diagnostics,
+                'computeMode': 'cpu' if explicit_cpu else 'auto'}
 
 
 def _prune(root: Path) -> None:
@@ -510,4 +545,6 @@ def rollback_runtime(progress: Progress | None = None) -> dict[str, Any]:
         _write_pointer(root, 'current.json', previous)
         if current:
             _write_pointer(root, 'previous.json', current)
+        from .runtime_active import clear_compute_caches
+        clear_compute_caches()
         return {'ok': True, 'message': 'Runtime restored', 'needsRestart': True}

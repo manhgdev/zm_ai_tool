@@ -38,6 +38,9 @@ def list_gpus() -> list[dict[str, Any]]:
 
 
 def _compute_backend(kind: str, torch_dev: str) -> str:
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return 'cpu'
     if kind == "nvidia" or torch_dev == "cuda":
         return "cuda"
     if kind == "apple" or torch_dev == "mps":

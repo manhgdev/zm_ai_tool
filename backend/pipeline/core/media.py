@@ -128,7 +128,7 @@ def _windows_video_controllers() -> list[dict[str, Any]]:
     """Use CIM on current Windows; WMIC disappeared from many clean Windows 11 installs."""
     script = (
         "Get-CimInstance Win32_VideoController | "
-        "Select-Object Name,AdapterRAM,DriverVersion | ConvertTo-Json -Compress"
+        "Select-Object Name,AdapterRAM,DriverVersion,PNPDeviceID,ConfigManagerErrorCode | ConvertTo-Json -Compress"
     )
     try:
         raw = subprocess.check_output(
@@ -143,16 +143,18 @@ def _windows_video_controllers() -> list[dict[str, Any]]:
 
 def _nvidia_gpus() -> list[dict[str, Any]]:
     """All NVIDIA adapters visible to this process, including vGPU/passthrough."""
+    from .accel import nvidia_smi_executable, _safe_subprocess_env
     try:
         out = subprocess.check_output(
             [
-                "nvidia-smi",
+                nvidia_smi_executable(),
                 "--query-gpu=index,name,memory.total,driver_version",
                 "--format=csv,noheader,nounits",
             ],
             text=True,
             stderr=subprocess.DEVNULL,
             timeout=3,
+            env=_safe_subprocess_env(),
         ).strip()
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return []
@@ -187,9 +189,12 @@ def _windows_gpu_inventory(nvidia: list[dict[str, Any]]) -> list[dict[str, Any]]
     known = {str(gpu.get("name") or "").casefold() for gpu in result}
     for controller in _windows_video_controllers():
         name = str(controller.get("Name") or "").strip()
-        if not name or "microsoft basic" in name.casefold():
+        instance = str(controller.get("PNPDeviceID") or "")
+        if not name:
             continue
-        kind = _gpu_kind_from_name(name)
+        kind = "nvidia" if "VEN_10DE" in instance.upper() else _gpu_kind_from_name(name)
+        if "microsoft basic" in name.casefold() and kind != "nvidia":
+            continue
         # Device Manager may repeat an adapter already reported by nvidia-smi.
         if kind == "nvidia" and any(
             name.casefold() in item or item in name.casefold() for item in known if item
@@ -207,6 +212,8 @@ def _windows_gpu_inventory(nvidia: list[dict[str, Any]]) -> list[dict[str, Any]]
             "driver": str(controller.get("DriverVersion") or ""),
             "accel": "directml",
             "source": "windows-cim",
+            "deviceInstanceId": instance,
+            "deviceProblemCode": controller.get("ConfigManagerErrorCode"),
         })
         known.add(name.casefold())
     return result

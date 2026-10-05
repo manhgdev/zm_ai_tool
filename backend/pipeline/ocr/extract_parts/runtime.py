@@ -335,6 +335,9 @@ def _rapidocr_labels(*, use_cuda: bool | None = None) -> Any:
     _patch_rapidocr_onnxruntime_ep()
 
     _limit_onnx_threads()
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        use_cuda = False
     gpu_kwargs: dict[str, bool] = (
         _rapidocr_gpu_kwargs()
         if use_cuda is None
@@ -363,6 +366,9 @@ def _rapidocr_labels(*, use_cuda: bool | None = None) -> Any:
 @lru_cache(maxsize=1)
 def _rapidocr_gpu_kwargs() -> dict[str, bool]:
     """Chọn ONNX GPU provider thực sự khả dụng: CUDA, rồi DirectML."""
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return {f'{part}_use_{provider}': False for part in ('det', 'cls', 'rec') for provider in ('cuda', 'dml')}
     use_cuda = False
     use_dml = False
     try:

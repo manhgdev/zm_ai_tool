@@ -99,6 +99,9 @@ def _probe_torch_device_in(python: str) -> TorchDevice:
 
 def preferred_torch_device(*, refresh: bool = False) -> TorchDevice:
     """Preferred target; use a runtime compute probe to determine CUDA readiness."""
+    from .runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return 'cpu'
     with _lock:
         if not refresh and "torch_device" in _cache and _cache["torch_device"] in ("cuda", "mps"):
             return _cache["torch_device"]  # type: ignore[return-value]

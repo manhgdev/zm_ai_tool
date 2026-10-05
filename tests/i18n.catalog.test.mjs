@@ -1,4 +1,21 @@
 import test from 'node:test'
+test('GPU choice popup has isolated width and responsive paired CPU action', () => {
+  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
+  const popup = readFileSync(new URL('../frontend/src/shared/components/ProgressPopup.tsx', import.meta.url), 'utf8')
+  assert.ok(modal.includes('min-[600px]:grid-cols-2'))
+  assert.ok(popup.includes("wide ? 'max-w-[720px]' : 'max-w-sm'"))
+  assert.ok(modal.includes("runDriverAction('cpu')"))
+  assert.ok(modal.includes('Using CPU.'))
+  assert.ok(modal.includes('AI tasks may run slower.'))
+})
+test('NVIDIA repair actions and error states are bilingual', () => {
+  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
+  const status = readFileSync(new URL('../frontend/src/features/configuration/runtimeStatus.ts', import.meta.url), 'utf8')
+  for (const english of ['Update driver and continue', 'Skip GPU and continue', 'Restart computer', 'Accept and continue', 'Copy diagnostics', 'Later']) assert.ok(modal.includes(english))
+  for (const code of ['NVIDIA_SMI_NOT_FOUND', 'GPU_PROBE_FAILED', 'DRIVER_UPDATE_NOT_FOUND', 'DRIVER_UAC_CANCELLED', 'DRIVER_CANDIDATE_CHANGED', 'DRIVER_STATE_UNKNOWN']) {
+    assert.match(status, new RegExp(`${code}: \\[\\s*'[^']+',\\s*'[^']+'\\s*\\]`))
+  }
+})
 test('Transcript SRT reflow explains original timing in both languages', () => {
   const source = readFileSync(new URL('../frontend/src/features/tts/TtsTranscribePanel.tsx', import.meta.url), 'utf8')
   const styles = readFileSync(new URL('../frontend/src/features/tts/lib/srt.ts', import.meta.url), 'utf8')
