@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from pipeline.flow import service, series
 from pipeline.flow import store
@@ -21,8 +21,9 @@ router = APIRouter(prefix="/api/flow", tags=["flow"])
 
 
 class AccountIn(BaseModel):
-    label: str = Field(min_length=1, max_length=80)
+    label: str = Field(default="", max_length=160)
     email: str = Field(default="", max_length=160)
+    password: SecretStr | None = None
     plan: str = Field(default="Free", pattern="^(Pro|Plus|Ultra|Free)$")
     projectId: str = Field(default="", max_length=160)
     isDefault: bool = False
@@ -195,14 +196,14 @@ def accounts_list():
 
 @router.post("/accounts")
 def accounts_create(body: AccountIn):
-    return service.save_account(body.model_dump())
+    return service.save_account(body.model_dump(exclude={"password"}), password=body.password.get_secret_value() if body.password else "")
 
 
 @router.put("/accounts/{account_id}")
 def accounts_update(account_id: str, body: AccountIn):
     if not store.get_row("accounts", account_id):
         raise HTTPException(404, "Flow account not found")
-    return service.save_account(body.model_dump(), account_id)
+    return service.save_account(body.model_dump(exclude={"password"}), account_id, password=body.password.get_secret_value() if body.password else "")
 
 
 @router.delete("/accounts/{account_id}")

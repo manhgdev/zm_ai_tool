@@ -759,21 +759,9 @@ export default function TtsStudio({
       await loadStatus()
       await loadHistory()
       if (cancelled) return
-      // CapCut/ElevenLabs/System are remote/system engines; warming VieNeu for
-      // them made the UI show a local model load unrelated to the selected voice.
-      const needsLocalModel = selectedVoiceEngine === 'vieneu' || selectedVoiceEngine === 'zmai' || selectedVoiceEngine === 'clone'
-      if (!needsLocalModel) return
-      // Warm once for a local voice; backend no-ops when model already ready.
-      try {
-        const warm = await api.ttsWarm()
-        if (!cancelled && warm.loadState !== 'ready') {
-          window.setTimeout(() => {
-            if (!cancelled) void loadStatus(true)
-          }, warm.loadState === 'loading' ? 1200 : 0)
-        }
-      } catch {
-        /* ignore */
-      }
+      // Do not warm VieNeu on page mount. Model loading belongs to the
+      // synthesis job so the progress popup has a real job id and Huỷ can
+      // cancel before the worker starts loading weights.
     })()
     return () => { cancelled = true }
   }, [loadStatus, loadHistory, selectedVoiceEngine])
@@ -792,7 +780,7 @@ export default function TtsStudio({
           ? t('Lỗi nạp model', 'Model load error')
           : vieneuLoadOk
             ? t('Sẵn sàng', 'Ready')
-            : t('Đã cài — nạp khi mở /text-to-speech', 'Installed — loads when opening /text-to-speech')
+            : t('Đã cài — nạp khi tạo giọng', 'Installed — loads when creating a voice')
 
   // Job progress and completion arrive through the shared TTS SSE stream.
   // Status is loaded once on mount and refreshed explicitly after warm/retry;

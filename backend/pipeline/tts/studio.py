@@ -484,7 +484,9 @@ def synth_text_job(
     wav = job_dir / "audio.wav"
     with _jobs_lock:
         _running[job_id] = True
-        _cancel_flags[job_id] = False
+        # A cancel request can arrive between the API response and this
+        # background worker starting. Do not erase that early cancellation.
+        _cancel_flags.setdefault(job_id, False)
     try:
         try:
             from pipeline.core.jobs import set_job_context
@@ -512,7 +514,7 @@ def synth_text_job(
                 from pipeline.tts.engines import vieneu as vieneu_mod
                 if vieneu_mod._load_state in ("cold", "loading"):
                     set_job_progress_pct(
-                        job_id, 3, "Đang nạp model VieNeu vào GPU lần đầu…",
+                        job_id, 3, "Đang nạp model VieNeu lần đầu…",
                         current=0, total=total_chunks,
                     )
             except Exception:
@@ -711,7 +713,8 @@ def synth_srt_job(
     job_dir.mkdir(parents=True, exist_ok=True)
     with _jobs_lock:
         _running[job_id] = True
-        _cancel_flags[job_id] = False
+        # Preserve a cancel request that arrived before the worker registered.
+        _cancel_flags.setdefault(job_id, False)
     total_cues = len(cues)
     set_job_progress(job_id, 0, total_cues, f"Bắt đầu tạo {total_cues} đoạn SRT…")
     part_paths: list[Path] = []
@@ -741,7 +744,7 @@ def synth_srt_job(
                 from pipeline.tts.engines import vieneu as vieneu_mod
                 if vieneu_mod._load_state in ("cold", "loading"):
                     set_job_progress_pct(
-                        job_id, 3, "Đang nạp model VieNeu vào GPU lần đầu…",
+                        job_id, 3, "Đang nạp model VieNeu lần đầu…",
                         current=0, total=total_cues,
                     )
             except Exception:

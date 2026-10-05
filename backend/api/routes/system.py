@@ -136,6 +136,20 @@ def _reset_install_log(kind: str) -> None:
         path.write_text(header + "\n", encoding="utf-8")
     except OSError:
         pass
+
+
+def _clear_install_log() -> dict[str, Any]:
+    """Clear the first-run package log without touching the source error log."""
+    with _install_lock:
+        _install_state["log"] = ""
+        _install_state["updatedAt"] = time.time()
+    try:
+        path = _install_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+        return {"ok": True, "path": str(path)}
+    except OSError as exc:
+        return {"ok": False, "path": str(_install_log_path()), "error": str(exc)}
 _UPDATE_REPOSITORY = "manhgdev/zm_ai_tool"
 _UPDATE_LOCK = threading.Lock()
 _UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30 * 60
@@ -2147,7 +2161,7 @@ def api_update_apply():
 
 @router.get("/api/system/logs")
 def api_system_logs(tail: int = 200):
-    """Log app (job lỗi, crash hook) — tab Cấu hình → Log."""
+    """Source-wide actionable error log — tab Cấu hình → Log."""
     from pipeline.core.app_log import read_log
 
     try:
@@ -2161,6 +2175,12 @@ def api_system_logs_clear():
     from pipeline.core.app_log import clear_log
 
     return clear_log()
+
+
+@router.delete("/api/system/install/log")
+def api_system_install_log_clear():
+    """Clear package-install output shown during first-run setup."""
+    return _clear_install_log()
 
 
 def _windows_native_dialog(script: str, extra_env: dict[str, str] | None = None) -> str:

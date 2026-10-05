@@ -101,6 +101,8 @@ export default function ConfigModal({
   const driverWaiting = driverStatus.stage === 'driver_eula' || driverStatus.rebootRequired
   const gpuChoice = Boolean(driverStatus.driverRepairAvailable || driverStatus.cpuRuntimeAvailable)
   const [installLog, setInstallLog] = useState('')
+  const [diagnosticLog, setDiagnosticLog] = useState('')
+  const [diagnosticLogLoading, setDiagnosticLogLoading] = useState(false)
   const [installProgress, setInstallProgress] = useState(0)
   const [installMessage, setInstallMessage] = useState('')
   const [pendingRestart, setPendingRestart] = useState(false)
@@ -443,8 +445,31 @@ export default function ConfigModal({
 
   useEffect(() => {
     if (!open) return
-    if (section === 'setup' || forceSetup) loadChecks(false, false)
+    if (section === 'setup' || section === 'logs' || forceSetup) loadChecks(false, false)
   }, [open, section, forceSetup, loadChecks])
+
+  useEffect(() => {
+    if (!open || section !== 'logs' || forceSetup || !checks?.ok) return
+    let cancelled = false
+    let timer: number | undefined
+    const loadDiagnosticLog = async () => {
+      setDiagnosticLogLoading(true)
+      try {
+        const result = await api.getAppLogs(200)
+        if (!cancelled) setDiagnosticLog(result.text || '')
+      } catch {
+        if (!cancelled) setDiagnosticLog('')
+      } finally {
+        if (!cancelled) setDiagnosticLogLoading(false)
+      }
+      if (!cancelled) timer = window.setTimeout(() => void loadDiagnosticLog(), 3000)
+    }
+    void loadDiagnosticLog()
+    return () => {
+      cancelled = true
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [open, section, forceSetup, checks?.ok])
 
   useEffect(() => {
     if (!open || (section !== 'setup' && section !== 'logs')) return
@@ -532,6 +557,10 @@ export default function ConfigModal({
 
   const cur = draft[tab]
   const canClose = !forceSetup || !!checks?.ok
+  const showPackageLog = forceSetup || !checks?.ok
+  const visibleLog = showPackageLog
+    ? [installLog, installPopupError || checksErr].filter(Boolean).join('\n')
+    : diagnosticLog
 
   const installAction = useCallback(async (kind: InstallKind) => {
     setInstalling(kind)
@@ -1475,16 +1504,41 @@ export default function ConfigModal({
           licenseStatus && onLicenseStatusChange ? <LicensePage status={licenseStatus} embedded onStatusChange={onLicenseStatusChange} /> : null
         ) : section === 'logs' ? (
           <div className="cfg-log-panel">
-            <h3>{t('Log cài đặt package', 'Package installation log')}</h3>
+            <h3>{showPackageLog ? t('Log cài đặt package', 'Package installation log') : t('Log lỗi hệ thống', 'System error log')}</h3>
             <pre className="cfg-log-pre" tabIndex={0}>
-              {[installLog, installPopupError || checksErr].filter(Boolean).join('\n') || t('Chưa có log cài đặt.', 'No installation log yet.')}
+              {diagnosticLogLoading && !showPackageLog
+                ? t('Đang tải log lỗi…', 'Loading error log…')
+                : visibleLog || (showPackageLog ? t('Chưa có log cài đặt.', 'No installation log yet.') : t('Chưa có lỗi được ghi nhận.', 'No recorded errors.'))}
             </pre>
-            <button type="button" className="cfg-secondary" disabled={!installLog && !checksErr && !installPopupError}
-              onClick={() => void copyText([installLog, installPopupError || checksErr].filter(Boolean).join('\n'))}>
-              {t('Sao chép log cài đặt', 'Copy installation log')}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="cfg-secondary" disabled={!visibleLog}
+                onClick={() => void copyText(visibleLog)}>
+                {showPackageLog ? t('Sao chép log cài đặt', 'Copy installation log') : t('Sao chép log lỗi', 'Copy error log')}
+              </button>
+              <button type="button" className="cfg-secondary" disabled={!visibleLog}
+                onClick={async () => {
+                  try {
+                    if (showPackageLog) {
+                      await api.clearInstallLog()
+                      setInstallLog('')
+                      setInstallPopupError('')
+                      setChecksErr('')
+                    } else {
+                      await api.clearAppLogs()
+                      setDiagnosticLog('')
+                    }
+                    toast.success(t('Đã xoá log', 'Log cleared'))
+                  } catch {
+                    toast.error(t('Không thể xoá log', 'Could not clear the log'))
+                  }
+                }}>
+                {t('Xoá log', 'Clear log')}
+              </button>
+            </div>
             <p className="cfg-hint">
-              {t('Chỉ hiển thị log tải và cài package AI.', 'Only AI package download and installation logs are shown.')}
+              {showPackageLog
+                ? t('Trong lần cài đầu, chỉ hiển thị log tải và cài package AI.', 'During first setup, only AI package download and installation logs are shown.')
+                : t('Chỉ giữ lỗi có ích từ toàn bộ source; log khởi động và warm model được bỏ qua.', 'Only actionable errors from the whole source are kept; startup and model-warm noise is omitted.')}
             </p>
           </div>
         ) : null}

@@ -142,6 +142,11 @@ def _publish(topic_name: str, action: str, row_id: str, row: dict[str, Any] | No
     try:
         from pipeline.core.realtime import realtime
         topic = "series" if topic_name == "series" else "flow"
+        if topic_name == "accounts" and row is not None:
+            # Account passwords are intentionally persisted for reconnect, but
+            # realtime events are still public to the browser session.
+            row = dict(row)
+            row.pop("password", None)
         if topic_name == "accounts":
             kind = "flow.account"
         elif topic_name == "logs":

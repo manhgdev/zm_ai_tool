@@ -253,6 +253,13 @@ export const api = {
       10_000,
     ),
 
+  clearInstallLog: () =>
+    fetchJson<{ ok: boolean; path?: string; error?: string }>(
+      `${base}/system/install/log`,
+      { method: 'DELETE' },
+      10_000,
+    ),
+
   getConfig: () => fetchJson<AppConfig>(`${base}/config`, undefined, 20_000),
 
   getLocalePreference: () =>

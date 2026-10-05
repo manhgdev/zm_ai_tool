@@ -12,12 +12,14 @@ try:
 except Exception:  # ponytail: graceful if flow lib version lacks this
     _GenerationMode = None
 import shutil
+import sys
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 _log = logging.getLogger(__name__)
 
@@ -59,6 +61,25 @@ _VIDEO_UI_MODELS = {
 # Temporarily disabled upstream; remove this entry to re-enable when Flow restores it.
 _DISABLED_VIDEO_MODELS = {"Veo 3.1 - Lite [Lower Priority]"}
 _DEFAULT_VIDEO_MODEL = "Veo 3.1 - Fast"
+
+
+async def _fill_google_password(page: Any, password: str) -> None:
+    """Fill once, only on Google's HTTPS login origin; never handle OTP/CAPTCHA."""
+    if urlsplit(str(page.url)).hostname != "accounts.google.com":
+        return  # Existing authenticated session — no password needed.
+    password_input = page.locator('input[type="password"], input[name="Passwd"]').first
+    try:
+        await password_input.wait_for(state="visible", timeout=10_000)
+        origin = urlsplit(str(page.url))
+        if origin.scheme != "https" or origin.hostname != "accounts.google.com" or origin.port not in (None, 443):
+            raise RuntimeError("Untrusted login origin")
+        await password_input.fill(password)
+        next_button = page.locator('#passwordNext').first
+        await next_button.wait_for(state="visible", timeout=5_000)
+        await next_button.click()
+    except Exception:
+        # Playwright's call log may include fill arguments. Never persist it.
+        raise RuntimeError("FLOW_LOGIN_VERIFICATION_REQUIRED") from None
 
 
 def _normalize_video_model(value: Any) -> str:
@@ -946,6 +967,10 @@ async def _open_flow_settings_panel(page, pill, tabs, ui=None) -> bool:
 
 class FlowService:
     def __init__(self) -> None:
+        # Keep a newly entered password available for the first connect. The
+        # durable copy lives in the account store so reconnect can survive an
+        # app restart; this cache is only a short-lived hand-off to _login().
+        self._login_passwords: dict[str, str] = {}
         self._account_active: dict[str, int] = {}
         # Monotonic dispatch cursor per account.  Threads are created quickly
         # for bulk jobs, so relying on OS scheduling makes prompts start in a
@@ -965,6 +990,13 @@ class FlowService:
         # Set to True during delete_all_jobs to stop enqueue from creating new jobs mid-loop
         self._stop_enqueue: bool = False
         self._random_rr_counter: int = 0
+
+    @staticmethod
+    def _public_account(account: dict[str, Any] | None) -> dict[str, Any]:
+        """Return account metadata safe to send to the browser/API client."""
+        public = dict(account or {})
+        public.pop("password", None)
+        return public
 
     def _claim_media_ids(self, candidates: list[str], expected_count: int) -> list[str]:
         """Atomically assign project media so concurrent jobs cannot share one output."""
@@ -992,7 +1024,7 @@ class FlowService:
                 patch = {"status": "reconnect", "error": None, "updatedAt": time.time()}
                 store.patch_row("accounts", account_id, patch)
                 row.update(patch)
-        return rows
+        return [self._public_account(row) for row in rows]
 
     def jobs(self) -> list[dict[str, Any]]:
         # Queue order is FIFO: the first prompt stays at the top and is the
@@ -1157,13 +1189,13 @@ class FlowService:
                 return f"FLOW_OUTPUT_UNREADABLE: {path}: {exc}"
         return None
 
-    def save_account(self, payload: dict[str, Any], account_id: str | None = None) -> dict[str, Any]:
+    def save_account(self, payload: dict[str, Any], account_id: str | None = None, *, password: str = "") -> dict[str, Any]:
         now = time.time()
         existing = store.get_row("accounts", account_id or "") or {}
         row = {
             **existing,
             "id": account_id or uuid.uuid4().hex[:12],
-            "label": str(payload.get("label") or existing.get("label") or "Flow account").strip(),
+            "label": str(payload.get("label") or existing.get("label") or payload.get("email") or "Flow account").strip(),
             "email": str(payload.get("email") or existing.get("email") or "").strip(),
             "plan": str(payload.get("plan") or existing.get("plan") or "Free"),
             "projectId": str(payload.get("projectId") or existing.get("projectId") or "").strip(),
@@ -1190,7 +1222,17 @@ class FlowService:
             for account in self.accounts():
                 if account["id"] != row["id"]:
                     store.patch_row("accounts", account["id"], {"isDefault": False})
-        return store.put_row("accounts", row)
+        # An empty password on edit deliberately preserves the saved secret.
+        # Do not accept or return it through the public account payload.
+        if password:
+            row["password"] = password
+        elif existing.get("password"):
+            row["password"] = existing["password"]
+        saved = store.put_row("accounts", row)
+        if password:
+            with self._guard:
+                self._login_passwords[row["id"]] = password
+        return self._public_account(saved)
 
     def suspend_account(
         self, account_id: str, reason: str, duration_seconds: float | None = None
@@ -1217,13 +1259,13 @@ class FlowService:
             ):
                 duration_seconds = _COOLDOWN_OUTPUT_S
             elif re.search(r"GENERATION_REJECTED|FLOW_GENERATION_REJECTED", r, re.I):
-                return account  # content/prompt issue — not an account fault, no suspension
+                return self._public_account(account)  # content/prompt issue — not an account fault, no suspension
             elif re.search(r"LOGIN_REQUIRED|FLOW_LOGIN_REQUIRED", r, re.I):
-                return account  # session issue — _ensure_shared_reconnect() owns this
+                return self._public_account(account)  # session issue — _ensure_shared_reconnect() owns this
             else:
-                return account  # unrecognised automation error — do not penalise account
+                return self._public_account(account)  # unrecognised automation error — do not penalise account
         if not duration_seconds:
-            return account  # caller passed 0 explicitly
+            return self._public_account(account)  # caller passed 0 explicitly
         until = time.time() + duration_seconds
         patch = {
             "suspendedUntil": until,
@@ -1245,7 +1287,7 @@ class FlowService:
             ),
             details={"suspendedUntil": until, "reason": reason, "duration": duration_seconds},
         )
-        return store.get_row("accounts", account_id) or {}
+        return self._public_account(store.get_row("accounts", account_id))
 
     def clear_account_suspension(self, account_id: str) -> dict[str, Any]:
         """Gỡ bỏ đánh dấu cách ly tài khoản."""
@@ -1270,13 +1312,15 @@ class FlowService:
                 f"Suspension cleared for account {account.get('label', account_id)}"
             ),
         )
-        return store.get_row("accounts", account_id) or {}
+        return self._public_account(store.get_row("accounts", account_id))
 
     def delete_account(self, account_id: str) -> bool:
         if any(job.get("accountId") == account_id and job.get("status") not in _TERMINAL for job in self.jobs()):
             raise RuntimeError("Account still has active Flow jobs")
         removed = store.delete_row("accounts", account_id)
         if removed:
+            with self._guard:
+                self._login_passwords.pop(account_id, None)
             shutil.rmtree(store.root() / "profiles" / account_id, ignore_errors=True)
         return removed
 
@@ -1473,7 +1517,7 @@ class FlowService:
             raise KeyError(account_id)
         with self._guard:
             if account_id in self._connecting_accounts:
-                return account
+                return self._public_account(account)
             self._connecting_accounts.add(account_id)
             store.patch_row("accounts", account_id, {"status": "connecting", "error": None, "updatedAt": time.time()})
         self._log("info", "account_connecting", account_id=account_id)
@@ -1482,7 +1526,7 @@ class FlowService:
             daemon=True,
             name=f"flow-login-{account_id}",
         ).start()
-        return store.get_row("accounts", account_id) or account
+        return self._public_account(store.get_row("accounts", account_id) or account)
 
     def _ensure_shared_reconnect(
         self,
@@ -1629,10 +1673,10 @@ class FlowService:
         with self._guard:
             if account_id in self._connecting_accounts:
                 _log.info("sync_credits_for_account: skip %s — connect in progress", account_id)
-                return account
+                return self._public_account(account)
             if account_id in self._syncing_accounts:
                 _log.info("sync_credits_for_account: skip %s — already syncing", account_id)
-                return account
+                return self._public_account(account)
             self._syncing_accounts.add(account_id)
         from ._flow._api import FlowAPI
         from ._flow._exceptions import AuthError as FlowAuthError
@@ -1732,7 +1776,7 @@ class FlowService:
                 await browser.stop()
             except Exception:
                 pass
-        return store.get_row("accounts", account_id) or account
+        return self._public_account(store.get_row("accounts", account_id) or account)
 
     async def _read_capability_catalog(self, browser, project_id: str, plan: str | None = None) -> dict[str, Any]:
         """Read the model/ratio/duration controls actually exposed to this account."""
@@ -2194,6 +2238,7 @@ class FlowService:
                 ok = await self._try_headless_reconnect(account_id, existing_project_id)
                 if ok:
                     with self._guard:
+                        self._login_passwords.pop(account_id, None)
                         self._connecting_accounts.discard(account_id)
                     self._wake_account_waiters(account_id)
                     self._requeue_auth_failed_jobs(account_id)
@@ -2210,10 +2255,15 @@ class FlowService:
 
         browser = None
         login_ok = False
+        with self._guard:
+            password = self._login_passwords.pop(account_id, "") or str(account.get("password") or "")
+        headless_login = sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
         try:
+            if headless_login and not password:
+                raise RuntimeError("FLOW_LOGIN_PASSWORD_REQUIRED")
             from .browser import BrowserManager, FLOW_BASE_URL
             browser = BrowserManager(
-                headless=False,
+                headless=headless_login,
                 profile_dir=store.profile_dir(account_id),
                 google_login_compat=True,
             )
@@ -2270,7 +2320,7 @@ class FlowService:
 
             # Điền email vào ô input và click Next tự động
             try:
-                if "accounts.google.com" in str(page.url or ""):
+                if urlsplit(str(page.url or "")).hostname == "accounts.google.com":
                     email_input = page.locator('input[type="email"], input[name="identifier"]').first
                     await email_input.wait_for(state="visible", timeout=5_000)
                     current_val = await email_input.input_value()
@@ -2281,6 +2331,9 @@ class FlowService:
                     await next_btn.click()
             except Exception:
                 pass
+
+            if password:
+                await _fill_google_password(page, password)
 
             # Fast-detect: only if already authenticated and project is open
             await asyncio.sleep(2.0)
@@ -2309,7 +2362,7 @@ class FlowService:
                         pass
 
                 # Interactive loop: wait for user to finish signing in in visible Chrome
-                deadline = time.monotonic() + 600
+                deadline = time.monotonic() + (90 if headless_login else 600)
                 while time.monotonic() < deadline:
                     try:
                         if _browser_closed or page.is_closed():
@@ -2354,6 +2407,8 @@ class FlowService:
                     await asyncio.sleep(1.5)
 
             if not project_id:
+                if headless_login:
+                    raise RuntimeError("FLOW_LOGIN_VERIFICATION_REQUIRED")
                 # Phân biệt user tắt Chrome vs timeout thực sự
                 try:
                     _ = page.url
@@ -2428,9 +2483,11 @@ class FlowService:
             login_ok = True
         except Exception as exc:
             login_ok = False
-            store.patch_row("accounts", account_id, {"status": "reconnect", "error": str(exc), "updatedAt": time.time()})
-            self._log("error", "account_connect_failed", account_id=account_id, message=str(exc))
+            detail = str(exc).replace(password, "[redacted]") if password else str(exc)
+            store.patch_row("accounts", account_id, {"status": "reconnect", "error": detail, "updatedAt": time.time()})
+            self._log("error", "account_connect_failed", account_id=account_id, message=detail)
         finally:
+            password = ""
             if browser is not None:
                 try:
                     await asyncio.wait_for(browser.stop(), timeout=8.0)

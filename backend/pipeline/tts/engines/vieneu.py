@@ -30,6 +30,7 @@ _client: Any = None
 _client_err: str | None = None
 _load_state = "cold"  # cold | loading | ready | error
 _warm_gate = threading.Lock()
+_client_load_gate = threading.Lock()
 _inference_lock = threading.Lock()
 _reference_lock = threading.Lock()
 _reference_cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
@@ -474,13 +475,14 @@ def get_client() -> Any:
         raise RuntimeError(
             "Chưa cài VieNeu-TTS. Trong backend/.venv chạy: pip install vieneu onnxruntime soundfile soxr sea-g2p"
         )
-    with _lock:
-        if _client is not None:
-            return _client
-        if _client_err and _load_state == "error":
-            # allow one retry after error
-            pass
-        _load_state = "loading"
+    # Do not hold the short-lived status lock while importing torch or loading
+    # model weights. That made /tts/status and the cancel endpoint appear hung.
+    with _client_load_gate:
+        with _lock:
+            if _client is not None:
+                return _client
+            _load_state = "loading"
+            _client_err = None
         try:
             _sanitize_no_proxy()
             from pipeline.core.system_check import ensure_runtime_torch, ensure_runtime_transformers
@@ -531,7 +533,7 @@ def get_client() -> Any:
             voice_store.ensure_vieneu_dirs()
             # Prefer our voices.json for cloned voices if SDK supports path
             voices_path = voice_store.VOICES_JSON
-            _client = Vieneu(**kwargs)
+            client = Vieneu(**kwargs)
             # Re-enroll clones from disk
             for item in voice_store.load_cloned():
                 ref = item.get("ref")
@@ -542,7 +544,7 @@ def get_client() -> Any:
                 if not path.is_file():
                     continue
                 try:
-                    _client.add_voice(str(clone_id), str(path), denoise=False, save=False)
+                    client.add_voice(str(clone_id), str(path), denoise=False, save=False)
                     stat = path.stat()
                     _clone_cache[str(clone_id)] = (stat.st_mtime_ns, stat.st_size)
                 except Exception:
@@ -553,13 +555,16 @@ def get_client() -> Any:
                     pass
             except Exception:
                 pass
-            _client_err = None
-            _load_state = "ready"
-            return _client
+            with _lock:
+                _client = client
+                _client_err = None
+                _load_state = "ready"
+            return client
         except Exception as e:
-            _client = None
-            _client_err = str(e)
-            _load_state = "error"
+            with _lock:
+                _client = None
+                _client_err = str(e)
+                _load_state = "error"
             raise RuntimeError(f"Không khởi tạo được VieNeu: {e}") from e
 
 

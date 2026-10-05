@@ -96,6 +96,17 @@ test('Flow top navigation includes Series and Accounts above utility views', () 
   assert.ok(tabs.includes('activateRail(id)'))
 })
 
+test('Flow account form uses Google email and password without display name', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
+  assert.ok(source.includes('Email Google'))
+  assert.ok(source.includes('t("Password", "Password")'))
+  assert.ok(source.includes('t("Email Google", "Google email")'))
+  assert.ok(source.includes('t("Lưu và kết nối", "Save and connect")'))
+  assert.ok(source.includes('type="password"'))
+  assert.ok(source.includes('Google password'))
+  assert.doesNotMatch(source, /Tên hiển thị.*Display name/)
+})
+
 test('local cleaner explains conservative matching and localizes its stable errors', () => {
   const source = readFileSync(new URL('../frontend/src/pages/VideoCleanerPage.tsx', import.meta.url), 'utf8')
   for (const code of ['CLEANER_LOGO_NOT_DETECTED', 'CLEANER_IMAGE_DEPTH_UNSUPPORTED', 'CLEANER_INVALID_LOGO_MASK']) {

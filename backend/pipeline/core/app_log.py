@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import traceback
+import re
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,42 @@ APP_LOG_LIMIT = 300
 _ring: deque[str] = deque(maxlen=APP_LOG_LIMIT)
 _hooks_installed = False
 _logging_handler: logging.Handler | None = None
+_TIMESTAMP_LINE = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ")
+
+# Keep this file useful as a copy/paste diagnostic, not a startup diary.
+# Installer output has its own install.log and is intentionally not filtered here.
+_NON_DIAGNOSTIC_MARKERS = (
+    "[app] log hooks installed",
+    "[api] lifespan start",
+    "[log] cleared by user",
+    "crash hook installed",
+    "[crash-hook] installed",
+    "[warm-models] ready",
+    "[warm-models] loading",
+    "[warm-models] started",
+)
+_ERROR_MARKERS = (
+    "traceback",
+    "error",
+    "exception",
+    "failed",
+    "failure",
+    "fatal",
+    "critical",
+    "crash",
+    "cannot",
+    "could not",
+    "không thể",
+    "thất bại",
+    "lỗi",
+    "invalid",
+    "empty",
+    "missing",
+    "not found",
+    "timeout",
+    "timed out",
+    "denied",
+)
 
 
 def log_path() -> Path:
@@ -42,6 +79,15 @@ def append_log(message: str, *, also_print: bool = True) -> None:
     if not line:
         return
     stamped = "\n".join(f"[{ts}] {ln}" if i == 0 else ln for i, ln in enumerate(line.splitlines()))
+    # Keep the on-disk ring small and actionable. Normal lifecycle/status
+    # messages are still printed to the server console when requested.
+    if not _diagnostic_blocks(stamped):
+        if also_print:
+            try:
+                print(stamped, flush=True)
+            except Exception:
+                pass
+        return
     with _lock:
         _ring.append(stamped)
         _persist_ring()
@@ -58,6 +104,28 @@ def append_exception(prefix: str, exc: BaseException | None = None) -> None:
     else:
         tb = traceback.format_exc()
     append_log(f"{prefix}\n{tb}".rstrip())
+
+
+def _diagnostic_blocks(text: str) -> list[str]:
+    """Return only actionable error blocks from the source-wide app log."""
+    blocks: list[list[str]] = []
+    for line in str(text or "").splitlines():
+        if _TIMESTAMP_LINE.match(line) and blocks:
+            blocks.append([line])
+        elif not blocks:
+            if line.strip():
+                blocks.append([line])
+        else:
+            blocks[-1].append(line)
+    out: list[str] = []
+    for block in blocks:
+        body = "\n".join(block).strip()
+        lower = body.lower()
+        if not body or any(marker in lower for marker in _NON_DIAGNOSTIC_MARKERS):
+            continue
+        if any(marker in lower for marker in _ERROR_MARKERS):
+            out.append(body)
+    return out
 
 
 class _AppLogHandler(logging.Handler):
@@ -81,7 +149,7 @@ def read_log(*, tail: int = APP_LOG_LIMIT, max_chars: int = 400_000) -> dict[str
     with _lock:
         mem = list(_ring)[-tail:]
     if mem:
-        body = "\n".join(mem)
+        body = "\n".join(_diagnostic_blocks("\n".join(mem)))
     else:
         chunks: list[str] = []
         try:
@@ -91,7 +159,7 @@ def read_log(*, tail: int = APP_LOG_LIMIT, max_chars: int = 400_000) -> dict[str
                 chunks = text.splitlines()[-tail:]
         except OSError as e:
             chunks = [f"[log-read] {e}"]
-        body = "\n".join(chunks)
+        body = "\n".join(_diagnostic_blocks("\n".join(chunks)))
     if len(body) > max_chars:
         body = body[-max_chars:]
         body = "…\n" + body
