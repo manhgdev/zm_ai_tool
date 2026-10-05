@@ -93,6 +93,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig, onBack }: { onOp
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsError, setModelsError] = useState(false)
   const [input, setInput] = useState('')
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
     const prefill = localStorage.getItem('zm-ai-tool:chat-prefill:v1')
     if (prefill) { setInput(prefill); localStorage.removeItem('zm-ai-tool:chat-prefill:v1') }
@@ -279,6 +280,13 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig, onBack }: { onOp
   }, [provider, providerReady, account, accountReady])
   useEffect(() => { localStorage.setItem(LAST_MODEL, model) }, [model])
   useEffect(() => { if (autoScroll.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }) }, [messages])
+  useEffect(() => {
+    const textarea = inputRef.current
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`
+    textarea.style.overflowY = textarea.scrollHeight > 240 ? 'auto' : 'hidden'
+  }, [input])
 
   const create = async () => {
     if (!providerReady) { setError(provider === 'chatgpt_web' ? (activeAccount ? accountError(activeAccount) || t('Hãy đăng nhập ChatGPT Codex trước.', 'Sign in to ChatGPT Codex first.') : t('Hãy đăng nhập ChatGPT Codex trước.', 'Sign in to ChatGPT Codex first.')) : t('Hãy chọn một provider có model khả dụng.', 'Choose a provider with an available model.')); return }
@@ -592,7 +600,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig, onBack }: { onOp
         {busy && !messages.some(m => m.status === 'streaming') ? <article className="chat-message assistant chat-message-pending"><div className="chat-avatar">AI</div><div className="chat-generating" role="status" aria-live="polite"><span>{t('Đang trả lời…', 'Answering…')}</span><span className="chat-generating-dots" aria-hidden="true"><i /><i /><i /></span></div></article> : null}
       </div>{notice && <div className="chat-notice" role="status">{notice}</div>}{error && !(messages[messages.length-1]?.status === 'failed' && !messages[messages.length-1]?.content) && <div className="chat-error" role="alert">{error}</div>}
       {attachmentNames.length ? <div className="chat-attachment-tray">{attachmentNames.map((name, index) => <span key={`${name}-${index}`}>{name}<button type="button" aria-label={t(`Bỏ ${name}`, `Remove ${name}`)} onClick={() => { setAttachmentNames(v => v.filter((_, i) => i !== index)); setAttachmentIds(v => v.filter((_, i) => i !== index)) }}>×</button></span>)}</div> : null}
-      <div className="chat-composer" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); void uploadFiles(Array.from(e.dataTransfer.files)) }}><textarea value={input} onChange={e => setInput(e.target.value)} onPaste={e => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); void uploadFiles(files) } }} placeholder={t('Nhắn tin cho AI…', 'Message AI…')} aria-label={t('Nội dung tin nhắn', 'Message content')} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}/>
+      <div className="chat-composer" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); void uploadFiles(Array.from(e.dataTransfer.files)) }}><textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onPaste={e => { const files = Array.from(e.clipboardData.files); if (files.length) { e.preventDefault(); void uploadFiles(files) } }} placeholder={t('Nhắn tin cho AI…', 'Message AI…')} aria-label={t('Nội dung tin nhắn', 'Message content')} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }}/>
         <div className="chat-composer-bar">
           <label className="chat-attach" title={t('Đính kèm file', 'Attach file')}>＋<input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,text/vtt,application/x-subrip,audio/wav,audio/x-wav,audio/mpeg,audio/mp4,audio/aac,audio/flac,audio/ogg" onChange={e => void uploadFiles(Array.from(e.target.files || []))}/></label>
           <label className="chat-model-picker chat-model-picker-bottom"><span className="sr-only">{t('Provider và model', 'Provider and model')}</span><select value={modelSelection} onChange={e => selectModel(e.target.value)} aria-label={t('Chọn provider và model', 'Choose provider and model')} aria-busy={modelsLoading} disabled={!selectableProviders.length || modelsLoading} title={modelsError ? t('Không tải được danh sách model.', 'Could not load models.') : undefined}>
