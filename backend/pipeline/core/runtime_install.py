@@ -106,7 +106,10 @@ def detect_profile() -> str:
         return 'nvidia-cu128' if modern else 'nvidia-cu124'
     if kind in ('amd', 'intel') and device.get('accel') == 'directml':
         return 'directml'
-    if kind == 'none' and not device.get('gpuName'):
+    # Unknown/display-only adapters (for example Cirrus Logic on a Linux VPS)
+    # do not provide a local-AI backend. Never turn them into a GPU package
+    # selection; the CPU wheels are the safe and complete profile.
+    if device.get('accel') in (None, '', 'cpu') or kind in ('none', 'other', 'amd', 'intel'):
         return 'cpu'
     raise RuntimeInstallError('HARDWARE_UNSUPPORTED', 'GPU cannot be identified safely', retryable=False, diagnostics=json.dumps(device))
 

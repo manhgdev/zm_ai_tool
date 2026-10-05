@@ -27,16 +27,19 @@ _LOCATE_TIMEOUT_SECONDS = 120
 
 def _python_can_ocr(exe: str) -> tuple[bool, str]:
     """(OCR usable, accelerator) — probe providers in a clean process."""
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    code = "import cv2, rapidocr_onnxruntime, onnxruntime as ort;"
+    code += ("print('CPU')" if cpu_mode_enabled() else
+             "p=ort.get_available_providers();"
+             "print('CUDA' if 'CUDAExecutionProvider' in p else "
+             "('DirectML' if 'DmlExecutionProvider' in p else "
+             "('CoreML' if 'CoreMLExecutionProvider' in p else 'CPU')))")
     try:
         proc = subprocess.run(
             [
                 exe,
                 "-c",
-                "import cv2, rapidocr_onnxruntime, onnxruntime as ort;"
-                "p=ort.get_available_providers();"
-                "print('CUDA' if 'CUDAExecutionProvider' in p else "
-                "('DirectML' if 'DmlExecutionProvider' in p else "
-                "('CoreML' if 'CoreMLExecutionProvider' in p else 'CPU')))",
+                code,
             ],
             capture_output=True,
             text=True,

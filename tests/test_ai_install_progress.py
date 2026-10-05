@@ -170,7 +170,8 @@ class AiInstallProgressTest(unittest.TestCase):
             ), patch.object(
                 install, "_ocr_cuda_check_fresh", return_value=(True, "CUDAExecutionProvider")
             ), patch.object(install, "_invalidate_checks_cache"):
-                result = install.install_ocr_cuda()
+                with patch('pipeline.core.media.detect_device', return_value={'gpuKind': 'nvidia', 'accel': 'cuda'}):
+                    result = install.install_ocr_cuda()
 
         self.assertTrue(result["ok"])
         self.assertEqual(len(commands), 2)

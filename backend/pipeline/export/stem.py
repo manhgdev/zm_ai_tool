@@ -483,7 +483,10 @@ def _demucs_python(project_id: str | None = None, *, report: bool = True) -> str
             message="Đang cài Demucs (xóa lời AI) — lần đầu có thể mất vài phút…",
             running=True,
         )
-    set_stem_progress(project_id, 4, "Đang cài Demucs / backend GPU (lần đầu)…")
+    set_stem_progress(
+        project_id, 4,
+        "Đang cài Demucs / backend phù hợp (lần đầu)… / Installing Demucs / compatible backend (first run)…",
+    )
     if not py.is_file():
         if getattr(sys, "frozen", False):
             uv = shutil.which("uv")

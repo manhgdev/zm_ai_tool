@@ -470,6 +470,9 @@ def _install_sherpa_cuda(python: Path | str, uv: str | None = None) -> None:
 
 
 def _runtime_ort_accel() -> str:
+    from ..runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return 'cpu'
     try:
         from ..media import detect_device
 
@@ -828,6 +831,54 @@ def ensure_torchaudio() -> None:
     ensure_runtime_torch()
 
 
+def _install_linux_cpu_packages() -> dict[str, Any]:
+    """Use the existing CPU recipe and probe in a native Linux Python venv."""
+    from ..runtime_install import CORE
+    from ..runtime_probe import PROBE_SOURCE
+    from ..runtime_download import RuntimeInstallError
+    from ..runtime_active import clear_compute_caches
+    from ..nvidia_driver import assert_idle
+
+    assert_idle()
+    # Always probe in a fresh process: the API may have imported stale wheels.
+    command = [sys.executable, '-I', '-c', PROBE_SOURCE, 'cpu']
+    _report_install(20, '', stage='probe', runtimeProfile='cpu', computeMode='cpu')
+    probe = _pip_stream(command, timeout=180, idle_timeout=None)
+    if probe.returncode == 0:
+        return {'ok': True, 'message': 'Runtime ready', 'runtimeProfile': 'cpu',
+                'computeMode': 'cpu', 'needsRestart': False, 'diagnostics': probe.stdout}
+
+    if _install_log_fn:
+        _install_log_fn('\n=== Linux CPU runtime ===\n')
+    # GPU ORT wheels own the same module as CPU ORT; remove only the conflicting
+    # distributions, not GPU drivers or other application packages.
+    removed = _pip_stream(_runtime_pip_uninstall_cmd('onnxruntime-gpu', 'onnxruntime-directml'),
+                          timeout=300, idle_timeout=120)
+    if removed.returncode:
+        raise RuntimeError((removed.stderr or removed.stdout)[-3000:])
+    _report_install(30, '', stage='install', runtimeProfile='cpu', computeMode='cpu')
+    # Resolve the inference dependencies normally; --no-deps belongs only on
+    # the three SDKs whose optional UI/legacy stacks are not used by the app.
+    _runtime_pip_install(*CORE, 'onnxruntime==1.20.1', 'sherpa-onnx==1.13.8',
+                         timeout=2400, progress=(30, 65, 'AI CPU dependencies'))
+    _runtime_pip_install('--force-reinstall', 'torch==2.6.0', 'torchaudio==2.6.0',
+                         index_url=_TORCH_CPU_INDEX, timeout=2400,
+                         progress=(65, 85, 'PyTorch CPU + Torchaudio'))
+    result = _pip_stream(_runtime_pip_cmd('--no-deps', 'faster-whisper==1.2.1',
+                                        'rapidocr-onnxruntime==1.4.4', 'vieneu==3.2.0'),
+                         timeout=1200, progress=(85, 95, 'Whisper / OCR / VieNeu'))
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout)[-3000:])
+    _report_install(97, '', stage='probe', runtimeProfile='cpu', computeMode='cpu')
+    probe = _pip_stream(command, timeout=180, idle_timeout=None)
+    if probe.returncode:
+        raise RuntimeInstallError('RUNTIME_PROBE_FAILED', 'Linux CPU runtime probe failed',
+                                  diagnostics=(probe.stdout or '') + '\n' + (probe.stderr or ''))
+    clear_compute_caches()
+    return {'ok': True, 'message': 'Runtime installed', 'runtimeProfile': 'cpu',
+            'computeMode': 'cpu', 'needsRestart': True, 'diagnostics': probe.stdout}
+
+
 def install_ai_runtime() -> dict[str, Any]:
     """Cài nhóm ASR/OCR nặng vào venv riêng của bản desktop."""
     if sys.platform == "win32" and getattr(sys, "frozen", False):
@@ -864,6 +915,9 @@ def install_ai_runtime() -> dict[str, Any]:
         progress=model_progress,
     )
     _report_install(18, "Đã kiểm tra model / Speaker models ready")
+    from ..runtime_active import cpu_mode_enabled
+    if sys.platform.startswith('linux') and not getattr(sys, 'frozen', False) and cpu_mode_enabled():
+        return _install_linux_cpu_packages()
     if getattr(sys, "frozen", False):
         _report_install(20, "Đang kiểm tra các gói đã cài… / Checking installed packages…")
         _invalidate_checks_cache()
@@ -1185,6 +1239,24 @@ def install_ai_runtime() -> dict[str, Any]:
 
 def install_ocr_cuda() -> dict[str, Any]:
     """Install the OCR GPU runtime into the Python running this API."""
+    # This action is optional and must never bootstrap GPU wheels on a
+    # CPU-only host, even if a stale client calls the endpoint directly.
+    try:
+        from ..media import detect_device
+
+        device = detect_device()
+        if str(device.get("accel") or "").lower() not in ("cuda", "directml"):
+            raise RuntimeError(
+                "OCR GPU không áp dụng: máy không có backend tăng tốc. "
+                "OCR sẽ dùng CPU. / OCR GPU is not applicable: no accelerator backend was detected."
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        raise RuntimeError(
+            "OCR GPU không áp dụng: không xác minh được GPU. "
+            "OCR sẽ dùng CPU. / OCR GPU is not applicable: GPU could not be verified."
+        )
     if sys.platform == "win32" and getattr(sys, "frozen", False):
         from ..runtime_install import install_runtime
 

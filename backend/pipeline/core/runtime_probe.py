@@ -23,7 +23,8 @@ def probe(profile: str, demucs: bool = False) -> dict[str, str]:
     import onnxruntime as ort
     from rapidocr_onnxruntime import RapidOCR
 
-    assert sys.version_info[:2] == (3, 12), sys.version
+    assert (sys.version_info[:2] == (3, 12) if sys.platform == 'win32'
+            else (3, 10) <= sys.version_info[:2] <= (3, 12)), sys.version
     assert 'float32' in ctranslate2.get_supported_compute_types('cpu')
     assert cv2.resize(np.zeros((8, 8, 3), np.uint8), (4, 4)).shape == (4, 4, 3)
     features = extract_speaker_fbank(torch.zeros(16000), sample_rate=16000)

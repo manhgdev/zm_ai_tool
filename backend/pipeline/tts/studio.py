@@ -182,6 +182,8 @@ def set_job_progress(job_id: str, current: int, total: int, message: str = "") -
     if not job_id:
         return
     with _jobs_lock:
+        if _cancel_flags.get(job_id):
+            return
         total_safe = max(1, total)
         current_safe = max(0, min(current, total_safe))
         pct = int(min(99, max(1, (current_safe / total_safe) * 100)))
@@ -206,6 +208,8 @@ def set_job_progress_pct(
     if not job_id:
         return
     with _jobs_lock:
+        if _cancel_flags.get(job_id):
+            return
         prev = dict(_job_progress.get(job_id) or {})
         total_safe = max(1, int(total if total is not None else prev.get("total") or 1))
         if current is None:
@@ -247,12 +251,44 @@ def set_job_error(job_id: str, error: Exception | str, *, message: str = "Tạo 
         return
     with _jobs_lock:
         current = dict(_job_progress.get(job_id) or {})
+        if _cancel_flags.get(job_id):
+            _job_progress[job_id] = {
+                "current": int(current.get("current") or 0),
+                "total": max(1, int(current.get("total") or 1)),
+                "pct": max(1, min(99, int(current.get("pct") or 1))),
+                "message": "Đã hủy",
+                "error": "cancelled",
+            }
+            _running.pop(job_id, None)
+            publish_cancelled = True
+        else:
+            publish_cancelled = False
+            _job_progress[job_id] = {
+                "current": int(current.get("current") or 0),
+                "total": max(1, int(current.get("total") or 1)),
+                "pct": max(1, min(99, int(current.get("pct") or 1))),
+                "message": message,
+                "error": str(error) or message,
+            }
+            _running.pop(job_id, None)
+    if publish_cancelled:
+        _publish_job_progress(job_id)
+        return
+    _publish_job_progress(job_id)
+
+
+def set_job_cancelled(job_id: str, message: str = "Đã hủy") -> None:
+    """Publish cancellation immediately, even while model loading is blocked."""
+    if not job_id:
+        return
+    with _jobs_lock:
+        current = dict(_job_progress.get(job_id) or {})
         _job_progress[job_id] = {
             "current": int(current.get("current") or 0),
             "total": max(1, int(current.get("total") or 1)),
             "pct": max(1, min(99, int(current.get("pct") or 1))),
             "message": message,
-            "error": str(error) or message,
+            "error": "cancelled",
         }
         _running.pop(job_id, None)
     _publish_job_progress(job_id)
@@ -275,27 +311,42 @@ def set_job_complete(
         return
     with _jobs_lock:
         current = dict(_job_progress.get(job_id) or {})
-        payload: dict[str, Any] = {
-            "current": max(1, int(current.get("total") or current.get("current") or 1)),
-            "total": max(1, int(current.get("total") or 1)),
-            "pct": 99,
-            "message": message,
-            "resultJobId": result_job_id or job_id,
-        }
-        if text:
-            payload["text"] = text
-        if srt:
-            payload["srt"] = srt
-        if srt_styles is not None:
-            payload["srt_styles"] = srt_styles
-        if translated_text:
-            payload["translated_text"] = translated_text
-        if translated_srt:
-            payload["translated_srt"] = translated_srt
-        if translation_error:
-            payload["translation_error"] = translation_error
-        _job_progress[job_id] = payload
-        _running.pop(job_id, None)
+        if _cancel_flags.get(job_id):
+            _job_progress[job_id] = {
+                "current": int(current.get("current") or 0),
+                "total": max(1, int(current.get("total") or 1)),
+                "pct": max(1, min(99, int(current.get("pct") or 1))),
+                "message": "Đã hủy",
+                "error": "cancelled",
+            }
+            _running.pop(job_id, None)
+            publish_cancelled = True
+        else:
+            publish_cancelled = False
+            payload: dict[str, Any] = {
+                "current": max(1, int(current.get("total") or current.get("current") or 1)),
+                "total": max(1, int(current.get("total") or 1)),
+                "pct": 99,
+                "message": message,
+                "resultJobId": result_job_id or job_id,
+            }
+            if text:
+                payload["text"] = text
+            if srt:
+                payload["srt"] = srt
+            if srt_styles is not None:
+                payload["srt_styles"] = srt_styles
+            if translated_text:
+                payload["translated_text"] = translated_text
+            if translated_srt:
+                payload["translated_srt"] = translated_srt
+            if translation_error:
+                payload["translation_error"] = translation_error
+            _job_progress[job_id] = payload
+            _running.pop(job_id, None)
+    if publish_cancelled:
+        _publish_job_progress(job_id)
+        return
     _publish_job_progress(job_id)
 
 
@@ -310,6 +361,7 @@ def request_cancel(job_id: str) -> bool:
     with _jobs_lock:
         _cancel_flags[job_id] = True
         running = job_id in _running
+    set_job_cancelled(job_id)
     try:
         from pipeline.core.jobs import kill_job_processes
 
@@ -488,6 +540,8 @@ def synth_text_job(
         # background worker starting. Do not erase that early cancellation.
         _cancel_flags.setdefault(job_id, False)
     try:
+        if _is_cancelled(job_id):
+            raise RuntimeError("Job đã hủy")
         try:
             from pipeline.core.jobs import set_job_context
 
@@ -721,6 +775,8 @@ def synth_srt_job(
     out_cues: list[dict] = []
     cursor = 0.0
     try:
+        if _is_cancelled(job_id):
+            raise RuntimeError("Job đã hủy")
         try:
             from pipeline.core.jobs import set_job_context
 

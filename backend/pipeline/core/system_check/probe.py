@@ -190,6 +190,9 @@ def _invalidate_probe_caches() -> None:
     _DEMUCS_PY_CACHE = None
     from pipeline.tts.engines import vieneu_frozen
     from pipeline.core import accel
+    from pipeline.core.runtime_active import _linux_cpu_only
+
+    _linux_cpu_only.cache_clear()
 
     vieneu_frozen._CUDA_READY = None
     with accel._lock:
@@ -198,6 +201,9 @@ def _invalidate_probe_caches() -> None:
 
 
 def _torch_cuda_ready_cached() -> bool:
+    from ..runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return False
     global _TORCH_CUDA_CACHE
     now = time.monotonic()
     if _TORCH_CUDA_CACHE and now - _TORCH_CUDA_CACHE[0] < _TORCH_CUDA_TTL:
@@ -220,6 +226,16 @@ def _ocr_cuda_check_cached(*, refresh: bool = False) -> tuple[bool, str]:
 def _nvidia_present() -> bool:
     from ..runtime_active import cpu_mode_enabled
     if cpu_mode_enabled():
+        return False
+    # Confirm the shared inventory identifies an actual NVIDIA adapter before
+    # probing CUDA. A standalone nvidia-smi binary (or a stale PATH entry)
+    # must not turn a CPU-only VPS into a GPU install path.
+    try:
+        from ..media import detect_device
+
+        if str(detect_device().get("gpuKind") or "").lower() != "nvidia":
+            return False
+    except Exception:
         return False
     from ..accel import _nvidia_smi
 
@@ -247,6 +263,9 @@ def _runtime_torch_accel() -> str:
 
 
 def _torch_cuda_ready() -> bool:
+    from ..runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return False
     if getattr(sys, "frozen", False):
         try:
             from pipeline.tts.engines.vieneu_frozen import runtime_torch_cuda_ready
@@ -523,8 +542,9 @@ def _demucs_check_uncached() -> tuple[bool, str]:
     - Không GPU → torch CPU cũng ok
     """
     from ..runtime_active import cpu_mode_enabled
-    want_cuda = not cpu_mode_enabled() and bool(_which("nvidia-smi"))
-    want_mlx = _apple_silicon()
+    cpu_only = cpu_mode_enabled()
+    want_cuda = not cpu_only and bool(_which("nvidia-smi"))
+    want_mlx = not cpu_only and _apple_silicon()
     py = _demucs_venv_python()
     if not py:
         return False, "chưa có backend/.venv-demucs (bấm Cài đặt)"
@@ -560,12 +580,13 @@ def _demucs_check_uncached() -> tuple[bool, str]:
                 str(py),
                 "-c",
                 (
-                    "import demucs, soundfile, torch; "
+                    "import demucs, soundfile, torch; " +
+                    ("d='cpu'; " if cpu_only else
                     "d=('cuda' if torch.cuda.is_available() else "
-                    "('mps' if getattr(torch.backends,'mps',None) and torch.backends.mps.is_available() else 'cpu')); "
-                    "n=(torch.cuda.get_device_name(0) if d=='cuda' else ('Apple GPU' if d=='mps' else 'CPU')); "
-                    "print(f'{d}|{n}|{torch.__version__}')"
-                ),
+                    "('mps' if getattr(torch.backends,'mps',None) and torch.backends.mps.is_available() else 'cpu')); ")
+                ) +
+                "n=(torch.cuda.get_device_name(0) if d=='cuda' else ('Apple GPU' if d=='mps' else 'CPU')); "
+                "print(f'{d}|{n}|{torch.__version__}')",
             ],
             capture_output=True,
             text=True,

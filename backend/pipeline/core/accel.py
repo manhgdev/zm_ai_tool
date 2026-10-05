@@ -7,6 +7,7 @@ Frozen desktop app probes torch inside .venv-runtime (PyInstaller cannot import 
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -99,7 +100,9 @@ def _probe_torch_device_in(python: str) -> TorchDevice:
 
 def preferred_torch_device(*, refresh: bool = False) -> TorchDevice:
     """Preferred target; use a runtime compute probe to determine CUDA readiness."""
-    from .runtime_active import cpu_mode_enabled
+    from .runtime_active import cpu_mode_enabled, _linux_cpu_only
+    if refresh:
+        _linux_cpu_only.cache_clear()
     if cpu_mode_enabled():
         return 'cpu'
     with _lock:
@@ -109,6 +112,18 @@ def preferred_torch_device(*, refresh: bool = False) -> TorchDevice:
     # Env override (debug / force)
     env = (os.environ.get("ZM_AIO_TORCH_DEVICE") or os.environ.get("TORCH_DEVICE") or "").strip().lower()
     if env in ("cuda", "mps", "cpu"):
+        # An override may choose between available backends, but it must not
+        # manufacture one on a CPU-only host. This is important on VPS
+        # machines where a display-only adapter is present but no CUDA device
+        # exists.
+        if env == "cuda" and not _nvidia_smi():
+            with _lock:
+                _cache["torch_device"] = "cpu"
+            return "cpu"
+        if env == "mps" and not (sys.platform == "darwin" and platform.machine().lower() in ("arm64", "aarch64")):
+            with _lock:
+                _cache["torch_device"] = "cpu"
+            return "cpu"
         with _lock:
             _cache["torch_device"] = env
         return env  # type: ignore[return-value]
@@ -246,6 +261,9 @@ def tts_local_workers(requested: int | None, *, tasks: int | None = None) -> int
 
 def apply_gpu_process_env() -> None:
     """Call early so child procs see GPU preference. Avoid importing torch in the API."""
+    from .runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return
     if sys.platform == "win32" and _nvidia_smi():
         os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
         os.environ.setdefault("VIENEU_BACKEND", "auto")

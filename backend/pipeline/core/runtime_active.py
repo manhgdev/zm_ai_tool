@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from functools import lru_cache
 
 
 def runtime_home() -> Path:
@@ -35,18 +36,30 @@ def active_runtime_dir() -> Path:
     return home / ".venv-runtime"
 
 
+@lru_cache(maxsize=1)
+def _linux_cpu_only() -> bool:
+    """Cache physical inventory per worker, not user mode or GPU readiness."""
+    from .media import detect_device
+
+    device = detect_device()
+    # An NVIDIA adapter with a broken driver is still a GPU, not CPU-only.
+    return (device.get('gpuKind') not in ('nvidia', 'apple')
+            and device.get('accel', 'cpu') == 'cpu')
+
+
 def cpu_mode_enabled() -> bool:
-    """Explicit user choice, not physical GPU inventory; read fresh in every worker."""
-    if sys.platform != 'win32':
-        return False
+    """Shared CPU-only state: saved choice on any OS, or a CPU-only Linux host."""
     try:
         data = json.loads((runtime_home() / 'runtime/current.json').read_text(encoding='utf-8'))
-        return data.get('computeMode') == 'cpu'
+        if data.get('computeMode') == 'cpu':
+            return True
     except (OSError, ValueError, AttributeError):
-        return False
+        pass
+    return sys.platform.startswith('linux') and _linux_cpu_only()
 
 
 def clear_compute_caches() -> None:
+    _linux_cpu_only.cache_clear()
     from .accel import _cache, _lock
     with _lock:
         _cache.clear()

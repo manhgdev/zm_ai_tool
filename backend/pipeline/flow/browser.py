@@ -169,7 +169,10 @@ class BrowserManager:
 
     def __init__(self, *, headless: bool, profile_dir: Path, slow_mo: int = 0, google_login_compat: bool = False) -> None:
         self.cdp_url = None  # flow-py checks this optional upstream attribute.
-        self.headless = headless
+        # Old clients can still request visible Chrome. A headless Linux VPS
+        # has no window server; normalize here for every Flow caller.
+        self.headless = headless or (sys.platform.startswith('linux')
+                                    and not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')))
         self.profile_dir = Path(profile_dir)
         self.slow_mo = slow_mo
         self.google_login_compat = google_login_compat

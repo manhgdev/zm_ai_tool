@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import tomllib
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -49,6 +48,10 @@ def select_wheels(lock: dict) -> list[Wheel]:
 
 
 def resolve(uv: str, profile: str, core: tuple[str, ...], root: Path, run, emit) -> list[Wheel]:
+    # The Windows cp312 resolver needs TOML; importing the shared CPU recipe
+    # on native Linux Python 3.10 must not require the Python 3.11 stdlib.
+    import tomllib
+
     cuda = profile.startswith('nvidia-')
     torch_backend = profile.removeprefix('nvidia-') if cuda else 'cpu'
     torch_version = '2.7.1' if torch_backend == 'cu128' else '2.6.0'

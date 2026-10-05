@@ -369,6 +369,17 @@ def _rapidocr_gpu_kwargs() -> dict[str, bool]:
     from pipeline.core.runtime_active import cpu_mode_enabled
     if cpu_mode_enabled():
         return {f'{part}_use_{provider}': False for part in ('det', 'cls', 'rec') for provider in ('cuda', 'dml')}
+    # ORT can expose a GPU provider simply because a GPU wheel is installed;
+    # that does not mean this machine has a usable accelerator. Gate it by the
+    # shared hardware inventory so CPU-only VPS hosts never enter CUDA/DML.
+    try:
+        from pipeline.core.media import detect_device
+
+        device = detect_device()
+        if str(device.get('accel') or '').lower() not in ('cuda', 'directml'):
+            return {f'{part}_use_{provider}': False for part in ('det', 'cls', 'rec') for provider in ('cuda', 'dml')}
+    except Exception:
+        return {f'{part}_use_{provider}': False for part in ('det', 'cls', 'rec') for provider in ('cuda', 'dml')}
     use_cuda = False
     use_dml = False
     try:

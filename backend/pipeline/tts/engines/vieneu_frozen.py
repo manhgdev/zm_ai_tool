@@ -180,7 +180,14 @@ def _sanitize_no_proxy(env: dict[str, str]) -> None:
 
 
 class _Worker:
-    def __init__(self, py: Path, backend: str, device: str, mode: str = "v3turbo") -> None:
+    def __init__(
+        self,
+        py: Path,
+        backend: str,
+        device: str,
+        mode: str = "v3turbo",
+        cancel_check=None,
+    ) -> None:
         self.backend = backend
         self.device = device
         self.mode = mode or "v3turbo"
@@ -230,6 +237,7 @@ class _Worker:
             init = self._rpc(
                 {"op": "init", "backend": backend, "device": device, "mode": self.mode},
                 timeout=300,
+                cancel_check=cancel_check,
             )
         except BaseException:
             self.close()
@@ -238,7 +246,7 @@ class _Worker:
             self.close()
             raise RuntimeError(init.get("error") or "VieNeu worker init failed")
 
-    def _rpc(self, msg: dict, *, timeout: float = 600) -> dict:
+    def _rpc(self, msg: dict, *, timeout: float = 600, cancel_check=None) -> dict:
         if self.proc.poll() is not None:
             return {"ok": False, "error": f"VieNeu worker exit {self.proc.returncode}: " + "".join(self._stderr)[-4000:]}
         assert self.proc.stdin and self.proc.stdout
@@ -259,6 +267,9 @@ class _Worker:
                         kill_process_tree,
                     )
 
+                    if cancel_check and cancel_check():
+                        kill_process_tree(self.proc)
+                        raise Cancelled()
                     if is_cancelled(current_job_id()):
                         kill_process_tree(self.proc)
                         raise Cancelled()
@@ -292,6 +303,7 @@ class _Worker:
         out_wav: Path,
         style: str,
         clone_ref: str | None,
+        cancel_check=None,
     ) -> None:
         res = self._rpc(
             {
@@ -303,6 +315,7 @@ class _Worker:
                 "clone_ref": clone_ref,
             },
             timeout=600,
+            cancel_check=cancel_check,
         )
         if not res.get("ok"):
             raise RuntimeError(res.get("error") or "VieNeu synth failed")
@@ -336,7 +349,7 @@ class _Worker:
                 pass
 
 
-def _acquire(backend: str, device: str, mode: str = "v3turbo") -> _Worker:
+def _acquire(backend: str, device: str, mode: str = "v3turbo", cancel_check=None) -> _Worker:
     mode = mode or "v3turbo"
     if mode == "v3nano":
         backend, device = "onnx", "cpu"
@@ -353,7 +366,7 @@ def _acquire(backend: str, device: str, mode: str = "v3turbo") -> _Worker:
                 pass
             if w in _all_workers:
                 _all_workers.remove(w)
-        w = _Worker(runtime_python(), backend, device, mode=mode)
+        w = _Worker(runtime_python(), backend, device, mode=mode, cancel_check=cancel_check)
         _all_workers.append(w)
         return w
 
@@ -410,6 +423,9 @@ def _run_runtime(code: str, *, timeout: float = 45.0) -> subprocess.CompletedPro
 
 def runtime_torch_cuda_ready(*, refresh: bool = False) -> bool:
     global _CUDA_READY
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return False
     if _CUDA_READY is not None and not refresh:
         return _CUDA_READY
     py = runtime_python()
@@ -481,6 +497,7 @@ def synthesize(
     backend: str = "onnx",
     device: str = "cpu",
     clone_ref: str | None = None,
+    cancel_check=None,
 ) -> None:
     py = runtime_python()
     if not py.is_file():
@@ -499,7 +516,7 @@ def synthesize(
     except Exception:
         if mode == MODE_NANO:
             backend, device = "onnx", "cpu"
-    w = _acquire(backend, device, mode=mode)
+    w = _acquire(backend, device, mode=mode, cancel_check=cancel_check)
     try:
         from pipeline.core.jobs import is_cancelled, current_job_id, Cancelled
 
@@ -511,6 +528,7 @@ def synthesize(
             out_wav=out_wav,
             style=style,
             clone_ref=clone_ref,
+            cancel_check=cancel_check,
         )
     except Exception:
         # worker có thể hỏng — đóng, không trả idle

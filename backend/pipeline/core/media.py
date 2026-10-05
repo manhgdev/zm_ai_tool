@@ -524,17 +524,20 @@ def detect_device() -> dict[str, Any]:
         ocr_label = ""
         install_summary = f"{os_label} Apple Silicon ({gpu_name}) → Demucs-MLX (Metal)"
         install_hint = "Mac Apple Silicon — OCR chạy CPU/ANE; tách lời dùng demucs-mlx (Metal)."
-    elif gpu_kind in ("amd", "intel", "other"):
+    elif gpu_kind in ("amd", "intel") and accel == "directml":
         demucs_label = "Cài Demucs (CPU)"
         demucs_backend = "cpu"
-        ocr_action = "ai_runtime" if accel == "directml" else ""
-        ocr_label = "Cài OCR DirectML" if accel == "directml" else ""
+        ocr_action = "ai_runtime"
+        ocr_label = "Cài OCR DirectML"
         install_summary = f"{os_label} + {gpu_name} → {accel.upper() if accel != 'cpu' else 'CPU'}"
-        install_hint = (
-            f"GPU: {gpu_name}. OCR dùng DirectML; các tác vụ không hỗ trợ sẽ tự dùng CPU."
-            if accel == "directml"
-            else f"GPU: {gpu_name}. Tác vụ PyTorch dùng ROCm khi tương thích, còn lại tự dùng CPU."
-        )
+        install_hint = f"GPU: {gpu_name}. OCR dùng DirectML; các tác vụ không hỗ trợ sẽ tự dùng CPU."
+    elif gpu_kind == "amd" and accel == "rocm":
+        demucs_label = "Cài Demucs (CPU)"
+        demucs_backend = "cpu"
+        ocr_action = ""
+        ocr_label = ""
+        install_summary = f"{os_label} + {gpu_name} → ROCm"
+        install_hint = f"GPU: {gpu_name}. Tác vụ PyTorch dùng ROCm khi tương thích, còn lại tự dùng CPU."
     else:
         demucs_label = "Cài Demucs (CPU)"
         demucs_backend = "cpu"
@@ -703,7 +706,11 @@ def detect_device() -> dict[str, Any]:
         "driver": driver,
         "accel": accel,
         "label": label,
-        "hasGpu": gpu_kind != "none",
+        # A display adapter is not automatically a usable local-AI GPU.  For
+        # example, Cirrus Logic on a headless Linux VPS is visible in lspci but
+        # has no CUDA/ROCm/DirectML backend. Keep it in `gpus` for diagnostics,
+        # while all local AI and setup decisions remain CPU-only.
+        "hasGpu": gpu_kind in ("nvidia", "apple") or accel in ("cuda", "metal", "rocm", "directml"),
         "gpuCount": len(gpus),
         "hybridGpu": len({str(g.get("kind")) for g in gpus}) > 1,
         "gpus": gpus,

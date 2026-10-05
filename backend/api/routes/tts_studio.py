@@ -245,12 +245,18 @@ def api_tts_studio_synth(body: StudioSynthIn):
             # polls the new request id, so publish its terminal state too.
             set_job_complete(job_id, result_job_id=str(jid or job_id))
         except Exception as e:
-            if jid:
+            cancelled = type(e).__name__ == "Cancelled" or str(e).strip().lower() in {
+                "job đã hủy",
+                "job đã huỷ",
+                "cancelled",
+            }
+            if jid and not cancelled:
                 from pipeline.tts.studio import mark_job_meta_error
                 mark_job_meta_error(str(jid), e)
             set_job_error(job_id, e)
-            import logging
-            logging.getLogger(__name__).error("tts_studio_synth background error: %s", e)
+            if not cancelled:
+                import logging
+                logging.getLogger(__name__).error("tts_studio_synth background error: %s", e)
 
     _threading.Thread(target=_run, name=f"studio-synth-{job_id[:8]}", daemon=True).start()
     # Trả job_id ngay — FE dùng GET /jobs/{job_id}/progress để theo dõi

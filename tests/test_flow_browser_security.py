@@ -1,4 +1,5 @@
 import sys
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +42,14 @@ class FlowBrowserGeometryTest(unittest.TestCase):
 
 
 class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_linux_without_display_ignores_visible_browser_request(self):
+        with patch.object(sys, 'platform', 'linux'), patch.dict(os.environ, {'DISPLAY': '', 'WAYLAND_DISPLAY': ''}):
+            manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-headless-test'))
+            self.assertTrue(manager.headless)
+        with patch.object(sys, 'platform', 'linux'), patch.dict(os.environ, {'DISPLAY': ':99'}):
+            manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-visible-test'))
+            self.assertFalse(manager.headless)
+
     async def test_existing_visible_page_does_not_keep_stealing_focus(self):
         page = SimpleNamespace(
             is_closed=lambda: False,

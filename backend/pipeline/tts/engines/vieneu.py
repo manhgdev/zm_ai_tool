@@ -286,6 +286,23 @@ def _resolve_backend() -> tuple[str, str]:
     return preferred_vieneu_backend()
 
 
+def _use_cancelable_linux_worker(cancel_check: Callable[[], bool] | None) -> bool:
+    """Use a killable worker while CPU TTS loads its model on Linux.
+
+    VieNeu's in-process constructor can block for minutes while loading ONNX or
+    PyTorch weights and Python cannot safely interrupt that constructor. TTS
+    jobs already provide a cancellation callback, so isolate only that path;
+    ordinary status/probe calls keep the existing in-process behavior.
+    """
+    if cancel_check is None or not sys.platform.startswith("linux"):
+        return False
+    try:
+        _backend, device = _resolve_backend()
+    except Exception:
+        return False
+    return device == "cpu"
+
+
 def available() -> bool:
     if os.environ.get("VIENEU_DISABLED", "").strip().lower() in ("1", "true", "yes"):
         return False
@@ -1007,19 +1024,21 @@ def _synthesize_once(
     if style not in ("tu_nhien", "tin_tuc", "doc_truyen"):
         style = "tu_nhien"
 
-    if getattr(sys, "frozen", False):
+    use_process_worker = getattr(sys, "frozen", False) or _use_cancelable_linux_worker(cancel_check)
+    if use_process_worker:
         from . import vieneu_frozen
 
         if cancel_check and cancel_check():
             raise RuntimeError("Job đã hủy")
         if on_progress:
             on_progress(0.02)
-        get_client()  # prepares PyTorch/MPS or CUDA before resolving the worker
+        if getattr(sys, "frozen", False):
+            get_client()  # prepares PyTorch/MPS or CUDA before resolving the worker
         if cancel_check and cancel_check():
             raise RuntimeError("Job đã hủy")
         if on_progress:
             on_progress(0.08)
-        backend, device = vieneu_frozen.resolve_backend()
+        backend, device = vieneu_frozen.resolve_backend() if getattr(sys, "frozen", False) else _resolve_backend()
         clone_ref = None
         voice_arg = name
         if kind == "clone":
@@ -1044,6 +1063,7 @@ def _synthesize_once(
             backend=backend,
             device=device,
             clone_ref=clone_ref,
+            cancel_check=cancel_check,
         )
         if on_progress:
             on_progress(1.0)
@@ -1297,6 +1317,9 @@ def reset_client() -> None:
     import gc
 
     gc.collect()
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return
     try:
         import torch
 

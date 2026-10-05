@@ -169,6 +169,7 @@ class HardwareTests(unittest.TestCase):
 
     def test_hardware_profiles(self):
         self.assertEqual(self.detect({'gpuKind': 'none'}), 'cpu')
+        self.assertEqual(self.detect({'gpuKind': 'other', 'accel': 'cpu'}), 'cpu')
         for kind in ('amd', 'intel'):
             self.assertEqual(self.detect({'gpuKind': kind, 'accel': 'directml'}), 'directml')
         self.assertEqual(self.detect({'gpuKind': 'nvidia'}, '551.78, 8.6'), 'nvidia-cu124')
@@ -180,8 +181,7 @@ class HardwareTests(unittest.TestCase):
         for device, output, code in [({'gpuKind': 'nvidia'}, '', 1),
                                      ({'gpuKind': 'nvidia'}, '528.32, 8.6', 0),
                                      ({'gpuKind': 'nvidia'}, '527.41, 7.5', 0),
-                                     ({'gpuKind': 'nvidia'}, '565.0, 12.0', 0),
-                                     ({'gpuKind': 'other'}, '', 0)]:
+                                     ({'gpuKind': 'nvidia'}, '565.0, 12.0', 0)]:
             with self.subTest(device=device, output=output), self.assertRaises(runtime.RuntimeInstallError):
                 self.detect(device, output, code)
 
@@ -196,6 +196,11 @@ class HardwareTests(unittest.TestCase):
             self.assertEqual(len(ort), 1)
             if profile == 'directml':
                 self.assertIn('onnxruntime_directml', ort[0])
+            if profile == 'cpu':
+                combined = '\n'.join(wheel_files).lower()
+                self.assertNotIn('onnxruntime_gpu', combined)
+                self.assertNotIn('onnxruntime_directml', combined)
+                self.assertNotIn('cuda', combined)
             for command in commands:
                 self.assertIn(str(Path('candidate/python.exe')), command)
                 self.assertEqual(command[:3], ['uv', 'pip', 'install'])

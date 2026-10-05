@@ -296,7 +296,10 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             fut_demucs = pool.submit(_demucs_check)
             fut_ocr = pool.submit(_ocr_cuda_check_cached) if nvidia else None
             fut_dml = pool.submit(_ocr_directml_check) if directml else None
-            fut_cuda = pool.submit(_torch_cuda_ready_cached) if _nvidia_present() else None
+            # `nvidia` is derived from the shared hardware inventory above.
+            # Do not run a second CUDA probe on CPU-only hosts (notably VPS
+            # machines exposing only a Cirrus/basic display adapter).
+            fut_cuda = pool.submit(_torch_cuda_ready_cached) if nvidia else None
             demucs_ok, demucs_detail = fut_demucs.result()
             cuda_ok, cuda_detail = (
                 fut_ocr.result() if fut_ocr else
@@ -310,7 +313,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             runtime_missing = [mid for mid in required_runtime if not runtime_status.get(mid, (False, ""))[0]]
         else:
             runtime_missing = [mid for mid in _required_ai_runtime_modules() if not _mod_ok(mid, dist_map=dist)[0]]
-        runtime_torch_cuda = _nvidia_present() and not torch_cuda_ok
+        runtime_torch_cuda = nvidia and not torch_cuda_ok
         runtime_detail = (
             _ai_runtime_detail(torch_cuda=torch_cuda_ok)
             if not runtime_missing
