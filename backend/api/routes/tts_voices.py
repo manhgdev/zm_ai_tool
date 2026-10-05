@@ -132,11 +132,11 @@ def api_tts_warm():
 
     # Already warm / in progress — do not spawn another load thread (UI remount spam).
     if installed and load_state == "ready":
-        if getattr(sys, "frozen", False):
+        if getattr(sys, "frozen", False) or sys.platform.startswith("linux"):
             try:
                 from pipeline.tts.engines import vieneu_frozen
 
-                if vieneu_frozen.has_ready_worker(mode=mode):
+                if vieneu_frozen.has_ready_worker(mode=mode) or vieneu_engine._client is not None:
                     return _payload("ready")
             except Exception:
                 return _payload("ready")
@@ -147,8 +147,9 @@ def api_tts_warm():
 
     if installed:
         with vieneu_engine._lock:
-            if vieneu_engine._load_state == "cold":
-                vieneu_engine._load_state = "loading"
+            if vieneu_engine._load_state == "loading":
+                return _payload("loading")
+            vieneu_engine._load_state = "loading"
 
         def _run() -> None:
             try:

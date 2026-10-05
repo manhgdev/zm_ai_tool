@@ -765,16 +765,31 @@ export default function TtsStudio({
 
   useEffect(() => {
     let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = async () => {
+      if (cancelled) return
+      try {
+        const next = await api.ttsStatus() as Record<string, EngineStatus>
+        if (cancelled) return
+        setStatus(next)
+        if (next.vieneu?.loadState === 'loading') timer = setTimeout(refresh, 2000)
+      } catch {
+        if (!cancelled) timer = setTimeout(refresh, 5000)
+      }
+    }
+    void loadHistory()
     void (async () => {
       await loadStatus()
-      await loadHistory()
       if (cancelled) return
-      // Do not warm VieNeu on page mount. Model loading belongs to the
-      // synthesis job so the progress popup has a real job id and Huỷ can
-      // cancel before the worker starts loading weights.
+      try {
+        await api.ttsWarm()
+      } catch {
+        // A timed-out warm request may still be loading on the backend.
+      }
+      await refresh()
     })()
-    return () => { cancelled = true }
-  }, [loadStatus, loadHistory, selectedVoiceEngine])
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [loadStatus, loadHistory])
 
   const vieneu = status.vieneu
   const vieneuLoadState = String(vieneu?.loadState || '')
@@ -790,11 +805,10 @@ export default function TtsStudio({
           ? t('Lỗi nạp model', 'Model load error')
           : vieneuLoadOk
             ? t('Sẵn sàng', 'Ready')
-            : t('Đã cài — nạp khi tạo giọng', 'Installed — loads when creating a voice')
+            : t('Đã cài — chờ nạp nền', 'Installed — waiting for background loading')
 
   // Job progress and completion arrive through the shared TTS SSE stream.
-  // Status is loaded once on mount and refreshed explicitly after warm/retry;
-  // avoid a second-by-second request loop while SSE is connected.
+  // Background model loading has no job SSE; poll only until loading finishes.
 
   function go(id: string) {
     // input/srt gộp vào dashboard Tổng quan (không còn tab sidebar riêng)

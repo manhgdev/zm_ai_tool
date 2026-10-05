@@ -1,4 +1,10 @@
 import test from 'node:test'
+test('TTS background warm status is bilingual', () => {
+  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
+  assert.ok(source.includes("t('Đã cài — chờ nạp nền', 'Installed — waiting for background loading')"))
+  assert.ok(source.includes('await api.ttsWarm()'))
+  assert.ok(source.includes("next.vieneu?.loadState === 'loading'"))
+})
 test('TTS job IDs work on public HTTP without randomUUID', () => {
   const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
   const helper = source.match(/function createTtsJobId\(\) \{([\s\S]*?)\n\}/)[1]

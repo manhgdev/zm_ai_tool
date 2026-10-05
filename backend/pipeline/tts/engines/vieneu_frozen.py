@@ -541,10 +541,16 @@ def probe() -> tuple[bool, str]:
 def has_ready_worker(*, mode: str = "v3turbo") -> bool:
     """True if a warm idle (or live) worker already holds the model for this mode."""
     mode = mode or "v3turbo"
-    with _pool_lock:
+    # Worker construction holds this lock while loading weights; status must
+    # remain responsive during background warm-up.
+    if not _pool_lock.acquire(blocking=False):
+        return False
+    try:
         for w in _all_workers:
             if w.mode == mode and w.alive():
                 return True
+    finally:
+        _pool_lock.release()
     return False
 
 

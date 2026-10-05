@@ -17,6 +17,36 @@ from pipeline.core import accel
 
 
 class FrozenTtsPathTest(unittest.TestCase):
+    def test_worker_status_does_not_wait_for_model_load_lock(self):
+        from pipeline.tts.engines import vieneu_frozen
+
+        lock = threading.Lock()
+        with mock.patch.object(vieneu_frozen, "_pool_lock", lock):
+            with lock:
+                self.assertFalse(vieneu_frozen.has_ready_worker())
+
+    def test_linux_cpu_warm_reuses_worker_and_reports_ready(self):
+        with (
+            mock.patch.object(sys, "platform", "linux"),
+            mock.patch.object(vieneu, "available", return_value=True),
+            mock.patch.object(vieneu, "_resolve_backend", return_value=("onnx", "cpu")),
+            mock.patch.object(vieneu, "_client", None),
+            mock.patch.object(vieneu, "_load_state", "cold"),
+            mock.patch.object(vieneu, "_client_err", None),
+            mock.patch.object(vieneu, "list_preset_from_assets", return_value=[]),
+            mock.patch.object(vieneu, "get_client", side_effect=AssertionError("must warm synthesis worker")),
+            mock.patch("pipeline.tts.engines.vieneu_frozen.has_ready_worker", return_value=False) as ready,
+            mock.patch("pipeline.tts.engines.vieneu_frozen.probe", return_value=(True, "onnx/cpu")) as probe,
+            mock.patch("pipeline.tts.engines.vieneu_frozen.resolve_backend", return_value=("onnx", "cpu")),
+        ):
+            self.assertEqual(vieneu.warm(), "ready")
+            ready.return_value = True
+            self.assertEqual(vieneu.warm(), "ready")
+            probe.assert_called_once()
+            self.assertTrue(vieneu.status()["loaded"])
+            ready.return_value = False
+            self.assertEqual(vieneu.status()["loadState"], "cold")
+
     def test_available_uses_runtime_files_not_import_probe(self):
         with tempfile.TemporaryDirectory() as td:
             site = Path(td) / "Lib" / "site-packages"

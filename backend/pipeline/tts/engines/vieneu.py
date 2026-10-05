@@ -619,7 +619,7 @@ def status() -> dict[str, Any]:
         out["ready"] = False
         out["message"] = "Chưa cài — " + out["installHint"]
         return out
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) or (sys.platform.startswith("linux") and _client is None):
         from . import vieneu_frozen
 
         # Do NOT call probe() here — acquiring a worker loads the full model and
@@ -631,9 +631,9 @@ def status() -> dict[str, Any]:
             out["loaded"] = True
             out["loadState"] = "ready"
         else:
-            out["ready"] = installed and _load_state == "ready"
+            out["ready"] = False
             out["loaded"] = out["ready"]
-            out["loadState"] = _load_state
+            out["loadState"] = "cold" if _load_state == "ready" else _load_state
 
         backend, device = "onnx", "cpu"
         if out["loadState"] == "ready":
@@ -1249,7 +1249,7 @@ def warm() -> str:
             with _lock:
                 _load_state = "cold"
             return "not-installed"
-        if getattr(sys, "frozen", False):
+        if getattr(sys, "frozen", False) or _use_cancelable_linux_worker(lambda: False):
             from . import vieneu_frozen
 
             # Keep warm pool: any live worker for this mode → already cached.
@@ -1306,6 +1306,10 @@ def reset_client() -> None:
         _reference_cache.clear()
     with _clone_lock:
         _clone_cache.clear()
+    if sys.platform.startswith("linux") and not getattr(sys, "frozen", False):
+        from . import vieneu_frozen
+
+        vieneu_frozen.shutdown_all_workers()
     if getattr(sys, "frozen", False):
         # NEVER import torch into the frozen UI/API process — runtime is on
         # sys.path, so `import torch` loads CUDA into ZM AI TOOL.exe and can
