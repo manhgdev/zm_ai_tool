@@ -112,6 +112,29 @@ _install_state: dict[str, Any] = {
 _install_lock = threading.Lock()
 _checks_warm_lock = threading.Lock()
 _checks_warming = False
+
+
+def _install_log_path() -> Path:
+    return Path(DATA) / "install.log"
+
+
+def _read_install_log(*, tail: int = 300) -> str:
+    try:
+        return "\n".join(_install_log_path().read_text(encoding="utf-8", errors="replace").splitlines()[-tail:])
+    except OSError:
+        return ""
+
+
+def _reset_install_log(kind: str) -> None:
+    path = _install_log_path()
+    header = f"=== Bắt đầu cài đặt / Installation started: {kind} ==="
+    with _install_lock:
+        _install_state["log"] = header
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(header + "\n", encoding="utf-8")
+    except OSError:
+        pass
 _UPDATE_REPOSITORY = "manhgdev/zm_ai_tool"
 _UPDATE_LOCK = threading.Lock()
 _UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30 * 60
@@ -778,11 +801,17 @@ def _start_checks_warm() -> None:
 
 
 def _append_install_log(text: str) -> None:
-    """Thread-safe append to install log, keep last 200 lines."""
+    """Persist installer output so it survives polling and API restart."""
     with _install_lock:
         lines = [*_install_state["log"].splitlines(), *text.splitlines()]
-        _install_state["log"] = "\n".join(lines[-200:])
+        _install_state["log"] = "\n".join(lines[-300:])
         _install_state["updatedAt"] = time.time()
+        try:
+            path = _install_log_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(lines[-300:]) + "\n", encoding="utf-8", errors="replace")
+        except OSError:
+            pass
 
 
 def _set_install_progress(
@@ -879,6 +908,7 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
             operationId="", driverCheck=None, rebootRequired=False, resumeKind="", eula=[],
             computeMode=None,
         )
+    _reset_install_log(kind)
 
     def work() -> None:
         import pipeline.core.system_check as _sc
@@ -916,6 +946,11 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                     _install_state["diagnostics"] = repr(e)
                 _install_state["message"] = "Cài đặt thất bại / Installation failed"
                 _install_state["updatedAt"] = time.time()
+            _append_install_log(
+                "\n=== Cài đặt thất bại / Installation failed ===\n"
+                + str(e)
+                + "\n"
+            )
         finally:
             _sc._install_log_fn = None
             _sc._install_progress_fn = None
@@ -1388,9 +1423,10 @@ def api_install_status():
             st.get('kind') in driver.KINDS and st.get('errorCode') in driver.REPAIRABLE
             or st.get('kind') == 'nvidia_driver' and st.get('resumeKind') in driver.KINDS
             and st.get('errorCode') and driver.snapshot().get('phase') in (None, *driver.TERMINAL)))
-    if st.get("log"):
+    persisted_install_log = _read_install_log()
+    if st.get("log") or persisted_install_log:
         # Trả 30 dòng cuối để tránh payload quá lớn.
-        out["log"] = "\n".join(st["log"].splitlines()[-30:])
+        out["log"] = "\n".join((st.get("log") or persisted_install_log).splitlines()[-300:])
     if st.get("error"):
         out["error"] = st["error"]
         out["ok"] = False

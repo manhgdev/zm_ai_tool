@@ -112,7 +112,6 @@ def clear_log() -> dict[str, Any]:
             path.write_text("", encoding="utf-8")
         except OSError as e:
             return {"ok": False, "error": str(e), "path": str(path)}
-    append_log("[log] cleared by user", also_print=False)
     return {"ok": True, "path": str(path)}
 
 
@@ -201,4 +200,3 @@ def install_process_hooks() -> None:
     handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
     logging.getLogger().addHandler(handler)
     _logging_handler = handler
-    append_log("[app] log hooks installed", also_print=False)

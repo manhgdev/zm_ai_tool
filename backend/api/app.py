@@ -91,7 +91,6 @@ def create_app() -> FastAPI:
             from pipeline.core.app_log import append_log, install_process_hooks
 
             install_process_hooks()
-            append_log("[api] lifespan start", also_print=False)
         except Exception:
             pass
 

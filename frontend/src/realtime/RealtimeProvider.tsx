@@ -9,7 +9,7 @@ type RealtimeContextValue = {
 const RealtimeContext = createContext<RealtimeContextValue | null>(null)
 const API = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 
-export function RealtimeProvider({ children }: { children: ReactNode }) {
+export function RealtimeProvider({ children, enabled = true }: { children: ReactNode; enabled?: boolean }) {
   const [status, setStatus] = useState<RealtimeStatus>('reconnecting')
   const sourceRef = useRef<EventSource | null>(null)
   const retryRef = useRef<number | null>(null)
@@ -112,12 +112,20 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
+    if (!enabled) {
+      sourceRef.current?.close()
+      sourceRef.current = null
+      if (retryRef.current !== null) window.clearTimeout(retryRef.current)
+      retryRef.current = null
+      setStatus('fallback')
+      return
+    }
     connect()
     return () => {
       if (retryRef.current !== null) window.clearTimeout(retryRef.current)
       sourceRef.current?.close()
     }
-  }, [connect])
+  }, [connect, enabled])
 
   const value = useMemo(() => ({ status, subscribe }), [status, subscribe])
   return <RealtimeContext.Provider value={value}>{children}</RealtimeContext.Provider>

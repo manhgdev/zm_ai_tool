@@ -901,7 +901,13 @@ def install_ai_runtime() -> dict[str, Any]:
                 f"--index-url {idx}"
             )
         missing = [name for name in _AI_RUNTIME_MODULES if not _mod_ok(name)[0]]
-        needs_torch = _runtime_torch_needs_install()
+        # The fast setup check and the installer must share the same source of
+        # truth. A missing module always requires the torch stage, even when
+        # a stale import/cache makes the accelerator probe look ready.
+        needs_torch = (
+            any(name in missing for name in ("torch", "torchaudio"))
+            or _runtime_torch_needs_install()
+        )
     if not missing and not needs_torch and _sherpa_cuda_ready():
         return {
             "ok": True,
@@ -1049,7 +1055,7 @@ def install_ai_runtime() -> dict[str, Any]:
                 raise RuntimeError("[OCR DirectML] " + (proc_dml.stderr or proc_dml.stdout)[-2000:])
 
         # Nhóm 3 — zmAI + VieNeu
-        _pip_group("zmAI + VieNeu", *_PKG_VIENEU)
+        _pip_group("zmAI + VieNeu dependencies", *_PKG_VIENEU)
 
         # transformers riêng --no-deps (conflict tokenizers với mọi version)
         if _need_install("transformers"):
@@ -1069,13 +1075,9 @@ def install_ai_runtime() -> dict[str, Any]:
             if proc_v.returncode:
                 raise RuntimeError("[VieNeu] " + (proc_v.stderr or proc_v.stdout)[-2000:])
 
-        return {
-            "ok": True,
-            "message": "Đã cài thành công",
-            "detail": _ai_runtime_detail(),
-        }
-
-    if missing:
+    # The native-venv path above already installed its groups individually;
+    # this resolver block only exists for the frozen runtime venv.
+    if getattr(sys, "frozen", False) and missing:
         if not base_cmd:
             pass  # tất cả gói cần thiết đều đã có, bỏ qua
         else:
@@ -1113,7 +1115,7 @@ def install_ai_runtime() -> dict[str, Any]:
                     raise RuntimeError((proc_provider.stderr or proc_provider.stdout)[-3000:])
     if getattr(sys, "frozen", False):
         _install_sherpa_cuda(py, uv)
-    if "vieneu" in missing or not _mod_ok("vieneu")[0]:
+    if getattr(sys, "frozen", False) and ("vieneu" in missing or not _mod_ok("vieneu")[0]):
         proc = _pip_stream(
             vieneu_cmd,
             timeout=1200,
@@ -1122,6 +1124,8 @@ def install_ai_runtime() -> dict[str, Any]:
         if proc.returncode:
             raise RuntimeError((proc.stderr or proc.stdout)[-3000:])
     if needs_torch:
+        if _install_log_fn:
+            _install_log_fn("\n=== PyTorch + Torchaudio ===\n")
         if not getattr(sys, "frozen", False) and _torch_dll_locked():
             # torch đã load → chỉ có thể cài torchaudio nếu đó là thứ duy nhất thiếu
             torch_ok = _mod_ok("torch")[0]

@@ -135,6 +135,10 @@ export default function App() {
   }, [locale])
 
   useEffect(() => {
+    if (!licenseStatus?.valid) {
+      setLocaleReady(true)
+      return
+    }
     api.getLocalePreference()
       .then(({ locale: savedLocale }) => {
         if (savedLocale && !localeChangedRef.current) setLocale(savedLocale)
@@ -143,14 +147,16 @@ export default function App() {
         /* Browser/dev mode continues with localStorage or browser language. */
       })
       .finally(() => setLocaleReady(true))
-  }, [])
+  }, [licenseStatus?.valid])
 
   const changeLocale = (nextLocale: AppLocale) => {
     localeChangedRef.current = true
     setLocale(nextLocale)
-    void api.saveLocalePreference(nextLocale).catch(() => {
-      /* localStorage remains a fallback when the API is unavailable. */
-    })
+    if (licenseStatus?.valid) {
+      void api.saveLocalePreference(nextLocale).catch(() => {
+        /* localStorage remains a fallback when the API is unavailable. */
+      })
+    }
   }
 
   const {
@@ -370,6 +376,7 @@ export default function App() {
   }
 
   const refreshVoices = useCallback((_lang?: string, force = false) => {
+    if (!licenseStatus?.valid) return
     if (voicesRequestRef.current) return
     if (!force && voicesLoadedRef.current) return
     const request = api.voices('all')
@@ -380,7 +387,7 @@ export default function App() {
       })
     voicesRequestRef.current = request
     void request
-  }, [])
+  }, [licenseStatus?.valid])
 
   function passSetupGate() {
     persistSetupGate()
@@ -457,9 +464,10 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!licenseStatus?.valid) return
     // App owns the catalog request; TTS reuses it instead of polling per language.
     refreshVoices()
-  }, [refreshVoices])
+  }, [licenseStatus?.valid, refreshVoices])
 
   async function onUpload(file: File) {
     const switchVersion = ++projectSwitchRef.current
@@ -861,7 +869,7 @@ export default function App() {
   const configModalOpen = configOpen || firstRunBlocked
 
   return (
-    <RealtimeProvider>
+    <RealtimeProvider enabled={Boolean(appUsable && licenseStatus?.valid)}>
     <LocaleContext.Provider value={{ locale, setLocale: changeLocale }}>
     <LocaleTextSync />
     <div className={`app${licenseBlocked ? ' app-license-gate' : ''}`}>

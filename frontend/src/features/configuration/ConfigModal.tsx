@@ -388,13 +388,14 @@ export default function ConfigModal({
     if (!open) return
     setSection(initialSection)
     // Load current outputRoot from /api/ui-preferences and resolved default from /api/config
+    if (!licenseStatus?.valid) return
     api.getLocalePreference().then((p) => {
       setOutputRoot((p as unknown as { outputRoot?: string | null }).outputRoot || '')
     }).catch(() => { })
     api.getConfig().then((cfg) => {
       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
     }).catch(() => { })
-  }, [open, initialSection])
+  }, [open, initialSection, licenseStatus?.valid])
 
   useEffect(() => {
     if (!open) return
