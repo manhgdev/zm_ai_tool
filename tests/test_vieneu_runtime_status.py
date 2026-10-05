@@ -96,7 +96,7 @@ class FrozenTtsPathTest(unittest.TestCase):
         with (
             mock.patch.object(sys, "frozen", True, create=True),
             mock.patch.dict("sys.modules", {"pipeline.tts.engines.vieneu_frozen": fake_frozen}),
-            mock.patch("pipeline.tts.engines.vieneu_frozen", fake_frozen),
+            mock.patch("pipeline.tts.engines.vieneu_frozen", fake_frozen, create=True),
             mock.patch("builtins.__import__", side_effect=guarded_import),
         ):
             with vieneu._lock:

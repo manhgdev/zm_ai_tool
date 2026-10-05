@@ -168,6 +168,12 @@ export function localize(locale: AppLocale, vietnamese: string, english: string)
 
 /** Backend job messages include dynamic counts, so they cannot use the static catalog. */
 export function localizePipelineMessage(locale: AppLocale, message: string): string {
+  if (message === 'CAPCUT_TTS_TIMEOUT') {
+    return localize(locale, 'CapCut không hoàn tất trong thời gian cho phép. Yêu cầu đã dừng; hãy thử lại.', 'CapCut did not finish within the time limit. The request stopped; please retry.')
+  }
+  if (message.startsWith('CAPCUT_TTS_NETWORK_ERROR|')) {
+    return localize(locale, 'Không kết nối được CapCut. Kiểm tra kết nối mạng của máy chạy backend.', 'Cannot connect to CapCut. Check the backend server network connection.') + '\n' + message
+  }
   const capcutInvalid = /^CAPCUT_TTS_INVALID_TEXT\|cue=(\d+)\|text=(.*)$/u.exec(message)
   if (capcutInvalid) {
     const cue = capcutInvalid[1]

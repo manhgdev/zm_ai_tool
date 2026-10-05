@@ -251,7 +251,7 @@ def set_job_error(job_id: str, error: Exception | str, *, message: str = "Tạo 
         return
     with _jobs_lock:
         current = dict(_job_progress.get(job_id) or {})
-        if _cancel_flags.get(job_id):
+        if _cancel_flags.get(job_id) or current.get("error") == "cancelled":
             _job_progress[job_id] = {
                 "current": int(current.get("current") or 0),
                 "total": max(1, int(current.get("total") or 1)),
@@ -311,7 +311,7 @@ def set_job_complete(
         return
     with _jobs_lock:
         current = dict(_job_progress.get(job_id) or {})
-        if _cancel_flags.get(job_id):
+        if _cancel_flags.get(job_id) or current.get("error") == "cancelled":
             _job_progress[job_id] = {
                 "current": int(current.get("current") or 0),
                 "total": max(1, int(current.get("total") or 1)),
@@ -580,6 +580,7 @@ def synth_text_job(
 
         chunk_frac = [0.0] * total_chunks
         frac_lock = threading.Lock()
+        abort_chunks = threading.Event()
 
         def _publish_frac(message: str = "") -> None:
             with frac_lock:
@@ -592,7 +593,7 @@ def synth_text_job(
                 )
 
         def _process_chunk(i: int, chunk: str, part: Path):
-            if _is_cancelled(job_id):
+            if _is_cancelled(job_id) or abort_chunks.is_set():
                 return
 
             def _on_progress(frac: float) -> None:
@@ -605,7 +606,7 @@ def synth_text_job(
             tts_segment(
                 chunk, voice, part, None, "none",
                 lang=lang, speed=speed, volume=volume, pitch=pitch, style=style,
-                cancel_check=lambda: _is_cancelled(job_id),
+                cancel_check=lambda: _is_cancelled(job_id) or abort_chunks.is_set(),
                 on_progress=_on_progress,
             )
             _postprocess_part(part, trim=trim_silence, normalize=normalize)
@@ -624,7 +625,9 @@ def synth_text_job(
                     future.result()
                 except Exception:
                     # Stop queued chunks and signal active providers immediately.
-                    request_cancel(job_id)
+                    # Stop siblings without misclassifying the provider failure
+                    # as a user cancellation; keep the original error visible.
+                    abort_chunks.set()
                     for pending in futures:
                         if pending is not future:
                             pending.cancel()

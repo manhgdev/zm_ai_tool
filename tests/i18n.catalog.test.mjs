@@ -1,4 +1,24 @@
 import test from 'node:test'
+test('TTS job IDs work on public HTTP without randomUUID', () => {
+  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
+  const helper = source.match(/function createTtsJobId\(\) \{([\s\S]*?)\n\}/)[1]
+  const createId = new Function('crypto', helper)
+  const crypto = { getRandomValues: array => globalThis.crypto.getRandomValues(array) }
+  const ids = new Set(Array.from({ length: 100 }, () => createId(crypto)))
+  assert.equal(ids.size, 100)
+  for (const id of ids) assert.match(id, /^[a-f0-9]{12}$/)
+  assert.ok(!source.includes('crypto.randomUUID'))
+  assert.ok(source.includes("ttsWaitersRef.current.get(runningJobId)?.({ error: 'cancelled' })"))
+})
+test('CapCut timeout and network errors are localized by stable codes', () => {
+  const source = readFileSync(new URL('../frontend/src/app/i18n.tsx', import.meta.url), 'utf8')
+  assert.ok(source.includes("message === 'CAPCUT_TTS_TIMEOUT'"))
+  assert.ok(source.includes("message.startsWith('CAPCUT_TTS_NETWORK_ERROR|')"))
+  assert.ok(source.includes('CapCut không hoàn tất trong thời gian cho phép.'))
+  assert.ok(source.includes('CapCut did not finish within the time limit.'))
+  assert.ok(source.includes('Không kết nối được CapCut.'))
+  assert.ok(source.includes('Cannot connect to CapCut.'))
+})
 test('GPU choice popup has isolated width and responsive paired CPU action', () => {
   const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
   const popup = readFileSync(new URL('../frontend/src/shared/components/ProgressPopup.tsx', import.meta.url), 'utf8')

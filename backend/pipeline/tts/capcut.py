@@ -1,6 +1,7 @@
 """CapCut TTS client (TTS-only). Adapted from K07VN/capcut-tts-api — httpx, no STT/upload."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -249,9 +250,45 @@ def escape_xml(text):
 
 
 
-def _http(**kwargs: Any) -> httpx.Client:
-    kwargs.setdefault("trust_env", False)
-    return httpx.Client(**kwargs)
+def _check_cancel(cancel_check=None) -> None:
+    from ..core.jobs import Cancelled, current_job_id, is_cancelled
+
+    if (cancel_check and cancel_check()) or is_cancelled(current_job_id()):
+        raise Cancelled()
+
+
+def _wait(seconds: float, cancel_check=None, deadline: float | None = None) -> None:
+    end = time.monotonic() + seconds
+    while True:
+        _check_cancel(cancel_check)
+        now = time.monotonic()
+        if deadline is not None and now >= deadline:
+            raise TimeoutError('CAPCUT_TTS_TIMEOUT')
+        if now >= end:
+            return
+        time.sleep(min(0.1, end - now))
+
+
+def _request(method: str, url: str, *, cancel_check=None, deadline=None, **kwargs) -> httpx.Response:
+    """Cancel the actual HTTP task/socket, not just the progress popup."""
+    async def run():
+        async with httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(20.0, connect=10.0)) as client:
+            task = asyncio.create_task(client.request(method, url, **kwargs))
+            try:
+                while True:
+                    _check_cancel(cancel_check)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError('CAPCUT_TTS_TIMEOUT')
+                    done, _ = await asyncio.wait({task}, timeout=0.1)
+                    if done:
+                        _check_cancel(cancel_check)
+                        return task.result()
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    return asyncio.run(run())
 
 
 def _device_path() -> Path:
@@ -303,15 +340,19 @@ def load_device() -> dict[str, Any]:
     return device
 
 
-def _throttle_create() -> None:
+def _throttle_create(cancel_check=None, deadline=None) -> None:
     global _last_tts_create_at
     # Nhiều worker được phép poll/download song song, nhưng thời điểm tạo task
     # vẫn phải cách nhau để CapCut không shark/rate-limit device.
-    with _create_lock:
+    while not _create_lock.acquire(timeout=0.1):
+        _wait(0, cancel_check, deadline)
+    try:
         gap = _MIN_CREATE_GAP_S - (time.time() - _last_tts_create_at)
         if gap > 0:
-            time.sleep(gap)
+            _wait(gap, cancel_check, deadline)
         _last_tts_create_at = time.time()
+    finally:
+        _create_lock.release()
 
 
 def _is_shark(err: BaseException | str) -> bool:
@@ -319,7 +360,7 @@ def _is_shark(err: BaseException | str) -> bool:
     return "shark" in s or "ret=-6" in s
 
 
-def _post_json(path: str, body: dict[str, Any], device: dict[str, Any], *, babi: dict | None, appid: bool) -> dict[str, Any]:
+def _post_json(path: str, body: dict[str, Any], device: dict[str, Any], *, babi: dict | None, appid: bool, cancel_check=None, deadline=None) -> dict[str, Any]:
     body_text = compact_json(body)
     query = common_query(device, babi, include_region=babi is not None)
     url = BASE + path + "?" + urlencode(query)
@@ -328,18 +369,17 @@ def _post_json(path: str, body: dict[str, Any], device: dict[str, Any], *, babi:
         headers["sign"] = make_sign_header(url, device["appvr"], headers["device-time"], device["tdid"])
     last_err: Exception | None = None
     r = None
-    for attempt in range(4):
+    for attempt in range(2):
         try:
-            with _http(timeout=60.0) as client:
-                r = client.post(url, headers=headers, content=body_text.encode("utf-8"))
+            r = _request('POST', url, headers=headers, content=body_text.encode('utf-8'),
+                         cancel_check=cancel_check, deadline=deadline)
             break
-        except Exception as e:
+        except httpx.TransportError as e:
             last_err = e
-            if attempt < 3:
-                import time
-                time.sleep(0.5 * (attempt + 1))
+            if attempt == 0:
+                _wait(0.5, cancel_check, deadline)
                 continue
-            raise RuntimeError(f"CapCut network error after 4 attempts: {e}") from e
+            raise RuntimeError(f"CAPCUT_TTS_NETWORK_ERROR|POST {BASE}{path}; {type(e).__name__}: {e}") from e
     if r is None:
         raise RuntimeError(f"CapCut request failed: {last_err}")
     try:
@@ -376,11 +416,11 @@ def _normalize_tts_text(text: str) -> str:
     return value or "."
 
 
-def tts_create(text: str, voice: str, resource_id: str, rate: str = "1.0", device: dict[str, Any] | None = None) -> tuple[str, str]:
+def tts_create(text: str, voice: str, resource_id: str, rate: str = "1.0", device: dict[str, Any] | None = None, *, cancel_check=None, deadline=None) -> tuple[str, str]:
     device = device or load_device()
-    _throttle_create()
+    _throttle_create(cancel_check, deadline)
     babi, body = tts_new_body([_normalize_tts_text(text)], voice, resource_id, rate, device)
-    data = _post_json("/lv/v1/common_task/new", body, device, babi=babi, appid=True)
+    data = _post_json("/lv/v1/common_task/new", body, device, babi=babi, appid=True, cancel_check=cancel_check, deadline=deadline)
     tasks = ((data.get("data") or {}).get("tasks")) or []
     if not tasks:
         raise RuntimeError(f"CapCut TTS không trả task: {data}")
@@ -391,10 +431,10 @@ def tts_create(text: str, voice: str, resource_id: str, rate: str = "1.0", devic
     return str(tid), str(token)
 
 
-def tts_query(task_id: str, token: str, device: dict[str, Any] | None = None) -> dict[str, Any]:
+def tts_query(task_id: str, token: str, device: dict[str, Any] | None = None, *, cancel_check=None, deadline=None) -> dict[str, Any]:
     device = device or load_device()
     body = query_body(task_id, token, "sami_text_to_speech")
-    return _post_json("/lv/v1/common_task/query", body, device, babi=None, appid=True)
+    return _post_json("/lv/v1/common_task/query", body, device, babi=None, appid=True, cancel_check=cancel_check, deadline=deadline)
 
 
 _URL_RE = re.compile(r"https?://[^\s\"\']+\.(?:mp3|wav|m4a)(?:\?[^\s\"\']*)?", re.I)
@@ -430,19 +470,17 @@ def _find_audio_url(obj: Any) -> str | None:
 def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, rate: str = "1.0", timeout_s: float = 60.0, cancel_check: Callable[[], bool] | None = None) -> Path:
     """Create CapCut TTS task, poll, download mp3. Shark → xoay device_id rồi thử lại."""
     last_err: BaseException | None = None
+    deadline = time.monotonic() + timeout_s
     for attempt in range(3):
-        if cancel_check and cancel_check():
-            raise RuntimeError('TTS_CANCELLED')
+        _wait(0, cancel_check, deadline)
         device = load_device()
         try:
-            tid, token = tts_create(text, voice, resource_id, rate, device)
-            deadline = time.time() + timeout_s
+            tid, token = tts_create(text, voice, resource_id, rate, device, cancel_check=cancel_check, deadline=deadline)
             last: dict[str, Any] = {}
             url: str | None = None
-            while time.time() < deadline:
-                if cancel_check and cancel_check():
-                    raise RuntimeError('TTS_CANCELLED')
-                last = tts_query(tid, token, device)
+            while time.monotonic() < deadline:
+                _check_cancel(cancel_check)
+                last = tts_query(tid, token, device, cancel_check=cancel_check, deadline=deadline)
                 tasks = ((last.get("data") or {}).get("tasks")) or []
                 task = tasks[0] if tasks else {}
                 status = str(task.get("status") or "").lower()
@@ -454,9 +492,9 @@ def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, ra
                     break
                 if url and status in ("success", "succeed", "done", "finished", "complete", "completed", ""):
                     break
-                time.sleep(0.8)
+                _wait(0.8, cancel_check, deadline)
             else:
-                raise RuntimeError(f"CapCut TTS timeout: {last}")
+                raise TimeoutError('CAPCUT_TTS_TIMEOUT')
 
             if not url:
                 url = _find_audio_url(((last.get("data") or {}).get("tasks") or [{}])[0]) or _find_audio_url(last)
@@ -464,14 +502,13 @@ def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, ra
                 raise RuntimeError(f"CapCut TTS xong nhưng không thấy URL audio: {last}")
 
             out_mp3.parent.mkdir(parents=True, exist_ok=True)
-            with _http(timeout=120.0) as client:
-                r = client.get(url)
-                r.raise_for_status()
-                out_mp3.write_bytes(r.content)
+            r = _request('GET', url, cancel_check=cancel_check, deadline=deadline)
+            r.raise_for_status()
+            _check_cancel(cancel_check)
+            out_mp3.write_bytes(r.content)
             return out_mp3
         except Exception as e:
-            if cancel_check and cancel_check():
-                raise RuntimeError('TTS_CANCELLED') from e
+            _check_cancel(cancel_check)
             last_err = e
             # CapCut can reject a laugh intermittently; retry once with a minimal
             # valid utterance instead of failing the whole dubbing job.
@@ -482,14 +519,11 @@ def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, ra
             ):
                 text = "Ha."
                 continue
-            if attempt < 2 and not _is_shark(e):
-                time.sleep(1.0 * (attempt + 1))
-                continue
             if not _is_shark(e) or attempt >= 2:
                 raise
             # ponytail: shark block — random device_id (upstream tip), chờ rồi thử lại
             fresh = _rotate_device_ids(load_device())
             _save_device(fresh)
-            time.sleep(2.0 * (attempt + 1))
+            _wait(2.0 * (attempt + 1), cancel_check, deadline)
     assert last_err is not None
     raise last_err

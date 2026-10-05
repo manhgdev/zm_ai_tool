@@ -102,6 +102,11 @@ async function loadTranscribeFile(): Promise<File | null> {
   return value ? new File([value.bytes], value.name, { type: value.type }) : null
 }
 
+function createTtsJobId() {
+  // getRandomValues also works on HTTP/IP VPS pages, unlike randomUUID.
+  return Array.from(crypto.getRandomValues(new Uint8Array(6)), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
 export default function TtsStudio({
   voices,
   voicesLoaded,
@@ -249,8 +254,10 @@ export default function TtsStudio({
     if (progressId && cancelledJobIdsRef.current.has(progressId)) return
     if (progressId) ttsProgressRef.current.set(progressId, progress)
     if (Number(progress.pct) > 0 && (!activeId || progressId === activeId)) setBusyProgress(Number(progress.pct))
-    if (progress.message) setBusyCustomMessage(progress.message)
-    if (progress.error) setError(progress.error)
+    if (progressId === activeId) {
+      if (progress.message) setBusyCustomMessage(progress.message)
+      if (progress.error) setError(progress.error)
+    }
     if (progress.error) {
       const line = `[${new Date().toLocaleTimeString()}] ${progress.error}`
       setTtsLogs((current) => [...current, line].slice(-50))
@@ -265,11 +272,13 @@ export default function TtsStudio({
     const existing = ttsProgressRef.current.get(jobId)
     if (existing?.done || existing?.error) { resolve(existing); return }
     const timer = window.setTimeout(() => {
+      window.clearInterval(poll)
       ttsWaitersRef.current.delete(jobId)
       reject(new Error(t('TTS không gửi được sự kiện hoàn tất qua SSE trong thời gian cho phép.', 'TTS did not receive a completion event through SSE within the allowed time.')))
     }, timeoutMs)
     ttsWaitersRef.current.set(jobId, (progress) => {
       window.clearTimeout(timer)
+      window.clearInterval(poll)
       ttsWaitersRef.current.delete(jobId)
       resolve(progress)
     })
@@ -282,6 +291,7 @@ export default function TtsStudio({
         return
       }
       void api.ttsStudioJobProgress(jobId).then((progress) => {
+        if (cancelledJobIdsRef.current.has(jobId)) return
         if (Number(progress.pct) > 0 && (!activeJobIdRef.current || activeJobIdRef.current === jobId)) {
           setBusyProgress(Math.max(1, Number(progress.pct)))
         }
@@ -916,6 +926,7 @@ export default function TtsStudio({
   async function onSynth() {
     const useSrt = inputMode === 'srt' && !!srtRaw.trim()
     if ((!useSrt && !text.trim()) || (useSrt && !srtRaw.trim()) || !voice) return
+    const requestJobId = createTtsJobId()
     setBusyKind('synth')
     setBusy(true)
     setBusyProgress(2)
@@ -930,7 +941,6 @@ export default function TtsStudio({
             : t('Đang chuẩn bị tạo giọng hệ thống…', 'Preparing system voice generation…')
     setBusyCustomMessage(preparationMessage)
     setError('')
-    const requestJobId = crypto.randomUUID().replaceAll('-', '').slice(0, 12)
     activeJobIdRef.current = requestJobId
 
     try {
@@ -989,9 +999,8 @@ export default function TtsStudio({
         setError(e instanceof Error ? e.message : 'Tạo giọng thất bại')
       }
     } finally {
-      setBusyCustomMessage('')
-      cancelledJobIdsRef.current.delete(requestJobId)
       if (activeJobIdRef.current === requestJobId) {
+        setBusyCustomMessage('')
         activeJobIdRef.current = null
         setBusy(false)
         setBusyKind(null)
@@ -1002,6 +1011,7 @@ export default function TtsStudio({
 
   async function onPreview() {
     if (!voice) return
+    const requestJobId = createTtsJobId()
     let sample = previewSample.trim().slice(0, 200)
     if (!sample) {
       sample = previewSampleFor(lang).slice(0, 200)
@@ -1011,7 +1021,6 @@ export default function TtsStudio({
     setPreviewingVoiceId(null)
     setPreviewBusy(true)
     setError('')
-    const requestJobId = crypto.randomUUID().replaceAll('-', '').slice(0, 12)
     try {
       const res = await api.ttsStudioSynth({
         jobId: requestJobId,
@@ -1058,6 +1067,11 @@ export default function TtsStudio({
   async function onCancelJob() {
     const runningJobId = activeJobIdRef.current
     if (runningJobId) {
+      // Retain a bounded tombstone set so late SSE/poll responses stay ignored.
+      if (cancelledJobIdsRef.current.size >= 64) {
+        const oldest = cancelledJobIdsRef.current.values().next().value
+        if (oldest) cancelledJobIdsRef.current.delete(oldest)
+      }
       cancelledJobIdsRef.current.add(runningJobId)
       activeJobIdRef.current = null
       setBusy(false)
@@ -1066,7 +1080,7 @@ export default function TtsStudio({
       setBusyCustomMessage('')
       setProgressMinimized(false)
       setError('Đã hủy')
-      ttsWaitersRef.current.delete(runningJobId)
+      ttsWaitersRef.current.get(runningJobId)?.({ error: 'cancelled' })
       try {
         await api.ttsStudioCancel(runningJobId)
       } catch {
@@ -1348,7 +1362,7 @@ export default function TtsStudio({
     setError('')
     try {
       const sampleLang = v.language || lang
-      const previewJobId = crypto.randomUUID().replaceAll('-', '').slice(0, 12)
+      const previewJobId = createTtsJobId()
       const res = await api.ttsStudioSynth({
         jobId: previewJobId,
         text: previewSampleFor(sampleLang).slice(0, 200),

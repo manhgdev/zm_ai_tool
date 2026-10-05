@@ -237,6 +237,7 @@ def synthesize_raw(
     lang: str = "vi",
     *,
     style: str = "tu_nhien",
+    cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """Write wav for voice (no duration fit)."""
     out_wav.parent.mkdir(parents=True, exist_ok=True)
@@ -256,7 +257,7 @@ def synthesize_raw(
     cc = _cc_parse(resolved)
     el = _el_voice_id(resolved)
     if cc:
-        _capcut_tts(text, cc[0], cc[1], out_wav)
+        _capcut_tts(text, cc[0], cc[1], out_wav, cancel_check=cancel_check)
     elif el:
         _el_tts(text, el, out_wav, lang=lang)
     else:
@@ -317,7 +318,7 @@ def tts_segment(
         else:
             if on_progress:
                 on_progress(0.05)
-            synthesize_raw(text, voice, out_wav, lang=lang, style=style)
+            synthesize_raw(text, voice, out_wav, lang=lang, style=style, cancel_check=cancel_check)
             if on_progress:
                 on_progress(1.0)
         if abs(speed - 1.0) > 0.02 or abs(volume - 1.0) > 0.02 or abs(pitch) > 0.1:
