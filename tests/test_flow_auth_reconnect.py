@@ -7,98 +7,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from pipeline.flow._flow._api import FlowAPI
 from pipeline.flow._flow._exceptions import AuthError, GenerationError
-from pipeline.flow.service import FlowService, _session_needs_login, _fill_google_password
+from pipeline.flow.service import FlowService, _session_needs_login
 
 
 class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
-    def test_account_password_is_persisted_but_not_returned(self):
+    def test_authenticated_lobby_still_enters_project_selection(self):
+        import ast
+        import inspect
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(FlowService._login)))
+        gate = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.If)
+                    and isinstance(node.test, ast.BoolOp)
+                    and {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)} == {'is_auth', 'project_id'})
+        condition = compile(ast.Expression(gate.test), '<login-project-gate>', 'eval')
+        self.assertTrue(eval(condition, {}, {'is_auth': True, 'project_id': ''}))
+        self.assertTrue(eval(condition, {}, {'is_auth': False, 'project_id': ''}))
+        self.assertFalse(eval(condition, {}, {'is_auth': True, 'project_id': 'project-id'}))
+
+    def test_save_account_preserves_display_name_and_drops_legacy_password(self):
         service = FlowService()
-        stored = {}
-
-        def put_row(_table, row):
-            stored.update(row)
-            return dict(row)
-
-        with patch('pipeline.flow.service.store.get_row', return_value=None), \
+        existing = {'id': 'account-1', 'label': 'Personal', 'email': 'example@gmail.com', 'password': 'old-secret'}
+        with patch('pipeline.flow.service.store.get_row', return_value=existing), \
              patch('pipeline.flow.service.store.list_rows', return_value=[]), \
-             patch('pipeline.flow.service.store.put_row', side_effect=put_row):
-            account = service.save_account({'email': 'example@gmail.com'}, password='test-only-password')
-        self.assertEqual(account['label'], 'example@gmail.com')
-        self.assertNotIn('password', account)
-        self.assertEqual(stored['password'], 'test-only-password')
-        self.assertEqual(service._login_passwords[account['id']], 'test-only-password')
-
-        with patch('pipeline.flow.service.store.list_rows', return_value=[dict(stored)]):
-            self.assertNotIn('password', service.accounts()[0])
-
-    def test_edit_with_blank_password_keeps_saved_password(self):
-        service = FlowService()
-        existing = {
-            'id': 'account-1',
-            'email': 'example@gmail.com',
-            'password': 'saved-password',
-            'status': 'reconnect',
-        }
-        with patch('pipeline.flow.service.store.get_row', return_value=dict(existing)), \
-             patch('pipeline.flow.service.store.list_rows', return_value=[dict(existing)]), \
-             patch('pipeline.flow.service.store.put_row', side_effect=lambda _table, row: dict(row)) as put:
-            account = service.save_account({'email': 'example@gmail.com'}, 'account-1')
-        self.assertNotIn('password', account)
-        self.assertEqual(put.call_args.args[1]['password'], 'saved-password')
-
-    async def test_password_only_fills_exact_google_https_origin(self):
-        page = MagicMock()
-        field = page.locator.return_value.first
-        field.wait_for = AsyncMock()
-        field.fill = AsyncMock()
-        field.click = AsyncMock()
-        page.url = 'https://accounts.google.com/signin/challenge/pwd'
-        await _fill_google_password(page, 'test-only-password')
-        field.fill.assert_awaited_once_with('test-only-password')
-        for url in ['https://accounts.google.com.evil.test/signin', 'http://accounts.google.com/signin', 'https://accounts.google.com:444/signin']:
-            field.fill.reset_mock()
-            page.url = url
-            try:
-                await _fill_google_password(page, 'test-only-password')
-            except RuntimeError:
-                pass
-            field.fill.assert_not_awaited()
-
-    async def test_password_fill_error_does_not_expose_secret(self):
-        page = MagicMock()
-        page.url = 'https://accounts.google.com/signin'
-        field = page.locator.return_value.first
-        field.wait_for = AsyncMock()
-        field.fill = AsyncMock(side_effect=RuntimeError('fill("test-only-password") failed'))
-        with self.assertRaisesRegex(RuntimeError, '^FLOW_LOGIN_VERIFICATION_REQUIRED$'):
-            await _fill_google_password(page, 'test-only-password')
-
-    async def test_headless_without_password_reports_actionable_error(self):
-        service = FlowService()
-        with patch('pipeline.flow.service.sys.platform', 'linux'), \
-             patch.dict('os.environ', {}, clear=True), \
-             patch('pipeline.flow.service.store.get_row', return_value={'id': 'account-1'}), \
-             patch('pipeline.flow.service.store.patch_row') as put, \
-             patch.object(service, '_log'), \
-             patch.object(service, '_wake_account_waiters'):
-            await service._login('account-1')
-        self.assertTrue(any(call.args[2].get('error') == 'FLOW_LOGIN_PASSWORD_REQUIRED' for call in put.call_args_list))
-
-    async def test_login_reads_persisted_password_after_service_restart(self):
-        service = FlowService()
-        with patch('pipeline.flow.service.sys.platform', 'linux'), \
-             patch.dict('os.environ', {}, clear=True), \
-             patch('pipeline.flow.service.store.get_row', return_value={
-                 'id': 'account-1', 'email': 'example@gmail.com', 'password': 'saved-password',
-             }), \
-             patch('pipeline.flow.service.store.patch_row') as put, \
-             patch('pipeline.flow.browser.BrowserManager', side_effect=RuntimeError('browser sentinel')), \
-             patch.object(service, '_log'), \
-             patch.object(service, '_wake_account_waiters'):
-            await service._login('account-1')
-        errors = [call.args[2].get('error') for call in put.call_args_list if len(call.args) >= 3]
-        self.assertIn('browser sentinel', errors)
-        self.assertNotIn('FLOW_LOGIN_PASSWORD_REQUIRED', errors)
+             patch('pipeline.flow.service.store.put_row', side_effect=lambda table, row: dict(row)) as put:
+            account = service.save_account({'label': 'Work'}, 'account-1')
+        self.assertEqual(account['label'], 'Work')
+        self.assertNotIn('password', put.call_args.args[1])
 
     def test_login_wall_triggers_session_login(self):
         err = Exception(

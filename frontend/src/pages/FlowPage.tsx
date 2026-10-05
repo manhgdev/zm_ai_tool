@@ -299,12 +299,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   );
   const [accountSaving, setAccountSaving] = useState(false);
   const [accountDraft, setAccountDraft] = useState<{
+    label: string;
     email: string;
-    password: string;
     plan: "Ultra" | "Pro" | "Plus" | "Free";
   }>({
+    label: "",
     email: "",
-    password: "",
     plan: "Free",
   });
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>(() => {
@@ -386,6 +386,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   useEffect(() => {
     const applyRoute = () => {
+      if (window.location.pathname !== '/flow-veo') return;
       const panel = flowRoutePanel() || (readText(ACTIVE_PANEL_KEY, "video") as FlowRoutePanel);
       if (panel === "series" || panel === "accounts" || panel === "help") {
         setUtilityView(panel);
@@ -795,6 +796,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   useEffect(() => {
     if (!preview) return;
     const navigate = (event: KeyboardEvent) => {
+      if (window.location.pathname !== '/flow-veo') return;
       if (event.key === "Escape") setPreview(null);
       if (event.key === "ArrowLeft") { event.preventDefault(); movePreview(-1); }
       if (event.key === "ArrowRight") { event.preventDefault(); movePreview(1); }
@@ -1259,25 +1261,20 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   };
   const addAccount = () => {
-    setAccountDraft({ email: "", password: "", plan: "Free" });
+    setAccountDraft({ label: "", email: "", plan: "Free" });
     setEditingAccount("new");
   };
   const editAccount = (account: FlowAccount) => {
     setAccountDraft({
+      label: account.label,
       email: account.email,
-      password: "",
       plan: account.plan || "Free",
     });
     setEditingAccount(account.id);
   };
   const saveAccount = async () => {
     if (accountSaving) return;
-    if (!accountDraft.email.trim() || (editingAccount === "new" && !accountDraft.password)) return;
-    if (accountDraft.password && window.location.protocol !== "https:"
-      && !["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)) {
-      toast.error(t("Dùng HTTPS hoặc SSH tunnel localhost trước khi gửi mật khẩu Google.", "Use HTTPS or a localhost SSH tunnel before sending your Google password."));
-      return;
-    }
+    if (!accountDraft.label.trim() || !accountDraft.email.trim()) return;
     setAccountSaving(true);
     try {
       const editing = accounts.find((item) => item.id === editingAccount);
@@ -1289,8 +1286,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         method: editingAccount === "new" ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: accountDraft.email.trim(),
-          ...(accountDraft.password ? { password: accountDraft.password } : {}),
+          ...accountDraft,
           plan: accountDraft.plan,
           projectId: editing?.projectId || "",
           isDefault: editing?.isDefault || false,
@@ -1298,10 +1294,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       });
       setAccounts((current) => [savedAccount, ...current.filter((item) => item.id !== savedAccount.id)]);
       setEditingAccount(null);
-      const shouldConnect = Boolean(accountDraft.password);
-      setAccountDraft({ email: "", password: "", plan: "Free" });
+      setAccountDraft({ label: "", email: "", plan: "Free" });
       setApiError("");
-      if (shouldConnect) connectAccount(savedAccount);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1480,6 +1474,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             ? { ...j, status: "cancelled" as const, stage: "cancelled", progress: 0 }
             : j,
           ));
+        window.dispatchEvent(new CustomEvent("zm-ai-tool:background-tasks-clear", { detail: { topic: "flow" } }));
         setApiError("");
         toast.success(t("Đã hủy tất cả job.", "All jobs cancelled."));
         // One command to backend — handles everything
@@ -2063,19 +2058,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       ? t("Thêm tài khoản", "Add account")
                       : t("Sửa tài khoản", "Edit account")}
                   </h3>
-                  <p>
-                    {t(
-                      "Mật khẩu được lưu để tự động kết nối lại sau khi khởi động app. Google có thể yêu cầu OTP/CAPTCHA.",
-                      "The password is saved for automatic reconnect after an app restart. Google may require OTP/CAPTCHA.",
-                    )}
-                  </p>
+                  <p>{t("Sau khi lưu, bấm Kết nối để đăng nhập Google trong Chrome.", "After saving, select Connect to sign in to Google in Chrome.")}</p>
+                <label>
+                  <span>{t("Tên hiển thị", "Display name")}</span>
+                  <input autoFocus value={accountDraft.label} onChange={(event) => setAccountDraft((current) => ({ ...current, label: event.target.value }))} placeholder="Ultra 01" />
+                </label>
                 </div>
                 <label>
                   <span>{t("Email Google", "Google email")}</span>
                   <input
-                    autoFocus
                     type="email"
-                    autoComplete="username"
                     required
                     value={accountDraft.email}
                     onChange={(event) =>
@@ -2087,23 +2079,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     placeholder="name@gmail.com"
                   />
                 </label>
-                <label>
-                  <span>{t("Password", "Password")}</span>
-                  <input
-                    type="password"
-                    autoComplete="current-password"
-                    required={editingAccount === "new"}
-                    value={accountDraft.password}
-                    onChange={(event) =>
-                      setAccountDraft((current) => ({ ...current, password: event.target.value }))
-                    }
-                    placeholder={editingAccount === "new" ? t("Mật khẩu Google", "Google password") : t("Để trống để giữ mật khẩu đã lưu", "Leave blank to keep the saved password")}
-                  />
-                </label>
 
                 <footer>
                   <button type="button" disabled={accountSaving} onClick={() => {
-                    setAccountDraft({ email: "", password: "", plan: "Free" });
+                    setAccountDraft({ label: "", email: "", plan: "Free" });
                     setEditingAccount(null);
                   }}>
                     {t("Hủy", "Cancel")}
@@ -2111,10 +2090,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <button
                     type="submit"
                     disabled={
-                      accountSaving || !accountDraft.email.trim() || (editingAccount === "new" && !accountDraft.password)
+                      accountSaving || !accountDraft.label.trim() || !accountDraft.email.trim()
                     }
                   >
-                    {accountDraft.password ? t("Lưu và kết nối", "Save and connect") : t("Lưu", "Save")}
+                    {t("Lưu", "Save")}
                   </button>
                 </footer>
               </form>
@@ -2295,8 +2274,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             <aside className="flow-account-note">
               <IconGear size={18} />
               {t(
-                "Mỗi tài khoản có phiên riêng. Nhập Email Google và Password để kết nối; VPS không có màn hình chạy trình duyệt nền. OTP/CAPTCHA vẫn cần xác minh thủ công.",
-                "Each account has its own session. Enter your Google email and password to connect; a VPS without a display uses a background browser. OTP/CAPTCHA still requires manual verification.",
+                "Mỗi tài khoản có Chrome profile riêng. Bấm Kết nối rồi đăng nhập Google trong cửa sổ Chrome.",
+                "Each account has its own Chrome profile. Select Connect, then sign in to Google in Chrome.",
               )}
             </aside>
           </section>

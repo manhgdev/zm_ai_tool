@@ -179,6 +179,15 @@
   font-variant-numeric: tabular-nums;
 }
 
+.hw-picker { position: relative; }
+.hw-picker summary { display: flex; align-items: center; gap: 4px; cursor: pointer; list-style: none; }
+.hw-picker summary > span { display: inline-block; transform: translateY(-1px); font-size: .78em; line-height: 1; }
+.hw-picker summary::-webkit-details-marker { display: none; }
+.hw-picker-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 120; min-width: 90px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 20px #0002; }
+.hw-picker-menu button { display: block; width: 100%; padding: 6px 10px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.hw-picker-menu button:hover { background: color-mix(in srgb, var(--primary) 12%, transparent); }
+.hw-picker-menu button:disabled { opacity: .45; cursor: not-allowed; }
+
 .hw .dot {
   width: 8px;
   height: 8px;
@@ -222,19 +231,19 @@
 html.platform-macos select.locale-select:not([multiple]) {
   -webkit-appearance: none;
   appearance: none;
-  width: 58px !important;
-  min-width: 58px !important;
-  max-width: 58px !important;
-  min-height: 28px !important;
-  height: 28px !important;
-  padding: 0 24px 0 10px !important;
+  width: 48px !important;
+  min-width: 48px !important;
+  max-width: 48px !important;
+  min-height: 24px !important;
+  height: 24px !important;
+  padding: 0 19px 0 7px !important;
   border-radius: 6px !important;
   background-image:
     linear-gradient(45deg, transparent 50%, currentColor 50%),
     linear-gradient(135deg, currentColor 50%, transparent 50%);
   background-position:
-    calc(100% - 15px) 50%,
-    calc(100% - 11px) 50%;
+    calc(100% - 12px) 50%,
+    calc(100% - 8px) 50%;
   background-size: 4px 4px, 4px 4px;
   background-repeat: no-repeat;
   font-size: 12px !important;

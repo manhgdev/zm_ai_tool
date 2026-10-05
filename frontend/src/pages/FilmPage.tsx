@@ -187,7 +187,7 @@ function downloadHref(jobId: string, part?: number) {
 function deviceBadge(hw: HardwareInfo) {
   const accel = (hw.accel || 'cpu').toLowerCase()
   const gpu = accel === 'cuda' || accel === 'metal' || accel === 'mps'
-  const name = (hw.gpuName || hw.label || '').trim()
+  const name = (gpu ? hw.gpuName || hw.label || '' : '').trim()
   const showName = name && !/^(cpu|gpu)$/i.test(name)
   return { kind: gpu ? 'GPU' : 'CPU', name: showName ? name : '', gpu }
 }
@@ -272,7 +272,17 @@ export default function FilmPage({ onBack, onOpenEditor }: Props) {
   }, [hasActiveJobs])
 
   useEffect(() => {
-    api.hardware().then(setHw).catch(() => undefined)
+    let stale = false
+    api.hardware().then(next => { if (!stale) setHw(next) }).catch(() => undefined)
+    const onHardwareChange = (event: Event) => {
+      stale = true
+      setHw((event as CustomEvent<HardwareInfo>).detail)
+    }
+    window.addEventListener('zm-hardware-mode-changed', onHardwareChange)
+    return () => {
+      stale = true
+      window.removeEventListener('zm-hardware-mode-changed', onHardwareChange)
+    }
   }, [])
 
   useEffect(() => {

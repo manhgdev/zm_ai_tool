@@ -11,6 +11,8 @@ import { Toaster, toast } from 'sonner'
 import Header, { type AppMode } from '@/shared/components/Header'
 import { IconVideo } from '@/shared/components/Icons'
 import ProgressPopup from '@/shared/components/ProgressPopup'
+import RetainedPages from '@/shared/components/RetainedPages'
+import BackgroundTasks from '@/shared/components/BackgroundTasks'
 import ProjectSidebar from '@/features/project/ProjectSidebar'
 import PipelineStepper from '@/features/project/PipelineStepper'
 import SegmentList from '@/features/project/SegmentList'
@@ -895,6 +897,22 @@ export default function App() {
           appMode === 'tts' ? () => setTtsSideOpen((o) => !o) : undefined
         }
         onModeChange={navigateToMode}
+        onHardwareChange={async (mode) => {
+          try { setHw(await api.hardwareMode(mode)) }
+          catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            const detail = message.includes('GPU_JOBS_BUSY')
+              ? localize(locale, 'Còn tác vụ đang chạy hoặc model đang nạp.', 'A task is running or a model is loading.')
+              : message.includes('GPU_NOT_AVAILABLE')
+                ? localize(locale, 'Máy backend không có GPU được hỗ trợ.', 'The backend has no supported GPU.')
+                : message.includes('RUNTIME_BUSY')
+                  ? localize(locale, 'Runtime đang cài đặt hoặc bảo trì.', 'The runtime is being installed or maintained.')
+                  : message.includes('COMPUTE_MODE_SAVE_FAILED') || message.includes('ACTIVATION_FAILED')
+                    ? localize(locale, 'Không ghi được cấu hình CPU/GPU. Kiểm tra quyền ghi thư mục runtime.', 'Cannot save CPU/GPU settings. Check runtime directory write permissions.')
+                    : message
+            toast.error(localize(locale, 'Không đổi được CPU/GPU', 'Could not change CPU/GPU'), { description: detail })
+          }
+        }}
         onToggleTheme={() => setDark(d => !d)}
         locale={locale}
         onLocaleChange={changeLocale}
@@ -932,7 +950,8 @@ export default function App() {
       )}
       <Suspense fallback={<div className="page-loading" role="status">Đang tải…</div>}>
       {appUsable && !licenseBlocked ? (
-      appMode === 'tts' ? (
+      <RetainedPages active={appMode} transient={['clone', 'live-preview', 'license']}>
+      {(appMode, visible) => appMode === 'tts' ? (
         <TtsPage
           voices={voices}
           voicesLoaded={voicesLoaded}
@@ -1001,7 +1020,7 @@ export default function App() {
           navigateToMode('srt-image')
         }} />
       ) : appMode === 'chat' ? (
-        <ChatPage onBack={goBackTab} onOpenConfig={() => { setConfigSection('cloud'); setConfigOpen(true) }} />
+        <ChatPage active={visible} onBack={goBackTab} onOpenConfig={() => { setConfigSection('cloud'); setConfigOpen(true) }} />
       ) : appMode === 'automation' ? (
         <AutomationPage onOpenCompose={async (jobId) => {
           const response = await fetch(`/api/automation/jobs/${encodeURIComponent(jobId)}/compose-inputs`)
@@ -1214,8 +1233,11 @@ export default function App() {
         </main>
       </div>
       )
+      }</RetainedPages>
       ) : null}
       </Suspense>
+      {appUsable && !licenseBlocked && <BackgroundTasks currentMode={appMode} onOpen={navigateToMode}
+        project={projectId ? { id: projectId, running: status.running, progress: status.progress, message: status.message } : undefined} />}
       <Toaster position="bottom-right" theme={dark ? 'dark' : 'light'} richColors closeButton />
       <ExportSuccessModal
         isOpen={exportSuccessOpen}
@@ -1242,6 +1264,7 @@ export default function App() {
           )
         }
         minimized={progressMinimized}
+        hideMinimized={status.running}
         running={status.running}
         title={
           status.step === 'dub'

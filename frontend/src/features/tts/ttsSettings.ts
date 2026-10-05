@@ -38,7 +38,7 @@ export const defaultTtsSettings: TtsSettings = {
   normalize: true,
   gapOn: false,
   gapMs: 300,
-  trimSilence: true,
+  trimSilence: false,
   autoSplit: true,
   playbackVolume: 1,
   outputFormat: 'wav48',

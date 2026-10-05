@@ -107,40 +107,37 @@ def _visible_window_geometry(
     screen_width: int,
     screen_height: int,
 ) -> tuple[int, int, int, int]:
-    """Return a compact four-window column anchored on the right.
+    """Return compact columns anchored on the right, fitting the work area.
 
     Each group fills one vertical column from top to bottom. Later groups move
     one column left, keeping every account window visible and clickable.
     """
-    width = max(300, screen_width // 4)
     # Leave room for Chrome's native title bar/frame; launch dimensions are
     # outer-window hints and can grow slightly on macOS.
     gap = max(16, min(28, screen_height // 36))
-    height = max(120, screen_height // 5)
+    columns = max(1, screen_width // 500)
+    horizontal_gap = min(gap, max(0, screen_width - columns * 500) // max(1, columns - 1))
+    width = (screen_width - horizontal_gap * (columns - 1)) // columns
+    # Keep readable cells on larger work areas instead of limiting every screen to two rows.
+    rows = max(1, (screen_height + gap) // (420 + gap))
+    height = (screen_height - gap * (rows - 1)) // rows
     width = min(width, screen_width)
     height = min(height, screen_height)
-    row = index % 4
-    group = index // 4
-    x = max(0, screen_width - width - group * (width + gap))
+    row = index % rows
+    # ponytail: wrap full grids; overlap is preferable to off-screen windows.
+    group = (index // rows) % columns
+    x = 0 if group == columns - 1 else screen_width - width - group * (width + horizontal_gap)
     y = row * (height + gap)
     return x, y, width, height
 
 
 def _visible_window_args() -> list[str]:
-    """Place visible Flow windows in four-row columns from right to left."""
-    global _visible_window_index
-    with _visible_window_guard:
-        index = _visible_window_index
-        _visible_window_index += 1
+    """Start compactly; the page then supplies the real monitor work area."""
     # Do not create Tk/AppKit from a Flow worker thread.  macOS aborts the
     # process when Tk initializes Cocoa off the main thread (SIGABRT/-6).
-    # Playwright's viewport is already 1440x900, so use the same stable
-    # fallback for window geometry rather than touching a native UI toolkit.
-    width = 1440
-    height = 900
-    x, y, _, _ = _visible_window_geometry(index, width, height)
     return [
-        f"--window-position={x},{y}",
+        "--window-position=0,0",
+        "--window-size=500,300",
         "--new-window",
     ]
 
@@ -180,6 +177,7 @@ class BrowserManager:
         self._ctx: BrowserContext | None = None
         self._page: Page | None = None
         self._zoom_applied = False
+        self._window_placed = False
         self._profile_lock = profile_lock(self.profile_dir)
         self._owns_profile = False
         # ponytail: captured only for visible windows; restored in stop().
@@ -212,7 +210,8 @@ class BrowserManager:
                     executable_path=str(executable),
                     headless=self.headless,
                     slow_mo=self.slow_mo,
-                    viewport={"width": 1440, "height": 900},
+                    viewport={"width": 1440, "height": 900} if self.headless else None,
+                    no_viewport=not self.headless,
                     accept_downloads=True,
                     locale="en-US",
                     extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
@@ -340,17 +339,61 @@ class BrowserManager:
         pages = self.context.pages
         self._page = pages[0] if pages else await self.context.new_page()
         if not self.headless:
+            if not self._window_placed:
+                await self._place_visible_window(self._page)
             await self._page.bring_to_front()
             await self._apply_visible_zoom(self._page)
         return self._page
 
+    async def _place_visible_window(self, page: Page) -> None:
+        global _visible_window_index
+        area = await page.evaluate("""() => ({
+            left: screen.availLeft || 0, top: screen.availTop || 0,
+            width: screen.availWidth, height: screen.availHeight
+        })""")
+        with _visible_window_guard:
+            index = _visible_window_index
+            _visible_window_index += 1
+        x, y, width, height = _visible_window_geometry(index, area['width'], area['height'])
+        session = await self.context.new_cdp_session(page)
+        try:
+            window = await session.send('Browser.getWindowForTarget')
+            window_id = window['windowId']
+            await session.send('Browser.setWindowBounds', {
+                'windowId': window_id, 'bounds': {'windowState': 'normal'},
+            })
+            await session.send('Browser.setWindowBounds', {
+                'windowId': window_id, 'bounds': {
+                    'left': area['left'] + x, 'top': area['top'] + y,
+                    'width': width, 'height': height,
+                },
+            })
+            # Chrome may enforce a larger native minimum; clamp its actual frame.
+            actual = (await session.send('Browser.getWindowBounds', {'windowId': window_id}))['bounds']
+            await session.send('Browser.setWindowBounds', {
+                'windowId': window_id, 'bounds': {
+                    'left': area['left'] + max(0, min(x, area['width'] - actual['width'])),
+                    'top': area['top'] + max(0, min(y, area['height'] - actual['height'])),
+                },
+            })
+            self._window_placed = True
+        finally:
+            await session.detach()
+
     async def _apply_visible_zoom(self, page: Page) -> None:
         if self._zoom_applied:
             return
-        key = "Meta+-" if sys.platform == "darwin" else "Control+-"
+        # Playwright key events do not trigger Chrome's native zoom shortcuts.
+        # Use Chrome's own settings page; closing it preserves the Flow tab.
+        settings_page = await self.context.new_page()
         try:
-            for _ in range(5):
-                await page.keyboard.press(key)
+            await settings_page.goto('chrome://settings/appearance', wait_until='domcontentloaded')
+            await settings_page.evaluate("""() => new Promise((resolve, reject) => {
+                chrome.settingsPrivate.setDefaultZoom(0.4, () => {
+                    if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                    else resolve();
+                });
+            })""")
             self._zoom_applied = True
-        except Exception:
-            pass
+        finally:
+            await settings_page.close()

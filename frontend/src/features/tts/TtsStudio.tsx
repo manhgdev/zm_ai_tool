@@ -317,6 +317,12 @@ export default function TtsStudio({
   const [downloadMenuId, setDownloadMenuId] = useState<string | null>(null)
   const [historySrtMenuId, setHistorySrtMenuId] = useState<string | null>(null)
   const [mainSrtMenuOpen, setMainSrtMenuOpen] = useState(false)
+  const [hardwareRevision, setHardwareRevision] = useState(0)
+  useEffect(() => {
+    const onHardwareChange = () => setHardwareRevision(value => value + 1)
+    window.addEventListener('zm-hardware-mode-changed', onHardwareChange)
+    return () => window.removeEventListener('zm-hardware-mode-changed', onHardwareChange)
+  }, [])
   const [status, setStatus] = useState<Record<string, EngineStatus>>({})
   const [cloneName, setCloneName] = useState('')
   const [cloneFile, setCloneFile] = useState<File | null>(null)
@@ -639,6 +645,7 @@ export default function TtsStudio({
 
   useEffect(() => {
     const onPopState = () => {
+      if (window.location.pathname !== '/text-to-speech') return
       setSection(sectionFromUrl())
       setSideOpen(false)
     }
@@ -767,6 +774,7 @@ export default function TtsStudio({
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const refresh = async () => {
+      clearTimeout(timer)
       if (cancelled) return
       try {
         const next = await api.ttsStatus() as Record<string, EngineStatus>
@@ -779,7 +787,9 @@ export default function TtsStudio({
     }
     void loadHistory()
     void (async () => {
-      await loadStatus()
+      await statusRequestRef.current
+      if (cancelled) return
+      await refresh()
       if (cancelled) return
       try {
         await api.ttsWarm()
@@ -789,9 +799,29 @@ export default function TtsStudio({
       await refresh()
     })()
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [loadStatus, loadHistory])
+  }, [loadStatus, loadHistory, hardwareRevision])
 
   const vieneu = status.vieneu
+  const lastModelLogRef = useRef('')
+  useEffect(() => {
+    if (!vieneu) return
+    if (vieneu.ready || vieneu.loadState === 'ready') {
+      lastModelLogRef.current = ''
+      return
+    }
+    const state = vieneu.loadState === 'error' ? 'error'
+      : !vieneu.installed ? 'not-installed' : vieneu.loadState || 'cold'
+    const detail = state === 'error' ? vieneu.error || vieneu.message || '' : ''
+    const key = JSON.stringify([vieneu.model, vieneu.mode, state, vieneu.device, detail])
+    if (lastModelLogRef.current === key) return
+    lastModelLogRef.current = key
+    const label = state === 'error' ? localize(locale, 'Lỗi nạp model', 'Model load error')
+      : state === 'not-installed' ? localize(locale, 'Chưa cài model', 'Model not installed')
+      : state === 'loading' ? localize(locale, 'Đang nạp model', 'Loading model')
+      : localize(locale, 'Chờ nạp model', 'Waiting to load model')
+    const line = `[${new Date().toLocaleTimeString()}] ${label} · ${vieneu.model || 'VieNeu'} · ${vieneu.device || '—'}${detail ? `\n${detail}` : ''}`
+    setTtsLogs(current => [...current, line].slice(-50))
+  }, [vieneu, locale])
   const vieneuLoadState = String(vieneu?.loadState || '')
   const vieneuLoadOk = Boolean(vieneu?.installed && (vieneu?.ready || vieneuLoadState === 'ready'))
   const vieneuLoadWarn = vieneuLoadState === 'loading' || (Boolean(vieneu?.installed) && vieneuLoadState === 'cold')
@@ -872,6 +902,7 @@ export default function TtsStudio({
   useEffect(() => {
     if (!downloadMenuId && !mainSrtMenuOpen) return
     const onDoc = (e: MouseEvent) => {
+      if (window.location.pathname !== '/text-to-speech') return
       const el = e.target as HTMLElement | null
       if (el?.closest?.('[data-dl-menu]')) return
       setDownloadMenuId(null)
@@ -879,6 +910,7 @@ export default function TtsStudio({
       setMainSrtMenuOpen(false)
     }
     const onKey = (e: KeyboardEvent) => {
+      if (window.location.pathname !== '/text-to-speech') return
       if (e.key === 'Escape') {
         setDownloadMenuId(null)
         setHistorySrtMenuId(null)
@@ -896,6 +928,7 @@ export default function TtsStudio({
   useEffect(() => {
     if (!bulkMoveOpen) return
     const onKey = (e: KeyboardEvent) => {
+      if (window.location.pathname !== '/text-to-speech') return
       if (e.key === 'Escape' && !busy) setBulkMoveOpen(false)
     }
     document.addEventListener('keydown', onKey)
@@ -1811,7 +1844,7 @@ export default function TtsStudio({
             <div className="tts-log-page-head">
               <div>
                 <h2 id="tts-log-title">{t('Log xử lý TTS', 'TTS processing log')}</h2>
-                <p>{t('Ghi lại lỗi TTS và ngữ cảnh để tìm nguyên nhân.', 'Capture TTS errors and context to help find the cause.')}</p>
+                <p>{t('Ghi lại trạng thái nạp model và lỗi TTS; bỏ qua model đã sẵn sàng.', 'Record model loading status and TTS errors; skip models that are ready.')}</p>
               </div>
               <div className="tts-log-actions">
                 <button type="button" className="tts-log-copy" disabled={!ttsLogs.length} onClick={() => void copyTtsLog([...ttsLogs].reverse().join('\n'))}>{t('Sao chép log', 'Copy logs')}</button>
@@ -2740,6 +2773,7 @@ export default function TtsStudio({
       <ProgressPopup
         active={busy || Boolean(error && error !== 'Đã hủy' && error !== 'cancelled')}
         minimized={progressMinimized}
+        hideMinimized={busy && Boolean(activeJobIdRef.current)}
         running={busy}
         title={busy ? busyTitle : error ? 'Lỗi TTS' : 'TTS'}
         message={busy ? localizePipelineMessage(locale, busyMessage || '') : error ? localizePipelineMessage(locale, error) : undefined}

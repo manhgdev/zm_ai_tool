@@ -445,6 +445,13 @@ export default function ConfigModal({
 
   useEffect(() => {
     if (!open) return
+    const onHardwareChange = () => loadChecks(true, false)
+    window.addEventListener('zm-hardware-mode-changed', onHardwareChange)
+    return () => window.removeEventListener('zm-hardware-mode-changed', onHardwareChange)
+  }, [open, loadChecks])
+
+  useEffect(() => {
+    if (!open) return
     if (section === 'setup' || section === 'logs' || forceSetup) loadChecks(false, false)
   }, [open, section, forceSetup, loadChecks])
 
@@ -964,17 +971,17 @@ export default function ConfigModal({
               </button>
               <button
                 type="button"
-                className={section === 'license' ? 'active' : undefined}
-                onClick={() => setSection('license')}
-              >
-                {t('Kích hoạt', 'Activate')}
-              </button>
-              <button
-                type="button"
                 className={section === 'output' ? 'active' : undefined}
                 onClick={() => setSection('output')}
               >
                 {t('Thư mục đầu ra', 'Output folder')}
+              </button>
+              <button
+                type="button"
+                className={section === 'license' ? 'active' : undefined}
+                onClick={() => setSection('license')}
+              >
+                {t('Kích hoạt', 'Activate')}
               </button>
             </>
           ) : null}
@@ -983,7 +990,7 @@ export default function ConfigModal({
             className={section === 'logs' ? 'active' : undefined}
             onClick={() => setSection('logs')}
           >
-            {t('Log cài đặt', 'Install log')}
+            {licenseStatus?.valid ? t('Log', 'Log') : t('Log cài đặt', 'Install log')}
           </button>
         </div>
 

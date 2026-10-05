@@ -9,6 +9,7 @@ export type ProgressPopupProps = {
   active: boolean
   /** true = chỉ hiện pill góc; false = popup giữa màn */
   minimized: boolean
+  hideMinimized?: boolean
   title?: string
   message?: string
   /** 0–100 */
@@ -82,6 +83,7 @@ function fmtElapsed(sec: number) {
 export default function ProgressPopup({
   active,
   minimized,
+  hideMinimized = false,
   title = 'Đang xử lý',
   message,
   progress,
@@ -158,6 +160,7 @@ export default function ProgressPopup({
   }
 
   if (minimized) {
+    if (hideMinimized) return null
     return (
       <button
         type="button"

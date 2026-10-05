@@ -66,11 +66,12 @@ def pending() -> bool:
 
 
 @contextlib.contextmanager
-def cpu_maintenance():
+def cpu_maintenance(*, force: bool = False):
     global _cpu_busy
     with _lock:
         assert_available()
-        assert_idle()
+        if not force:
+            assert_idle()
         _cpu_busy = True
     _local.resume = True
     try:
@@ -134,7 +135,7 @@ def _active_jobs() -> bool:
         if any(jobs._job_pids.values()) or any(jobs._job_procs.values()):
             return True
     studio = sys.modules.get('pipeline.tts.studio')
-    if studio and any(not item.get('done') for item in studio.list_job_progress().values()):
+    if studio and any(item.get('running') for item in studio.list_job_progress().values()):
         return True
     automation = sys.modules.get('pipeline.automation.service')
     if automation and any(job.get('status') in ('queued', 'running') for job in automation.service.list_jobs()):

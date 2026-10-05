@@ -11,34 +11,59 @@ from pipeline.flow.browser import BrowserManager, _visible_window_geometry
 
 
 class FlowBrowserGeometryTest(unittest.TestCase):
-    def test_first_four_windows_fill_right_column_top_to_bottom(self):
-        positions = [_visible_window_geometry(i, 1440, 900) for i in range(4)]
+    def test_first_two_windows_fill_right_column_top_to_bottom(self):
+        positions = [_visible_window_geometry(i, 1440, 900) for i in range(2)]
 
         self.assertEqual(positions, [
-            (1080, 0, 360, 180),
-            (1080, 205, 360, 180),
-            (1080, 410, 360, 180),
-            (1080, 615, 360, 180),
+            (733, 0, 707, 437),
+            (733, 462, 707, 437),
         ])
-        self.assertEqual(len({(x, y) for x, y, _, _ in positions}), 4)
+        self.assertEqual(len({(x, y) for x, y, _, _ in positions}), 2)
 
     def test_small_screen_keeps_windows_inside_screen(self):
-        positions = [_visible_window_geometry(i, 800, 600) for i in range(4)]
+        positions = [_visible_window_geometry(i, 800, 600) for i in range(100)]
 
         for x, y, width, height in positions:
             self.assertGreaterEqual(x, 0)
             self.assertGreaterEqual(y, 0)
             self.assertLessEqual(x + width, 800)
             self.assertLessEqual(y + height, 600)
-        self.assertEqual(len({(x, y) for x, y, _, _ in positions}), 4)
+        self.assertEqual(len({(x, y) for x, y, _, _ in positions}), 1)
 
     def test_next_group_moves_to_left_column(self):
         first = _visible_window_geometry(0, 1440, 900)
-        next_group = _visible_window_geometry(4, 1440, 900)
+        next_group = _visible_window_geometry(2, 1440, 900)
 
         self.assertNotEqual(first[:2], next_group[:2])
         self.assertGreaterEqual(next_group[0], 0)
         self.assertGreaterEqual(next_group[1], 0)
+
+    def test_six_windows_fill_screen_to_left_edge(self):
+        positions = [_visible_window_geometry(i, 1512, 949) for i in range(6)]
+        self.assertEqual(len(set(positions)), 6)
+        self.assertEqual([positions[i][0] for i in (0, 2, 4)], [1012, 506, 0])
+        for x, y, width, height in positions:
+            self.assertLessEqual(x + width, 1512)
+            self.assertLessEqual(y + height, 949)
+        self.assertEqual(_visible_window_geometry(6, 1512, 949), positions[0])
+        self.assertEqual(positions[0], (1012, 0, 500, 461))
+
+    def test_large_work_areas_add_rows_and_columns(self):
+        for screen_width, screen_height, columns, rows in (
+            (2560, 1440, 5, 3), (3840, 2160, 7, 4),
+        ):
+            with self.subTest(size=(screen_width, screen_height)):
+                positions = [_visible_window_geometry(i, screen_width, screen_height)
+                             for i in range(columns * rows)]
+                self.assertEqual(len({x for x, _, _, _ in positions}), columns)
+                self.assertEqual(len({y for _, y, _, _ in positions}), rows)
+                for x, y, width, height in positions:
+                    self.assertGreaterEqual(x, 0)
+                    self.assertGreaterEqual(y, 0)
+                    self.assertLessEqual(x + width, screen_width)
+                    self.assertLessEqual(y + height, screen_height)
+                    self.assertGreaterEqual(width, 500)
+                    self.assertGreaterEqual(height, 420)
 
 
 class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
@@ -58,12 +83,34 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
         )
         manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-focus-test'))
         manager._page = page
+        settings_page = SimpleNamespace(goto=AsyncMock(), evaluate=AsyncMock(), close=AsyncMock())
+        manager._ctx = SimpleNamespace(new_page=AsyncMock(return_value=settings_page))
 
         await manager.page()
         await manager.page()
 
         page.bring_to_front.assert_not_awaited()
-        self.assertEqual(page.keyboard.press.await_count, 5)
+        page.keyboard.press.assert_not_awaited()
+        manager._ctx.new_page.assert_awaited_once()
+        self.assertIn('setDefaultZoom(0.4', settings_page.evaluate.call_args.args[0])
+        settings_page.close.assert_awaited_once()
+
+    async def test_window_uses_work_area_offset_and_clamps_native_size(self):
+        page = SimpleNamespace(evaluate=AsyncMock(return_value={
+            'left': -1440, 'top': 25, 'width': 1440, 'height': 875,
+        }))
+        session = SimpleNamespace(send=AsyncMock(side_effect=[
+            {'windowId': 7}, {}, {}, {'bounds': {'width': 740, 'height': 260}}, {},
+        ]), detach=AsyncMock())
+        manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-bounds-test'))
+        manager._ctx = SimpleNamespace(new_cdp_session=AsyncMock(return_value=session))
+        with patch('pipeline.flow.browser._visible_window_index', 0):
+            await manager._place_visible_window(page)
+        self.assertEqual(session.send.await_args_list[-1].args[1], {
+            'windowId': 7, 'bounds': {'left': -740, 'top': 25},
+        })
+        session.detach.assert_awaited_once()
+        self.assertTrue(manager._window_placed)
 
     async def test_flow_restores_launch_compatibility_without_disabling_sandbox(self):
         context = SimpleNamespace(add_init_script=AsyncMock())
@@ -78,6 +125,9 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 await manager.start()
                 self.assertTrue(launch.call_args.kwargs['chromium_sandbox'])
                 self.assertEqual(launch.call_args.kwargs['headless'], headless)
+                self.assertEqual(launch.call_args.kwargs['viewport'],
+                                 {'width': 1440, 'height': 900} if headless else None)
+                self.assertEqual(launch.call_args.kwargs['no_viewport'], not headless)
                 self.assertNotIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
                 self.assertNotIn('--no-sandbox', launch.call_args.kwargs['args'])
                 context.add_init_script.assert_any_await(

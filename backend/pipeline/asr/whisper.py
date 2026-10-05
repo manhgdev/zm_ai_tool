@@ -37,6 +37,9 @@ def _mlx_model_name() -> str:
 
 def _mlx_whisper_available() -> bool:
     """True khi ASR có thể dùng MLX trên GPU Apple, không nạp model."""
+    from pipeline.core.runtime_active import cpu_mode_enabled
+    if cpu_mode_enabled():
+        return False
     if (
         sys.platform != "darwin"
         or platform.machine().lower() not in {"arm64", "aarch64"}

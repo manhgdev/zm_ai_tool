@@ -730,6 +730,7 @@ def hardware() -> dict[str, str]:
         "os": str(d["os"]),
         "gpuKind": str(d["gpuKind"]),
         "gpuName": str(d.get("gpuName") or ""),
+        "hasGpu": bool(d.get("hasGpu")),
     }
 
 

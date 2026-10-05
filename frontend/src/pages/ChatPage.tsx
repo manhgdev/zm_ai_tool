@@ -67,7 +67,7 @@ function MessageBody({ content }: { content: string }) {
       : text)}</span>)}</>
 }
 
-export default function ChatPage({ onOpenConfig: _onOpenConfig, onBack }: { onOpenConfig: () => void; onBack: () => void }) {
+export default function ChatPage({ onOpenConfig: _onOpenConfig, onBack, active: pageActive = true }: { onOpenConfig: () => void; onBack: () => void; active?: boolean }) {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const [conversations, setConversations] = useState<Conversation[]>([])
@@ -95,9 +95,10 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig, onBack }: { onOp
   const [input, setInput] = useState('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
+    if (!pageActive) return
     const prefill = localStorage.getItem('zm-ai-tool:chat-prefill:v1')
     if (prefill) { setInput(prefill); localStorage.removeItem('zm-ai-tool:chat-prefill:v1') }
-  }, [])
+  }, [pageActive])
   const [busy, setBusy] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [error, setError] = useState('')

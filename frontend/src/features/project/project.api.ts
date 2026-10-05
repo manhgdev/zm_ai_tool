@@ -126,6 +126,13 @@ export const api = {
     }),
 
   hardware: () => fetchJson<HardwareInfo>(`${base}/hardware`, undefined, 40_000),
+  hardwareMode: async (mode: 'cpu' | 'gpu') => {
+    const hardware = await fetchJson<HardwareInfo>(`${base}/hardware/mode`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
+    })
+    window.dispatchEvent(new CustomEvent('zm-hardware-mode-changed', { detail: hardware }))
+    return hardware
+  },
   hardwareUsage: () => fetchJson<import('./project.types').HardwareUsage>(`${base}/hardware/usage`, undefined, 5_000),
 
   systemChecks: (refresh = false, _deep = false) =>

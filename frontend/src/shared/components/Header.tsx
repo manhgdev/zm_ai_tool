@@ -75,6 +75,7 @@ type Props = {
   locale: AppLocale
   onLocaleChange: (locale: AppLocale) => void
   onOpenLicense?: () => void
+  onHardwareChange?: (mode: 'cpu' | 'gpu') => Promise<void>
 }
 
 export default function Header({
@@ -90,6 +91,7 @@ export default function Header({
   locale,
   onLocaleChange,
   onOpenLicense,
+  onHardwareChange,
 }: Props) {
   const t = (key: Parameters<typeof translate>[1], values?: Record<string, string | number>) => translate(locale, key, values)
   const hardwareDisplay = HARDWARE_SHORT[hardware.accel] ?? hardware.accel.toUpperCase()
@@ -98,6 +100,17 @@ export default function Header({
   const cloneRef = useRef<HTMLDivElement>(null)
   const batchRef = useRef<HTMLDivElement>(null)
   const toolsRef = useRef<HTMLDivElement>(null)
+  const hardwareRef = useRef<HTMLDetailsElement>(null)
+  const [hardwareBusy, setHardwareBusy] = useState(false)
+  const chooseHardware = async (value: 'cpu' | 'gpu') => {
+    if (hardwareBusy) return
+    setHardwareBusy(true)
+    try { await onHardwareChange?.(value) }
+    finally {
+      setHardwareBusy(false)
+      if (hardwareRef.current) hardwareRef.current.open = false
+    }
+  }
 
   useEffect(() => {
     if (!openMenu) return
@@ -352,7 +365,7 @@ export default function Header({
           )
         })}
       </nav>
-      <div className="hw" title={hardware.label}>
+      <div className="hw" title={hardwareDisplay}>
         <select className="locale-select" value={locale} onChange={(event) => onLocaleChange(event.target.value as AppLocale)} aria-label={t('header.interfaceLanguage')}>
           <option value="vi">VI</option>
           <option value="en">EN</option>
@@ -368,7 +381,19 @@ export default function Header({
           </button>
         )}
         <span className="dot" aria-hidden="true" />
-        <span className="hw-usage">{hardwareDisplay}</span>
+        <details className="hw-picker" ref={hardwareRef}>
+          <summary className="hw-usage" title={t('header.computeMode')}>
+            {hardwareDisplay}<span aria-hidden="true">⌄</span>
+          </summary>
+          <div className="hw-picker-menu" role="menu">
+            <button type="button" role="menuitem" disabled={hardwareBusy} onClick={() => void chooseHardware('cpu')}>
+              CPU
+            </button>
+            <button type="button" role="menuitem" onClick={() => void chooseHardware('gpu')} disabled={hardwareBusy || hardware.hasGpu !== true}>
+              GPU
+            </button>
+          </div>
+        </details>
         <button
           type="button"
           className="theme-toggle"

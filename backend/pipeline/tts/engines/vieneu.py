@@ -601,6 +601,7 @@ def status() -> dict[str, Any]:
         "ready": installed and _load_state == "ready",
         "loaded": _load_state == "ready",
         "loadState": _load_state,
+        "error": _client_err if _load_state == "error" else None,
         "device": "—",
         "mode": mode,
         "model": _MODE_LABEL.get(mode, "VieNeu-TTS-v3-Turbo"),

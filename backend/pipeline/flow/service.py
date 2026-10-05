@@ -63,25 +63,6 @@ _DISABLED_VIDEO_MODELS = {"Veo 3.1 - Lite [Lower Priority]"}
 _DEFAULT_VIDEO_MODEL = "Veo 3.1 - Fast"
 
 
-async def _fill_google_password(page: Any, password: str) -> None:
-    """Fill once, only on Google's HTTPS login origin; never handle OTP/CAPTCHA."""
-    if urlsplit(str(page.url)).hostname != "accounts.google.com":
-        return  # Existing authenticated session — no password needed.
-    password_input = page.locator('input[type="password"], input[name="Passwd"]').first
-    try:
-        await password_input.wait_for(state="visible", timeout=10_000)
-        origin = urlsplit(str(page.url))
-        if origin.scheme != "https" or origin.hostname != "accounts.google.com" or origin.port not in (None, 443):
-            raise RuntimeError("Untrusted login origin")
-        await password_input.fill(password)
-        next_button = page.locator('#passwordNext').first
-        await next_button.wait_for(state="visible", timeout=5_000)
-        await next_button.click()
-    except Exception:
-        # Playwright's call log may include fill arguments. Never persist it.
-        raise RuntimeError("FLOW_LOGIN_VERIFICATION_REQUIRED") from None
-
-
 def _normalize_video_model(value: Any) -> str:
     """Migrate saved jobs away from models Flow has temporarily removed."""
     model = str(value or _DEFAULT_VIDEO_MODEL).strip()
@@ -1189,7 +1170,7 @@ class FlowService:
                 return f"FLOW_OUTPUT_UNREADABLE: {path}: {exc}"
         return None
 
-    def save_account(self, payload: dict[str, Any], account_id: str | None = None, *, password: str = "") -> dict[str, Any]:
+    def save_account(self, payload: dict[str, Any], account_id: str | None = None) -> dict[str, Any]:
         now = time.time()
         existing = store.get_row("accounts", account_id or "") or {}
         row = {
@@ -1222,16 +1203,8 @@ class FlowService:
             for account in self.accounts():
                 if account["id"] != row["id"]:
                     store.patch_row("accounts", account["id"], {"isDefault": False})
-        # An empty password on edit deliberately preserves the saved secret.
-        # Do not accept or return it through the public account payload.
-        if password:
-            row["password"] = password
-        elif existing.get("password"):
-            row["password"] = existing["password"]
+        row.pop("password", None)
         saved = store.put_row("accounts", row)
-        if password:
-            with self._guard:
-                self._login_passwords[row["id"]] = password
         return self._public_account(saved)
 
     def suspend_account(
@@ -2256,11 +2229,10 @@ class FlowService:
         browser = None
         login_ok = False
         with self._guard:
-            password = self._login_passwords.pop(account_id, "") or str(account.get("password") or "")
-        headless_login = sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+            self._login_passwords.pop(account_id, None)
+        password = ""
+        headless_login = False
         try:
-            if headless_login and not password:
-                raise RuntimeError("FLOW_LOGIN_PASSWORD_REQUIRED")
             from .browser import BrowserManager, FLOW_BASE_URL
             browser = BrowserManager(
                 headless=headless_login,
@@ -2306,10 +2278,15 @@ class FlowService:
             async def _is_flow_authenticated() -> tuple[bool, str]:
                 try:
                     url = str(page.url or "")
-                    if "accounts.google.com" in url or "/about" in url:
+                    if urlsplit(url).hostname not in {"flow.google.com", "labs.google"} or "/about" in url:
                         return False, ""
+                    m = _PROJECT_RE.search(url)
+                    # A project URL is a candidate, not proof of login. The
+                    # credits request below verifies the session before online.
+                    if m:
+                        return True, m.group(1)
                     has_auth = await page.evaluate(
-                        "() => Boolean(window.WIZ_global_data?.SNlM0e || window.WIZ_global_data?.oPEP7c)"
+                        "() => Boolean(window.WIZ_global_data?.SNlM0e || window.WIZ_global_data?.oPEP7c || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email)"
                     )
                     if not has_auth:
                         return False, ""
@@ -2332,15 +2309,12 @@ class FlowService:
             except Exception:
                 pass
 
-            if password:
-                await _fill_google_password(page, password)
-
             # Fast-detect: only if already authenticated and project is open
             await asyncio.sleep(2.0)
             is_auth, project_id = await _is_flow_authenticated()
 
             # Nếu chưa đăng nhập và bị redirect vào accounts.google.com → chờ user login rồi tự navigate về Flow
-            if not is_auth:
+            if not is_auth or not project_id:
                 if "/about" in str(page.url or ""):
                     # Trang giới thiệu Flow → click Sign In để vào Google login
                     try:
@@ -2353,7 +2327,7 @@ class FlowService:
                 elif "accounts.google.com" in str(page.url or ""):
                     # Đã ở trang đăng nhập Google — không cần navigate thêm
                     pass
-                else:
+                elif not is_auth:
                     # Chưa login, thử navigate đến Flow login
                     try:
                         await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
@@ -2411,8 +2385,7 @@ class FlowService:
                     raise RuntimeError("FLOW_LOGIN_VERIFICATION_REQUIRED")
                 # Phân biệt user tắt Chrome vs timeout thực sự
                 try:
-                    _ = page.url
-                    is_closed = False
+                    is_closed = _browser_closed or page.is_closed()
                 except Exception:
                     is_closed = True
                 if is_closed:

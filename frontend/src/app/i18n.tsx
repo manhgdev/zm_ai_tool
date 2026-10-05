@@ -55,6 +55,7 @@ const MESSAGES = {
   'header.openTtsMenu': { vi: 'Mở menu TTS', en: 'Open TTS menu' },
   'header.closeTtsMenu': { vi: 'Đóng menu TTS', en: 'Close TTS menu' },
   'header.interfaceLanguage': { vi: 'Ngôn ngữ giao diện', en: 'Interface language' },
+  'header.computeMode': { vi: 'Chọn CPU hoặc GPU', en: 'Choose CPU or GPU' },
   'header.unlimited': { vi: 'Không giới hạn', en: 'Unlimited' },
   'header.daysLeft': { vi: '{count} ngày còn lại', en: '{count} days left' },
   'header.expires': { vi: 'Hết hạn: {date}', en: 'Expires: {date}' },

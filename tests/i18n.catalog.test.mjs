@@ -1,4 +1,37 @@
 import test from 'node:test'
+test('header hardware picker offers CPU and GPU choices', () => {
+  const source = readFileSync(new URL('../frontend/src/shared/components/Header.tsx', import.meta.url), 'utf8')
+  assert.ok(source.includes('onHardwareChange'))
+  assert.ok(source.includes("chooseHardware('cpu')"))
+  assert.ok(source.includes("chooseHardware('gpu')"))
+  const catalog = readFileSync(new URL('../frontend/src/app/i18n.tsx', import.meta.url), 'utf8')
+  assert.ok(catalog.includes("'header.computeMode': { vi: 'Chọn CPU hoặc GPU', en: 'Choose CPU or GPU' }"))
+})
+test('Global background task panel has bilingual labels', () => {
+  const source = readFileSync(new URL('../frontend/src/shared/components/BackgroundTasks.tsx', import.meta.url), 'utf8')
+  for (const pair of ["t('Tác vụ nền', 'Background tasks')", "t('Mở trang tác vụ', 'Open task page')", "t('Đang chờ', 'Queued')", "t('Đang xử lý', 'Processing')", "t('Thu nhỏ tác vụ nền', 'Collapse background tasks')", "t('Mở rộng tác vụ nền', 'Expand background tasks')"]) assert.ok(source.includes(pair))
+})
+test('TTS model logs skip ready states and deduplicate unchanged diagnostics', () => {
+  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
+  const effect = source.match(/const lastModelLogRef = useRef\(''\)\s+useEffect\(\(\) => \{([\s\S]*?)\n  \}, \[vieneu, locale\]\)/)[1]
+  const run = new Function('vieneu', 'locale', 'lastModelLogRef', 'localize', 'setTtsLogs', effect)
+  let logs = []
+  const last = { current: '' }
+  const apply = status => run(status, 'en', last, (_locale, _vi, en) => en, update => { logs = update(logs) })
+  apply({ ready: true })
+  apply({ loadState: 'ready' })
+  assert.equal(logs.length, 0)
+  const loading = { installed: true, loadState: 'loading', model: 'VieNeu', device: 'CPU' }
+  apply(loading)
+  apply(loading)
+  assert.equal(logs.length, 1)
+  apply({ ...loading, loadState: 'error', error: 'full ONNX diagnostic' })
+  assert.match(logs[1], /Model load error.*VieNeu.*CPU\nfull ONNX diagnostic/)
+  apply({ ready: true })
+  apply(loading)
+  assert.equal(logs.length, 3)
+  for (const label of ['Lỗi nạp model', 'Model load error', 'Chưa cài model', 'Model not installed', 'Đang nạp model', 'Loading model', 'Chờ nạp model', 'Waiting to load model']) assert.ok(effect.includes(label))
+})
 test('TTS background warm status is bilingual', () => {
   const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
   assert.ok(source.includes("t('Đã cài — chờ nạp nền', 'Installed — waiting for background loading')"))
@@ -133,15 +166,14 @@ test('Flow top navigation includes Series and Accounts above utility views', () 
   assert.ok(tabs.includes('activateRail(id)'))
 })
 
-test('Flow account form uses Google email and password without display name', () => {
+test('Flow account form keeps display name and uses Chrome sign-in', () => {
   const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
   assert.ok(source.includes('Email Google'))
-  assert.ok(source.includes('t("Password", "Password")'))
+  assert.ok(source.includes('t("Tên hiển thị", "Display name")'))
   assert.ok(source.includes('t("Email Google", "Google email")'))
-  assert.ok(source.includes('t("Lưu và kết nối", "Save and connect")'))
-  assert.ok(source.includes('type="password"'))
-  assert.ok(source.includes('Google password'))
-  assert.doesNotMatch(source, /Tên hiển thị.*Display name/)
+  assert.ok(source.includes('sign in to Google in Chrome'))
+  assert.ok(!source.includes('type="password"'))
+  assert.ok(!source.includes('accountDraft.password'))
 })
 
 test('local cleaner explains conservative matching and localizes its stable errors', () => {

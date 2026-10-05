@@ -14,6 +14,7 @@ import time
 import traceback
 import uuid
 import urllib.request
+import contextlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -1003,7 +1004,56 @@ except Exception:  # pragma: no cover
 
 @router.get("/api/hardware")
 def api_hardware():
-    return hardware()
+    from pipeline.core.runtime_active import cpu_mode_enabled
+
+    info = hardware()
+    if cpu_mode_enabled():
+        info.update(label='CPU', accel='cpu')
+    return info
+
+
+class HardwareModeIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    mode: Literal['cpu', 'gpu']
+
+
+@router.post("/api/hardware/mode")
+def api_hardware_mode(payload: HardwareModeIn):
+    """Persist the explicit compute choice used by all subsequent local jobs."""
+    from pipeline.core.runtime_active import runtime_home, clear_compute_caches
+    from pipeline.core import nvidia_driver as driver
+    from pipeline.core.runtime_install import _write_pointer
+
+    pointer = runtime_home() / 'runtime' / 'current.json'
+    try:
+        with _install_lock:
+            if _install_state.get('running'):
+                raise HTTPException(409, 'RUNTIME_BUSY')
+        # Driver maintenance checks persisted project metadata on Windows.
+        # On Linux/Ubuntu that metadata can remain "running" after a worker
+        # restart; CPU/GPU selection only needs the live model guard here.
+        maintenance = driver.cpu_maintenance() if sys.platform == 'win32' else contextlib.nullcontext()
+        with maintenance:
+            if payload.mode == 'gpu' and hardware().get('hasGpu') is not True:
+                raise HTTPException(400, 'GPU_NOT_AVAILABLE')
+            data = json.loads(pointer.read_text(encoding='utf-8')) if pointer.is_file() else {}
+            if not isinstance(data, dict):
+                raise ValueError('Invalid runtime pointer')
+            from pipeline.tts.engines import vieneu
+            # Do not block on a stale or active model-load flag. reset_client
+            # clears the singleton; existing workers keep their own runtime.
+            vieneu.reset_client()
+            from pipeline.asr.whisper import reset_whisper
+            reset_whisper()
+            data['computeMode'] = 'cpu' if payload.mode == 'cpu' else 'auto'
+            pointer.parent.mkdir(parents=True, exist_ok=True)
+            _write_pointer(pointer.parent, pointer.name, data)
+            clear_compute_caches()
+        return api_hardware()
+    except driver.RuntimeInstallError as e:
+        raise HTTPException(409, e.code) from e
+    except (OSError, ValueError) as e:
+        raise HTTPException(500, 'COMPUTE_MODE_SAVE_FAILED') from e
 
 
 def _clamp_percent(value: object) -> int | None:
@@ -1307,7 +1357,9 @@ def api_install_cpu_runtime(request: Request, payload: CpuRuntimeIn):
             # This request is excluded from ordinary activity counting; all other
             # mutating requests and queued/running jobs still prevent the switch.
             _set_install_progress(2, '', {'resumeKind': kind})
-            with driver.cpu_maintenance():
+        # Compute mode is a user setting and can be changed immediately. Jobs
+        # already running keep their current worker; new jobs use the choice.
+        with driver.cpu_maintenance(force=True):
                 return install_runtime(_set_install_progress, demucs=kind == 'demucs_cuda', compute_mode='cpu')
         return _start_install_job('cpu_runtime', work)
     except driver.RuntimeInstallError as exc:

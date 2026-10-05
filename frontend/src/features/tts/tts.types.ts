@@ -27,6 +27,7 @@ export type EngineStatus = {
   ready?: boolean
   loaded?: boolean
   loadState?: string
+  error?: string | null
   device?: string
   model?: string
   mode?: string

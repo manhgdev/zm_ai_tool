@@ -17,6 +17,19 @@ from pipeline.core import accel
 
 
 class FrozenTtsPathTest(unittest.TestCase):
+    def test_status_preserves_model_error_details_for_processing_log(self):
+        detail = 'ONNXRuntimeError: ' + 'external data path validation failed; ' * 20
+        with (
+            mock.patch.object(vieneu, "available", return_value=True),
+            mock.patch.object(vieneu, "list_preset_from_assets", return_value=[]),
+            mock.patch.object(vieneu, "_load_state", "error"),
+            mock.patch.object(vieneu, "_client_err", detail),
+            mock.patch("pipeline.tts.engines.vieneu_frozen.has_ready_worker", return_value=False),
+        ):
+            self.assertEqual(vieneu.status()["error"], detail)
+            with mock.patch.object(vieneu, "_load_state", "cold"):
+                self.assertIsNone(vieneu.status()["error"])
+
     def test_worker_status_does_not_wait_for_model_load_lock(self):
         from pipeline.tts.engines import vieneu_frozen
 

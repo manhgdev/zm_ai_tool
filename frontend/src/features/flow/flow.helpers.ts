@@ -249,6 +249,7 @@ export function flowRoutePanel(): FlowRoutePanel | null {
 }
 
 export function writeFlowRoutePanel(panel: FlowRoutePanel) {
+  if (window.location.pathname !== '/flow-veo') return;
   const url = new URL(window.location.href);
   url.searchParams.set("p", panel);
   const dest = `${url.pathname}${url.search}${url.hash}`;

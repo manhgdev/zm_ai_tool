@@ -133,7 +133,7 @@ def create_app() -> FastAPI:
         path = request.url.path
         if sys.platform != 'win32' or request.method not in ('POST', 'PUT', 'PATCH', 'DELETE') or not path.startswith('/api/'):
             return await call_next(request)
-        if path.startswith('/api/system/install/nvidia_driver') or path == '/api/system/install/cpu_runtime' or path.startswith('/api/license') or path.endswith('/cancel'):
+        if path.startswith('/api/system/install/nvidia_driver') or path in ('/api/system/install/cpu_runtime', '/api/hardware/mode') or path.startswith('/api/license') or path.endswith('/cancel'):
             return await call_next(request)
         from pipeline.core.nvidia_driver import request_activity
         from pipeline.core.runtime_download import RuntimeInstallError

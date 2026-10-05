@@ -190,13 +190,14 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
 
   useEffect(() => {
     if (!helpKey) return
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && setHelpKey(null)
+    const close = (event: KeyboardEvent) => window.location.pathname === '/media-compose' && event.key === 'Escape' && setHelpKey(null)
     window.addEventListener('keydown', close)
     return () => window.removeEventListener('keydown', close)
   }, [helpKey])
 
   useEffect(() => {
     const receiveNativeDrop = (event: Event) => {
+      if (window.location.pathname !== '/media-compose') return
       const detail = (event as CustomEvent<{ kind?: string; path?: string }>).detail
       const kind = detail?.kind
       const path = String(detail?.path || '')

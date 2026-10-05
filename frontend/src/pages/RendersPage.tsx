@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/features/project/project.api'
 import type { RenderedVideo } from '@/features/project/project.types'
 import { BackTitle } from '@/shared/components/BackTitle'
+import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import { IconDownload, IconFilm, IconRefresh } from '@/shared/components/Icons'
 import { MediaPreviewModal } from '@/shared/components/MediaPreviewModal'
 import { localize, useLocale } from '@/app/i18n'
@@ -48,6 +49,7 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
   const [textSaving, setTextSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'all' | 'video' | 'image' | 'audio' | 'srt'>('all')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{ message: string; run: () => Promise<void> } | null>(null)
 
   useEffect(() => { setPage(1); setSelectedIds(new Set()) }, [activeTab])
 
@@ -89,6 +91,7 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
   useEffect(() => {
     if (!viewing) return
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (window.location.pathname !== '/renders') return
       if (event.key === 'Escape') setViewing(null)
       if (event.key === 'ArrowLeft') moveViewing(-1)
       if (event.key === 'ArrowRight') moveViewing(1)
@@ -142,8 +145,11 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
     }
   }
 
-  async function deleteRender(item: RenderedVideo) {
-    if (!window.confirm(t(`Xóa video “${renderName(item)}”? Thao tác này không thể hoàn tác.`, `Delete video “${renderName(item)}”? This action cannot be undone.`))) return
+  async function deleteRender(item: RenderedVideo, confirmed = false) {
+    if (!confirmed) {
+      setDeleteConfirmation({ message: t(`Xóa “${renderName(item)}”? Thao tác này không thể hoàn tác.`, `Delete “${renderName(item)}”? This action cannot be undone.`), run: () => deleteRender(item, true) })
+      return
+    }
     try {
       await api.deleteRender(item.renderId)
       setItems((current) => current.filter((row) => row.renderId !== item.renderId))
@@ -156,9 +162,12 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
     }
   }
 
-  async function deleteSelected() {
+  async function deleteSelected(confirmed = false) {
     if (selectedIds.size === 0) return
-    if (!window.confirm(t(`Xóa ${selectedIds.size} mục đã chọn? Thao tác này không thể hoàn tác.`, `Delete ${selectedIds.size} selected items? This action cannot be undone.`))) return
+    if (!confirmed) {
+      setDeleteConfirmation({ message: t(`Xóa ${selectedIds.size} mục đã chọn? Thao tác này không thể hoàn tác.`, `Delete ${selectedIds.size} selected items? This action cannot be undone.`), run: () => deleteSelected(true) })
+      return
+    }
     setLoading(true)
     try {
       await api.deleteRendersBatch(Array.from(selectedIds))
@@ -174,13 +183,16 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
     }
   }
 
-  async function deleteAll() {
+  async function deleteAll(confirmed = false) {
     const count = filteredItems.length
     if (count === 0) return
     const msg = activeTab === 'all'
       ? t(`Xóa toàn bộ ${count} file đã render? Thao tác này không thể hoàn tác.`, `Delete all ${count} rendered media? This action cannot be undone.`)
       : t(`Xóa toàn bộ ${count} file trong mục “${activeTab}”? Thao tác này không thể hoàn tác.`, `Delete all ${count} items in “${activeTab}”? This action cannot be undone.`)
-    if (!window.confirm(msg)) return
+    if (!confirmed) {
+      setDeleteConfirmation({ message: msg, run: () => deleteAll(true) })
+      return
+    }
     setLoading(true)
     try {
       const idsToDelete = filteredItems.map(item => item.renderId)
@@ -399,16 +411,21 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
           viewing
             ? async () => {
                 const toDelete = viewing
-                if (filteredItems.length > 1) {
-                  moveViewing(1)
-                } else {
-                  setViewing(null)
-                }
                 await deleteRender(toDelete)
               }
             : undefined
         }
       />
+      <ConfirmDialog open={Boolean(deleteConfirmation)} danger
+        title={t('Xác nhận xóa', 'Confirm deletion')}
+        message={deleteConfirmation?.message || ''}
+        confirmLabel={t('Xóa', 'Delete')} cancelLabel={t('Hủy', 'Cancel')}
+        onCancel={() => setDeleteConfirmation(null)}
+        onConfirm={() => {
+          const action = deleteConfirmation
+          setDeleteConfirmation(null)
+          if (action) void action.run()
+        }} />
     </main>
   )
 }

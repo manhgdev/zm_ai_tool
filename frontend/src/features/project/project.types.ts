@@ -342,6 +342,7 @@ export type HardwareInfo = {
   os?: string
   gpuKind?: string
   gpuName?: string
+  hasGpu?: boolean
 }
 
 export type HardwareUsage = {
