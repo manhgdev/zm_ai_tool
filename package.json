@@ -1,12 +1,13 @@
 {
   "name": "zm-ai-tool",
   "private": true,
-  "version": "8.6.18",
+  "version": "8.6.19",
   "type": "module",
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "dev": "vite --config frontend/vite.config.ts",
     "build": "tsc -b frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
+    "test:frontend": "node --test tests/*.test.mjs",
     "test:i18n": "node --test tests/i18n.catalog.test.mjs",
     "build:app": "node build_app/build.mjs",
     "build:release:macos": "ONEFILE=0 CLEAN=1 npm run build:app && npm run check:build",

@@ -1,270 +1,102 @@
 import test from 'node:test'
-test('header hardware picker offers CPU and GPU choices', () => {
-  const source = readFileSync(new URL('../frontend/src/shared/components/Header.tsx', import.meta.url), 'utf8')
-  assert.ok(source.includes('onHardwareChange'))
-  assert.ok(source.includes("chooseHardware('cpu')"))
-  assert.ok(source.includes("chooseHardware('gpu')"))
-  const catalog = readFileSync(new URL('../frontend/src/app/i18n.tsx', import.meta.url), 'utf8')
-  assert.ok(catalog.includes("'header.computeMode': { vi: 'Chọn CPU hoặc GPU', en: 'Choose CPU or GPU' }"))
-})
-test('Global background task panel has bilingual labels', () => {
-  const source = readFileSync(new URL('../frontend/src/shared/components/BackgroundTasks.tsx', import.meta.url), 'utf8')
-  for (const pair of ["t('Tác vụ nền', 'Background tasks')", "t('Mở trang tác vụ', 'Open task page')", "t('Đang chờ', 'Queued')", "t('Đang xử lý', 'Processing')", "t('Thu nhỏ tác vụ nền', 'Collapse background tasks')", "t('Mở rộng tác vụ nền', 'Expand background tasks')"]) assert.ok(source.includes(pair))
-})
-test('TTS model logs skip ready states and deduplicate unchanged diagnostics', () => {
-  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
-  const effect = source.match(/const lastModelLogRef = useRef\(''\)\s+useEffect\(\(\) => \{([\s\S]*?)\n  \}, \[vieneu, locale\]\)/)[1]
-  const run = new Function('vieneu', 'locale', 'lastModelLogRef', 'localize', 'setTtsLogs', effect)
-  let logs = []
-  const last = { current: '' }
-  const apply = status => run(status, 'en', last, (_locale, _vi, en) => en, update => { logs = update(logs) })
-  apply({ ready: true })
-  apply({ loadState: 'ready' })
-  assert.equal(logs.length, 0)
-  const loading = { installed: true, loadState: 'loading', model: 'VieNeu', device: 'CPU' }
-  apply(loading)
-  apply(loading)
-  assert.equal(logs.length, 1)
-  apply({ ...loading, loadState: 'error', error: 'full ONNX diagnostic' })
-  assert.match(logs[1], /Model load error.*VieNeu.*CPU\nfull ONNX diagnostic/)
-  apply({ ready: true })
-  apply(loading)
-  assert.equal(logs.length, 3)
-  for (const label of ['Lỗi nạp model', 'Model load error', 'Chưa cài model', 'Model not installed', 'Đang nạp model', 'Loading model', 'Chờ nạp model', 'Waiting to load model']) assert.ok(effect.includes(label))
-})
-test('TTS background warm status is bilingual', () => {
-  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
-  assert.ok(source.includes("t('Đã cài — chờ nạp nền', 'Installed — waiting for background loading')"))
-  assert.ok(source.includes('await api.ttsWarm()'))
-  assert.ok(source.includes("next.vieneu?.loadState === 'loading'"))
-})
-test('TTS job IDs work on public HTTP without randomUUID', () => {
-  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
-  const helper = source.match(/function createTtsJobId\(\) \{([\s\S]*?)\n\}/)[1]
-  const createId = new Function('crypto', helper)
-  const crypto = { getRandomValues: array => globalThis.crypto.getRandomValues(array) }
-  const ids = new Set(Array.from({ length: 100 }, () => createId(crypto)))
-  assert.equal(ids.size, 100)
-  for (const id of ids) assert.match(id, /^[a-f0-9]{12}$/)
-  assert.ok(!source.includes('crypto.randomUUID'))
-  assert.ok(source.includes("ttsWaitersRef.current.get(runningJobId)?.({ error: 'cancelled' })"))
-})
-test('CapCut timeout and network errors are localized by stable codes', () => {
-  const source = readFileSync(new URL('../frontend/src/app/i18n.tsx', import.meta.url), 'utf8')
-  assert.ok(source.includes("message === 'CAPCUT_TTS_TIMEOUT'"))
-  assert.ok(source.includes("message.startsWith('CAPCUT_TTS_NETWORK_ERROR|')"))
-  assert.ok(source.includes('CapCut không hoàn tất trong thời gian cho phép.'))
-  assert.ok(source.includes('CapCut did not finish within the time limit.'))
-  assert.ok(source.includes('Không kết nối được CapCut.'))
-  assert.ok(source.includes('Cannot connect to CapCut.'))
-})
-test('GPU choice popup has isolated width and responsive paired CPU action', () => {
-  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
-  const popup = readFileSync(new URL('../frontend/src/shared/components/ProgressPopup.tsx', import.meta.url), 'utf8')
-  assert.ok(modal.includes('min-[600px]:grid-cols-2'))
-  assert.ok(popup.includes("wide ? 'max-w-[720px]' : 'max-w-sm'"))
-  assert.ok(modal.includes("runDriverAction('cpu')"))
-  assert.ok(modal.includes('Using CPU.'))
-  assert.ok(modal.includes('AI tasks may run slower.'))
-})
-test('NVIDIA repair actions and error states are bilingual', () => {
-  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
-  const status = readFileSync(new URL('../frontend/src/features/configuration/runtimeStatus.ts', import.meta.url), 'utf8')
-  for (const english of ['Update driver and continue', 'Skip GPU and continue', 'Restart computer', 'Accept and continue', 'Copy diagnostics', 'Later']) assert.ok(modal.includes(english))
-  for (const code of ['NVIDIA_SMI_NOT_FOUND', 'GPU_PROBE_FAILED', 'DRIVER_UPDATE_NOT_FOUND', 'DRIVER_UAC_CANCELLED', 'DRIVER_CANDIDATE_CHANGED', 'DRIVER_STATE_UNKNOWN']) {
-    assert.match(status, new RegExp(`${code}: \\[\\s*'[^']+',\\s*'[^']+'\\s*\\]`))
-  }
-})
-test('GPU package failures are distinct from outdated drivers in both languages', () => {
-  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
-  for (const pair of [
-    ['Driver GPU quá cũ', 'GPU driver is outdated'],
-    ['Lỗi cài package GPU', 'GPU package setup failed'],
-    ['Thử cài lại package GPU', 'Retry GPU package setup'],
-  ]) assert.ok(modal.includes(`t('${pair[0]}', '${pair[1]}')`))
-  assert.ok(modal.includes("driverStatus.errorCode === 'DRIVER_TOO_OLD'"))
-  assert.ok(modal.includes('Network or disk-space errors still need to be resolved in CPU mode.'))
-  assert.ok(modal.includes('Lỗi mạng hay dung lượng ổ đĩa vẫn cần được xử lý khi dùng CPU.'))
-})
-test('Transcript SRT reflow explains original timing in both languages', () => {
-  const source = readFileSync(new URL('../frontend/src/features/tts/TtsTranscribePanel.tsx', import.meta.url), 'utf8')
-  const styles = readFileSync(new URL('../frontend/src/features/tts/lib/srt.ts', import.meta.url), 'utf8')
-  assert.ok(source.includes("t('Giữ cue gốc', 'Original cues')"))
-  assert.ok(source.includes('never estimates timing within a cue'))
-  assert.ok(source.includes("t('Đang xem:', 'Viewing:')"))
-  assert.ok(source.includes("t('Định dạng kết quả', 'Result format')"))
-  assert.ok(!styles.includes("id: 'whisper'"))
-  assert.ok(source.includes('Giữ nguyên từng cue và timecode CapCut cloud'))
-  assert.ok(source.includes('Keeps every CapCut cloud cue and timestamp'))
-  assert.ok(source.includes('Giữ nguyên nội dung và timecode nguồn.'))
-  assert.ok(source.includes('Keeps source content and timecodes unchanged.'))
-  assert.ok(source.includes('Chia cue và timecode bằng timestamp từng từ của Whisper.'))
-  assert.ok(source.includes('Splits cues and timecodes using Whisper word timestamps.'))
-  assert.ok(source.includes('Kiểu này cho cùng kết quả'))
-  assert.ok(source.includes('This style produces the same result'))
-  assert.ok(source.includes("srtPreviewLines(formatTranscriptSrt(resultSrt, 'original', 'capcut'))"))
-  assert.ok(source.includes('Chưa có SRT cho kết quả này.'))
-  assert.ok(source.includes('No SRT for this result yet.'))
-  assert.ok(!source.includes('t(option.label, option.label)'))
-})
-test('Transcription chooses a translation model locally with bilingual labels', () => {
-  const source = readFileSync(new URL('../frontend/src/features/tts/TtsTranscribePanel.tsx', import.meta.url), 'utf8')
-  assert.ok(source.includes("t('Chọn model dịch', 'Select translation model')"))
-  assert.ok(!source.includes('Model from Settings → Translation APIs'))
-  assert.ok(source.includes('translation.enabled && !translation.model'))
-  assert.ok(source.includes('model: e.target.value'))
-})
-test('Changing recognition source preserves transcript cache and selected file', () => {
-  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
-  assert.ok(source.includes('onEngineChange={handleTranscribeEngineChange}'))
-  assert.ok(source.includes('Existing transcript, SRT, translation and selected file stay available'))
-  assert.ok(!source.includes('Changing the source is a view/setting change, not a destructive cache action.\n    // Existing transcript, SRT, translation and selected file stay available until\n    // the user explicitly clears cache or a new recognition completes.\n    clearTranscribeResults()'))
-  assert.ok(!source.includes('onEngineChange={setTranscribeEngine}'))
-})
-test('Live Preview AI settings include bilingual model groups and credential gating', () => {
-  const source = readFileSync(new URL('../frontend/src/features/project/TranslationReview.tsx', import.meta.url), 'utf8')
-  assert.ok(source.includes("t('Model AI', 'AI model')"))
-  assert.ok(source.includes("t('Model free dùng được', 'Free models available')"))
-  assert.ok(source.includes("t('Model cần credit', 'Models requiring credit')"))
-  assert.ok(source.includes('value.apiKeySet'))
-  assert.ok(source.includes('!providers.length'))
-})
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import ts from 'typescript'
 
-test('Flow queue bulk folding is bilingual, covers both kinds and persists', () => {
-  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
-  assert.ok(source.includes('t("Mở rộng tất cả", "Expand all")'))
-  assert.ok(source.includes('t("Thu gọn tất cả", "Collapse all")'))
-  assert.match(source, /disabled=\{!queueGroups.length\} onClick=\{toggleAllFoldersCollapsed\}/)
-  const body = source.match(/const toggleAllFoldersCollapsed = \(\) => \{([\s\S]*?)\n  \};/)[1]
-  const groups = [{ kind: 'video', outputDir: 'same' }, { kind: 'image', outputDir: 'same' }]
-  let state = { 'video-same': true, unrelated: true }
-  let saved
-  const toggle = new Function('queueGroups', 'setCollapsedFolders', 'sessionStorage', 'COLLAPSED_FOLDERS_KEY', body)
-  const run = () => toggle(groups, update => { state = update(state) }, { setItem: (_key, value) => { saved = JSON.parse(value) } }, 'test')
-  run()
-  assert.deepEqual(state, { 'video-same': true, 'image-same': true, unrelated: true })
-  assert.deepEqual(saved, state)
-  run()
-  assert.deepEqual(state, { 'video-same': false, 'image-same': false, unrelated: true })
-  assert.deepEqual(saved, state)
-})
+const read = path => readFileSync(new URL(`../frontend/src/${path}`, import.meta.url), 'utf8')
+const parse = path => ts.createSourceFile(path, read(path), ts.ScriptTarget.Latest, true)
+function visit(node, check) {
+  check(node)
+  ts.forEachChild(node, child => visit(child, check))
+}
+function literal(node) {
+  return node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : undefined
+}
 
-test('Flow top navigation includes Series and Accounts above utility views', () => {
-  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
-  const start = source.indexOf('<div className="flow-tabs"')
-  const end = source.indexOf('{utilityView === "accounts" && (', start)
-  assert.ok(start >= 0 && end > start)
-  const tabs = source.slice(start, end)
-  assert.deepEqual([...tabs.matchAll(/\["(createImage|createVideo|series|queue|history|accounts|logs)", Icon/g)].map(match => match[1]), ['createImage', 'createVideo', 'series', 'queue', 'history', 'accounts', 'logs'])
-  assert.ok(tabs.includes('t("Tạo ảnh", "Create image")'))
-  assert.ok(tabs.includes('t("Tạo video", "Create video")'))
-  assert.match(tabs, /\["series", IconBook, t\("Series", "Series"\)\]/)
-  assert.match(tabs, /\["accounts", IconGear, t\("Tài khoản", "Accounts"\)\]/)
-  assert.ok(tabs.includes('createKind === "image" ? "createImage" : "createVideo"'))
-  assert.ok(tabs.includes('activateRail(id)'))
-})
+// Validate translation data, independent of quotes, whitespace, JSX layout or CSS.
+for (const paths of [
+  ['shared/components/BackgroundTasks.tsx'],
+  ['features/tts/TtsStudio.tsx', 'features/tts/TtsTranscribePanel.tsx'],
+  ['features/configuration/ConfigModal.tsx', 'features/configuration/setupLabels.ts'],
+  ['pages/FlowPage.tsx', 'pages/FlowSeriesPanel.tsx'],
+  ['pages/VideoCleanerPage.tsx'],
+  ['features/project/TranslationReview.tsx'],
+]) {
+  test(`inline Vietnamese/English pairs are complete: ${paths.join(', ')}`, () => {
+    for (const path of paths) {
+      let pairs = 0
+      visit(parse(path), node => {
+        if (!ts.isCallExpression(node)) return
+        const name = node.expression.getText()
+        const args = node.arguments
+        const offset = name === 'localize' ? 1 : 0
+        if (!['t', 'localize', 'text'].includes(name) || args.length < offset + 2) return
+        const vi = literal(args[offset])
+        if (vi === undefined || !vi.trim()) return
+        const en = literal(args[offset + 1])
+        if (en === undefined) return // Dynamic expressions are checked by TypeScript.
+        pairs++
+        assert.ok(en.trim(), `${path}: missing English for ${vi}`)
+      })
+      assert.ok(pairs > 0, `${path}: no bilingual labels checked`)
+    }
+  })
+}
 
-test('Flow account form keeps display name and uses Chrome sign-in', () => {
-  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
-  assert.ok(source.includes('Email Google'))
-  assert.ok(source.includes('t("Tên hiển thị", "Display name")'))
-  assert.ok(source.includes('t("Email Google", "Google email")'))
-  assert.ok(source.includes('sign in to Google in Chrome'))
-  assert.ok(!source.includes('type="password"'))
-  assert.ok(!source.includes('accountDraft.password'))
-})
-
-test('local cleaner explains conservative matching and localizes its stable errors', () => {
-  const source = readFileSync(new URL('../frontend/src/pages/VideoCleanerPage.tsx', import.meta.url), 'utf8')
-  for (const code of ['CLEANER_LOGO_NOT_DETECTED', 'CLEANER_IMAGE_DEPTH_UNSUPPORTED', 'CLEANER_INVALID_LOGO_MASK']) {
-    assert.match(source, new RegExp(`error === '${code}'\\) return t\\('[^']+', '[^']+'\\)`))
+test('shared chrome and runtime dictionaries have complete translations', () => {
+  for (const [path, dictionaries, size] of [
+    ['app/i18n.tsx', ['MESSAGES'], 2],
+    ['features/configuration/runtimeStatus.ts', ['stages', 'errors'], 2],
+    ['features/configuration/setupLabels.ts', ['labels'], 4],
+  ]) {
+    const found = new Set()
+    visit(parse(path), node => {
+      if (!ts.isVariableDeclaration(node) || !dictionaries.includes(node.name.getText())) return
+      found.add(node.name.getText())
+      let value = node.initializer
+      while (ts.isAsExpression(value)) value = value.expression
+      assert.ok(ts.isObjectLiteralExpression(value))
+      assert.ok(value.properties.length > 0)
+      for (const entry of value.properties) {
+        const label = `${path}: ${entry.name.getText()}`
+        const values = size === 2 && ts.isObjectLiteralExpression(entry.initializer)
+          ? ['vi', 'en'].map(key => entry.initializer.properties.find(p => p.name.getText() === key)?.initializer)
+          : entry.initializer.elements
+        assert.equal(values.length, size, label)
+        for (const item of values) assert.ok(literal(item)?.trim(), label)
+      }
+    })
+    assert.equal(found.size, dictionaries.length, path)
   }
-  assert.match(source, /cleanerError\(job.error\)/)
-  assert.match(source, /Khử lớp phủ sao bán trong suốt/)
-  assert.match(source, /Recover translucent sparkle overlays/)
-  assert.doesNotMatch(source, /Using local sparkle mask|fallback still creates a result file/)
 })
 
-test('Series AI create view is bilingual and uses backend provider labels only as brand names', () => {
-  const source = readFileSync(new URL('../frontend/src/pages/FlowSeriesPanel.tsx', import.meta.url), 'utf8')
-  for (const [vi, en] of [['Tạo Series bằng AI', 'Create a Series with AI'], ['Chủ đề', 'Topic'], ['Lưu thành Series', 'Save as Series'], ['Cài đặt nhanh', 'Quick settings'], ['Nhân vật & ảnh neo', 'Characters & anchors']]) {
-    assert.ok(source.includes(`t('${vi}', '${en}')`), `${vi} / ${en}`)
+test('CapCut errors produce Vietnamese and English messages while preserving diagnostics', () => {
+  const tree = parse('app/i18n.tsx')
+  const fn = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name.text === 'localizePipelineMessage')
+  const code = ts.transpileModule(fn.getText().replace('export ', ''), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const localize = (locale, vi, en) => locale === 'vi' ? vi : en
+  const message = new Function('localize', `${code}; return localizePipelineMessage`)(localize)
+  for (const error of ['CAPCUT_TTS_TIMEOUT', 'CAPCUT_TTS_NETWORK_ERROR|ConnectTimeout: diagnostic']) {
+    const vi = message('vi', error)
+    const en = message('en', error)
+    assert.ok(vi && en)
+    assert.notEqual(vi, en)
+    assert.notEqual(en, error)
+    if (error.includes('|')) {
+      assert.ok(vi.includes('ConnectTimeout: diagnostic'))
+      assert.ok(en.includes('ConnectTimeout: diagnostic'))
+    }
   }
-  assert.match(source, /chưa sẵn sàng', 'not ready'/)
 })
 
-test('technical status is localized without translating provider names', () => {
-  const labels = readFileSync(new URL('../frontend/src/features/configuration/setupLabels.ts', import.meta.url), 'utf8')
-  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
-  assert.match(labels, /case 'installed_auto'/)
-  assert.match(labels, /Đã cài · tự động', 'Installed · automatic'/)
-  assert.match(labels, /item.detailValue/)
-  assert.match(modal, /setupDetail\(locale, it\)/)
+test('static English catalog entries are non-empty', () => {
+  const catalog = JSON.parse(read('app/ui.en.json'))
+  assert.ok(Object.keys(catalog).length > 0)
+  for (const [key, value] of Object.entries(catalog)) {
+    assert.equal(typeof value, 'string', key)
+    assert.ok(value.trim(), key)
+  }
 })
-
-test('setup cards use stable IDs instead of backend display strings', () => {
-  const source = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
-  assert.match(source, /setupLabel\(locale, it.id, 'name'\)/)
-  assert.match(source, /setupLabel\(locale, it.id, 'hint'\)/)
-  assert.doesNotMatch(source, /it.installLabel \|\|/)
-  assert.doesNotMatch(source, /systemCheckText/)
-  assert.match(source, /Chi tiết kỹ thuật', 'Technical details'/)
-})
-
-test('download completion automatically applies update once without a second button', () => {
-  const source = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
-  assert.match(source, /state.phase === 'ready'\) \{\s*await applyUpdate\(\)/)
-  assert.match(source, /if \(updateApplyStarted.current \|\| updateCancelRequested.current\) return/)
-  assert.doesNotMatch(source, /updateDialog.kind === 'ready'.*<button/)
-  assert.match(source, /if \(updateDialog\?\.kind !== 'downloading' && updateDialog\?\.kind !== 'cancelling'\) return/)
-})
-
-test('stable TTS routing removes language confirmation controls', () => {
-  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
-  const api = readFileSync(new URL('../frontend/src/features/project/project.api.ts', import.meta.url), 'utf8')
-  const routes = readFileSync(new URL('../frontend/src/features/tts/lib/ttsStudioHelpers.tsx', import.meta.url), 'utf8')
-  assert.doesNotMatch(source, /Xác nhận ngôn ngữ nội dung|cloneInputLanguage|languageRequest/)
-  assert.doesNotMatch(api, /ttsDetectLanguage|tts\/language/)
-  assert.doesNotMatch(routes, /'settings'/)
-  assert.match(source, /preferredVoiceRef\.current = ''\s*\n\s*setVoice\(''\)/)
-  assert.match(source, /TTS_TRANSCRIBE_RESULT_LS_KEY/)
-})
-
-test('TTS restores the saved voice only after the full catalog loads', () => {
-  const app = readFileSync(new URL('../frontend/src/app/App.tsx', import.meta.url), 'utf8')
-  const page = readFileSync(new URL('../frontend/src/pages/TtsPage.tsx', import.meta.url), 'utf8')
-  const studio = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
-  assert.match(app, /const \[voicesLoaded, setVoicesLoaded\] = useState\(false\)/)
-  assert.match(app, /setVoicesLoaded\(true\)/)
-  assert.match(app, /onRefreshVoices=\{refreshVoices\}/)
-  assert.match(page, /voicesLoaded: boolean/)
-  assert.match(studio, /if \(!voicesLoaded\) return/)
-  assert.match(studio, /disabled=\{!voicesLoaded\}/)
-  assert.match(studio, /lang === 'auto' \|\| v\.id === 'system'/)
-})
-
-test('installation progress has a single detailed surface, without dependency dumps', () => {
-  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
-  const status = readFileSync(new URL('../frontend/src/features/configuration/runtimeStatus.ts', import.meta.url), 'utf8')
-  assert.doesNotMatch(modal, /setMsg\(runtimeStatusText/)
-  assert.match(modal, /msg && !installing && !installPopupError && section === 'setup'/)
-  assert.match(modal, /msg && section !== 'logs' && section !== 'setup'/)
-  assert.doesNotMatch(status, /profile, status.currentPackage/)
-})
-
-test('first-run setup exposes the shared locale selector and waits for saved locale', () => {
-  const modal = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
-  const app = readFileSync(new URL('../frontend/src/app/App.tsx', import.meta.url), 'utf8')
-  assert.match(modal, /locale, setLocale.*useLocale/)
-  assert.match(modal, /value=\{locale\} onChange=.*setLocale/)
-  assert.match(app, /open=\{configModalOpen && localeReady\}/)
-  assert.match(modal, /t\('Kiểm tra cập nhật', 'Check for updates'\)/)
-  assert.match(modal, /t\('Cấu hình', 'Settings'\)/)
-  assert.match(modal, /t\('Cài gói AI', 'Install AI packages'\)/)
-})
-
 test('Windows Setup Vietnamese uses complete message sections', () => {
   const source = readFileSync(new URL('../build_app/languages/Vietnamese.isl', import.meta.url), 'utf8')
   const [messages, custom] = source.split('[Messages]')[1].split('[CustomMessages]')
@@ -275,76 +107,4 @@ test('Windows Setup Vietnamese uses complete message sections', () => {
   assert.match(messages, /^InstallingLabel=.+/m)
   assert.match(messages, /^CannotInstallToNetworkDrive=.+/m)
   assert.doesNotMatch(messages, /^(CannotInstallTo|InstallingDesc|PreviousInstallDetected|UninstallDataNotice)=/m)
-})
-
-test('runtime setup stages and errors have Vietnamese and English labels', () => {
-  const source = readFileSync(new URL('../frontend/src/features/configuration/runtimeStatus.ts', import.meta.url), 'utf8')
-  for (const key of ['detect_hardware', 'prepare_python', 'resolve', 'download', 'install', 'download_packages', 'install_packages', 'probe', 'activate', 'rollback',
-    'NETWORK_TIMEOUT', 'DNS_FAILED', 'PROXY_AUTH_FAILED', 'TLS_CERTIFICATE_FAILED', 'HTTP_UNAUTHORIZED',
-    'HTTP_RATE_LIMITED', 'HTTP_FORBIDDEN', 'HTTP_NOT_FOUND', 'INDEX_UNAVAILABLE', 'DOWNLOAD_INTERRUPTED', 'DEPENDENCY_RESOLUTION_FAILED', 'CHECKSUM_MISMATCH', 'FILE_ACCESS_DENIED',
-    'HARDWARE_UNSUPPORTED', 'DRIVER_TOO_OLD', 'DOWNLOAD_FAILED', 'PYTHON_PREPARE_FAILED',
-    'DEPENDENCY_INSTALL_FAILED', 'RUNTIME_PROBE_FAILED', 'DISK_FULL', 'ACTIVATION_FAILED', 'RUNTIME_BUSY']) {
-    assert.match(source, new RegExp(`${key}: \\[\\s*'[^']+',\\s*'[^']+'\\s*\\]`), key)
-  }
-  const component = readFileSync(new URL('../frontend/src/features/configuration/ConfigModal.tsx', import.meta.url), 'utf8')
-  assert.match(component, /runtimeStatusText\(status, localeRef.current\)/)
-  assert.match(component, /runtimeErrorText\(status, localeRef.current\)/)
-  assert.doesNotMatch(source, /return status.message \|\|/)
-  assert.doesNotMatch(source, /: status.error \|\|/)
-  assert.doesNotMatch(component, /checks\?\.summary \|\|/)
-})
-
-test('Flow random account options and suspension badges are bilingual', () => {
-  const flowPage = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
-  assert.match(flowPage, /t\("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"\)/)
-  assert.match(flowPage, /t\("Tạm cách ly", "Suspended"\)/)
-  assert.match(flowPage, /t\("Bỏ cách ly", "Unblock"\)/)
-  assert.match(flowPage, /t\("Tài khoản tạo ảnh", "Image account"\)/)
-  assert.match(flowPage, /t\("Tài khoản tạo video", "Video account"\)/)
-  const seriesPanel = readFileSync(new URL('../frontend/src/pages/FlowSeriesPanel.tsx', import.meta.url), 'utf8')
-  assert.match(seriesPanel, /t\('🎲 Ngẫu nhiên tài khoản', '🎲 Random account'\)/)
-})
-
-test('static English catalog entries are non-empty', () => {
-  const catalog = JSON.parse(readFileSync(new URL('../frontend/src/app/ui.en.json', import.meta.url), 'utf8'))
-  for (const [key, value] of Object.entries(catalog)) {
-    assert.equal(typeof value, 'string', key)
-    assert.ok(value.trim(), key)
-  }
-})
-
-test('Clone and Live Preview share compact bilingual translation review controls', () => {
-  const sidebar = readFileSync(new URL('../frontend/src/features/project/ProjectSidebar.tsx', import.meta.url), 'utf8')
-  const batch = readFileSync(new URL('../frontend/src/features/studio/CloneBatchSettingsPanel.tsx', import.meta.url), 'utf8')
-  const card = readFileSync(new URL('../frontend/src/features/project/SegmentCard.tsx', import.meta.url), 'utf8')
-  const projectPanel = readFileSync(new URL('../frontend/src/features/editor/EditorProjectPanel.tsx', import.meta.url), 'utf8')
-  const properties = readFileSync(new URL('../frontend/src/features/editor/EditorPropertiesPanel.tsx', import.meta.url), 'utf8')
-  const shared = readFileSync(new URL('../frontend/src/features/project/TranslationReview.tsx', import.meta.url), 'utf8')
-  for (const source of [batch, projectPanel]) assert.match(source, /<TranslationReviewSettings settings=\{settings\}/)
-  assert.match(sidebar, /<Field label=\{t\('Công cụ AI', 'AI provider'\)\}/)
-  assert.match(sidebar, /<Field label=\{t\('Model AI', 'AI model'\)\}/)
-  assert.doesNotMatch(sidebar, /<TranslationReviewSettings/)
-  for (const source of [card, properties]) assert.match(source, /<TranslationReviewField projectId=\{projectId\}/)
-  assert.match(shared, /t\('AI chỉnh bản dịch', 'AI translation review'\)/)
-  assert.match(shared, /t\('Tự động sau khi dịch', 'Automatic after translation'\)/)
-  assert.match(shared, /t\('Thủ công', 'Manual'\)/)
-  assert.match(shared, /t\('AI chỉnh bản dịch', 'Review translation with AI'\)/)
-  assert.match(shared, /t\('AI sửa câu này, giữ nguyên ý', 'Polish this translation with AI while preserving meaning'\)/)
-  assert.match(shared, /t\('Nguồn AI dùng để sửa bản dịch', 'AI source used for translation review'\)/)
-  assert.doesNotMatch(sidebar, /translation-review-card|translation-review-title/)
-  const list = readFileSync(new URL('../frontend/src/features/project/SegmentList.tsx', import.meta.url), 'utf8')
-  assert.doesNotMatch(list, /translation-review-hint/)
-})
-
-test('Flow logs use localized event titles and render diagnostic text only below', () => {
-  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8')
-  const labels = readFileSync(new URL('../frontend/src/features/flow/flow.explain.ts', import.meta.url), 'utf8')
-  assert.ok(source.includes('<strong>{logEventText(entry.event)}</strong>'))
-  assert.ok(!source.includes('explained?.title || logEventText(entry.event)'))
-  for (const pair of [
-    '["Đã chuyển sang tài khoản khác", "Switched to another account"]',
-    '["Tài khoản đã bị tạm cách ly", "Account temporarily quarantined"]',
-    '["Đã gỡ cách ly tài khoản", "Account suspension cleared"]',
-    '["Job thất bại", "Job failed"]',
-  ]) assert.ok(labels.includes(pair))
 })

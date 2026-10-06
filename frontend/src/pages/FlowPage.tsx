@@ -981,6 +981,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const deletingAllRef = useRef(false);
   // deletingIdsRef is declared earlier (before onFlowRealtime) so the SSE callback can read it
   const [actionBusy, setActionBusy] = useState(false);
+  const [retryBusy, setRetryBusy] = useState(false);
+  const retryBusyRef = useRef(false);
   const runAction = async (action: () => void | Promise<unknown>) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -1327,6 +1329,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         toast.error(msg);
       });
   const openRetrySettings = (retryJobs: FlowJob[], opts?: { askIncludeDone?: boolean }) => {
+    if (retryBusyRef.current) return;
     const job = retryJobs[0];
     if (!job) return;
     const doneJobs = retryJobs.filter((item) => item.status === "done");
@@ -1337,18 +1340,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const initialJobs = showIncludeDone ? retryOnlyJobs : retryJobs;
     const selectedJob = initialJobs[0] || job;
     const onlineAccounts = accounts.filter(isFlowAccountConnected);
-    const resolvedAccountId =
+    const resolvedAccountId = selectedJob.randomAccount ? "random" : (
       (onlineAccounts.some((account) => account.id === selectedJob.accountId) ? selectedJob.accountId : "")
-      || accounts.find((account) => account.id === selectedJob.accountId)?.id
-      || accounts.find((account) => account.label === selectedJob.account)?.id
+      || onlineAccounts.find((account) => account.label === selectedJob.account)?.id
       || onlineAccounts[0]?.id
-      || accounts[0]?.id
-      || "";
+      || "random");
     const groups = [...new Set(initialJobs.map((item) => `${item.kind}:${item.mode}`))].map((groupKey) => {
       const [kind, mode] = groupKey.split(":") as [CreateKind, ImageMode | VideoMode];
       const groupJobs = initialJobs.filter((item) => item.kind === kind && item.mode === mode);
       const first = groupJobs[0];
-      const groupAccountId = onlineAccounts.some((account) => account.id === first.accountId)
+      const groupAccountId = first.randomAccount ? "random" : onlineAccounts.some((account) => account.id === first.accountId)
         ? (first.accountId || resolvedAccountId) : resolvedAccountId;
       return {
         kind,
@@ -1388,7 +1389,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     if (job) openRetrySettings([job]);
   };
   const confirmRetryJob = () => {
-    if (!retryTarget) return;
+    if (!retryTarget || retryBusyRef.current) return;
     const { jobs: retryJobs, concurrency } = retryTarget;
     const groups = retryTarget.groups.length === 1
       ? [{ ...retryTarget.groups[0], mode: retryTarget.mode, model: retryTarget.model, ratio: retryTarget.ratio, duration: retryTarget.duration, resolution: retryTarget.resolution, quality: retryTarget.quality, count: retryTarget.count, accountId: retryTarget.accountId }]
@@ -1397,21 +1398,25 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       toast.error(t("Chọn tài khoản Flow còn online để chạy lại.", "Pick an online Flow account to retry."));
       return;
     }
+    retryBusyRef.current = true;
+    setRetryBusy(true);
     setRetryTarget(null);
     const retryRequests = groups.flatMap((group) => {
       const retrySettings = /omni.*flash/i.test(group.model) && group.duration.trim()
         ? { model: group.model, ratio: group.ratio, duration: group.duration, resolution: group.resolution, quality: group.quality, count: group.count, concurrency }
         : { model: group.model, ratio: group.ratio, resolution: group.resolution, quality: group.quality, count: group.count, concurrency };
-      return group.jobs.map((job) => flowRequest(`/api/flow/jobs/${job.id}/retry`, {
+      return group.jobs.map((job) => flowRequest<Record<string, unknown>>(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accountId: group.accountId, mode: group.mode, settings: retrySettings, fresh: retryTarget.fresh, headless: retryTarget.headless }),
-      }));
+      }).then(updateJob));
     });
-    void Promise.all(retryRequests)
-      .then(async () => {
+    void Promise.allSettled(retryRequests)
+      .then(async (results) => {
         const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
         setJobs(normalizeFlowJobs(data.jobs, accounts));
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
         toast.success(
           retryJobs.every((job) => job.status === "done")
             ? t(`Đã đưa ${retryJobs.length} job vào hàng đợi tạo mới.`, `Queued ${retryJobs.length} jobs to create new media.`)
@@ -1422,6 +1427,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         const msg = error instanceof Error ? error.message : String(error);
         setApiError(msg);
         toast.error(msg);
+      })
+      .finally(() => {
+        retryBusyRef.current = false;
+        setRetryBusy(false);
       });
   };
   const deleteWebFlowOutputs = async (job: FlowJob) => {
@@ -2925,7 +2934,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 <button className="flow-text-button" type="button" disabled={!queueGroups.length} onClick={toggleAllFoldersCollapsed}>
                   {allFoldersCollapsed ? t("Mở rộng tất cả", "Expand all") : t("Thu gọn tất cả", "Collapse all")}
                 </button>
-                <button className="flow-text-button" type="button" disabled={actionBusy || !jobs.some(canRetryJob)} onClick={retryAllJobs}>{jobs.filter(canRetryJob).every(isFreshCreateJob) && jobs.some(canRetryJob) ? t("Tạo mới tất cả", "Create all new") : t("Chạy lại tất cả", "Retry all")}</button>
+                <button className="flow-text-button" type="button" disabled={actionBusy || retryBusy || jobs.some((job) => job.status === "queued" || job.status === "processing") || !jobs.some(canRetryJob)} onClick={retryAllJobs}>{jobs.filter(canRetryJob).every(isFreshCreateJob) && jobs.some(canRetryJob) ? t("Tạo mới tất cả", "Create all new") : t("Chạy lại tất cả", "Retry all")}</button>
                 <button className="flow-text-button" type="button" disabled={!jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={cancelAllJobs}>{t("Hủy tất cả", "Cancel all")}</button>
                 <button className="flow-text-button is-danger" type="button" disabled={!jobs.length} onClick={deleteAllJobs}>{t("Xóa tất cả", "Delete all")}</button>
               </div>
@@ -2988,7 +2997,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         <div className="flow-queue-folder-actions">
                           <button className="flow-text-button" type="button" onClick={() => openSrtImageWithFlowFolder(queueFolderLabel(group.kind, group.outputDir, group.outputFolder, group.displayOutputFolder))}>{t("Ghép", "Merge")}</button>
                           {(folderHasRetryErrors || folderDoneOnly) && (
-                            <button className="flow-text-button is-retry" type="button" disabled={actionBusy} onClick={() => retryFolderJobs(group.outputDir, group.kind, group.jobs)}>
+                            <button className="flow-text-button is-retry" type="button" disabled={actionBusy || retryBusy || group.jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={() => retryFolderJobs(group.outputDir, group.kind, group.jobs)}>
                               {folderHasRetryErrors ? t("Chạy lại", "Retry") : t("Tạo mới", "Create new")}
                             </button>
                           )}
@@ -3081,7 +3090,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                                 </button>
                               )}
                             {canRetryJob(job) && (
-                                <button type="button" onClick={() => retryJob(job.id)}>
+                                <button type="button" disabled={actionBusy || retryBusy} onClick={() => retryJob(job.id)}>
                                   {retryActionLabel(job)}
                                 </button>
                               )}
@@ -3324,6 +3333,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             <button
                               type="button"
                               onClick={() => retryJob(job.id)}
+                              disabled={actionBusy || retryBusy || !canRetryJob(job)}
                             >
                               {retryActionLabel(job)}
                             </button>
@@ -3522,7 +3532,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                                 resolution: first.settings.resolution || "",
                                 quality: first.settings.quality || "",
                                 count: Math.max(1, Math.min(4, Number((first.settings as { count?: number }).count) || 1)),
-                                accountId: first.accountId || current.accountId,
+                                accountId: current.accountId,
                               };
                             }),
                           };
@@ -3639,9 +3649,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   </div>
                 </label>
                 <FlowSelect
-                  label={t("Tài khoản", "Account")}
+                  label={retryTarget.groups.length > 1 ? t("Áp dụng tài khoản cho mọi nhóm", "Apply account to all groups") : t("Tài khoản", "Account")}
                   value={retryTarget.accountId}
-                  onChange={(accountId) => setRetryTarget((current) => current ? { ...current, accountId } : current)}
+                  onChange={(accountId) => setRetryTarget((current) => current ? { ...current, accountId, groups: current.groups.map((group) => ({ ...group, accountId })) } : current)}
                   options={["random", ...accounts.filter(isFlowAccountConnected).map((account) => account.id)]}
                   optionLabels={{
                     random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
@@ -3660,7 +3670,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             </div>
               <footer>
                 <button type="button" onClick={() => setRetryTarget(null)}>{t("Quay lại", "Go back")}</button>
-                <button type="button" className="is-primary" onClick={confirmRetryJob} disabled={!retryTarget.jobs.length || !retryTarget.accountId}>{retryActionLabel(retryTarget.jobs)}</button>
+                <button type="button" className="is-primary" onClick={confirmRetryJob} disabled={retryBusy || !retryTarget.jobs.length || !retryTarget.accountId}>{retryActionLabel(retryTarget.jobs)}</button>
               </footer>
             </section>
           </div>
