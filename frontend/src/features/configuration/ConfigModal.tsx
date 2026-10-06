@@ -1480,8 +1480,9 @@ export default function ConfigModal({
                 id="cfg-output-root-save"
                 type="button"
                 className="cfg-primary"
-                disabled={outputRootSaving}
+                disabled={outputRootSaving || !licenseStatus?.valid}
                 onClick={async () => {
+                  if (!licenseStatus?.valid) return
                   const raw = outputRoot.trim()
                   if (raw && !raw.match(/^([A-Za-z]:[/\\]|\/)/)) {
                     toast.error(t('Phải là đường dẫn tuyệt đối', 'Must be an absolute path'))
@@ -1506,9 +1507,10 @@ export default function ConfigModal({
                 <button
                   type="button"
                   className="cfg-secondary"
-                  disabled={outputRootSaving}
+                  disabled={outputRootSaving || !licenseStatus?.valid}
                   title={t('Đặt lại mặc định', 'Reset to default')}
                   onClick={async () => {
+                    if (!licenseStatus?.valid) return
                     setOutputRootSaving(true)
                     try {
                       await api.saveOutputRoot('')
