@@ -485,7 +485,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       const seen = new Set<string>(JSON.parse(localStorage.getItem(key) || "[]"));
       const fresh = events.filter((event) => event && !seen.has(event.id));
       if (!fresh.length) return;
-      const next = { ...settings, imageModel: "Nano Banana 2", model: createKind === "image" ? "Nano Banana 2" : settings.model };
+      const next = { ...settings, imageModel: "Nano Banana 2.1", model: createKind === "image" ? "Nano Banana 2.1" : settings.model };
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
       fresh.forEach((event) => { if (event) seen.add(event.id); });
       localStorage.setItem(key, JSON.stringify([...seen]));
@@ -1205,7 +1205,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         displayOutputFolder: effectiveSettings.outputDir || "",
         error: null,
         settings: {
-          model: effectiveSettings.model || (createKind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"),
+          model: effectiveSettings.model || (createKind === "image" ? "Nano Banana 2.1" : "Veo 3.1 - Fast"),
           ratio: effectiveSettings.ratio || "16:9",
           duration: String(effectiveSettings.duration || ""),
           resolution: effectiveSettings.resolution || (createKind === "image" ? "1K" : ""),
@@ -2216,8 +2216,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   )}
 
                   {account.lastModelFallback && <details>
-                    <summary>{t("Pro hết hạn mức → Nano Banana 2", "Pro quota reached → Nano Banana 2")}</summary>
-                    <p>{t("Nano Banana Pro đã đạt hạn mức. Đã chuyển sang Nano Banana 2 và lên lịch tạo lại.", "Nano Banana Pro reached its quota. Switched to Nano Banana 2 and scheduled a retry.")}</p>
+                    <summary>{t("Pro hết hạn mức → Nano Banana 2.1", "Pro quota reached → Nano Banana 2.1")}</summary>
+                    <p>{t("Nano Banana Pro đã đạt hạn mức. Đã chuyển sang Nano Banana 2.1 và lên lịch tạo lại.", "Nano Banana Pro reached its quota. Switched to Nano Banana 2.1 and scheduled a retry.")}</p>
                     <pre style={{ whiteSpace: "pre-wrap" }}>{technicalFlowDetail(account.lastModelFallback.rawError)}</pre>
                     <button type="button" onClick={() => void copyText(technicalFlowDetail(account.lastModelFallback?.rawError))}>{t("Copy lỗi", "Copy error")}</button>
                   </details>}

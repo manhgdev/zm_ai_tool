@@ -53,7 +53,7 @@ _PROFILE_COPY_IGNORES = {
     # it is not part of the Google session state needed by Flow.
     "RunningChromeVersion",
 }
-_IMAGE_UI_MODELS = {"Nano Banana Pro", "Nano Banana 2", "Nano Banana 2 Lite"}
+_IMAGE_UI_MODELS = {"Nano Banana Pro", "Nano Banana 2.1", "Nano Banana 2", "Nano Banana 2 Lite"}
 _VIDEO_UI_MODELS = {
     "Omni 1.1 Flash", "Veo 3.1 - Lite", "Veo 3.1 - Fast",
     "Veo 3.1 - Quality", "Veo 3.1 - Lite [Lower Priority]",
@@ -921,6 +921,17 @@ async def _click_settings_pill(pill, tabs) -> bool:
     return False
 
 
+async def _dismiss_flow_whats_new(page) -> None:
+    """Acknowledge an optional announcement, never the generation button."""
+    buttons = page.get_by_role("button", name=re.compile(r"^(?:Bắt đầu|Get started|Start)$", re.I))
+    for index in range(await buttons.count()):
+        button = buttons.nth(index)
+        if await button.is_visible() and await button.is_enabled():
+            await button.click(timeout=5_000)
+            await button.wait_for(state="hidden", timeout=10_000)
+            return
+
+
 async def _disable_flow_agent_mode(page) -> None:
     """Agent mode hides the mode/model settings pill behind a chat composer."""
     try:
@@ -930,6 +941,7 @@ async def _disable_flow_agent_mode(page) -> None:
         ).first.wait_for(state="visible", timeout=15_000)
     except Exception:
         return
+    await _dismiss_flow_whats_new(page)
     chip = page.locator("button.agent-mode-chip[aria-pressed='true']")
     if await chip.count():
         await chip.first.click()
@@ -1763,6 +1775,7 @@ class FlowService:
                 f"{FLOW_BASE_URL}/project/{project_id}",
                 wait_until="domcontentloaded", timeout=30_000,
             )
+        await _dismiss_flow_whats_new(page)
         await _disable_flow_agent_mode(page)
         await page.wait_for_selector(".settings-trigger-button", state="visible", timeout=15_000)
         controls = page.locator(_FLOW_CONTROL_SELECTOR)
@@ -2570,6 +2583,7 @@ class FlowService:
                     break
                 await asyncio.sleep(0.5)
             if "/404" not in str(page.url or ""):
+                await _dismiss_flow_whats_new(page)
                 return account
         except RuntimeError as exc:
             if "FLOW_PROJECT_NOT_FOUND" not in str(exc):
@@ -2587,6 +2601,7 @@ class FlowService:
             if persisted_id and persisted_id != old_id:
                 self._bind_flow_project(api, client, persisted_id)
                 await client._ensure_project_page(page)
+                await _dismiss_flow_whats_new(page)
                 return {**account, **persisted}
             self._log(
             "warning",
@@ -2619,6 +2634,7 @@ class FlowService:
                 details={"oldProjectId": old_id, "projectId": new_id},
             )
             await client._ensure_project_page(page)
+            await _dismiss_flow_whats_new(page)
             return {**account, **patch}
         finally:
             recovery_lock.release()
@@ -3610,7 +3626,10 @@ class FlowService:
                 choice = choices.nth(index)
                 text = (await choice.inner_text()).strip()
                 if await choice.is_visible() and _match_model_choice(model, text):
-                    await choice.click()
+                    # Flow's nested CDK overlays can intercept a coordinate click.
+                    # Dispatch on the visible option, then wait for its menu to close.
+                    await choice.dispatch_event("click", timeout=5_000)
+                    await choice.wait_for(state="hidden", timeout=10_000)
                     selected = True
                     break
             if not selected:
@@ -3620,6 +3639,8 @@ class FlowService:
                     if await choice.is_visible():
                         visible_texts.append((await choice.inner_text()).strip())
                 raise RuntimeError(f"FLOW_MODEL_UNAVAILABLE: {model} — available: {visible_texts}")
+        if not await _model_pill_matches(model):
+            raise RuntimeError(f"FLOW_SETTING_MISMATCH: model {model} was not selected")
 
 
     async def _prepare_ui_format(
@@ -3635,6 +3656,7 @@ class FlowService:
         Recent Flow builds label aspect tabs ``16:9``/``9:16``/``1:1`` rather
         than the older Landscape/Portrait/Square labels used by flow-py.
         """
+        await _dismiss_flow_whats_new(page)
         async def visible_tab(label: str | re.Pattern[str]):
             if page.is_closed():
                 raise RuntimeError("Target page, context or browser has been closed")
@@ -3884,11 +3906,11 @@ class FlowService:
             raise RuntimeError(f"FLOW_UI_CHANGED: aspect ratio {ratio_label} was not found")
         if not await _flow_control_is_selected(ratio_tab):
             await ratio_tab.scroll_into_view_if_needed()
-            await ratio_tab.click(force=True)
+            await ratio_tab.click(timeout=5_000)
             await asyncio.sleep(0.5)
         if not await _flow_control_is_selected(ratio_tab):
             # Second retry — UI may lag on slow machines
-            await ratio_tab.click(force=True)
+            await ratio_tab.click(timeout=5_000)
             await asyncio.sleep(0.8)
         if not await _flow_control_is_selected(ratio_tab):
             # mat-button-toggle ancestor fallback

@@ -123,7 +123,7 @@ export type Asset = { id: string; name: string; label: string; locked: boolean }
 export type Series = { id: string; title: string; description: string; bible: string; anchorAssets: string[]; assets: Asset[]; episodes: Episode[] }
 
 export const VIDEO_MODELS = ['Veo 3.1 - Lite', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Omni 1.1 Flash'] as const
-export const IMAGE_MODELS = ['Nano Banana Pro', 'Nano Banana 2', 'Nano Banana 2 Lite'] as const
+export const IMAGE_MODELS = ['Nano Banana Pro', 'Nano Banana 2.1', 'Nano Banana 2 Lite'] as const
 export const SERIES_SETTINGS_KEY = 'zm-flow-series:settings:v1'
 export const SERIES_SELECTED_ID_KEY = 'zm-flow-series:selected-id:v1'
 export const SERIES_TAB_KEY = 'zm-flow-series:active-tab:v1'

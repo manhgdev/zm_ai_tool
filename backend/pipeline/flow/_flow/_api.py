@@ -80,6 +80,7 @@ IMAGE_AR_SQUARE    = "IMAGE_ASPECT_RATIO_SQUARE"      # 1:1
 def ui_to_api_image_model(ui_name: str) -> str:
     """Map Flow UI model display name → API imageModelName constant."""
     return {
+        "Nano Banana 2.1":    IMAGE_MODEL_NARWHAL,
         "Nano Banana 2":      IMAGE_MODEL_NARWHAL,
         "Nano Banana Pro":    IMAGE_MODEL_NARWHAL,  # same key, plan-tier guard is in service.py
         "Nano Banana 2 Lite": IMAGE_MODEL_IMAGEN3,

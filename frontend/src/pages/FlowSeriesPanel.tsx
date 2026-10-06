@@ -149,7 +149,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
     }
   })
   const [imageModel, setImageModel] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(SERIES_SETTINGS_KEY) || '{}').imageModel || 'Nano Banana 2' } catch { return 'Nano Banana 2' }
+    try { return JSON.parse(localStorage.getItem(SERIES_SETTINGS_KEY) || '{}').imageModel || 'Nano Banana 2.1' } catch { return 'Nano Banana 2.1' }
   })
   const selectedAccount = (seriesSettings.accountId === 'random' ? accounts.find((a) => a.status === 'online' && (a.plan === 'Ultra' || a.plan === 'Pro' || a.plan === 'Plus')) : undefined) || accounts.find((account) => account.id === seriesSettings.accountId) || accounts[0]
   const videoSection = selectedAccount?.capabilityStatus === 'verified' ? selectedAccount.capabilityCatalog?.video : undefined

@@ -93,7 +93,7 @@ export function clampFlowImageResolution(
 
 export const FLOW_IMAGE_MODELS = [
   "Nano Banana Pro",
-  "Nano Banana 2",
+  "Nano Banana 2.1",
   "Nano Banana 2 Lite",
 ] as const;
 
@@ -111,7 +111,7 @@ export function settingsForCreateKind(settings: FlowSettings, kind: CreateKind):
     : (settings.videoAccount || settings.account);
   return {
     ...settings,
-    model: model || (kind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"),
+    model: model || (kind === "image" ? "Nano Banana 2.1" : "Veo 3.1 - Fast"),
     account: account || settings.account,
   };
 }
@@ -189,7 +189,7 @@ export function readText(key: string, fallback: string) {
 
 export function readSettings(): FlowSettings {
   const fallback: FlowSettings = {
-    model: "Veo 3.1 - Fast", videoModel: "Veo 3.1 - Fast", imageModel: "Nano Banana 2",
+    model: "Veo 3.1 - Fast", videoModel: "Veo 3.1 - Fast", imageModel: "Nano Banana 2.1",
     ratio: "16:9", imageRatio: "16:9", duration: "8", count: 1, imageCount: 1,
     account: "Ultra 01",
     videoAccount: "Ultra 01",
@@ -209,7 +209,9 @@ export function readSettings(): FlowSettings {
     if (merged.model === "Omni Flash") merged.model = "Omni 1.1 Flash";
     if (merged.videoModel === "Omni Flash") merged.videoModel = "Omni 1.1 Flash";
     if (merged.model === "Veo 3.1 - Lite [Lower Priority]") merged.model = fallback.videoModel;
-    if (/^Imagen 3/i.test(merged.model)) merged.model = "Nano Banana 2";
+    if (merged.model === "Nano Banana 2") merged.model = "Nano Banana 2.1";
+    if (merged.imageModel === "Nano Banana 2") merged.imageModel = "Nano Banana 2.1";
+    if (/^Imagen 3/i.test(merged.model)) merged.model = "Nano Banana 2.1";
     if (!String(merged.videoModel || "").trim()) merged.videoModel = fallback.videoModel;
     if (!String(merged.imageModel || "").trim()) merged.imageModel = fallback.imageModel;
     if (!["16:9", "9:16", "1:1", "4:3", "3:4"].includes(merged.imageRatio)) merged.imageRatio = fallback.imageRatio;
@@ -262,7 +264,7 @@ export function writeFlowRoutePanel(panel: FlowRoutePanel) {
 export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts: FlowAccount[]): FlowJob[] {
   return rows.map((raw) => {
     const s = raw.settings && typeof raw.settings === "object" ? raw.settings as Record<string, unknown> : {};
-    const savedModel = String(s.model || (raw.kind === "image" ? "Nano Banana 2" : "Veo 3.1 - Fast"));
+    const savedModel = String(s.model || (raw.kind === "image" ? "Nano Banana 2.1" : "Veo 3.1 - Fast"));
     const savedMode = String(raw.mode || "");
     return {
       id: String(raw.id),
