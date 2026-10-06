@@ -649,7 +649,9 @@ export default function ConfigModal({
       }
     }
     try {
-      const result = kind === 'ai_runtime'
+      const result = kind === 'audio8_runtime'
+        ? await api.installResource('audio8')
+        : kind === 'ai_runtime'
         ? await api.installAiRuntime(onStatus)
         : kind === 'ocr_cuda'
           ? await api.installOcrCuda(onStatus)

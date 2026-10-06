@@ -30,6 +30,17 @@ _VOICES_JSON = Path(__file__).resolve().parent / "voices_capcut.json"
 _cc_voices_cache: list[dict[str, Any]] | None = None
 
 
+def _is_zmtss_audio8_voice(voice: str) -> bool:
+    """Catalog IDs are also accepted without the legacy ``zmt:`` prefix."""
+    if not voice or voice.startswith(("audio8:", "zmt:")):
+        return voice.startswith(("audio8:", "zmt:"))
+    try:
+        from . import zmtss_catalog
+        return bool(zmtss_catalog.get(voice))
+    except Exception:
+        return False
+
+
 def _engine_of(voice: str) -> str:
     """Return a stable engine label for diagnostic messages."""
     value = voice or ""
@@ -254,7 +265,7 @@ def synthesize_raw(
             )
         vieneu_engine.synthesize(text, resolved, out_wav, style=style)
         return
-    if resolved.startswith(("audio8:", "zmt:") ) and lang not in ("vi", "en"):
+    if _is_zmtss_audio8_voice(resolved) and lang not in ("vi", "en"):
         from .engines import audio8
         audio8.synthesize(text, resolved, out_wav)
         return
@@ -294,7 +305,7 @@ def tts_segment(
         if force_refit:
             force_refit = False
         resolved = resolve_voice(voice, lang)
-        if resolved.startswith(("audio8:", "zmt:")) and lang not in ("vi", "en"):
+        if _is_zmtss_audio8_voice(resolved) and lang not in ("vi", "en"):
             from .engines import audio8
             audio8.synthesize(text, resolved, out_wav)
             if on_progress:

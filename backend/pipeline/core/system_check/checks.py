@@ -337,7 +337,6 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
         )
     )
 
-
     # Nhóm 1b — Sherpa-ONNX + hai model offline. Hiển thị riêng để người dùng
     # biết rõ vì sao công tắc «Tách người nói» có/không sẵn sàng.
     from ..config import DATA
@@ -422,6 +421,13 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
         )
     )
 
+
+    from pipeline.tts.engines import audio8
+    items.append(_item(
+        id="audio8_runtime", name="Audio8-TTS-0.1B", ok=audio8.available(), required=False,
+        detail="đã cài · CPU/ONNX" if audio8.available() else "chưa cài · CPU/ONNX",
+        hint="Giọng tiếng Trung và ngôn ngữ khác.", install="audio8_runtime", installLabel="Cài Audio8",
+    ))
 
     for mid, title, req in (("httpx", "httpx", True),):
         ok, detail = _mod_ok_fast(mid) if fast else _mod_ok(mid, dist_map=dist)

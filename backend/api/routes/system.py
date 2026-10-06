@@ -1415,11 +1415,31 @@ def api_resources():
         {"id": "diarization", "name": "Sherpa-ONNX (Tách người nói)", "kind": "diarization", "installed": diarization_installed, "provider": runtime["label"], "action": "ai_runtime"},
         {"id": "ocr", "name": "RapidOCR", "kind": "ocr", "installed": ocr_ok, "provider": runtime["label"], "action": "ai_runtime"},
     ]
+    from pipeline.tts.engines import audio8
+    audio8_runtime, audio8_model, audio8_voices = audio8._paths()
+    resources.append({
+        "id": "audio8",
+        "name": "Audio8-TTS-0.1B",
+        "kind": "tts",
+        "installed": audio8.available(),
+        "provider": "CPU / ONNX",
+        "action": "audio8_runtime",
+        "detail": str(audio8_model),
+    })
     return {"items": resources}
 
 
 @router.post("/api/resources/{resource_id}/install")
 def api_install_resource(resource_id: str):
+    if resource_id == "audio8":
+        from pipeline.tts.engines import audio8
+
+        def install_audio8():
+            runtime_dir, model_dir, voices_dir = audio8._paths()
+            audio8._ensure_installed(runtime_dir, model_dir, voices_dir)
+            return {"message": "Audio8-TTS-0.1B đã sẵn sàng / Audio8-TTS-0.1B is ready", "needsRestart": False}
+
+        return _start_install_job("audio8_runtime", install_audio8)
     if resource_id in {"whisper", "diarization", "ocr"}:
         if resource_id == "diarization":
             # Kiểm tra nếu models chưa có thì phải force cài thực sự

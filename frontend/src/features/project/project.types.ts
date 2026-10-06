@@ -426,7 +426,7 @@ export type SystemChecks = {
 export type AiResource = {
   id: string
   name: string
-  kind: 'asr' | 'diarization' | 'ocr' | string
+  kind: 'asr' | 'diarization' | 'ocr' | 'tts' | string
   installed: boolean
   provider: string
   action: string
