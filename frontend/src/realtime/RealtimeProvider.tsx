@@ -85,13 +85,21 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
         }, 3000)
       }
     }
+    const snapshotIds = new Map<string, number>()
+    const receive = (event: RealtimeEvent) => {
+      if (sourceRef.current !== source) return
+      const id = Number(event.id)
+      if (event.type === 'snapshot') snapshotIds.set(event.topic, id)
+      else if (event.type !== 'snapshot.required' && id <= (snapshotIds.get(event.topic) ?? -1)) return
+      dispatch(event)
+    }
     source.onmessage = (message) => {
-      try { dispatch(JSON.parse(message.data) as RealtimeEvent) } catch { /* ignore malformed event */ }
+      try { receive(JSON.parse(message.data) as RealtimeEvent) } catch { /* ignore malformed event */ }
     }
     const listen = (eventType: string) => {
       source.addEventListener(eventType, (message) => {
         const data = (message as MessageEvent).data
-        try { dispatch(JSON.parse(data) as RealtimeEvent) } catch { /* ignore malformed event */ }
+        try { receive(JSON.parse(data) as RealtimeEvent) } catch { /* ignore malformed event */ }
       })
     }
     ;['connected', 'snapshot', 'snapshot.required', 'tts.job.updated', 'flow.job.updated', 'flow.job.created', 'flow.job.deleted', 'flow.account.updated', 'flow.account.created', 'flow.account.deleted', 'flow.log.appended', 'flow.log.deleted', 'drawing.job.created', 'drawing.job.updated', 'drawing.job.deleted', 'automation.job.created', 'automation.job.updated', 'automation.job.deleted', 'srt-export.job.created', 'srt-export.job.updated', 'srt-export.job.deleted', 'cleaner.job.created', 'cleaner.job.updated', 'cleaner.job.deleted', 'srt-image.job.created', 'srt-image.job.updated', 'srt-image.job.deleted', 'download.job.created', 'download.job.updated', 'download.job.deleted', 'series.created', 'series.updated', 'series.deleted'].forEach(listen)
@@ -138,7 +146,8 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
 
 export function useRealtimeEvents(topic: string, handler: RealtimeHandler) {
   const context = useContext(RealtimeContext)
-  useEffect(() => context?.subscribe(topic, handler), [context, topic, handler])
+  const subscribe = context?.subscribe
+  useEffect(() => subscribe?.(topic, handler), [subscribe, topic, handler])
   return context?.status || 'fallback'
 }
 

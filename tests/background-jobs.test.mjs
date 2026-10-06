@@ -73,3 +73,48 @@ test('background Flow completion cannot change another tool URL', () => {
   new Function('window', 'panel', body)(win, 'queue')
   assert.equal(writes, 0)
 })
+
+test('realtime subscriptions stay stable on status changes and discard pre-snapshot replay', () => {
+  const source = readFileSync(new URL('../frontend/src/realtime/RealtimeProvider.tsx', import.meta.url), 'utf8')
+  const compiled = ts.transpileModule(source.replace('import.meta.env.VITE_API_BASE_URL', "''"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText
+  let context
+  let dependencies
+  let stream
+  const react = {
+    createContext: () => ({ Provider: 'provider' }), useContext: () => context,
+    useCallback: fn => fn, useMemo: fn => fn(), useRef: current => ({ current }),
+    useState: value => [value, () => {}], useEffect: (_fn, deps) => { dependencies = deps },
+  }
+  class EventSource {
+    static CLOSED = 2
+    readyState = 1
+    listeners = {}
+    constructor() { stream = this }
+    close() {}
+    addEventListener(type, handler) { this.listeners[type] = handler }
+  }
+  const exports = {}
+  new Function('require', 'exports', 'EventSource', compiled)(name => name === 'react' ? react : {
+    jsx: (_type, props) => props,
+  }, exports, EventSource)
+  context = exports.RealtimeProvider({ children: null }).value
+  const received = []
+  const handler = event => received.push(event)
+  context.subscribe('flow', handler)
+  exports.useRealtimeEvents('flow', handler)
+  const before = dependencies
+  context = { ...context, status: 'connected' }
+  exports.useRealtimeEvents('flow', handler)
+  assert.deepEqual(dependencies, before)
+  const emit = (type, id, payload) => stream.listeners[type]({ data: JSON.stringify({
+    type, id: String(id), topic: 'flow', entityId: 'a', payload,
+  }) })
+  emit('snapshot', 10, { jobs: [{ id: 'a', status: 'done' }] })
+  emit('flow.job.updated', 8, { id: 'a', status: 'processing' })
+  assert.ok(received.every(event => event.payload?.status !== 'processing'))
+  emit('flow.job.updated', 11, { id: 'a', status: 'processing' })
+  emit('flow.job.updated', 12, { id: 'a', status: 'done' })
+  assert.deepEqual(received.reduce(update, []), [])
+})

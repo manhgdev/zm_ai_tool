@@ -85,7 +85,6 @@ export default function BackgroundTasks({ onOpen, project }: {
   const receive = useCallback((event: RealtimeEvent) => setJobs(current => updateBackgroundJobs(current, event)), [])
   useRealtimeEvents('flow', receive)
   useRealtimeEvents('tts', receive)
-  useRealtimeEvents('flow', receive)
   useRealtimeEvents('download', receive)
   useRealtimeEvents('drawing', receive)
   useRealtimeEvents('automation', receive)
