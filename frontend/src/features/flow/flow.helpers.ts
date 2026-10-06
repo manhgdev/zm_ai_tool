@@ -298,6 +298,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
           ? clampFlowImageResolution(String(s.resolution || "1K"))
           : (isFlowVideoUiResolution(String(s.resolution || "")) ? String(s.resolution) : ""),
         quality: String(s.quality || ""),
+        headless: typeof s.headless === "boolean" ? s.headless : undefined,
         outputDir: String(s.outputDir || "flow"),
         concurrency: s.concurrency != null ? String(s.concurrency) : undefined,
       },

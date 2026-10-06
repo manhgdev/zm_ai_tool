@@ -3087,6 +3087,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                               downloadLabel: t("tải", "DL"),
                             })}{" "}
                             · {job.randomAccount ? "🎲 " : ""}{job.account}
+                            {job.settings.headless === false && <> · {t("Mở Chrome", "Open Chrome")}</>}
                           </span>
                           <div className="flow-job-progress">
                             <i>

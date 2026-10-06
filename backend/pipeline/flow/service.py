@@ -5382,7 +5382,7 @@ class FlowService:
                     and (row.get("settings") or {}).get("model") == "Nano Banana Pro"
                 ):
                     continue
-                patch = {"settings": {**dict(row.get("settings") or {}), "model": "Nano Banana 2"},
+                    patch = {"settings": {**dict(row.get("settings") or {}), "model": "Nano Banana 2"},
                          "updatedAt": time.time()}
                 if is_current:
                     patch.update({"quotaModelFallbackApplied": True, "modelFallback": event,
