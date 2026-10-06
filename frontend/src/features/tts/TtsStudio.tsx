@@ -245,6 +245,10 @@ export default function TtsStudio({
   const ttsProgressRef = useRef(new Map<string, TtsRealtimeProgress>())
   const ttsWaitersRef = useRef(new Map<string, (progress: TtsRealtimeProgress) => void>())
   const onTtsRealtime = useCallback((event: { type: string; payload: unknown; entityId: string }) => {
+    if (event.type === 'tts.engine.status' && event.payload && typeof event.payload === 'object') {
+      setStatus(event.payload as Record<string, EngineStatus>)
+      return
+    }
     const activeId = activeJobIdRef.current
     const raw = event.type === 'snapshot'
       ? activeId ? (event.payload as { jobs?: Record<string, unknown> } | null)?.jobs?.[activeId] : null
@@ -267,7 +271,7 @@ export default function TtsStudio({
     }
     if (progressId && (progress.done || progress.error)) ttsWaitersRef.current.get(progressId)?.(progress)
   }, [])
-  useRealtimeEvents('tts', onTtsRealtime)
+  const realtimeStatus = useRealtimeEvents('tts', onTtsRealtime)
   useEffect(() => {
     if (error) setTtsLogs((current) => [...current, `[${new Date().toLocaleTimeString()}] ${error}`].slice(-50))
   }, [error])
@@ -796,9 +800,9 @@ export default function TtsStudio({
         const next = await api.ttsStatus() as Record<string, EngineStatus>
         if (cancelled) return
         setStatus(next)
-        if (next.vieneu?.loadState === 'loading') timer = setTimeout(refresh, 2000)
+        if (realtimeStatus !== 'connected' && next.vieneu?.loadState === 'loading') timer = setTimeout(refresh, 2000)
       } catch {
-        if (!cancelled) timer = setTimeout(refresh, 5000)
+        if (!cancelled && realtimeStatus !== 'connected') timer = setTimeout(refresh, 5000)
       }
     }
     void loadHistory()
@@ -815,7 +819,7 @@ export default function TtsStudio({
       await refresh()
     })()
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [loadStatus, loadHistory, hardwareRevision])
+  }, [loadStatus, loadHistory, hardwareRevision, realtimeStatus])
 
   const vieneu = status.vieneu
   const lastModelLogRef = useRef('')

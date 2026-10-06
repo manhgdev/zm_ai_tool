@@ -67,6 +67,7 @@ from pipeline.export.mux import (
     separate_no_vocals,
 )
 from pipeline.tts import engines_status
+from pipeline.core.realtime import realtime
 
 router = APIRouter()
 
@@ -156,6 +157,8 @@ def api_tts_warm():
                 vieneu_engine.warm()
             except Exception:
                 pass
+            finally:
+                realtime.publish("tts", "tts.engine.status", "vieneu", engines_status())
 
         threading.Thread(target=_run, name="tts-warm", daemon=True).start()
     return _payload(getattr(vieneu_engine, "_load_state", "cold"))
@@ -180,6 +183,8 @@ def api_tts_vieneu_model(body: VieNeuModelIn):
             vieneu_engine.warm()
         except Exception:
             pass
+        finally:
+            realtime.publish("tts", "tts.engine.status", "vieneu", engines_status())
 
     threading.Thread(target=_run, name="tts-mode-warm", daemon=True).start()
     return {
