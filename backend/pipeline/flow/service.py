@@ -2240,6 +2240,8 @@ class FlowService:
                 headless=headless_login,
                 profile_dir=store.profile_dir(account_id),
                 google_login_compat=True,
+                fullscreen=True,
+                page_zoom=1.0,
             )
             await browser.start()
             page = await browser.page()

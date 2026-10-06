@@ -131,13 +131,13 @@ def _visible_window_geometry(
     return x, y, width, height
 
 
-def _visible_window_args() -> list[str]:
+def _visible_window_args(*, fullscreen: bool = False) -> list[str]:
     """Start compactly; the page then supplies the real monitor work area."""
     # Do not create Tk/AppKit from a Flow worker thread.  macOS aborts the
     # process when Tk initializes Cocoa off the main thread (SIGABRT/-6).
     return [
         "--window-position=0,0",
-        "--window-size=500,300",
+        *( ["--start-maximized"] if fullscreen else ["--window-size=500,300"] ),
         "--new-window",
     ]
 
@@ -164,7 +164,7 @@ def chrome_executable() -> Path | None:
 class BrowserManager:
     """Subset of flow-py's browser contract backed by installed Google Chrome."""
 
-    def __init__(self, *, headless: bool, profile_dir: Path, slow_mo: int = 0, google_login_compat: bool = False) -> None:
+    def __init__(self, *, headless: bool, profile_dir: Path, slow_mo: int = 0, google_login_compat: bool = False, fullscreen: bool = False, page_zoom: float = 0.4) -> None:
         self.cdp_url = None  # flow-py checks this optional upstream attribute.
         # Old clients can still request visible Chrome. A headless Linux VPS
         # has no window server; normalize here for every Flow caller.
@@ -173,6 +173,8 @@ class BrowserManager:
         self.profile_dir = Path(profile_dir)
         self.slow_mo = slow_mo
         self.google_login_compat = google_login_compat
+        self.fullscreen = fullscreen
+        self.page_zoom = page_zoom
         self._pw: Playwright | None = None
         self._ctx: BrowserContext | None = None
         self._page: Page | None = None
@@ -199,7 +201,7 @@ class BrowserManager:
             visible_launch_owned = True
         try:
             self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
-            visible_args = [] if self.headless else _visible_window_args()
+            visible_args = [] if self.headless else _visible_window_args(fullscreen=self.fullscreen)
             launch_args = ["--lang=en-US"]
             if self.google_login_compat:
                 launch_args.append("--disable-blink-features=AutomationControlled")
@@ -346,6 +348,15 @@ class BrowserManager:
         return self._page
 
     async def _place_visible_window(self, page: Page) -> None:
+        if self.fullscreen:
+            session = await self.context.new_cdp_session(page)
+            try:
+                window_id = (await session.send('Browser.getWindowForTarget'))['windowId']
+                await session.send('Browser.setWindowBounds', {'windowId': window_id, 'bounds': {'windowState': 'maximized'}})
+                self._window_placed = True
+            finally:
+                await session.detach()
+            return
         global _visible_window_index
         area = await page.evaluate("""() => ({
             left: screen.availLeft || 0, top: screen.availTop || 0,
@@ -389,11 +400,11 @@ class BrowserManager:
         try:
             await settings_page.goto('chrome://settings/appearance', wait_until='domcontentloaded')
             await settings_page.evaluate("""() => new Promise((resolve, reject) => {
-                chrome.settingsPrivate.setDefaultZoom(0.4, () => {
+                    chrome.settingsPrivate.setDefaultZoom(%s, () => {
                     if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
                     else resolve();
                 });
-            })""")
+            })""" % self.page_zoom)
             self._zoom_applied = True
         finally:
             await settings_page.close()
