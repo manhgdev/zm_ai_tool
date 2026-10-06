@@ -305,6 +305,9 @@ def set_job_complete(
     translated_text: str = "",
     translated_srt: str = "",
     translation_error: str = "",
+    speaker_cues: list[dict[str, Any]] | None = None,
+    speakers: list[dict[str, str]] | None = None,
+    speaker_warning: str | None = None,
 ) -> None:
     """Publish completion for the request ID, including cache-hit requests."""
     if not job_id:
@@ -342,6 +345,12 @@ def set_job_complete(
                 payload["translated_srt"] = translated_srt
             if translation_error:
                 payload["translation_error"] = translation_error
+            if speaker_cues is not None:
+                payload["speaker_cues"] = speaker_cues
+            if speakers is not None:
+                payload["speakers"] = speakers
+            if speaker_cues is not None or speaker_warning is not None:
+                payload["speaker_warning"] = speaker_warning
             _job_progress[job_id] = payload
             _running.pop(job_id, None)
     if publish_cancelled:

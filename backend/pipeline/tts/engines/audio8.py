@@ -86,6 +86,8 @@ def _ensure_zmtss_voice(name: str, runtime_dir: Path, model_dir: Path, voices_di
 
 
 def synthesize(text: str, voice: str, out_wav: Path, *, max_new_tokens: int = 256) -> None:
+    if not str(text or "").strip():
+        raise ValueError("Audio8 không thể tổng hợp văn bản rỗng / cannot synthesize empty text")
     runtime_dir, model_dir, voices_dir = _paths()
     if not available():
         try:
@@ -101,8 +103,20 @@ def synthesize(text: str, voice: str, out_wav: Path, *, max_new_tokens: int = 25
 
     name = voice.removeprefix("audio8:").removeprefix("zmt:")
     _ensure_zmtss_voice(name, runtime_dir, model_dir, voices_dir)
-    runtime = ArkTtsRuntime(model_dir, voices_dir, threads=5)
+    # Keep CPU inference bounded while scaling with the VPS; override with
+    # AUDIO8_THREADS when the host has a different concurrency budget.
+    try:
+        default_threads = min(8, max(1, (os.cpu_count() or 2) // 2))
+        cpu_threads = max(1, int(os.environ.get("AUDIO8_THREADS", str(default_threads))))
+    except ValueError:
+        cpu_threads = default_threads
+    runtime = ArkTtsRuntime(model_dir, voices_dir, threads=cpu_threads)
     audio, _ = runtime.synthesize(text=text, voice=name, max_new_tokens=max_new_tokens,
                                   temperature=0.7, top_p=0.9, top_k=50, seed=42)
+    if getattr(audio, "size", 0) <= 0:
+        raise RuntimeError("Audio8 model returned empty audio / model trả về audio rỗng")
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(out_wav), audio, int(runtime.manifest["sample_rate"]))
+    info = sf.info(str(out_wav))
+    if info.frames <= 0 or info.samplerate <= 0:
+        raise RuntimeError("Audio8 tạo file 0 giây / generated zero-duration audio")
