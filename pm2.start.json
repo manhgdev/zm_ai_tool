@@ -1,0 +1,17 @@
+{
+    "apps": [
+        {
+            "name": "zm_ai_tool",
+            "script": "npm",
+            "args": "start",
+            "interpreter": "none",
+            "exec_mode": "fork",
+            "kill_timeout": 5000,
+            "wait_ready": false,
+            "log_date_format": "HH:mm 〉",
+            "env": {
+                "NODE_ENV": "production"
+            }
+        }
+    ]
+}   
