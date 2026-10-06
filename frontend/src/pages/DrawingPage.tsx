@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { api } from '@/features/project/project.api'
 import { toast } from 'sonner'
 import { localize, useLocale } from '@/app/i18n'
 import { BackTitle } from '@/shared/components/BackTitle'
@@ -201,7 +202,7 @@ export default function DrawingPage({ onBack }: { onBack: () => void }) {
     window.localStorage.setItem(DRAWING_SETTINGS_KEY, JSON.stringify(settings))
   }, [preset, mode, tool, duration, detail, thickness, fps, resolution, strokeOrder, showOriginalEnd])
   useEffect(() => { window.localStorage.setItem(DRAWING_OUTPUT_DIR_KEY, outputDir) }, [outputDir])
-  useEffect(() => { void fetch('/api/config').then(async (r) => r.ok && setIsDesktopApp(Boolean((await r.json() as { desktop?: boolean }).desktop))).catch(() => undefined) }, [])
+  useEffect(() => { void api.getConfig().then(config => setIsDesktopApp(Boolean(config.desktop))).catch(() => undefined) }, [])
   useEffect(() => {
     void fetch('/api/drawing/hands').then(async (r) => r.ok ? (await r.json() as { items: typeof hands }).items : hands)
       .then(setHands).catch(() => undefined)

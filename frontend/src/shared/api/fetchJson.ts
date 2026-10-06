@@ -1,7 +1,30 @@
 /** fetch + timeout — tránh treo khi backend reload / đang cài gói.
  *  Hỗ trợ AbortSignal ngoài (hủy tốc độ cũ khi chọn tốc độ mới).
  */
-export async function fetchJson<T>(
+const pendingReads = new Map<string, Promise<unknown>>()
+
+export async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 12_000): Promise<T> {
+  // ponytail: only default GETs share in-flight work; custom headers/signals
+  // stay isolated. No settled cache, so refreshes always read current state.
+  if (init && Object.keys(init).length) {
+    if (!['GET', 'HEAD'].includes((init.method || 'GET').toUpperCase())) pendingReads.clear()
+    return requestJson<T>(url, init, timeoutMs)
+  }
+  const key = JSON.stringify([url, timeoutMs])
+  let request = pendingReads.get(key)
+  if (!request) {
+    request = requestJson<T>(url, init, timeoutMs)
+    pendingReads.set(key, request)
+  }
+  try {
+    // Callers may edit returned rows; never share mutable parsed objects.
+    return structuredClone(await request) as T
+  } finally {
+    if (pendingReads.get(key) === request) pendingReads.delete(key)
+  }
+}
+
+async function requestJson<T>(
   url: string,
   init?: RequestInit,
   timeoutMs = 12_000,

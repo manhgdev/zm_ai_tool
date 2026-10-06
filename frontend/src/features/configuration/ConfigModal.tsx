@@ -114,6 +114,7 @@ export default function ConfigModal({
   const restartRequested = useRef(false)
   const observedInstallError = useRef('')
   const [outputRoot, setOutputRoot] = useState('')
+  const savedOutputRoot = useRef<string | null>(null)
   const [outputRootDefault, setOutputRootDefault] = useState('')
   const [outputRootSaving, setOutputRootSaving] = useState(false)
   const cleanupLabels: Record<string, [string, string]> = {
@@ -423,7 +424,9 @@ export default function ConfigModal({
     // Load current outputRoot from /api/ui-preferences and resolved default from /api/config
     if (!licenseStatus?.valid) return
     api.getLocalePreference().then((p) => {
-      setOutputRoot((p as unknown as { outputRoot?: string | null }).outputRoot || '')
+      const saved = (p as unknown as { outputRoot?: string | null }).outputRoot || ''
+      savedOutputRoot.current = saved
+      setOutputRoot(saved)
     }).catch(() => { })
     api.getConfig().then((cfg) => {
       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
@@ -1484,6 +1487,7 @@ export default function ConfigModal({
                 onClick={async () => {
                   if (!licenseStatus?.valid) return
                   const raw = outputRoot.trim()
+                  if (raw === savedOutputRoot.current) return
                   if (raw && !raw.match(/^([A-Za-z]:[/\\]|\/)/)) {
                     toast.error(t('Phải là đường dẫn tuyệt đối', 'Must be an absolute path'))
                     return
@@ -1491,6 +1495,7 @@ export default function ConfigModal({
                   setOutputRootSaving(true)
                   try {
                     await api.saveOutputRoot(raw)
+                    savedOutputRoot.current = raw
                     const cfg = await api.getConfig()
                     setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
                     toast.success(t('Đã lưu', 'Saved'))
@@ -1511,9 +1516,11 @@ export default function ConfigModal({
                   title={t('Đặt lại mặc định', 'Reset to default')}
                   onClick={async () => {
                     if (!licenseStatus?.valid) return
+                    if (savedOutputRoot.current === '') { setOutputRoot(''); return }
                     setOutputRootSaving(true)
                     try {
                       await api.saveOutputRoot('')
+                      savedOutputRoot.current = ''
                       setOutputRoot('')
                       const cfg = await api.getConfig()
                       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')

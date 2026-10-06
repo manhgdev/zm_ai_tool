@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, useEffect, type DragEvent } from 'react'
+import { api } from '@/features/project/project.api'
 import { localize, useLocale } from '@/app/i18n'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
@@ -194,7 +195,7 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
   useEffect(() => { localStorage.setItem(LS_VC_METHOD, method) }, [method])
   useEffect(() => { localStorage.setItem(LS_VC_OPTS, JSON.stringify(options)) }, [options])
   useEffect(() => { localStorage.setItem(LS_VC_OUTPUT_DIR, outputDir) }, [outputDir])
-  useEffect(() => { void fetch('/api/config').then(async (r) => r.ok && setIsDesktopApp(Boolean((await r.json() as { desktop?: boolean }).desktop))).catch(() => undefined) }, [])
+  useEffect(() => { void api.getConfig().then(config => setIsDesktopApp(Boolean(config.desktop))).catch(() => undefined) }, [])
 
   // Fetch once while idle; poll only while the backend has work in flight.
   // This avoids a permanent request/localStorage loop on an otherwise idle UI.

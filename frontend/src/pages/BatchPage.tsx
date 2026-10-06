@@ -12,6 +12,8 @@ import { IconArrowRight, IconGear } from '@/shared/components/Icons'
 import { MediaPreviewModal } from '@/shared/components/MediaPreviewModal'
 import { useRemountState } from '@/shared/lib/useRemountState'
 import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
+import { api } from '@/features/project/project.api'
+import { fetchJson } from '@/shared/api/fetchJson'
 import { DEFAULT_REVIEW_SETTINGS, STYLE_TO_PIPE, type ReviewSettings } from '@/features/studio/reviewSettings'
 import './StudioPages.css'
 import './FilmPage.css'
@@ -174,7 +176,7 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
     const snap = await studioApi.queue()
     setJobs(snap.jobs || [])
     setPauseAll(Boolean(snap.pauseAll))
-    const drawing = await fetch('/api/drawing/jobs').then(async (response) => response.ok ? await response.json() as DrawingJob[] : []).catch(() => [] as DrawingJob[])
+    const drawing = await fetchJson<DrawingJob[]>('/api/drawing/jobs').catch(() => [] as DrawingJob[])
     setDrawingJobs(drawing)
   }
 
@@ -184,7 +186,7 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
     const timer = window.setInterval(() => void refresh().catch(() => undefined), 3000)
     return () => window.clearInterval(timer)
   }, [hasActiveQueueJobs, drawingRealtimeStatus])
-  useEffect(() => { void fetch('/api/config').then(async (response) => response.ok && setIsDesktopApp(Boolean((await response.json() as { desktop?: boolean }).desktop))).catch(() => undefined) }, [])
+  useEffect(() => { void api.getConfig().then(config => setIsDesktopApp(Boolean(config.desktop))).catch(() => undefined) }, [])
 
   useEffect(() => {
     if (!cloneVoices.length || cloneVoices.some((voice) => voice.id === cloneSettings.defaultVoice)) return

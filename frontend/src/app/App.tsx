@@ -153,6 +153,7 @@ export default function App() {
   }, [licenseStatus?.valid])
 
   const changeLocale = (nextLocale: AppLocale) => {
+    if (nextLocale === locale) return
     localeChangedRef.current = true
     setLocale(nextLocale)
     if (licenseStatus?.valid) {

@@ -7,6 +7,8 @@ import { MediaPreviewModal, type MediaPreviewAction, type MediaPreviewItem } fro
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
 import { useRemountState } from '@/shared/lib/useRemountState'
 import { useRealtimeEvents } from '@/realtime/RealtimeProvider'
+import { fetchJson } from '@/shared/api/fetchJson'
+import { api } from '@/features/project/project.api'
 import { normalizeChatProviders, type ChatProviderOption } from '@/features/chat/chatProviders'
 import './AutomationPage.css'
 
@@ -72,8 +74,6 @@ type TtsVoiceOption = {
 }
 
 const API = '/api/automation'
-const fetchWithTimeout = (input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 8000) =>
-  fetch(input, { ...init, signal: init.signal || AbortSignal.timeout(timeoutMs) })
 const AUTOMATION_SETTINGS_OPEN_KEY = 'zm_ai_tool.automation-settings-open.v1'
 const AUTOMATION_PANEL_WIDTH_KEY = 'zm_ai_tool.automation-panel-width.v1'
 const AUTOMATION_SETTINGS_TAB_KEY = 'zm_ai_tool.automation-settings-tab.v1'
@@ -247,9 +247,7 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
   } as Record<string, string>)[id] || id
   const refresh = useCallback(async () => {
     try {
-      const response = await fetchWithTimeout(`${API}/jobs`)
-      if (!response.ok) throw new Error(await response.text())
-      const data = await response.json() as { jobs?: AutomationJob[] }
+      const data = await fetchJson<{ jobs?: AutomationJob[] }>(`${API}/jobs`, undefined, 8000)
       setJobs(Array.isArray(data.jobs) ? data.jobs.filter(job => !deletedJobIds.current.has(job.id)) : [])
       setError('')
     } catch (cause) {
@@ -276,8 +274,8 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
 
   useEffect(() => {
     void Promise.all([
-      fetchWithTimeout(`${API}/settings`).then(response => response.ok ? response.json() as Promise<Partial<AutomationSettings>> : null).then(value => { if (value) setSettings(mergeSettings(value)) }).catch(() => undefined),
-      fetchWithTimeout('/api/config').then(async (r) => r.ok && setIsDesktopApp(Boolean((await r.json() as { desktop?: boolean }).desktop))).catch(() => undefined),
+      fetchJson<Partial<AutomationSettings>>(`${API}/settings`, undefined, 8000).then(value => { if (value) setSettings(mergeSettings(value)) }).catch(() => undefined),
+      api.getConfig().then(config => setIsDesktopApp(Boolean(config.desktop))).catch(() => undefined),
       refresh(),
     ])
   }, [refresh])
@@ -285,7 +283,7 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
   useEffect(() => {
     let active = true
     setChatModelsLoading(true)
-    void fetchWithTimeout('/api/chat/providers').then(response => response.ok ? response.json() as Promise<unknown> : null).then(raw => {
+    void fetchJson<unknown>('/api/chat/providers', undefined, 8000).then(raw => {
       if (!active) return
       const available = normalizeChatProviders(raw)
       setChatProviders(available)
@@ -308,8 +306,8 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
     let active = true
     setOptionsLoading(true)
     void Promise.all([
-      fetchWithTimeout('/api/flow/accounts').then(response => response.ok ? response.json() as Promise<unknown> : null),
-      fetchWithTimeout('/api/voices?lang=all').then(response => response.ok ? response.json() as Promise<unknown> : null),
+      fetchJson<unknown>('/api/flow/accounts', undefined, 8000),
+      api.voices('all'),
     ]).then(([accounts, voices]) => {
       if (!active) return
       setFlowAccounts(normalizeFlowAccounts(accounts))

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { api } from '@/features/project/project.api'
 import { createPortal } from 'react-dom'
 import type { ProjectSettings } from '../project/project.types'
 import { CoverPickerModal } from './CoverPickerModal'
@@ -119,7 +120,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [isDesktopApp, setIsDesktopApp] = useState(false)
 
   useEffect(() => {
-    void fetch('/api/config').then(async (response) => response.ok && setIsDesktopApp(Boolean((await response.json() as { desktop?: boolean }).desktop))).catch(() => undefined)
+    void api.getConfig().then(config => setIsDesktopApp(Boolean(config.desktop))).catch(() => undefined)
   }, [])
 
   async function pickFolder() {

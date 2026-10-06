@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import threading
+import logging
+import os
 from contextlib import asynccontextmanager
 
 import anyio
@@ -13,6 +15,22 @@ from fastapi.staticfiles import StaticFiles
 from api.routes_all import router
 from pipeline.core.cleanup import run_public_cleanup_periodically
 from pipeline.core.config import PUBLIC_DATA
+
+
+class StatusAccessFilter(logging.Filter):
+    """Keep errors and writes; suppress only successful, routine status reads."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        if os.environ.get('ZM_AI_TOOL_ACCESS_LOG') == '1':
+            return True
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != 5:
+            return True
+        _, method, target, _, status = args
+        path = str(target).split('?', 1)[0]
+        return not (method == 'GET' and str(status) == '200' and path in {
+            '/api/health', '/api/tts/status', '/api/system/install/status',
+            '/api/license/status', '/api/system/checks', '/api/events',
+        })
 
 
 def _allowed_origins() -> list[str]:
@@ -38,6 +56,9 @@ def _allowed_origins() -> list[str]:
 
 
 def create_app() -> FastAPI:
+    access_logger = logging.getLogger('uvicorn.access')
+    if not any(isinstance(item, StatusAccessFilter) for item in access_logger.filters):
+        access_logger.addFilter(StatusAccessFilter())
     # ponytail: do NOT import torch/GPU stuff here — blocks the main thread 2–10s.
     # Model loading remains lazy; the first feature that needs it owns warm-up.
     try:

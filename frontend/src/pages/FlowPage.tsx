@@ -18,6 +18,7 @@ import { OutputFolderField } from "@/shared/components/OutputFolderField";
 import { copyText } from "@/shared/lib/clipboard";
 import { useRemountState } from "@/shared/lib/useRemountState";
 import { useRealtimeEvents } from "@/realtime/RealtimeProvider";
+import { api } from "@/features/project/project.api";
 import FlowSeriesPanel, { type FlowSeriesSceneContext } from "./FlowSeriesPanel";
 import { FlowTemplatesPanel } from "@/features/flow/FlowTemplatesPanel";
 import {
@@ -692,7 +693,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     };
   }, [hasConnectingAccounts, realtimeStatus]);
   useEffect(() => {
-    void flowRequest<{ desktop?: boolean }>("/api/config")
+    void api.getConfig()
       .then((data) => setIsDesktopApp(Boolean(data.desktop)))
       .catch(() => setIsDesktopApp(false))
       .finally(() => setRuntimeKnown(true));

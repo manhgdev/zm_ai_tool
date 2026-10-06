@@ -7,6 +7,7 @@ import type {
   JobFilter,
 } from './download.types'
 import { downloadApi } from './download.api'
+import { api } from '@/features/project/project.api'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { localize, useLocale } from '@/app/i18n'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
@@ -306,9 +307,7 @@ export default function DownloadStudio({ onBack, onUseInClone }: Props) {
 
   useEffect(() => {
     void refresh()
-    void fetch('/api/config').then(async (response) => {
-      if (!response.ok) return
-      const config = await response.json() as { desktop?: boolean }
+    void api.getConfig().then((config) => {
       setIsDesktopApp(Boolean(config.desktop))
     }).catch(() => undefined)
     void downloadApi

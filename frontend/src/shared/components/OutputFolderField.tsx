@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { localize, useLocale } from '@/app/i18n'
+import { api } from '@/features/project/project.api'
 import './OutputFolderField.css'
 
-let desktopOutputRootRequest: Promise<string> | undefined
 
 export function normalizeWebOutputName(value: string, appFolder: string) {
   const trimmed = value.trim()
@@ -28,13 +28,7 @@ export function compactOutputPrefix(prefix: string) {
 }
 
 function loadDesktopOutputRoot() {
-  if (!desktopOutputRootRequest) {
-    desktopOutputRootRequest = fetch('/api/config')
-      .then(async (response) => response.ok ? response.json() as Promise<{ desktopOutputRoot?: string }> : null)
-      .then((config) => String(config?.desktopOutputRoot || ''))
-      .catch(() => '')
-  }
-  return desktopOutputRootRequest
+  return api.getConfig().then(config => String((config as { desktopOutputRoot?: string }).desktopOutputRoot || '')).catch(() => '')
 }
 
 type Props = {

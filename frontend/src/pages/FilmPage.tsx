@@ -238,7 +238,7 @@ export default function FilmPage({ onBack, onOpenEditor }: Props) {
   })
 
   useEffect(() => {
-    void fetch('/api/config').then(async (response) => response.ok && setIsDesktopApp(Boolean((await response.json() as { desktop?: boolean }).desktop))).catch(() => undefined)
+    void api.getConfig().then(config => setIsDesktopApp(Boolean(config.desktop))).catch(() => undefined)
   }, [])
 
   useEffect(() => {
