@@ -254,6 +254,10 @@ def synthesize_raw(
             )
         vieneu_engine.synthesize(text, resolved, out_wav, style=style)
         return
+    if resolved.startswith(("audio8:", "zmt:") ) and lang not in ("vi", "en"):
+        from .engines import audio8
+        audio8.synthesize(text, resolved, out_wav)
+        return
     cc = _cc_parse(resolved)
     el = _el_voice_id(resolved)
     if cc:
@@ -290,6 +294,12 @@ def tts_segment(
         if force_refit:
             force_refit = False
         resolved = resolve_voice(voice, lang)
+        if resolved.startswith(("audio8:", "zmt:")) and lang not in ("vi", "en"):
+            from .engines import audio8
+            audio8.synthesize(text, resolved, out_wav)
+            if on_progress:
+                on_progress(1.0)
+            return audio_utils.fit_duration(out_wav, target_sec, match, force_refit=force_refit)
         if vieneu_engine.parse_voice(resolved):
             from .voice_store import normalize_voice_language
 

@@ -372,12 +372,13 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             ok=diarization_ok,
             required=False,
             detail=(
-                f"đã cài · tự động: {provider_label}" if diarization_ok
-                else f"thiếu: {', '.join(diarization_missing)} · {diarization_package_detail[:160]}"
+                ((f"đã cài · model tải khi sử dụng · tự động: {provider_label}" if diarization_models_ok
+                  else f"đã cài · model sẽ tải khi sử dụng · tự động: {provider_label}") if diarization_ok
+                 else f"thiếu: {', '.join(diarization_missing)} · {diarization_package_detail[:160]}")
             ),
             hint="Dùng kết quả nhận diện phần cứng chung của ZM AI TOOL; nếu backend tăng tốc không tương thích sẽ fallback CPU.",
-            install="",
-            installLabel="Tải khi bật Tách người nói",
+            install="ai_runtime",
+            installLabel="Cài tách người nói",
         )
     )
 

@@ -16,6 +16,12 @@ type Props = {
   resultText: string
   resultSrt: string
   timedStyles?: TranscriptTimedStyles | null
+  speakerDiarization: boolean
+  speakerCount: number
+  speakers: Array<{ id: string; label: string; voice: string }>
+  speakerWarning: string
+  onSpeakerDiarizationChange: (value: boolean) => void
+  onSpeakerCountChange: (value: number) => void
   onFileChange: (file: File | null) => void
   onLangChange: (lang: string) => void
   onEngineChange: (engine: TranscribeEngine) => void
@@ -41,6 +47,7 @@ export default function TtsTranscribePanel({
   resultText: sourceText,
   resultSrt: sourceSrt,
   timedStyles,
+  speakerDiarization, speakerCount, speakers, speakerWarning, onSpeakerDiarizationChange, onSpeakerCountChange,
   translation, onTranslationChange, translatedText, translatedSrt, onTranslatedTextChange, onTranslatedSrtChange,
   onFileChange,
   onLangChange,
@@ -119,6 +126,25 @@ export default function TtsTranscribePanel({
             'Pick a recognition source like Clone Video (Whisper / CapCut / OCR / subtitles), then send text to Create voice.',
           )}
         </p>
+        <div className="tts-speaker-options">
+        <div className="tts-field tts-transcribe-field tts-translation-toggle-row">
+          <span>{t('Tách người nói không?', 'Do you need speaker separation?')}</span>
+          <button
+            type="button"
+            className={`tts-switch${speakerDiarization ? ' is-on' : ''}`}
+            role="switch"
+            aria-checked={speakerDiarization}
+            disabled={busy}
+            onClick={() => onSpeakerDiarizationChange(!speakerDiarization)}
+          >
+            <span className="tts-switch-track" aria-hidden="true" />
+            <span>{speakerDiarization ? t('Có', 'Yes') : t('Không', 'No')}</span>
+          </button>
+        </div>
+        {speakerDiarization && <label className="tts-inline-option">{t('Số người nói', 'Speaker count')} <select value={speakerCount} onChange={(e) => onSpeakerCountChange(Number(e.target.value))}><option value={0}>{t('Tự động', 'Auto')}</option>{[2, 3, 4, 5, 6, 7, 8].map((n) => <option key={n} value={n}>{n}</option>)}</select></label>}
+        {speakerWarning && <p className="tts-transcribe-hint" role="status">{speakerWarning}</p>}
+        {speakers.length > 0 && <div className="tts-transcribe-hint">{speakers.map((speaker) => <span key={speaker.id}>{speaker.label} · {speaker.id} </span>)}</div>}
+        </div>
 
         <label className="tts-field tts-transcribe-field tts-source-field">
           <span>{t('Nguồn nhận dạng', 'Recognition source')}</span>

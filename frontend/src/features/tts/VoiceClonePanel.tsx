@@ -1,5 +1,6 @@
 /** Form «Clone giọng nói» — dùng ở trang Clone (variant `page`) và dashboard (variant `dash`). */
 import { useState, type DragEvent } from 'react'
+import { localize, useLocale } from '@/app/i18n'
 import { VoiceTagPicker, type VoiceTagLabel } from './VoiceMetadataModal'
 import { IconUpload } from './TtsIcons'
 
@@ -9,10 +10,12 @@ type Props = {
   cloneFile: File | null
   cloneTags: VoiceTagLabel[]
   cloneCount: number
+  cloneLanguage: string
   busy: boolean
   onNameChange: (name: string) => void
   onFileChange: (file: File | null) => void
   onTagsChange: (tags: VoiceTagLabel[]) => void
+  onLanguageChange: (language: string) => void
   onSubmit: () => void
   /** Mở tab «Danh sách giọng» */
   onVoiceList: () => void
@@ -24,13 +27,17 @@ export default function VoiceClonePanel({
   cloneFile,
   cloneTags,
   cloneCount,
+  cloneLanguage,
   busy,
   onNameChange,
   onFileChange,
   onTagsChange,
+  onLanguageChange,
   onSubmit,
   onVoiceList,
 }: Props) {
+  const { locale } = useLocale()
+  const t = (vi: string, en: string) => localize(locale, vi, en)
   const [isDragging, setIsDragging] = useState(false)
   const fileInputId = variant === 'dash' ? 'tts-clone-file-dash' : 'tts-clone-file'
   const introStyle =
@@ -100,6 +107,15 @@ export default function VoiceClonePanel({
           {cloneFile ? cloneFile.name : 'Định dạng hỗ trợ: WAV, MP3, M4A · Tối thiểu 10 giây, tối đa 5 phút'}
         </div>
       </div>
+      <label className="tts-field">
+        <span>{t('Ngôn ngữ clone', 'Clone language')}</span>
+        <select value={cloneLanguage} onChange={(e) => onLanguageChange(e.target.value)} disabled={busy}>
+          <option value="auto">{t('Tự động', 'Auto')}</option>
+          <option value="vi">{t('Tiếng Việt — VieNeu', 'Vietnamese — VieNeu')}</option>
+          <option value="en">{t('Tiếng Anh — VieNeu', 'English — VieNeu')}</option>
+          <option value="other">{t('Ngôn ngữ khác — Audio8-TTS-0.1B', 'Other — Audio8-TTS-0.1B')}</option>
+        </select>
+      </label>
       <label className="tts-field">
         <span>Tên giọng</span>
         <input type="text" value={cloneName} placeholder="Ví dụ: Giọng của tôi" onChange={(e) => onNameChange(e.target.value)} />

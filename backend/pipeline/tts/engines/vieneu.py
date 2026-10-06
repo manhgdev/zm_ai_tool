@@ -741,16 +741,15 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
             voice_id.startswith(zmtss_catalog.VOICE_ID_PREFIX)
             or str(item.get("source") or "").strip().lower() == "zmtts"
         )
-        if is_zmt_reference and language not in VIENEU_TEXT_LANGUAGES:
-            continue
         ref_path = voice_store.reference_path(item)
+        audio8_voice = language not in VIENEU_TEXT_LANGUAGES
         out.append(
             {
                 **item,
                 "id": voice_id,
                 "name": str(item.get("name") or voice_id),
-                "engine": "zmai",
-                "type": "zmAI",
+                "engine": "audio8" if audio8_voice else "zmai",
+                "type": "Audio8" if audio8_voice else "zmAI",
                 "available": ref_path.is_file(),
                 "tags": voice_store.normalize_voice_tags(item.get("tags")),
                 # Current bundled zmAI references are Vietnamese; keep an
@@ -765,8 +764,6 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
     listed_ids = {str(v.get("id") or "") for v in out}
     for item in zmtss_catalog.voices():
         language = zmtss_catalog.language_code(item.get("language"))
-        if language not in VIENEU_TEXT_LANGUAGES:
-            continue
         if requested_language and language != requested_language:
             continue
         remote_id = str(item["id"])
@@ -779,7 +776,8 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
         out.append({
             "id": voice_id,
             "name": voice_store.clean_display_name(str(item.get("name") or remote_id), fallback=remote_id),
-            "engine": "zmai", "type": "zmAI", "mode": "remote-reference",
+            "engine": "audio8" if language not in VIENEU_TEXT_LANGUAGES else "zmai",
+            "type": "Audio8" if language not in VIENEU_TEXT_LANGUAGES else "zmAI", "mode": "remote-reference",
             "available": path.is_file(), "language": language,
             "source": "zmtss",
             "previewUrl": _preview_api_url(voice_id),

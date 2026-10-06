@@ -487,6 +487,8 @@ def _flow_job_credit_cost(account: dict[str, Any], kind: str, model: Any) -> int
 
 
 def _ensure_flow_credits_for_job(account: dict[str, Any], kind: str, settings: dict[str, Any]) -> None:
+    if kind != "video":
+        return
     credits = account.get("credits")
     if not isinstance(credits, (int, float)):
         return
@@ -1988,7 +1990,7 @@ class FlowService:
                 except (ValueError, TypeError):
                     pass
             credits = acc.get("credits")
-            if isinstance(credits, (int, float)) and int(credits) <= 0:
+            if kind == "video" and isinstance(credits, (int, float)) and int(credits) <= 0:
                 continue
             # Gói Free không hỗ trợ tạo ảnh Nano Banana Pro
             if kind == "image" and model == "Nano Banana Pro" and acc.get("plan") == "Free":
@@ -2120,7 +2122,7 @@ class FlowService:
             self._account_condition.notify_all()
         return stopped
 
-    def _verify_account_plan_before_enqueue(self, account_id: str) -> dict[str, Any]:
+    def _verify_account_plan_before_enqueue(self, account_id: str, kind: str = "video") -> dict[str, Any]:
         """Refresh Flow entitlement before every generation entry point.
 
         ``enqueue`` is synchronous and is also called by series/automation
@@ -2147,7 +2149,7 @@ class FlowService:
         # before opening a browser/sync attempt so an expired session cannot
         # mask the real user-facing error as FLOW_SESSION_EXPIRED.
         known_credits = account.get("credits")
-        if isinstance(known_credits, (int, float)) and int(known_credits) <= 0:
+        if kind == "video" and isinstance(known_credits, (int, float)) and int(known_credits) <= 0:
             raise ValueError(
                 "FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)"
             )
@@ -2847,10 +2849,9 @@ class FlowService:
         # take minutes; doing it here made the UI look stuck and prevented the
         # user from seeing/cancelling the complete batch. The worker verifies
         # the account immediately before submitting each job.
-        # Free/Plus/Pro/Ultra all spend credits for video+image; only block when
-        # the synced balance is known and empty. Plan no longer gates create kind.
+        # Credits gate video only; image eligibility still respects plan/quota.
         credits = account.get("credits")
-        if isinstance(credits, (int, float)) and int(credits) <= 0:
+        if kind == "video" and isinstance(credits, (int, float)) and int(credits) <= 0:
             raise ValueError("FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)")
 
         settings, _ = _normalize_catalog_settings(account, kind, settings)
@@ -3027,7 +3028,7 @@ class FlowService:
             if job_id in self._cancelled:
                 return
             try:
-                verified_account = self._verify_account_plan_before_enqueue(account_id)
+                verified_account = self._verify_account_plan_before_enqueue(account_id, str(job.get("kind") or "video"))
             except ValueError as verify_exc:
                 # Account offline / reconnecting — fail-fast, free the slot,
                 # shared reconnect owns login. Do not hold concurrency.
@@ -3056,7 +3057,7 @@ class FlowService:
                     return
                 raise
             credits = verified_account.get("credits")
-            if isinstance(credits, (int, float)) and int(credits) <= 0:
+            if job.get("kind", "video") == "video" and isinstance(credits, (int, float)) and int(credits) <= 0:
                 raise ValueError("FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)")
             if verified_account.get("plan") == "Free" and str(job.get("kind") or "video") == "image" and dict(job.get("settings") or {}).get("model") == "Nano Banana Pro":
                 raise ValueError("FLOW_PLAN_INSUFFICIENT: Tài khoản Free không hỗ trợ tạo ảnh Nano Banana Pro (chỉ khả dụng trên gói Pro/Plus/Ultra)")

@@ -126,6 +126,8 @@ export const api = {
     }),
 
   hardware: () => fetchJson<HardwareInfo>(`${base}/hardware`, undefined, 40_000),
+  cleanupInventory: () => fetchJson<{ targets: Record<string, { bytes: number; items: number; path?: string; selectable?: boolean; unreadable?: boolean }> }>(`${base}/system/cleanup`),
+  cleanup: (targets: string[]) => fetchJson<{ ok: boolean; deleted: string[]; errors?: string[] }>(`${base}/system/cleanup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targets }) }),
   hardwareMode: async (mode: 'cpu' | 'gpu') => {
     const hardware = await fetchJson<HardwareInfo>(`${base}/hardware/mode`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
@@ -365,12 +367,12 @@ export const api = {
       15_000,
     ),
 
-  ttsStudioTranscribe: async (file: File, lang = 'auto', engine = 'whisper', translation?: { enabled: boolean; targetLang: string; translator: string; model: string }) => {
+  ttsStudioTranscribe: async (file: File, lang = 'auto', engine = 'whisper', translation?: { enabled: boolean; targetLang: string; translator: string; model: string }, speakerDiarization = false, speakerCount = 0) => {
     const fd = new FormData()
     fd.append('file', file)
-    const q = new URLSearchParams({ lang, engine })
+    const q = new URLSearchParams({ lang, engine, speaker_diarization: String(speakerDiarization), speaker_count: String(speakerCount) })
     if (translation?.enabled) { q.set('translate', 'true'); q.set('target_lang', translation.targetLang); q.set('translator', translation.translator); q.set('translation_model', translation.model) }
-    return fetchJson<{ id: string; job_id: string; running: boolean; engine?: string }>(
+    return fetchJson<{ id: string; job_id: string; running: boolean; engine?: string; speakers?: Array<{ id: string; label: string; voice: string }>; speaker_cues?: Array<{ start: number; end: number; text: string; speaker?: string }>; speaker_warning?: string | null }>(
       `${base}/tts/studio/transcribe?${q.toString()}`,
       { method: 'POST', body: fd },
       30_000,
@@ -450,10 +452,10 @@ export const api = {
       5000,
     ),
 
-  ttsStudioClone: async (name: string, file: File, transcript = '', tags: string[] = []) => {
+  ttsStudioClone: async (name: string, file: File, transcript = '', tags: string[] = [], language = 'auto', referenceType = 'upload', referenceId = '') => {
     const fd = new FormData()
     fd.append('file', file)
-    const q = new URLSearchParams({ name, transcript, tags: JSON.stringify(tags) })
+    const q = new URLSearchParams({ name, transcript, tags: JSON.stringify(tags), language, reference_type: referenceType, reference_id: referenceId })
     return fetchJson<{ id: string; name: string; tags: string[] }>(
       `${base}/tts/studio/clone?${q.toString()}`,
       { method: 'POST', body: fd },

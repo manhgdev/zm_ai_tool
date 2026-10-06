@@ -1317,7 +1317,7 @@ html.dark .tts-voice-filter-chip.is-active {
 
 html.dark .tts-voice-move {
   border-color: var(--tts-line);
-  background: var(--tts-bg);
+  background-color: var(--tts-bg);
   color: var(--tts-ink);
 }
 
@@ -1550,15 +1550,32 @@ html.dark .tts-btn-sm:hover:not(:disabled) {
 }
 
 .tts-voice-move {
+  appearance: none;
   font: inherit;
-  font-size: 0.72rem;
-  padding: 2px 6px;
-  border-radius: 6px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  width: 78px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 22px 0 9px;
+  border-radius: 8px;
   border: 1px solid var(--tts-line, #e5e7eb);
   background: var(--tts-card, #fff);
   color: var(--tts-ink, #111);
-  max-width: 96px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 16px) 50%, calc(100% - 12px) 50%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
   cursor: pointer;
+}
+
+.tts-voice-move:hover:not(:disabled) {
+  border-color: var(--tts-blue);
+}
+
+.tts-voice-move:focus-visible {
+  outline: 2px solid var(--tts-blue);
+  outline-offset: 2px;
 }
 
 .tts-voice-move:disabled {
@@ -2229,12 +2246,13 @@ html.dark .tts-wave-box {
 .tts-transcribe-source > .tts-transcribe-description { grid-row: 2; }
 .tts-transcribe-source > label.tts-field:nth-of-type(1) { grid-column: 1 / -1; grid-row: 3; }
 .tts-transcribe-source > label.tts-field:nth-of-type(2) { grid-column: 1; grid-row: 4; }
-.tts-transcribe-source > .tts-translation-toggle-row { grid-column: 1 / -1; grid-row: 5; }
-.tts-transcribe-source > label.tts-field:nth-of-type(3) { grid-column: 1; grid-row: 6; }
-.tts-transcribe-source > label.tts-field:nth-of-type(4) { grid-column: 2; grid-row: 6; }
-.tts-transcribe-source > label.tts-field:nth-of-type(5) { grid-column: 1 / -1; grid-row: 7; }
-.tts-transcribe-source > .tts-drop { grid-row: 8; }
-.tts-transcribe-source > .tts-transcribe-actions { grid-row: 9; }
+.tts-transcribe-source > .tts-speaker-options { grid-column: 1 / -1; grid-row: 5; min-width: 0; }
+.tts-transcribe-source > .tts-translation-toggle-row { grid-column: 1 / -1; grid-row: 6; }
+.tts-transcribe-source > label.tts-field:nth-of-type(3) { grid-column: 1; grid-row: 7; }
+.tts-transcribe-source > label.tts-field:nth-of-type(4) { grid-column: 2; grid-row: 7; }
+.tts-transcribe-source > label.tts-field:nth-of-type(5) { grid-column: 1 / -1; grid-row: 8; }
+.tts-transcribe-source > .tts-drop { grid-row: 9; }
+.tts-transcribe-source > .tts-transcribe-actions { grid-row: 10; }
 .tts-transcribe-source .tts-field { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
 .tts-transcribe-source .tts-field > span { font-size: .73rem; font-weight: 600; }
 .tts-transcribe-source .tts-field select,

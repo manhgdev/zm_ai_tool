@@ -307,7 +307,7 @@ def _pip_stream(
 
 _AI_RUNTIME_PACKAGES = (
     "faster-whisper>=1.1.0",
-    "av==16.0.1",
+    "av",
     "rapidocr-onnxruntime>=1.3.20",
     "pillow",
     "opencv-python-headless",
@@ -325,7 +325,7 @@ _AI_RUNTIME_PACKAGES = (
 )
 
 # 3 nhóm riêng — mỗi nhóm cài 1 pip call với --no-deps, có header log riêng.
-_PKG_WHISPER = ("faster-whisper>=1.1.0", "av==16.0.1", "soundfile", "cffi", "pycparser", "soxr", "tokenizers")
+_PKG_WHISPER = ("faster-whisper>=1.1.0", "av", "soundfile", "cffi", "pycparser", "soxr", "tokenizers")
 _PKG_DIARIZATION = ("sherpa-onnx>=1.12.0", "sherpa-onnx-bin>=1.12.0", "soundfile")
 _PKG_OCR     = ("rapidocr-onnxruntime>=1.3.20", "pillow", "opencv-python-headless<5.0")
 _PKG_VIENEU  = (
@@ -348,7 +348,7 @@ _SHERPA_CUDA_INDEX = "https://k2-fsa.github.io/sherpa/onnx/cuda.html"
 # locally-installed wheels that have no newer index release.
 _FROZEN_PACKAGE_MODULES: dict[str, tuple[str, ...]] = {
     "faster-whisper>=1.1.0": ("faster_whisper",),
-    "av==16.0.1": ("av",),
+    "av": ("av",),
     "rapidocr-onnxruntime>=1.3.20": ("rapidocr_onnxruntime",),
     "pillow": ("PIL",),
     "opencv-python-headless": ("cv2",),
@@ -483,7 +483,7 @@ def _runtime_ort_accel() -> str:
 # cài đúng gói thiếu (không --upgrade cả lô). Frozen dùng base_cmd đủ bộ.
 _MODULE_TO_PACKAGE: dict[str, str] = {
     "faster_whisper": "faster-whisper>=1.1.0",
-    "av": "av==16.0.1",
+    "av": "av",
     "rapidocr_onnxruntime": "rapidocr-onnxruntime>=1.3.20",
     "PIL": "pillow",
     "cv2": "opencv-python-headless",

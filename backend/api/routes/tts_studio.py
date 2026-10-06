@@ -271,6 +271,8 @@ async def api_tts_studio_transcribe(
     target_lang: str = "vi",
     translator: str = "google",
     translation_model: str = "",
+    speaker_diarization: bool = False,
+    speaker_count: int = 0,
     file: UploadFile = File(...),
 ):
     """Chép lời → plain text for TTS Studio.
@@ -374,12 +376,35 @@ async def api_tts_studio_transcribe(
 
                 rows = asr_whisper(wav_path, source_lang, workers=0)
 
+            speaker_warning = None
+            speakers = []
+            if speaker_diarization and eng in {"whisper", "capcut"}:
+                try:
+                    from pipeline.asr.speaker import assign_speakers, default_speaker_role, diarize_audio
+                    diarize_wav = wav_path
+                    if eng == "capcut":
+                        extract_audio(raw_path, diarize_wav)
+                    turns = diarize_audio(diarize_wav, DATA / "speaker_models", int(speaker_count or 0))
+                    assign_speakers(rows, turns)
+                    ids = sorted({str(row.get("speaker")) for row in rows if row.get("speaker")})
+                    speakers = [{"id": value, "label": default_speaker_role(i), "voice": ""} for i, value in enumerate(ids)]
+                except Exception as exc:
+                    speaker_warning = f"Không tách được người nói; đang dùng một giọng chung. / Speaker separation unavailable; using one voice. ({exc})"
+            elif speaker_diarization:
+                speaker_warning = "Nguồn này không có audio để tách người nói. / This source has no audio for speaker separation."
             text = _transcript_rows_to_text(rows, separator="\n")
             set_job_progress_pct(job_id, 85, "Đang chuẩn hóa các câu chép lời…")
             srt = _transcript_rows_to_srt(rows)
             if not text:
                 raise RuntimeError("Không nhận dạng được lời thoại trong file")
             payload = {"text": text, "srt": srt}
+            payload["speaker_cues"] = [
+                {"start": float(row.get("start") or 0), "end": float(row.get("end") or 0),
+                 "text": str(row.get("source") or row.get("text") or ""), "speaker": row.get("speaker")}
+                for row in rows
+            ]
+            payload["speakers"] = speakers
+            payload["speaker_warning"] = speaker_warning
             if eng == "whisper":
                 payload["srt_styles"] = _transcript_word_styles(rows)
             if translate:
@@ -601,6 +626,9 @@ async def api_tts_studio_clone(
     name: str = "",
     transcript: str = "",
     tags: str = "[]",
+    language: str = "auto",
+    reference_type: str = "upload",
+    reference_id: str = "",
     file: UploadFile = File(...),
 ):
     """Clone giọng VieNeu từ file ref (3–8s).
@@ -610,6 +638,13 @@ async def api_tts_studio_clone(
     import asyncio
     if not name.strip():
         raise HTTPException(400, "Thiếu tên giọng")
+    language = (language or "auto").strip().lower()
+    if language not in {"auto", "vi", "en", "other"}:
+        raise HTTPException(400, "Ngôn ngữ clone không hợp lệ / Invalid clone language")
+    if reference_type != "upload":
+        raise HTTPException(400, "Audio mẫu ZMTTS chưa được nối vào Clone Voice / ZMTTS reference is not connected to Clone Voice yet")
+    if language == "other":
+        raise HTTPException(501, "Audio8-TTS-0.1B chưa được cài trong runtime local / Audio8-TTS-0.1B is not installed in the local runtime")
     try:
         parsed_tags = json.loads(tags)
         clean_tags = voice_store.normalize_voice_tags(parsed_tags, strict=True)
@@ -632,7 +667,7 @@ async def api_tts_studio_clone(
         raise HTTPException(500, str(e)) from e
     finally:
         tmp.unlink(missing_ok=True)
-    return voice
+    return {**voice, "engine": "vieneu", "language": language, "referenceType": reference_type, "referenceId": reference_id or None}
 
 
 def _studio_voice_payload(entry: dict) -> dict:

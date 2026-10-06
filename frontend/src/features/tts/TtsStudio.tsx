@@ -84,6 +84,9 @@ type TtsRealtimeProgress = {
   srt_styles?: TranscriptTimedStyles['styles']
   translated_text?: string
   translated_srt?: string
+  speakers?: Array<{ id: string; label: string; voice: string }>
+  speaker_cues?: Array<{ start: number; end: number; text: string; speaker?: string }>
+  speaker_warning?: string | null
   translation_error?: string
 }
 
@@ -326,9 +329,14 @@ export default function TtsStudio({
   const [status, setStatus] = useState<Record<string, EngineStatus>>({})
   const [cloneName, setCloneName] = useState('')
   const [cloneFile, setCloneFile] = useState<File | null>(null)
+  const [cloneLanguage, setCloneLanguage] = useState('auto')
   const [transcribeFile, setTranscribeFile] = useState<File | null>(null)
   const [transcribeLang, setTranscribeLang] = useState(() => { try { return localStorage.getItem('zm-ai-tool:tts-transcribe-lang:v1') || 'auto' } catch { return 'auto' } })
   const [transcribeEngine, setTranscribeEngine] = useState<TranscribeEngine>(() => { try { const value = localStorage.getItem('zm-ai-tool:tts-transcribe-engine:v1'); return value === 'capcut' || value === 'paddleocr' || value === 'subtitle' ? value : 'whisper' } catch { return 'whisper' } })
+  const [speakerDiarization, setSpeakerDiarization] = useState(() => localStorage.getItem('zm-ai-tool:tts-speaker-diarization:v1') === 'true')
+  const [speakerCount, setSpeakerCount] = useState(() => Number(localStorage.getItem('zm-ai-tool:tts-speaker-count:v1') || 0))
+  const [transcribeSpeakers, setTranscribeSpeakers] = useState<Array<{ id: string; label: string; voice: string }>>([])
+  const [speakerWarning, setSpeakerWarning] = useState('')
   const [transcribeResult, setTranscribeResult] = useState(() => {
     try {
       return localStorage.getItem(TTS_TRANSCRIBE_RESULT_LS_KEY) || ''
@@ -356,6 +364,8 @@ export default function TtsStudio({
     setTranscribeTimedStyles(null)
     setTranslatedResult('')
     setTranslatedSrt('')
+    setTranscribeSpeakers([])
+    setSpeakerWarning('')
     try {
       localStorage.removeItem(TTS_TRANSCRIBE_RESULT_LS_KEY)
       localStorage.removeItem('zm-ai-tool:tts-transcribe-srt:v1')
@@ -364,6 +374,7 @@ export default function TtsStudio({
       localStorage.removeItem('zm-ai-tool:tts-translated-srt:v1')
     } catch { /* storage unavailable */ }
   }, [])
+  useEffect(() => { localStorage.setItem('zm-ai-tool:tts-speaker-diarization:v1', String(speakerDiarization)); localStorage.setItem('zm-ai-tool:tts-speaker-count:v1', String(speakerCount)) }, [speakerDiarization, speakerCount])
   const handleTranscribeEngineChange = useCallback((engine: TranscribeEngine) => {
     setTranscribeEngine(engine)
     // Changing the source is a view/setting change, not a destructive cache action.
@@ -428,6 +439,11 @@ export default function TtsStudio({
   const [previewBusy, setPreviewBusy] = useState(false)
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null)
   const [previewGeneratingVoiceId, setPreviewGeneratingVoiceId] = useState<string | null>(null)
+  // The preview sentence must follow the selected voice language; never send
+  // a Vietnamese/English sentence to a Chinese Audio8 voice after a language switch.
+  useEffect(() => {
+    setPreviewSample('')
+  }, [lang])
   const [selectedVoiceIds, setSelectedVoiceIds] = useState<Set<string>>(() => new Set())
   const [bulkMoveOpen, setBulkMoveOpen] = useState(false)
   const [voiceQuery, setVoiceQuery] = useState('')
@@ -1059,9 +1075,10 @@ export default function TtsStudio({
   async function onPreview() {
     if (!voice) return
     const requestJobId = createTtsJobId()
+    const previewLang = selectedVoice?.language || lang
     let sample = previewSample.trim().slice(0, 200)
     if (!sample) {
-      sample = previewSampleFor(lang).slice(0, 200)
+      sample = previewSampleFor(previewLang).slice(0, 200)
       setPreviewSample(sample)
     }
     voicePreviewRef.current?.pause()
@@ -1073,7 +1090,7 @@ export default function TtsStudio({
         jobId: requestJobId,
         text: sample,
         voice,
-        lang,
+        lang: previewLang,
         speed,
         volume,
         pitch,
@@ -1152,7 +1169,7 @@ export default function TtsStudio({
     setError('')
     setProgressMinimized(false)
     try {
-      const started = await api.ttsStudioTranscribe(transcribeFile, transcribeLang, transcribeEngine, transcribeTranslation)
+      const started = await api.ttsStudioTranscribe(transcribeFile, transcribeLang, transcribeEngine, transcribeTranslation, speakerDiarization, speakerCount)
       const jid = started.id || started.job_id
       activeJobIdRef.current = jid
       cancelledJobIdsRef.current.delete(jid)
@@ -1166,6 +1183,8 @@ export default function TtsStudio({
       setTranscribeTimedStyles(p.srt_styles ? { sourceSrt: String(p.srt || ''), styles: p.srt_styles } : null)
       setTranslatedResult(String(p.translated_text || ''))
       setTranslatedSrt(String(p.translated_srt || ''))
+      setTranscribeSpeakers(Array.isArray(p.speakers) ? p.speakers : [])
+      setSpeakerWarning(String(p.speaker_warning || ''))
       if (p.translation_error) toast.error(t('Chép lời xong nhưng dịch thất bại: ', 'Transcription complete but translation failed: ') + p.translation_error)
       setBusyProgress(100)
       setBusyCustomMessage(t('Đã chép lời xong!', 'Transcription complete!'))
@@ -1197,7 +1216,8 @@ export default function TtsStudio({
     setBusy(true)
     setError('')
     try {
-      const v = await api.ttsStudioClone(cloneName.trim(), cloneFile, '', cloneTags)
+      const resolvedLanguage = cloneLanguage === 'auto' ? (lang === 'vi' || lang === 'en' ? lang : 'other') : cloneLanguage
+      const v = await api.ttsStudioClone(cloneName.trim(), cloneFile, '', cloneTags, resolvedLanguage)
       setBusyProgress(100)
       setEngine('clone')
       preferredVoiceRef.current = v.id
@@ -1928,6 +1948,12 @@ export default function TtsStudio({
             resultText={transcribeResult}
             resultSrt={transcribeSrt}
             timedStyles={transcribeTimedStyles}
+            speakerDiarization={speakerDiarization}
+            speakerCount={speakerCount}
+            speakers={transcribeSpeakers}
+            speakerWarning={speakerWarning}
+            onSpeakerDiarizationChange={setSpeakerDiarization}
+            onSpeakerCountChange={setSpeakerCount}
             translation={transcribeTranslation}
             onTranslationChange={setTranscribeTranslation}
             translatedText={translatedResult}
@@ -2142,10 +2168,12 @@ export default function TtsStudio({
             cloneFile={cloneFile}
             cloneTags={cloneTags}
             cloneCount={cloneCount}
+            cloneLanguage={cloneLanguage}
             busy={busy}
             onNameChange={setCloneName}
             onFileChange={setCloneFile}
             onTagsChange={setCloneTags}
+            onLanguageChange={setCloneLanguage}
             onSubmit={() => void onClone()}
             onVoiceList={() => go('voice')}
             />
@@ -2483,10 +2511,12 @@ export default function TtsStudio({
           cloneFile={cloneFile}
           cloneTags={cloneTags}
           cloneCount={cloneCount}
+          cloneLanguage={cloneLanguage}
           busy={busy}
           onNameChange={setCloneName}
           onFileChange={setCloneFile}
           onTagsChange={setCloneTags}
+          onLanguageChange={setCloneLanguage}
           onSubmit={() => void onClone()}
           onVoiceList={() => go('voice')}
           />

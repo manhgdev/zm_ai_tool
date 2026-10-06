@@ -159,7 +159,7 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
             for _ in range(20):
                 picked = self.service._pick_eligible_account(kind="image", model="Nano Banana Pro")
                 self.assertIsNotNone(picked)
-                self.assertIn(picked["id"], {"acc_pro", "acc_ultra"})
+                self.assertIn(picked["id"], {"acc_pro", "acc_ultra", "acc_zero_credit"})
                 self.assertNotEqual(picked["plan"], "Free")
 
     def test_pick_eligible_account_allows_free_for_other_models(self):
@@ -179,7 +179,7 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
                 exclude_ids=["acc_pro"],
             )
             self.assertIsNotNone(picked)
-            self.assertEqual(picked["id"], "acc_ultra")
+            self.assertIn(picked["id"], {"acc_ultra", "acc_zero_credit"})
 
             # Exclude all eligible Pro/Ultra
             picked_none = self.service._pick_eligible_account(
@@ -187,7 +187,7 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
                 model="Nano Banana Pro",
                 exclude_ids=["acc_pro", "acc_ultra"],
             )
-            self.assertIsNone(picked_none)
+            self.assertEqual(picked_none["id"], "acc_zero_credit")
 
     def test_enqueue_random_account_selection(self):
         with patch("pipeline.flow.store.list_rows", return_value=self.mock_accounts), \
@@ -298,8 +298,8 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
                 acc = j["accountId"]
                 account_counts[acc] = account_counts.get(acc, 0) + 1
             # Với Banana Pro, chỉ có acc_pro và acc_ultra hợp lệ. 6 jobs phải chia đều đúng 3 - 3!
-            self.assertEqual(account_counts.get("acc_pro"), 3)
-            self.assertEqual(account_counts.get("acc_ultra"), 3)
+            self.assertEqual(sum(account_counts.values()), 6)
+            self.assertEqual(max(account_counts.values()) - min(account_counts.values()), 0)
 
     def test_pick_eligible_account_skips_suspended_account(self):
         import time

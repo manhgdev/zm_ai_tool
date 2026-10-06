@@ -1002,6 +1002,163 @@ except Exception:  # pragma: no cover
     system_check = None  # type: ignore
 
 
+# Never add DATA root/config files here: app_config.json contains Cloud and ElevenLabs keys,
+# license.json contains activation, and ui_preferences.json contains user settings.
+CLEANUP_PROTECTED = {DATA / name for name in (
+    "app_config.json", "license.json", "ui_preferences.json", "setup_ok", "download_root.json",
+    "flow/accounts.json", "flow/profiles", "chat", "voices", "drawing/hands",
+)}
+
+CLEANUP_TARGETS = {
+    "data_srt_image": DATA / "srt_image",
+    "data_srt_export": DATA / "srt_export",
+    "data_automation": DATA / "automation" / "jobs",
+    "data_cache": DATA / "cache",
+    "data_temp": DATA / "tmp",
+    "data_logs": DATA / "logs",
+    "data_tts_temp": DATA / "tts_temp",
+    "data_review": DATA / "review_cache",
+    "data_artifacts": DATA / "artifact_cache",
+    "data_capcut": DATA / "capcut-stt-raw",
+    "data_voice_cache": DATA / "voices" / "vieneu" / "cache",
+    "data_cleaner": DATA / "cleaner_out",
+    "data_legacy_tts": DATA / "tts_output",
+    "public_upload": PUBLIC_DATA / "upload",
+    "public_exports": PUBLIC_DATA / "exports",
+    "public_tts": PUBLIC_DATA / "tts_output",
+    "public_flow": PUBLIC_DATA / "flow",
+    "public_downloads": PUBLIC_DATA / "downloads",
+    "public_cleaner": PUBLIC_DATA / "cleaner",
+}
+
+
+def _cleanup_stats(path: Path) -> tuple[int, int]:
+    if path.is_symlink() or not path.exists():
+        return 0, 0
+    if path.is_file():
+        return path.stat().st_size, 1
+    sizes = [_cleanup_stats(child) for child in path.iterdir()]
+    return sum(size for size, _ in sizes), sum(count for _, count in sizes)
+
+
+def _cleanup_paths() -> dict[str, Path]:
+    paths = dict(CLEANUP_TARGETS)
+    # Work directories are selected individually; credentials and databases are never inferred as disposable.
+    for group, base in (("data", DATA), ("public", PUBLIC_DATA)):
+        if not base.is_dir():
+            continue
+        for child in base.iterdir():
+            if child.is_dir() and not child.is_symlink() and (child / "meta.json").is_file():
+                paths[f"{group}_project:{child.name}"] = child
+    drawing = DATA / "drawing"
+    if drawing.is_dir() and not drawing.is_symlink():
+        for child in drawing.iterdir():
+            if child.is_dir() and not child.is_symlink() and child.name != "hands":
+                paths[f"data_drawing:{child.name}"] = child
+    from pipeline.core.output_paths import app_output_root, _OUTPUT_SUBFOLDERS
+    output = app_output_root()
+    groups = {parts[0] for parts in _OUTPUT_SUBFOLDERS.values()}
+    for group in sorted(groups):
+        folder = output / group
+        if group == "flow":
+            # Keep Series independently selectable; never list its parent as another deletion target.
+            paths["output:flow/video"] = folder / "video"
+            paths["output:flow/image"] = folder / "image"
+            series = folder / "series"
+            if series.is_dir() and not series.is_symlink():
+                for item in series.iterdir():
+                    if item.is_dir() and not item.is_symlink():
+                        paths[f"output:flow/series/{item.name}"] = item
+            if folder.is_dir() and not folder.is_symlink():
+                for item in folder.iterdir():
+                    if item.is_dir() and not item.is_symlink() and item.name not in ("video", "image", "series"):
+                        paths[f"output:flow/{item.name}"] = item
+        else:
+            paths[f"output:{group}"] = folder
+    # One physical folder may also be configured under public/data. Count and clear it once.
+    return dict({path.absolute(): (key, path) for key, path in paths.items()}.values())
+
+
+def _cleanup_base(key: str) -> Path:
+    if key.startswith("output:"):
+        from pipeline.core.output_paths import app_output_root
+        return app_output_root()
+    return PUBLIC_DATA if key.startswith("public_") else DATA
+
+
+def _cleanup_inventory() -> dict[str, dict[str, object]]:
+    paths = _cleanup_paths()
+    rows = {}
+    def add(key: str, path: Path, selectable: bool) -> None:
+        try:
+            size, count = _cleanup_stats(path)
+            rows[key] = {"bytes": size, "items": count, "path": str(path), "selectable": selectable}
+        except OSError:
+            rows[key] = {"bytes": 0, "items": 0, "path": str(path), "selectable": False, "unreadable": True}
+    for key, path in paths.items():
+        base = _cleanup_base(key)
+        relative = path.relative_to(base)
+        add(key, path, not any((base / Path(*relative.parts[:i])).is_symlink() for i in range(1, len(relative.parts) + 1)))
+    # Include every remaining area as protected, recursing only around known cleanup targets.
+    def remaining(base: Path, group: str, path: Path) -> None:
+        if path in paths.values():
+            return
+        if not path.is_symlink() and path.is_dir() and any(path in target.parents for target in paths.values()):
+            for child in path.iterdir():
+                remaining(base, group, child)
+        else:
+            add(f"{group}_protected:{path.relative_to(base).as_posix()}", path, False)
+    for group, base in (("data", DATA), ("public", PUBLIC_DATA)):
+        if base.is_dir():
+            for child in base.iterdir():
+                remaining(base, group, child)
+    return rows
+
+
+class CleanupBody(BaseModel):
+    targets: list[str] | None = None
+
+
+@router.get("/api/system/cleanup")
+def api_cleanup_inventory():
+    return {"targets": _cleanup_inventory()}
+
+
+@router.post("/api/system/cleanup")
+def api_cleanup(body: CleanupBody):
+    paths = _cleanup_paths()
+    targets = set(paths if body.targets is None else body.targets)
+    invalid = sorted(targets - set(paths))
+    if invalid:
+        raise HTTPException(400, "CLEANUP_TARGET_INVALID")
+    if targets:
+        from pipeline.core.nvidia_driver import _active_jobs
+        if _active_jobs():
+            raise HTTPException(409, "CLEANUP_JOBS_BUSY")
+        from pipeline.flow.service import service as flow_service
+        if any(job.get("status") in ("queued", "running", "processing") for job in flow_service.jobs()):
+            raise HTTPException(409, "CLEANUP_JOBS_BUSY")
+    deleted: list[str] = []
+    errors: list[str] = []
+    for key in sorted(targets):
+        path = paths[key]
+        try:
+            base = _cleanup_base(key)
+            resolved = path.resolve()
+            if any(protected.resolve() == resolved or resolved in protected.resolve().parents for protected in CLEANUP_PROTECTED):
+                raise OSError("CLEANUP_PROTECTED_DATA")
+            relative = path.relative_to(base)
+            if any((base / Path(*relative.parts[:i])).is_symlink() for i in range(1, len(relative.parts) + 1)):
+                raise OSError("CLEANUP_SYMLINK_NOT_ALLOWED")
+            path.mkdir(parents=True, exist_ok=True)
+            for child in path.iterdir():
+                shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+            deleted.append(key)
+        except OSError as exc:
+            errors.append(f"{key}: {exc}")
+    return {"ok": not errors, "deleted": deleted, "errors": errors, "targets": _cleanup_inventory()}
+
+
 @router.get("/api/hardware")
 def api_hardware():
     from pipeline.core.runtime_active import cpu_mode_enabled

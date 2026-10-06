@@ -53,10 +53,6 @@ def _mod_ok(name: str, *, dist_map: dict[str, list[str]] | None = None) -> tuple
         if importlib.util.find_spec(name) is None:
             return False, "chưa cài"
         module = __import__(name)
-        if name == "av":
-            version = importlib.metadata.version("av")
-            if version != "16.0.1":
-                return False, f"PyAV {version}; required av==16.0.1"
         if name == "cv2" and not getattr(module, "VideoCapture", None):
             return False, "cv2 thiếu VideoCapture"
         # Import OK = package usable. Metadata có thể hỏng (~orch dist-info) — đừng coi là thiếu.
@@ -89,11 +85,6 @@ def _runtime_modules_batch_ok(names: list[str]) -> dict[str, tuple[bool, str]]:
         "for n in names:\n"
         "  try:\n"
         "    m = __import__(n)\n"
-        "    if n == 'av':\n"
-        "      from importlib.metadata import version\n"
-        "      raw = version('av')\n"
-        "      if raw != '16.0.1':\n"
-        "        raise RuntimeError('PyAV ' + raw + '; required av==16.0.1')\n"
         "    if n == 'cv2' and not getattr(m, 'VideoCapture', None):\n"
         "      raise ImportError('cv2 thiếu VideoCapture')\n"
         "    if n == 'transformers':\n"

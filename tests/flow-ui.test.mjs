@@ -7,6 +7,27 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { isFlowAccountConnected, selectedFlowAccount, formatFlowJobSettingsMeta } from '../frontend/src/features/flow/flow.helpers.ts'
 import { explainFlowError, explainFlowEvent, technicalFlowDetail, formatFlowExplain, flowStageLabel } from '../frontend/src/features/flow/flow.explain.ts'
 
+test('prompt height defaults to flex and only saves a native manual resize', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../frontend/src/pages/FlowPage.css', import.meta.url), 'utf8');
+  assert.match(css, /flex: 1 0 212px/);
+  const start = source.indexOf('const textarea = event.currentTarget;');
+  const body = source.slice(start, source.indexOf('\n                }}', start));
+  let finish;
+  const saved = [];
+  const run = new Function('event', 'window', 'setPromptHeight', 'localStorage', body);
+  const textarea = { style: { height: '' } };
+  const storage = { setItem: (key, value) => saved.push([key, value]) };
+  const win = { addEventListener: (_event, fn) => { finish = fn; } };
+  run({ currentTarget: textarea }, win, () => {}, storage);
+  finish();
+  assert.equal(saved.length, 0);
+  run({ currentTarget: textarea }, win, () => {}, storage);
+  textarea.style.height = '540px';
+  finish();
+  assert.deepEqual(saved, [['zm-ai-tool:flow:prompt-height', '540']]);
+});
+
 test('retry locks duplicate confirmation until every request settles', async () => {
   const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
   const body = source.slice(source.indexOf('  const confirmRetryJob ='), source.indexOf('  const deleteWebFlowOutputs ='));
@@ -42,6 +63,12 @@ test('retry locks duplicate confirmation until every request settles', async () 
     const button = source.slice(source.lastIndexOf('<button', pos), source.indexOf('</button>', pos));
     assert.match(button, /disabled=\{[^}]*retryBusy/);
   }
+});
+
+test('video resolution selection follows the matching download quality', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
+  const matches = source.match(/resolution\.toLowerCase\(\) === "360p" \|\| resolution\.toLowerCase\(\) === "720p" \? \{ quality: resolution \} : \{\}/g) || [];
+  assert.equal(matches.length, 2);
 });
 
 test('retry restores only connected accounts and preserves random jobs', () => {

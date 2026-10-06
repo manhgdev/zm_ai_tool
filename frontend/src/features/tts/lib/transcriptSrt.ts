@@ -12,12 +12,12 @@ function millis(value: string): number {
 }
 
 /** Reflow only whole timed cues; never manufacture a time within a cue. */
-export function formatTranscriptSrt(raw: string, style: TranscriptStyle, _engine: TranscriptEngine = 'whisper'): string {
+export function formatTranscriptSrt(raw: string, style: TranscriptStyle, engine: TranscriptEngine = 'whisper'): string {
   // "Giữ cue gốc" is deliberately byte-for-byte source SRT. CapCut already
   // returns authoritative cue timestamps; merging its short cues here makes
   // the text appear in the wrong time range. Reflow styles below may combine
   // complete cues, but never this source view.
-  if (!raw.trim() || style === 'original') return raw
+  if (!raw.trim()) return raw
   const cues: Cue[] = []
   for (const block of raw.replace(/^\uFEFF/, '').trim().split(/\r?\n\s*\r?\n/)) {
     const [index, time, ...lines] = block.split(/\r?\n/)
@@ -28,7 +28,8 @@ export function formatTranscriptSrt(raw: string, style: TranscriptStyle, _engine
     if (millis(end) <= millis(start)) return raw
     cues.push({ start, end, from: millis(start), to: millis(end), text: lines.join(' ').trim() })
   }
-  const limit = { original: Infinity, hard: 42, v916: 28, h169: 56, clause: 48, sentence: 120 }[style]
+  if (style === 'original' && engine !== 'capcut') return raw
+  const limit = { original: engine === 'capcut' ? 120 : Infinity, hard: 42, v916: 28, h169: 56, clause: 48, sentence: 120 }[style]
   const boundary = style === 'clause' ? /[.!?…。！？,;:，；：]["'”’)]*$/u : /[.!?…。！？]["'”’)]*$/u
   const grouped: Cue[] = []
   for (const cue of cues) {
@@ -42,7 +43,9 @@ export function formatTranscriptSrt(raw: string, style: TranscriptStyle, _engine
     const canStyledMerge = !!previous
       && gap >= 0 && gap <= 350 && elapsed <= 6000
       && previous.text.length + cue.text.length + 1 <= limit
-    if (previous && !boundary.test(previous.text) && canStyledMerge) {
+    const canCapCutSentenceMerge = engine === 'capcut' && style === 'original'
+      && previous && gap >= 0 && gap <= 120 && !boundary.test(previous.text)
+    if (previous && (canCapCutSentenceMerge || (!boundary.test(previous.text) && canStyledMerge))) {
       previous.text += ` ${cue.text}`
       previous.end = cue.end
       previous.to = cue.to

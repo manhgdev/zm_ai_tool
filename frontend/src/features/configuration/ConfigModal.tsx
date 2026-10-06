@@ -116,6 +116,58 @@ export default function ConfigModal({
   const [outputRoot, setOutputRoot] = useState('')
   const [outputRootDefault, setOutputRootDefault] = useState('')
   const [outputRootSaving, setOutputRootSaving] = useState(false)
+  const cleanupLabels: Record<string, [string, string]> = {
+    data_srt_image: ['Data · SRT ảnh', 'Data · SRT images'],
+    data_srt_export: ['Data · SRT video', 'Data · SRT video'],
+    data_automation: ['Data · file tác vụ Automation', 'Data · Automation job files'],
+    public_upload: ['Public · file upload', 'Public · uploads'],
+    data_tts_temp: ['Data · file TTS tạm', 'Data · temporary TTS files'],
+    data_review: ['Data · cache Review', 'Data · Review cache'],
+    data_artifacts: ['Data · cache xử lý', 'Data · processing cache'],
+    data_capcut: ['Data · phản hồi CapCut lưu tạm', 'Data · cached CapCut responses'],
+    data_voice_cache: ['Data · cache giọng nói', 'Data · voice cache'],
+    data_cleaner: ['Data · kết quả làm sạch video', 'Data · cleaned video outputs'],
+    data_legacy_tts: ['Data · kết quả TTS cũ', 'Data · legacy TTS outputs'],
+    data_cache: ['Data cache', 'Data cache'], data_temp: ['Data tạm', 'Temporary data'], data_logs: ['Log data', 'Data logs'],
+    public_exports: ['Public exports', 'Public exports'], public_tts: ['Public TTS', 'Public TTS'], public_flow: ['Public Flow', 'Public Flow'],
+    public_downloads: ['Public downloads', 'Public downloads'], public_cleaner: ['Public cleaner', 'Public cleaner'],
+  }
+  const [cleanupTargets, setCleanupTargets] = useState<Record<string, { bytes: number; items: number; path?: string; selectable?: boolean; unreadable?: boolean }>>({})
+  const [cleanupSelected, setCleanupSelected] = useState<string[]>([])
+  const [cleanupRunning, setCleanupRunning] = useState(false)
+  const [cleanupConfirm, setCleanupConfirm] = useState(false)
+  const [cleanupView, setCleanupView] = useState<'selectable' | 'protected'>('selectable')
+  const cleanupAvailable = Object.keys(cleanupTargets).filter(key => !cleanupTargets[key].unreadable && (cleanupTargets[key].selectable ?? Object.hasOwn(cleanupLabels, key)))
+
+  useEffect(() => {
+    if (!open || section !== 'cleanup') return
+    api.cleanupInventory().then(result => {
+      setCleanupTargets(result.targets)
+      setCleanupSelected([])
+    }).catch(() => toast.error(t('Không đọc được dung lượng dọn dẹp.', 'Could not read cleanup inventory.')))
+  }, [open, section])
+
+  const runCleanup = async () => {
+    if (!cleanupSelected.length || cleanupRunning) return
+    setCleanupConfirm(false)
+    setCleanupRunning(true)
+    try {
+      const result = await api.cleanup(cleanupSelected)
+      if (!result.ok || result.errors?.length) {
+        toast.error(t('Chưa dọn được hết các mục đã chọn.', 'Some selected items could not be cleaned.'), { description: result.errors?.join('; ') })
+      } else {
+        toast.success(t('Đã dọn dẹp dữ liệu đã chọn.', 'Selected data cleaned.'))
+      }
+      try {
+        const next = await api.cleanupInventory()
+        setCleanupTargets(next.targets)
+      } catch {
+        toast.error(t('Không cập nhật được dung lượng sau khi dọn.', 'Could not refresh storage usage after cleanup.'))
+      }
+    } catch (error) {
+      toast.error(String(error).includes('CLEANUP_JOBS_BUSY') ? t('Hãy chờ tác vụ đang chạy hoàn tất trước khi dọn dẹp.', 'Wait for running tasks to finish before cleanup.') : String(error))
+    } finally { setCleanupRunning(false) }
+  }
 
   useEffect(() => {
     if (!open || section !== 'cloud') return
@@ -922,10 +974,10 @@ export default function ConfigModal({
           </div>
           <div className="cfg-head-actions">
             <label>
-              <select aria-label={t('Ngôn ngữ giao diện', 'Interface language')}
+              <select className="locale-select" aria-label={t('Ngôn ngữ giao diện', 'Interface language')}
                 value={locale} onChange={(event) => setLocale(event.target.value === 'en' ? 'en' : 'vi')}>
-                <option value="vi">Tiếng Việt</option>
-                <option value="en">English</option>
+                <option value="vi">VI</option>
+                <option value="en">EN</option>
               </select>
             </label>
             <button type="button" className="cfg-update" disabled={updateChecking} onClick={() => void checkForUpdate()}>
@@ -975,6 +1027,9 @@ export default function ConfigModal({
                 onClick={() => setSection('output')}
               >
                 {t('Thư mục đầu ra', 'Output folder')}
+              </button>
+              <button type="button" className={section === 'cleanup' ? 'active' : undefined} onClick={() => setSection('cleanup')}>
+                {t('Dọn dẹp', 'Cleanup')}
               </button>
               <button
                 type="button"
@@ -1053,6 +1108,8 @@ export default function ConfigModal({
                         key={a.id}
                         type="button"
                         className="cfg-check-install cfg-check-install-sm"
+                        title={actionLabel}
+                        aria-label={actionLabel}
                         disabled={!!installing}
                         onClick={() => {
                           autoSetupLock.current = false
@@ -1060,7 +1117,7 @@ export default function ConfigModal({
                           void installAction(a.id as 'ocr_cuda' | 'demucs_cuda')
                         }}
                       >
-                        {installing === a.id ? '…' : actionLabel}
+                        {installing === a.id ? t('Đang cài…', 'Installing…') : t('Cài đặt', 'Install')}
                       </button>
                     )
                   })
@@ -1113,9 +1170,7 @@ export default function ConfigModal({
                     </div>
                     <div className="cfg-check-action">
                       {it.ok ? (
-                        ['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
-                          <span className="cfg-check-installed">{t('Đã cài', 'Installed')}</span>
-                        ) : null
+                        <span className="cfg-check-installed">{t('Sẵn sàng', 'Ready')}</span>
                       ) : ['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
                         <button
                           type="button"
@@ -1133,11 +1188,7 @@ export default function ConfigModal({
                         >
                           {installing === it.install || (it.install.startsWith('ai_runtime') && installing === 'ai_runtime')
                             ? t('Đang cài…', 'Installing…')
-                            : it.install.startsWith('ai_runtime')
-                              ? t('Cài gói AI', 'Install AI packages')
-                              : it.install === 'demucs_cuda' ? t('Cài Demucs', 'Install Demucs')
-                              : it.install === 'nvm' ? t('Cài Node.js', 'Install Node.js')
-                              : t('Cài OCR GPU', 'Install OCR GPU')}
+                            : t('Cài đặt', 'Install')}
 
                         </button>
                       ) : it.install && it.install.startsWith('http') ? (
@@ -1154,7 +1205,7 @@ export default function ConfigModal({
                     </div>
                   </div>
                   <div className="cfg-check-body">
-                    <div className="cfg-check-detail">{it.ok ? t('Sẵn sàng', 'Ready') : t('Cần kiểm tra hoặc cài đặt', 'Needs checking or installation')}</div>
+                    {!it.ok && <div className="cfg-check-detail">{t('Cần kiểm tra hoặc cài đặt', 'Needs checking or installation')}</div>}
                     {it.detail && <details><summary>{t('Chi tiết kỹ thuật', 'Technical details')}</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{setupDetail(locale, it)}</pre></details>}
                     {!it.ok && <div className="cfg-check-hint">{setupLabel(locale, it.id, 'hint')}</div>}
                     {!it.ok && it.install && !it.install.startsWith('http') && !['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
@@ -1481,8 +1532,7 @@ export default function ConfigModal({
               const rows: [string, string][] = [
                 ['Video Clone',   p('clone')],
                 ['Film Review',   p('review')],
-                ['Flow / Video',  p('flow' + sep + 'video')],
-                ['Flow / Ảnh',    p('flow' + sep + 'image')],
+                ['Flow', p('flow')],
                 ['TTS',           p('text-to-speech')],
                 [t('Tải video','Download video'), p('download-video')],
                 [t('Xuất SRT','SRT export'), p('subtitles' + sep + 'export')],
@@ -1499,13 +1549,42 @@ export default function ConfigModal({
                     {rows.map(([label, full]) => (
                       <div key={label} className="cfg-subfolder-item" title={full}>
                         <span className="cfg-subfolder-label">{label}</span>
+                        {label === 'Flow' ? (
+                          <ul className="cfg-subfolder-children">
+                            {[[t('Video', 'Video'), 'video'], [t('Ảnh', 'Images'), 'image'], ['Series', 'series']].map(([name, folder]) => (
+                              <li key={folder} title={p(`flow/${folder}`)}>
+                                <span>{name}</span>
+                                <code className="cfg-subfolder-path">{p(`flow/${folder}`)}</code>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
                         <code className="cfg-subfolder-path">{full}</code>
+                        )}
                       </div>
                     ))}
                   </div>
                 </div>
               )
             })() : null}
+          </div>
+        ) : section === 'cleanup' ? (
+          <div className="cfg-body">
+            <h3>{t('Dọn dẹp dữ liệu', 'Clean up data')}</h3>
+            <label className="cfg-cleanup-all"><input type="checkbox" checked={cleanupAvailable.length > 0 && cleanupSelected.length === cleanupAvailable.length} onChange={event => setCleanupSelected(event.target.checked ? cleanupAvailable : [])} /> {t('Chọn tất cả', 'Select all')}</label>
+<div className="cfg-cleanup-tabs" role="tablist">
+              <button type="button" role="tab" aria-selected={cleanupView === 'selectable'} className={cleanupView === 'selectable' ? 'active' : undefined} onClick={() => setCleanupView('selectable')}>{t('Có thể dọn', 'Can be cleaned')} <small>{cleanupAvailable.length}</small></button>
+              <button type="button" role="tab" aria-selected={cleanupView === 'protected'} className={cleanupView === 'protected' ? 'active' : undefined} onClick={() => setCleanupView('protected')}>{t('Được giữ lại', 'Kept safe')} <small>{Object.keys(cleanupTargets).length - cleanupAvailable.length}</small></button>
+            </div>
+            <div className="cfg-cleanup-list">{(cleanupView === 'selectable' ? cleanupAvailable : Object.keys(cleanupTargets).filter(key => !cleanupAvailable.includes(key))).map(key => {
+              const info = cleanupTargets[key]
+              return <label key={key} className="cfg-cleanup-item" title={info.path}>
+                <input type="checkbox" disabled={cleanupView !== 'selectable' || cleanupRunning} checked={cleanupSelected.includes(key)} onChange={event => setCleanupSelected(current => event.target.checked ? [...current, key] : current.filter(item => item !== key))} />
+                <span>{cleanupLabels[key] ? t(...cleanupLabels[key]) : key.startsWith('output:') ? `${t('Đầu ra', 'Output')} · ${key.slice(7)}` : (info.path || key).split(/[\\/]/).slice(-2).join('/')}{cleanupView === 'protected' && <em> · {t('Được giữ lại', 'Protected')}</em>}<small className="cfg-cleanup-path">{info.path || t('Backend chưa cung cấp đường dẫn — khởi động lại backend để cập nhật.', 'The backend has not provided a path — restart it to update.')}</small></span>
+                <small>{info.unreadable ? t('Không đọc được', 'Unreadable') : `${info.items} ${t('file', 'files')} · ${info.bytes < 1024 * 1024 ? `${(info.bytes / 1024).toFixed(1)} KB` : `${(info.bytes / 1024 / 1024).toFixed(1)} MB`}`}</small>
+              </label>
+            })}</div>
+            <button type="button" className="cfg-primary" disabled={!cleanupSelected.length || cleanupRunning} onClick={() => setCleanupConfirm(true)}>{cleanupRunning ? t('Đang dọn…', 'Cleaning…') : t('Dọn phần đã chọn', 'Clean selected')}</button>
           </div>
         ) : section === 'license' ? (
           licenseStatus && onLicenseStatusChange ? <LicensePage status={licenseStatus} embedded onStatusChange={onLicenseStatusChange} /> : null
@@ -1584,7 +1663,7 @@ export default function ConfigModal({
                 {checks?.ok ? t('Bắt đầu', 'Start') : checksLoading ? t('Đang chuẩn bị…', 'Preparing…') : t('Thử lại', 'Retry')}
               </button>
             </>
-          ) : section === 'logs' || section === 'license' || section === 'output' ? (
+          ) : section === 'logs' || section === 'license' || section === 'output' || section === 'cleanup' ? (
             <button type="button" className="cfg-secondary" onClick={tryClose} disabled={!canClose}>
               {t('Đóng', 'Close')}
             </button>
@@ -1709,6 +1788,14 @@ export default function ConfigModal({
           }}
           onRestore={() => setInstallProgressMinimized(false)}
         />
+        <ConfirmDialog open={cleanupConfirm}
+          danger
+          title={t('Xóa dữ liệu đã chọn?', 'Delete selected data?')}
+          message={t('Dữ liệu đã xóa không thể khôi phục. Key, kích hoạt và cấu hình được giữ nguyên.', 'Deleted data cannot be recovered. Keys, activation and settings are preserved.')}
+          confirmLabel={t('Xóa dữ liệu', 'Delete data')}
+          cancelLabel={t('Hủy', 'Cancel')}
+          onConfirm={() => void runCleanup()}
+          onCancel={() => setCleanupConfirm(false)} />
         <ConfirmDialog open={driverConfirm !== null}
           scrollMessage={driverConfirm === 'accept_eula'}
           title={driverConfirm === 'reboot' ? t('Khởi động lại Windows?', 'Restart Windows?') : t('Cập nhật driver NVIDIA?', 'Update the NVIDIA driver?')}

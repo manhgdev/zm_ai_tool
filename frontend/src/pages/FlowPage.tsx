@@ -981,6 +981,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const deletingAllRef = useRef(false);
   // deletingIdsRef is declared earlier (before onFlowRealtime) so the SSE callback can read it
   const [actionBusy, setActionBusy] = useState(false);
+  const [promptHeight, setPromptHeight] = useState<number | undefined>(() => {
+    try {
+      const saved = Number(localStorage.getItem("zm-ai-tool:flow:prompt-height"));
+      return Number.isFinite(saved) && saved >= 212 ? saved : undefined;
+    } catch { return undefined; }
+  });
   const [retryBusy, setRetryBusy] = useState(false);
   const retryBusyRef = useRef(false);
   const runAction = async (action: () => void | Promise<unknown>) => {
@@ -1042,10 +1048,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         return;
       }
     } else {
-      if (account.credits != null && account.credits <= 0) {
+      if (createKind === "video" && account.credits != null && account.credits <= 0) {
         const message = t(
-          "Hết tín dụng — không tạo được ảnh/video. Đồng bộ lại hoặc đợi tín dụng reset.",
-          "Out of credits — cannot create images/videos. Sync again or wait for credits to reset.",
+          "Hết tín dụng — không tạo được video. Đồng bộ lại hoặc đợi tín dụng reset.",
+          "Out of credits — cannot create videos. Sync again or wait for credits to reset.",
         );
         setApiError(message);
         showLimitNotice("FLOW_CREDITS_EMPTY");
@@ -1974,8 +1980,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               Flow (Veo 3)
               <small>
                 {t(
-                  "Tạo ảnh và video bằng tài khoản Google Flow (Free/Plus/Pro/Ultra) còn tín dụng.",
-                  "Create images and videos with Google Flow accounts (Free/Plus/Pro/Ultra) that still have credits.",
+                  "Tạo ảnh và video bằng tài khoản Google Flow (Free/Plus/Pro/Ultra). Credits chỉ dùng cho video.",
+                  "Create images and videos with Google Flow accounts (Free/Plus/Pro/Ultra). Credits apply only to videos.",
                 )}
               </small>
             </span>
@@ -2526,6 +2532,17 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 </div>
               </div>
               <textarea
+                style={promptHeight == null ? undefined : { height: promptHeight, flex: "0 0 auto" }}
+                onMouseDown={(event) => {
+                  const textarea = event.currentTarget;
+                  const previousHeight = textarea.style.height;
+                  window.addEventListener("mouseup", () => {
+                    const height = Number.parseFloat(textarea.style.height);
+                    if (textarea.style.height === previousHeight || !Number.isFinite(height) || height < 212) return;
+                    setPromptHeight(height);
+                    try { localStorage.setItem("zm-ai-tool:flow:prompt-height", String(height)); } catch { }
+                  }, { once: true });
+                }}
                 value={prompt}
                 onChange={(event) => {
                   setPrompt(event.target.value);
@@ -2594,12 +2611,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     : t("Nâng cao", "Advanced")}
                 </button>
               </div>
-              {selectedFlowAccount(accounts, settings.account)?.credits != null
+              {createKind === "video" && selectedFlowAccount(accounts, settings.account)?.credits != null
                 && (selectedFlowAccount(accounts, settings.account)?.credits ?? 0) <= 0 && (
                 <div style={{ padding: "8px 12px", background: "rgba(234, 179, 8, 0.12)", borderRadius: "6px", color: "var(--color-warning, #eab308)", fontSize: "12px", marginBottom: "8px" }}>
                   ⚠️ {t(
-                    "Hết tín dụng — không tạo được ảnh/video cho đến khi có tín dụng lại.",
-                    "Out of credits — cannot create images/videos until credits return.",
+                    "Hết tín dụng — không tạo được video cho đến khi có tín dụng lại.",
+                    "Out of credits — cannot create videos until credits return.",
                   )}
                 </div>
               )}
@@ -2650,7 +2667,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                               // Selecting Flow's 360p generation tier also
                               // selects the matching download tier. Changing
                               // download quality remains independent.
-                              ...(resolution.toLowerCase() === "360p" ? { quality: "360p" } : {}),
+                              ...(resolution.toLowerCase() === "360p" || resolution.toLowerCase() === "720p" ? { quality: resolution } : {}),
                             }))
                           }
                           options={resolutionOptions}
@@ -3627,7 +3644,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           onChange={(resolution) => setRetryTarget((current) => current ? {
                             ...current,
                             resolution,
-                            ...(resolution.toLowerCase() === "360p" ? { quality: "360p" } : {}),
+                            ...(resolution.toLowerCase() === "360p" || resolution.toLowerCase() === "720p" ? { quality: resolution } : {}),
                           } : current)}
                     options={retryResolutionOptions}
                   />
