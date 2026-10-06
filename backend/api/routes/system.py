@@ -151,7 +151,7 @@ def _clear_install_log() -> dict[str, Any]:
         return {"ok": True, "path": str(path)}
     except OSError as exc:
         return {"ok": False, "path": str(_install_log_path()), "error": str(exc)}
-_UPDATE_REPOSITORY = "manhgdev/zm_ai_tool"
+_UPDATE_REPOSITORY = "manhgdev/zm_ai_tool_vip"
 _UPDATE_LOCK = threading.Lock()
 _UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30 * 60
 _UPDATE_RANGE_IDLE_TIMEOUT_SECONDS = 45
