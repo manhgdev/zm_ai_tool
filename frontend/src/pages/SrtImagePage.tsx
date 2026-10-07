@@ -5,6 +5,7 @@ import './SrtImagePage.css'
 import { localize, useLocale } from '../app/i18n'
 import { BackTitle } from '../shared/components/BackTitle'
 import { copyText } from '../shared/lib/clipboard'
+import { randomId } from '../shared/lib/randomId'
 import { useRemountState } from '../shared/lib/useRemountState'
 import { useRealtimeEvents } from '../realtime/RealtimeProvider'
 import { CAPTION_FONT_PRESETS, captionChromeStyle, captionFontCss } from '../features/editor/lib/previewStyles'
@@ -14,7 +15,7 @@ import {
 } from './srtImage.types'
 
 // ponytail: 6-char hex suffix via crypto — no extra dep needed
-const randomOutputName = () => `output-${crypto.randomUUID().replace(/-/g, '').slice(0, 6)}.mp4`
+const randomOutputName = () => `output-${randomId().replace(/-/g, '').slice(0, 6)}.mp4`
 
 export default function SrtImagePage({ onBack, initialMediaFolder = '', initialCompose = null }: { onBack: () => void; initialMediaFolder?: string; initialCompose?: { audioPath?: string; timelinePath?: string; srtPath?: string; outputDir?: string; settings?: Record<string, unknown> } | null }) {
   const { locale } = useLocale()

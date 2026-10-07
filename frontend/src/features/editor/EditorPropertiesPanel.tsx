@@ -9,6 +9,7 @@ import { localize, useLocale } from '@/app/i18n'
 import { normalizeTranslatorForEngine, translatorOptions } from '@/app/appSettings'
 import { TranslationReviewField, TranslationReviewSettings } from '@/features/project/TranslationReview'
 import { cn } from '@/shared/lib/cn'
+import { randomId } from '@/shared/lib/randomId'
 import { IconHeadphones } from '@/shared/components/Icons'
 import { ScrollArea } from '@/shared/ui/scroll-area'
 import { EditorMaskPanel, type CoverApplyRange } from '@/features/editor/EditorMaskPanel'
@@ -1718,7 +1719,7 @@ export function EditorPropertiesPanel({
                               <input type="color" aria-label={t('Màu vùng hiệu ứng', 'Effect color')} className="h-8 w-12 cursor-pointer rounded border border-border bg-input p-1" value={selectedOverlay.maskColor ?? '#4c1d95'} onChange={(e) => editOverlay({ ...selectedOverlay, maskColor: e.target.value })} />
                             <PropLabel label={`${t('Độ đậm', 'Opacity')}: ${effectOpacityDraft ?? selectedOverlay.maskOpacity ?? 0}%`}><input type="range" min={0} max={100} className="w-full accent-primary" value={effectOpacityDraft ?? selectedOverlay.maskOpacity ?? 0} onInput={(e) => previewEffectOpacity(Number(e.currentTarget.value))} onPointerUp={commitEffectOpacity} onPointerCancel={commitEffectOpacity} onBlur={commitEffectOpacity} onKeyUp={commitEffectOpacity} /></PropLabel>
                             </div>
-                            <button type="button" className="w-full rounded-md border border-border bg-accent hover:bg-muted px-3 py-1.5 text-xs transition-colors" onClick={() => editOverlay({ ...selectedOverlay, id: crypto.randomUUID(), start: Math.min(timelineDuration - 0.1, selectedOverlay.end), end: Math.min(timelineDuration, selectedOverlay.end + (selectedOverlay.end - selectedOverlay.start)) }, true)}>{t('Nhân bản vùng hiệu ứng', 'Duplicate effect region')}</button>
+                            <button type="button" className="w-full rounded-md border border-border bg-accent hover:bg-muted px-3 py-1.5 text-xs transition-colors" onClick={() => editOverlay({ ...selectedOverlay, id: randomId(), start: Math.min(timelineDuration - 0.1, selectedOverlay.end), end: Math.min(timelineDuration, selectedOverlay.end + (selectedOverlay.end - selectedOverlay.start)) }, true)}>{t('Nhân bản vùng hiệu ứng', 'Duplicate effect region')}</button>
                             <button type="button" className="w-full rounded-md border border-destructive/50 text-destructive hover:bg-destructive/10 px-3 py-1.5 text-xs transition-colors" onClick={() => { onOverlayDelete(selectedOverlay.id); setSelectedOverlayId(null) }}>{t('Xóa vùng hiệu ứng', 'Delete effect region')}</button>
                           </>
                         )}
@@ -1799,7 +1800,7 @@ export function EditorPropertiesPanel({
                               className="w-full rounded-md border border-border bg-accent hover:bg-muted px-3 py-1.5 text-xs transition-colors"
                               onClick={() => editOverlay({
                                 ...selectedOverlay,
-                                id: crypto.randomUUID(),
+                                id: randomId(),
                                 start: Math.min(timelineDuration - 0.1, selectedOverlay.end),
                                 end: Math.min(timelineDuration, selectedOverlay.end + (selectedOverlay.end - selectedOverlay.start)),
                               }, true)}

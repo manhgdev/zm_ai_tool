@@ -8,6 +8,7 @@ import { localize, useLocale } from '@/app/i18n'
 import { api } from '@/features/project/project.api'
 import { IconHeadphones } from '@/shared/components/Icons'
 import { cn } from '@/shared/lib/cn'
+import { randomId } from '@/shared/lib/randomId'
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle, useDefaultLayout } from '@/shared/ui/resizable'
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, horizontalListSortingStrategy } from '@dnd-kit/sortable'
@@ -616,7 +617,7 @@ export default function LivePreviewEditor({
     const kind = asset.kind === 'audio' ? 'audio' : asset.kind === 'image' ? 'image' : 'video'
     const duration = Math.max(0.25, asset.duration || (kind === 'image' ? 3 : 5))
     const safeStart = Math.max(0, Math.min(timelineDuration, start))
-    setImportedClips((prev) => [...prev, { id: crypto.randomUUID(), assetId: asset.id, name: asset.name, kind, start: safeStart, end: safeStart + duration }])
+    setImportedClips((prev) => [...prev, { id: randomId(), assetId: asset.id, name: asset.name, kind, start: safeStart, end: safeStart + duration }])
   }
 
   function beginImportedClipDrag(event: React.PointerEvent, clip: ImportedTimelineClip, edge: 'move' | 'start' | 'end') {
@@ -2963,7 +2964,7 @@ export default function LivePreviewEditor({
       ? crop.y + Math.max(0, Math.min(crop.h * 0.85, ((clientY - rect.top) / rect.height) * crop.h))
       : crop.y + crop.h * 0.2
     const overlay: TextOverlay = {
-      id: crypto.randomUUID(), start: time, end: Math.min(timelineDuration, time + 3),
+      id: randomId(), start: time, end: Math.min(timelineDuration, time + 3),
       text: 'Nhập nội dung',
       x: Math.round(x), y: Math.round(y),
       w: Math.round(sourceWidth * 0.5), h: Math.round(sourceHeight * 0.12),
@@ -2994,7 +2995,7 @@ export default function LivePreviewEditor({
     let draft: TextOverlay = existing
       ? { ...existing, positionKeyframes: [] }
       : {
-          id: crypto.randomUUID(), start: 0, end: timelineDuration, text: 'LOGO',
+          id: randomId(), start: 0, end: timelineDuration, text: 'LOGO',
           x: Math.round(crop.x + crop.w * .04), y: Math.round(crop.y + crop.h * .04),
           w: Math.max(48, Math.round(shortEdge * .12)), h: Math.max(24, Math.round(shortEdge * .06)),
           fontSize: 12, fontFamily: 'system', color: '#ffffff', kind: 'logo',
@@ -3105,7 +3106,7 @@ export default function LivePreviewEditor({
       )
     }
     const overlay: TextOverlay = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       start: time,
       end: Math.min(timelineDuration || time + 4, time + 4),
       text: preset.id === 'feather' ? t('Mờ tan mép', 'Feathered blur') : preset.label,
@@ -3466,7 +3467,7 @@ export default function LivePreviewEditor({
       const ov = editTarget.ov
       editOverlay({ ...ov, end: t }, false, { skipHistory: true })
       editOverlay(
-        { ...ov, id: crypto.randomUUID(), start: t, end: ov.end },
+        { ...ov, id: randomId(), start: t, end: ov.end },
         true,
         { skipHistory: true },
       )
@@ -3492,7 +3493,7 @@ export default function LivePreviewEditor({
     const left: Segment = { ...seg, end: t }
     const right: Segment = {
       ...seg,
-      id: crypto.randomUUID(),
+      id: randomId(),
       start: t,
       end: seg.end,
       audioUrl: undefined,
@@ -3721,7 +3722,7 @@ export default function LivePreviewEditor({
       const dur = ov.end - ov.start
       const start = Math.min(timelineDuration - MIN_CLIP_SEC, ov.end)
       editOverlay(
-        { ...ov, id: crypto.randomUUID(), start, end: Math.min(timelineDuration, start + dur) },
+        { ...ov, id: randomId(), start, end: Math.min(timelineDuration, start + dur) },
         true,
       )
       return
@@ -3731,7 +3732,7 @@ export default function LivePreviewEditor({
       const dur = c.end - c.start
       const start = Math.min(timelineDuration - MIN_CLIP_SEC, c.end)
       const copy: MediaClip = {
-        id: crypto.randomUUID(),
+        id: randomId(),
         start,
         end: Math.min(timelineDuration, start + dur),
       }
@@ -3748,7 +3749,7 @@ export default function LivePreviewEditor({
     const start = Math.min(timelineDuration - MIN_CLIP_SEC, seg.end)
     const copy: Segment = {
       ...seg,
-      id: crypto.randomUUID(),
+      id: randomId(),
       start,
       end: Math.min(timelineDuration, start + dur),
       audioUrl: undefined,

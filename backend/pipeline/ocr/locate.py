@@ -29,7 +29,7 @@ _inprocess_lock = threading.Lock()
 # the full short timeline so a previous on-screen row is not assigned to the
 # next ASR cue, then inherit only when OCR genuinely has no row to measure.
 _SHORT_VIDEO_SECONDS = 10 * 60
-_QUICK_PROBE_LIMIT = 32
+_QUICK_PROBE_LIMIT = 12
 _FRAME_SEEK_TIMEOUT_SECONDS = 5.0
 _locate_ocr: Any = None
 _locate_ocr_lock = threading.Lock()
@@ -1245,7 +1245,7 @@ def attach_speech_hardsub_boxes_inprocess(
 
     attached = 0
     # ponytail: Whisper captions rarely move. Start with 3/5 anchors and only
-    # bisect changed intervals; 16 is the explicit ceiling for unusual videos.
+    # bisect changed intervals; keep CPU OCR bounded for responsive clone-video runs.
     anchor_hits: dict[int, tuple[int, int, int, int] | None] = {}
     decode_failed: set[int] = set()
     pending = _initial_anchor_indices(filtered, video_end)

@@ -1,11 +1,12 @@
 import type { Segment, TextOverlay } from '@/features/project/project.types'
+import { randomId } from '@/shared/lib/randomId'
 import { MIN_CLIP_SEC, SPLIT_EDGE } from './timelineBasics'
 
 /** Clip Video / Âm gốc trên timeline (tách khỏi Caption·TTS) */
 export type MediaClip = { id: string; start: number; end: number; sourceStart?: number }
 
 export function fullMediaClip(end: number): MediaClip {
-  return { id: crypto.randomUUID(), start: 0, end: Math.max(end, MIN_CLIP_SEC), sourceStart: 0 }
+  return { id: randomId(), start: 0, end: Math.max(end, MIN_CLIP_SEC), sourceStart: 0 }
 }
 
 /**
@@ -53,7 +54,7 @@ export function normalizeMediaClips(clips: MediaClip[], durationSec: number, pre
     .filter((c) => c && typeof c.start === 'number' && typeof c.end === 'number' && c.end > c.start)
     .map((c) => ({
       ...c,
-      id: String(c.id || crypto.randomUUID()),
+      id: String(c.id || randomId()),
       start: Math.max(0, Math.min(c.start, durationSec - MIN_CLIP_SEC)),
       end: Math.max(MIN_CLIP_SEC, Math.min(c.end, durationSec)),
     } as MediaClip))
@@ -103,7 +104,7 @@ export function splitMediaList(clips: MediaClip[], clipId: string, t: number): M
     if (!(t > c.start + SPLIT_EDGE && t < c.end - SPLIT_EDGE)) return [c]
     return [
       { ...c, end: t },
-      { ...c, id: crypto.randomUUID(), start: t, end: c.end, sourceStart: (c.sourceStart ?? c.start) + t - c.start },
+      { ...c, id: randomId(), start: t, end: c.end, sourceStart: (c.sourceStart ?? c.start) + t - c.start },
     ]
   })
 }
