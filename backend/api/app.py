@@ -100,6 +100,12 @@ def create_app() -> FastAPI:
             automation_service.start()
         except Exception:
             pass
+        try:
+            from pipeline.core.memory_guard import start_monitor
+
+            start_monitor()
+        except Exception:
+            pass
 
 
         threading.Thread(

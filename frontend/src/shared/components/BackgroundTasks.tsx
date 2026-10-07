@@ -1,3 +1,6 @@
+import { createPortal } from 'react-dom'
+import { cancelBackgroundJob } from '@/realtime/cancelBackgroundJob'
+import { toast } from 'sonner'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { localize, useLocale } from '@/app/i18n'
 import { useRealtimeEvents, useRealtimeStatus } from '@/realtime/RealtimeProvider'
@@ -27,6 +30,30 @@ export default function BackgroundTasks({ onOpen, project }: {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const [jobs, setJobs] = useState<BackgroundJob[]>([])
+  const cancellingRef = useRef(new Set<string>())
+  const [cancelling, setCancelling] = useState<Set<string>>(new Set())
+  const [selectedJob, setSelectedJob] = useState<BackgroundJob | null>(null)
+  const cancelJob = async (job: BackgroundJob) => {
+    const key = `${job.topic}:${job.id}`
+    if (cancellingRef.current.has(key)) return
+    cancellingRef.current.add(key)
+    setCancelling(new Set(cancellingRef.current))
+    try {
+      const result = await cancelBackgroundJob(job)
+      if (result.ok === false) throw new Error(t('Backend chưa chấp nhận huỷ tác vụ.', 'The backend did not accept cancellation.'))
+    } catch (error) {
+      toast.error(t('Không huỷ được tác vụ', 'Could not cancel task'), { description: error instanceof Error ? error.message : String(error) })
+    } finally {
+      cancellingRef.current.delete(key)
+      setCancelling(new Set(cancellingRef.current))
+    }
+  }
+  const cancelButton = (job: BackgroundJob) => <button type="button"
+    aria-label={t(`Huỷ tác vụ ${job.id}`, `Cancel task ${job.id}`)} title={t('Huỷ tác vụ', 'Cancel task')}
+    disabled={cancelling.has(`${job.topic}:${job.id}`)} onClick={() => void cancelJob(job)}
+    className="h-6 w-6 shrink-0 rounded text-base hover:bg-accent/50 disabled:opacity-50">
+    {cancelling.has(`${job.topic}:${job.id}`) ? '…' : '×'}
+  </button>
   const [collapsed, setCollapsed] = useState(true)
   const [position, setPosition] = useState<{ left: number; top: number } | null>(() => {
     try {
@@ -133,21 +160,36 @@ export default function BackgroundTasks({ onOpen, project }: {
         const tool = tools[job.topic]
         if (!tool) return null
         const label = t(tool[1], tool[2])
-        return <button key={`${job.topic}:${job.id}`} type="button" onClick={() => onOpen(tool[0])}
+        return <div key={`${job.topic}:${job.id}`} className="flex items-center"><button type="button" onClick={() => setSelectedJob(job)}
           title={t('Mở trang tác vụ', 'Open task page')}
-          className="rounded-lg px-2 py-2 text-left hover:bg-accent/40">
+          className="min-w-0 flex-1 rounded-lg px-2 py-2 text-left hover:bg-accent/40">
           <span className="flex items-center justify-between gap-2 text-xs"><strong>{label} · {job.id.slice(0, 8)}</strong><span>{Math.round(job.progress)}%</span></span>
           <progress aria-label={label} max={100} value={job.progress} className="block h-1 w-full accent-primary" />
-        </button>
+        </button>{cancelButton(job)}</div>
       })}
     </div>}
     {collapsed && (() => {
       const latest = rows[0]
       const tool = latest && tools[latest.topic]
-      return tool ? <button type="button" onClick={() => onOpen(tool[0])} className="w-full rounded-lg px-2 py-1 text-left hover:bg-accent/40">
+      return tool ? <div className="flex items-center"><button type="button" onClick={() => setSelectedJob(latest)} className="min-w-0 flex-1 rounded-lg px-2 py-1 text-left hover:bg-accent/40">
         <span className="flex items-center justify-between gap-2 text-xs"><strong>{t(tool[1], tool[2])}</strong><span>{Math.round(latest.progress)}%</span></span>
         <progress aria-label={t(tool[1], tool[2])} max={100} value={latest.progress} className="mt-1 block h-1 w-full accent-primary" />
-      </button> : null
+      </button>{cancelButton(latest)}</div> : null
+    })()}
+    {selectedJob && (() => {
+      const currentJob = rows.find(row => row.topic === selectedJob.topic && row.id === selectedJob.id)
+      if (!currentJob) return null
+      const detailTool = tools[selectedJob.topic]
+      const detailLabel = detailTool ? t(detailTool[1], detailTool[2]) : selectedJob.topic
+      return createPortal(<div className="fixed inset-0 z-[210] grid place-items-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-label={detailLabel}>
+        <section className="w-[min(560px,calc(100vw-2rem))] rounded-xl border border-border bg-background p-5 shadow-2xl">
+          <div className="flex items-start justify-between gap-4"><div><p className="text-xs text-muted-foreground">{detailLabel}</p><h2 className="mt-1 text-lg font-semibold">{selectedJob.id}</h2></div><button type="button" aria-label={t('Đóng chi tiết tác vụ', 'Close task details')} onClick={() => setSelectedJob(null)} className="h-8 w-8 rounded text-xl text-muted-foreground hover:bg-accent/50">×</button></div>
+          <div className="mt-5 flex items-center justify-between text-sm"><strong>{t('Tiến độ', 'Progress')}</strong><strong>{Math.round(currentJob.progress)}%</strong></div>
+          <progress max={100} value={currentJob.progress} className="mt-2 block h-2 w-full accent-primary" />
+          <p className="mt-4 min-h-12 rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">{currentJob.message || t('Đang xử lý…', 'Processing…')}</p>
+          <div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => void cancelJob(selectedJob)} disabled={cancelling.has(`${selectedJob.topic}:${selectedJob.id}`)} className="rounded-lg border border-destructive/40 px-3 py-2 text-sm text-destructive hover:bg-destructive/10">{cancelling.has(`${selectedJob.topic}:${selectedJob.id}`) ? t('Đang huỷ…', 'Cancelling…') : t('Huỷ tác vụ', 'Cancel task')}</button><button type="button" onClick={() => { setSelectedJob(null); if (detailTool) onOpen(detailTool[0]) }} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent/50">{t('Mở trang', 'Open page')}</button></div>
+        </section>
+      </div>, document.body)
     })()}
   </aside>
 }

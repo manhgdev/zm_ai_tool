@@ -25,6 +25,7 @@ from urllib.parse import quote
 from ..schemas import PREFIX_VIENEU
 from .. import voice_store
 from .. import zmtss_catalog
+from ...core.memory_guard import guarded
 _lock = threading.Lock()
 _client: Any = None
 _client_err: str | None = None
@@ -461,6 +462,8 @@ def _register_vieneu_transformers() -> None:
 def get_client() -> Any:
     """Lazy singleton — only when synth/clone needs the model."""
     global _client, _client_err, _load_state
+    from pipeline.core.memory_guard import ensure_budget, register, touch
+
     if getattr(sys, "frozen", False):
         from . import vieneu_frozen
         # Frozen APP must keep torch/ONNX out of the UI/API process.  The
@@ -468,7 +471,10 @@ def get_client() -> Any:
         # loading native extensions here can abort the whole desktop process.
         with _lock:
             if _load_state == "ready" and vieneu_frozen.has_ready_worker(mode=current_mode()):
+                touch("vieneu")
                 return None
+        ensure_budget()
+        with _lock:
             # Allow retry after a previous error (cancel / failed warm).
             _load_state = "loading"
             _client_err = None
@@ -482,6 +488,7 @@ def get_client() -> Any:
                     raise RuntimeError(detail)
                 _load_state = "ready"
                 _client_err = None
+            register("vieneu", reset_client)
         except Exception as exc:
             with _lock:
                 _load_state = "error"
@@ -497,7 +504,10 @@ def get_client() -> Any:
     with _client_load_gate:
         with _lock:
             if _client is not None:
+                touch("vieneu")
                 return _client
+        ensure_budget()
+        with _lock:
             _load_state = "loading"
             _client_err = None
         try:
@@ -580,6 +590,7 @@ def get_client() -> Any:
                 _client = client
                 _client_err = None
                 _load_state = "ready"
+            register("vieneu", reset_client)
             return client
         except Exception as e:
             with _lock:
@@ -742,14 +753,14 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
             or str(item.get("source") or "").strip().lower() == "zmtts"
         )
         ref_path = voice_store.reference_path(item)
-        audio8_voice = language not in VIENEU_TEXT_LANGUAGES
+        moss_tts_nano_voice = language not in VIENEU_TEXT_LANGUAGES
         out.append(
             {
                 **item,
                 "id": voice_id,
                 "name": str(item.get("name") or voice_id),
-                "engine": "audio8" if audio8_voice else "zmai",
-                "type": "Audio8" if audio8_voice else "zmAI",
+                "engine": "moss_tts_nano" if moss_tts_nano_voice else "zmai",
+                "type": "MOSS-TTS-Nano" if moss_tts_nano_voice else "zmAI",
                 "available": ref_path.is_file(),
                 "tags": voice_store.normalize_voice_tags(item.get("tags")),
                 # Current bundled zmAI references are Vietnamese; keep an
@@ -776,8 +787,8 @@ def list_voices(lang: str | None = None) -> list[dict[str, Any]]:
         out.append({
             "id": voice_id,
             "name": voice_store.clean_display_name(str(item.get("name") or remote_id), fallback=remote_id),
-            "engine": "audio8" if language not in VIENEU_TEXT_LANGUAGES else "zmai",
-            "type": "Audio8" if language not in VIENEU_TEXT_LANGUAGES else "zmAI", "mode": "remote-reference",
+            "engine": "moss_tts_nano" if language not in VIENEU_TEXT_LANGUAGES else "zmai",
+            "type": "MOSS-TTS-Nano" if language not in VIENEU_TEXT_LANGUAGES else "zmAI", "mode": "remote-reference",
             "available": path.is_file(), "language": language,
             "source": "zmtss",
             "previewUrl": _preview_api_url(voice_id),
@@ -1169,6 +1180,7 @@ def _synthesize_once(
         on_progress(1.0)
 
 
+@guarded("vieneu")
 def synthesize(
     text: str,
     voice: str,
@@ -1301,6 +1313,9 @@ def reset_client() -> None:
         _client = None
         _client_err = None
         _load_state = "cold"
+    from pipeline.core.memory_guard import unregister
+
+    unregister("vieneu")
     with _reference_lock:
         _reference_cache.clear()
     with _clone_lock:

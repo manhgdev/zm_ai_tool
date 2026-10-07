@@ -17,7 +17,7 @@ const labels: Record<string, [string, string, string, string]> = {
   ai_runtime_diarization: ['Sherpa-ONNX (tách người nói)', 'Sherpa-ONNX (speaker diarization)', 'Model được tải khi sử dụng tách người nói.', 'Models download when speaker diarization is used.'],
   ai_runtime_ocr: ['OCR (nhận dạng chữ)', 'OCR (text recognition)', 'Đọc chữ trong video bằng RapidOCR và OpenCV.', 'Read video text with RapidOCR and OpenCV.'],
   ai_runtime_vieneu: ['zmAI + VieNeu cục bộ', 'zmAI + VieNeu Local', 'Tổng hợp và nhân bản giọng nói.', 'Speech synthesis and voice cloning.'],
-  audio8_runtime: ['Audio8-TTS-0.1B', 'Audio8-TTS-0.1B', 'Giọng tiếng Trung và ngôn ngữ khác · CPU/ONNX.', 'Chinese and other-language voice · CPU/ONNX.'],
+  moss_tts_nano_runtime: ['MOSS-TTS-Nano', 'MOSS-TTS-Nano', 'Giọng tiếng Trung và ngôn ngữ khác · CPU/ONNX.', 'Chinese and other-language voice · CPU/ONNX.'],
   ocr_cuda: ['Tăng tốc OCR bằng GPU', 'GPU-accelerated OCR', 'Dùng CUDA hoặc DirectML phù hợp với thiết bị.', 'Use CUDA or DirectML matching the hardware.'],
   demucs: ['Demucs (tách giọng hát)', 'Demucs (vocal separation)', 'Tách giọng và nhạc nền khi cần.', 'Separate vocals and background music when needed.'],
   say: ['Giọng nói hệ thống macOS', 'macOS system speech', 'Chuyển văn bản thành giọng nói hệ thống.', 'System text-to-speech.'],

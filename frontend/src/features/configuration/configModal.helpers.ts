@@ -2,11 +2,11 @@ import type { CloudProviderId, SystemChecks } from '@/features/project/project.t
 
 export const PROVIDERS: CloudProviderId[] = ['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral']
 
-export type InstallKind = 'ai_runtime' | 'ai_runtime_ocr' | 'ai_runtime_vieneu' | 'audio8_runtime' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
+export type InstallKind = 'ai_runtime' | 'ai_runtime_ocr' | 'ai_runtime_vieneu' | 'moss_tts_nano_runtime' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
 
 export const INSTALL_LABELS: Record<InstallKind, string> = {
   ai_runtime: 'gói AI', ai_runtime_ocr: 'gói AI', ai_runtime_vieneu: 'gói AI',
-  audio8_runtime: 'Audio8-TTS-0.1B', ocr_cuda: 'OCR CUDA', demucs_cuda: 'Demucs', nvm: 'NVM + Node.js LTS',
+  moss_tts_nano_runtime: 'MOSS-TTS-Nano', ocr_cuda: 'OCR CUDA', demucs_cuda: 'Demucs', nvm: 'NVM + Node.js LTS',
 }
 
 export const INSTALL_ORDER: InstallKind[] = ['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'ocr_cuda', 'demucs_cuda']

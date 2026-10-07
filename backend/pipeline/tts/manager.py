@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import platform
 import re
 import subprocess
@@ -30,13 +31,17 @@ _VOICES_JSON = Path(__file__).resolve().parent / "voices_capcut.json"
 _cc_voices_cache: list[dict[str, Any]] | None = None
 
 
-def _is_zmtss_audio8_voice(voice: str) -> bool:
-    """Catalog IDs are also accepted without the legacy ``zmt:`` prefix."""
-    if not voice or voice.startswith(("audio8:", "zmt:")):
-        return voice.startswith(("audio8:", "zmt:"))
+def _is_zmtss_moss_voice(voice: str) -> bool:
+    """Catalog IDs are also accepted without the ``zmt:`` prefix."""
+    if not voice or voice.startswith(("moss:", "zmt:")):
+        return voice.startswith(("moss:", "zmt:"))
     try:
         from . import zmtss_catalog
-        return bool(zmtss_catalog.get(voice))
+        if zmtss_catalog.get(voice):
+            return True
+        from . import voice_store
+        reference = voice_store.get_reference_voice(voice)
+        return bool(reference and voice_store.normalize_voice_language(reference.get("language")) not in {"", "vi", "en"})
     except Exception:
         return False
 
@@ -52,6 +57,8 @@ def _engine_of(voice: str) -> str:
         return "capcut"
     if value.startswith(PREFIX_ELEVEN):
         return "elevenlabs"
+    if _is_zmtss_moss_voice(value):
+        return "moss_tts_nano"
     return "system"
 
 
@@ -265,9 +272,14 @@ def synthesize_raw(
             )
         vieneu_engine.synthesize(text, resolved, out_wav, style=style)
         return
-    if _is_zmtss_audio8_voice(resolved) and lang not in ("vi", "en"):
-        from .engines import audio8
-        audio8.synthesize(text, resolved, out_wav)
+    if _is_zmtss_moss_voice(resolved) and lang not in ("vi", "en"):
+        from .engines import moss_tts_nano
+        logging.getLogger(__name__).info("MOSS-TTS-Nano synth start voice=%r lang=%r text_len=%d", resolved, lang, len(text or ""))
+        try:
+            moss_tts_nano.synthesize(text, resolved, out_wav)
+        except Exception:
+            logging.getLogger(__name__).exception("MOSS-TTS-Nano synth failed voice=%r lang=%r output=%s", resolved, lang, out_wav)
+            raise
         return
     cc = _cc_parse(resolved)
     el = _el_voice_id(resolved)
@@ -305,9 +317,14 @@ def tts_segment(
         if force_refit:
             force_refit = False
         resolved = resolve_voice(voice, lang)
-        if _is_zmtss_audio8_voice(resolved) and lang not in ("vi", "en"):
-            from .engines import audio8
-            audio8.synthesize(text, resolved, out_wav)
+        if _is_zmtss_moss_voice(resolved) and lang not in ("vi", "en"):
+            from .engines import moss_tts_nano
+            logging.getLogger(__name__).info("MOSS-TTS-Nano segment start voice=%r lang=%r text_len=%d", resolved, lang, len(text or ""))
+            try:
+                moss_tts_nano.synthesize(text, resolved, out_wav)
+            except Exception:
+                logging.getLogger(__name__).exception("MOSS-TTS-Nano segment failed voice=%r lang=%r output=%s", resolved, lang, out_wav)
+                raise
             if on_progress:
                 on_progress(1.0)
             return audio_utils.fit_duration(out_wav, target_sec, match, force_refit=force_refit)

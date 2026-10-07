@@ -16,7 +16,7 @@ export function engineOf(voiceId: string) {
 
 /** Bucket rõ ràng — clone không lẫn VieNeu Local / zmAI. */
 export function voiceEngineBucket(v: Voice): TtsEngine {
-  if (v.engine === 'audio8' || v.type === 'Audio8') return 'zmai'
+  if (v.engine === 'moss_tts_nano' || v.type === 'MOSS-TTS-Nano') return 'zmai'
   if (v.type === 'zmAI' || v.engine === 'zmai') return 'zmai'
   if (v.type === 'clone' || v.engine === 'clone' || v.id.startsWith('vn:clone:')) return 'clone'
   if (v.engine === 'capcut' || v.id.startsWith('cc:')) return 'capcut'
@@ -98,7 +98,7 @@ export function voiceMetadata(v: Voice): { description: string; tags: VoiceTag[]
 export function engineLabel(engine?: string, voiceId?: string) {
   const e = (engine || '').toLowerCase()
   if (e === 'zmai' || e === 'zmai_ref' || e === 'reference') return 'zmAI'
-  if (e === 'audio8') return 'zmAI'
+  if (e === 'moss_tts_nano') return 'zmAI'
   if (e === 'clone') return 'Clone'
   if (e === 'vieneu' || e === 'vn') {
     // meta cũ gộp hết vào vieneu — suy ra đúng bucket từ voice id

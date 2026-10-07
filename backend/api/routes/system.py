@@ -1415,31 +1415,34 @@ def api_resources():
         {"id": "diarization", "name": "Sherpa-ONNX (Tách người nói)", "kind": "diarization", "installed": diarization_installed, "provider": runtime["label"], "action": "ai_runtime"},
         {"id": "ocr", "name": "RapidOCR", "kind": "ocr", "installed": ocr_ok, "provider": runtime["label"], "action": "ai_runtime"},
     ]
-    from pipeline.tts.engines import audio8
-    audio8_runtime, audio8_model, audio8_voices = audio8._paths()
+    from pipeline.tts.engines import moss_tts_nano
+    moss_tts_nano_runtime, moss_tts_nano_model, moss_tts_nano_voices = moss_tts_nano._paths()
     resources.append({
-        "id": "audio8",
-        "name": "Audio8-TTS-0.1B",
+        "id": "moss_tts_nano",
+        "name": "MOSS-TTS-Nano",
         "kind": "tts",
-        "installed": audio8.available(),
+        "installed": moss_tts_nano.available(),
         "provider": "CPU / ONNX",
-        "action": "audio8_runtime",
-        "detail": str(audio8_model),
+        "action": "moss_tts_nano_runtime",
+        "detail": str(moss_tts_nano_model),
     })
     return {"items": resources}
 
 
 @router.post("/api/resources/{resource_id}/install")
 def api_install_resource(resource_id: str):
-    if resource_id == "audio8":
-        from pipeline.tts.engines import audio8
+    if resource_id == "moss_tts_nano":
+        from pipeline.tts.engines import moss_tts_nano
 
-        def install_audio8():
-            runtime_dir, model_dir, voices_dir = audio8._paths()
-            audio8._ensure_installed(runtime_dir, model_dir, voices_dir)
-            return {"message": "Audio8-TTS-0.1B đã sẵn sàng / Audio8-TTS-0.1B is ready", "needsRestart": False}
+        def install_moss_tts_nano():
+            def progress(value, message):
+                _set_install_progress(value, message)
+                if message:
+                    _append_install_log(message)
 
-        return _start_install_job("audio8_runtime", install_audio8)
+            return moss_tts_nano.install(progress=progress)
+
+        return _start_install_job("moss_tts_nano_runtime", install_moss_tts_nano)
     if resource_id in {"whisper", "diarization", "ocr"}:
         if resource_id == "diarization":
             # Kiểm tra nếu models chưa có thì phải force cài thực sự

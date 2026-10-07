@@ -649,8 +649,8 @@ export default function ConfigModal({
       }
     }
     try {
-      const result = kind === 'audio8_runtime'
-        ? await api.installResource('audio8')
+      const result = kind === 'moss_tts_nano_runtime'
+        ? await api.installResource('moss_tts_nano', onStatus)
         : kind === 'ai_runtime'
         ? await api.installAiRuntime(onStatus)
         : kind === 'ocr_cuda'
@@ -1176,7 +1176,7 @@ export default function ConfigModal({
                     <div className="cfg-check-action">
                       {it.ok ? (
                         <span className="cfg-check-installed">{t('Sẵn sàng', 'Ready')}</span>
-                      ) : ['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
+                      ) : ['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'moss_tts_nano_runtime', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
                         <button
                           type="button"
                           className="cfg-check-install"
@@ -1187,7 +1187,7 @@ export default function ConfigModal({
                             // ai_runtime_ocr / ai_runtime_vieneu → cùng endpoint ai_runtime
                             const kind = it.install.startsWith('ai_runtime')
                               ? 'ai_runtime'
-                              : it.install as 'ocr_cuda' | 'demucs_cuda' | 'nvm'
+                              : it.install as 'moss_tts_nano_runtime' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
                             void installAction(kind)
                           }}
                         >
@@ -1213,7 +1213,7 @@ export default function ConfigModal({
                     {!it.ok && <div className="cfg-check-detail">{t('Cần kiểm tra hoặc cài đặt', 'Needs checking or installation')}</div>}
                     {it.detail && <details><summary>{t('Chi tiết kỹ thuật', 'Technical details')}</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{setupDetail(locale, it)}</pre></details>}
                     {!it.ok && <div className="cfg-check-hint">{setupLabel(locale, it.id, 'hint')}</div>}
-                    {!it.ok && it.install && !it.install.startsWith('http') && !['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
+                    {!it.ok && it.install && !it.install.startsWith('http') && !['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'moss_tts_nano_runtime', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
                       <code className="cfg-check-cmd" title={t('Lệnh kỹ thuật', 'Technical command')}>
                         {it.install}
                       </code>

@@ -643,8 +643,6 @@ async def api_tts_studio_clone(
         raise HTTPException(400, "Ngôn ngữ clone không hợp lệ / Invalid clone language")
     if reference_type != "upload":
         raise HTTPException(400, "Audio mẫu ZMTTS chưa được nối vào Clone Voice / ZMTTS reference is not connected to Clone Voice yet")
-    if language == "other":
-        raise HTTPException(501, "Audio8-TTS-0.1B chưa được cài trong runtime local / Audio8-TTS-0.1B is not installed in the local runtime")
     try:
         parsed_tags = json.loads(tags)
         clean_tags = voice_store.normalize_voice_tags(parsed_tags, strict=True)
@@ -656,6 +654,28 @@ async def api_tts_studio_clone(
     try:
         with tmp.open("wb") as f:
             shutil.copyfileobj(file.file, f)
+        if language == "other":
+            from pipeline.core.media import ffprobe_duration
+            if ffprobe_duration(tmp) <= 0:
+                raise HTTPException(400, "TTS_INVALID_AUDIO")
+            safe = voice_store.make_clone_id(name.strip(), {str(x.get("id") or "") for x in voice_store.load_reference_voices()})
+            ref_name = f"moss-cloned/{safe}{ext.lower()}"
+            destination = (voice_store.REFERENCE_ROOT / ref_name).resolve()
+            if voice_store.REFERENCE_ROOT.resolve() not in destination.parents:
+                raise HTTPException(400, "Đường dẫn audio mẫu không hợp lệ / invalid reference path")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(tmp, destination)
+            entries = [x for x in voice_store._read_reference_raw() if x.get("id") != f"moss:clone:{safe}"]
+            entries.append({
+                "id": f"moss:clone:{safe}", "name": name.strip(), "label": name.strip(),
+                "type": "zmAI", "engine": "vieneu", "mode": "reference",
+                "language": "zh", "ref_file": ref_name, "hidden": False,
+                "favorite": False, "tags": clean_tags, "source": "upload",
+            })
+            voice_store.save_reference_voices(entries)
+            return {"id": f"moss:clone:{safe}", "name": name.strip(), "tags": clean_tags,
+                    "engine": "moss_tts_nano", "language": "other", "referenceType": reference_type,
+                    "referenceId": reference_id or None}
         voice = await asyncio.to_thread(
             vieneu_engine.clone_voice,
             name.strip(),

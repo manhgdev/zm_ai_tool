@@ -83,7 +83,7 @@ export function parseTtsSettings(raw: unknown): TtsSettings {
   }
 
   const d = defaultTtsSettings
-  const engine = obj.engine === 'audio8' ? 'zmai' : asStr(obj.engine, d.engine)
+  const engine = obj.engine === 'moss_tts_nano' ? 'zmai' : asStr(obj.engine, d.engine)
   const style = asStr(obj.style, d.style)
   const outputFormat = asStr(obj.outputFormat, d.outputFormat)
   const lang = asStr(obj.lang, d.lang)

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..core.jobs import Cancelled, check_cancel
+from ..core.memory_guard import guarded
 from ..core.project import set_status
 from ..core.resources import adaptive_workers, progress_msg
 from ..ocr.extract import (  # noqa: F401 — public re-exports for run.py / burn / tests
@@ -160,11 +161,18 @@ def get_whisper(workers: int = 2):
     from pipeline.core.runtime_active import cpu_mode_enabled
     explicit_cpu = cpu_mode_enabled()
     thr = _resolve_asr_workers(workers)
+    if explicit_cpu and _whisper is not None and getattr(_whisper, '_vc_device', '') != 'cpu':
+        reset_whisper()
     with _whisper_lock:
-        if explicit_cpu and _whisper is not None and getattr(_whisper, '_vc_device', '') != 'cpu':
-            _whisper = None
         if _whisper is not None:
+            from pipeline.core.memory_guard import touch
+
+            touch("whisper")
             return _whisper
+
+        from pipeline.core.memory_guard import ensure_budget
+
+        ensure_budget()
 
         cpu_only = explicit_cpu or os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() == "-1"
         device = "cpu"
@@ -243,6 +251,9 @@ def get_whisper(workers: int = 2):
         except Exception:
             pass
         _whisper_threads = thr
+        from pipeline.core.memory_guard import register
+
+        register("whisper", reset_whisper)
         try:
             from pipeline.core.app_log import append_log
 
@@ -275,6 +286,9 @@ def reset_whisper() -> None:
     with _whisper_lock:
         model, _whisper = _whisper, None
         _whisper_threads = None
+    from pipeline.core.memory_guard import unregister
+
+    unregister("whisper")
     try:
         inner = getattr(model, "model", None)
         unload = getattr(inner, "unload_model", None)
@@ -576,6 +590,7 @@ def _whisper_audio(wav: Path) -> Any:
     return audio
 
 
+@guarded("whisper")
 def asr_whisper_inprocess(
     wav: Path,
     source_lang: str,

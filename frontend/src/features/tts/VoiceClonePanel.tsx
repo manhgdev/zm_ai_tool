@@ -113,7 +113,7 @@ export default function VoiceClonePanel({
           <option value="auto">{t('Tự động', 'Auto')}</option>
           <option value="vi">{t('Tiếng Việt — VieNeu', 'Vietnamese — VieNeu')}</option>
           <option value="en">{t('Tiếng Anh — VieNeu', 'English — VieNeu')}</option>
-          <option value="other">{t('Ngôn ngữ khác — Audio8-TTS-0.1B', 'Other — Audio8-TTS-0.1B')}</option>
+          <option value="other">{t('Ngôn ngữ khác — MOSS-TTS-Nano', 'Other — MOSS-TTS-Nano')}</option>
         </select>
       </label>
       <label className="tts-field">

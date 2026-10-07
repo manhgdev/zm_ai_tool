@@ -20,6 +20,7 @@ for (const paths of [
   ['features/configuration/ConfigModal.tsx', 'features/configuration/setupLabels.ts'],
   ['pages/FlowPage.tsx', 'pages/FlowSeriesPanel.tsx'],
   ['pages/VideoCleanerPage.tsx'],
+  ['pages/RendersPage.tsx'],
   ['features/project/TranslationReview.tsx'],
 ]) {
   test(`inline Vietnamese/English pairs are complete: ${paths.join(', ')}`, () => {

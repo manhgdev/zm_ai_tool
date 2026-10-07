@@ -422,11 +422,11 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
     )
 
 
-    from pipeline.tts.engines import audio8
+    from pipeline.tts.engines import moss_tts_nano
     items.append(_item(
-        id="audio8_runtime", name="Audio8-TTS-0.1B", ok=audio8.available(), required=False,
-        detail="đã cài · CPU/ONNX" if audio8.available() else "chưa cài · CPU/ONNX",
-        hint="Giọng tiếng Trung và ngôn ngữ khác.", install="audio8_runtime", installLabel="Cài Audio8",
+        id="moss_tts_nano_runtime", name="MOSS-TTS-Nano", ok=moss_tts_nano.available(), required=False,
+        detail="đã cài · CPU/ONNX" if moss_tts_nano.available() else "chưa cài · CPU/ONNX",
+        hint="Giọng tiếng Trung và ngôn ngữ khác.", install="moss_tts_nano_runtime", installLabel="Cài MOSS-TTS-Nano",
     ))
 
     for mid, title, req in (("httpx", "httpx", True),):

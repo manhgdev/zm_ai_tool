@@ -32,6 +32,40 @@ function renderName(item: RenderedVideo) {
   return item.name?.trim() || `Render ${item.projectId}`
 }
 
+function isMergedMedia(item: RenderedVideo) {
+  const source = `${item.name} ${item.outputFolder || ''}`
+  return /(?:^|[\\/_ .-])merger?(?:d)?(?:$|[\\/_ .-])/i.test(source)
+    || /(?:image-video|media-compose|compose|gh[eé]p)/i.test(source)
+    || (item.type === 'audio' && /(?:^|[\\/])(?:text-to-speech|tts_output|tts)(?:[\\/]|$)/i.test(item.outputFolder || ''))
+}
+
+function renderSelectionScope(items: RenderedVideo[], item: RenderedVideo, scope: 'job' | 'folder' = 'folder') {
+  if (scope === 'folder' && item.outputFolder) return items.filter(row => row.outputFolder === item.outputFolder)
+  if (scope === 'job' && item.projectId && item.projectId !== 'srt') return items.filter(row => row.projectId === item.projectId)
+  return [item]
+}
+
+function selectRenderItems(current: Set<string>, rows: RenderedVideo[], checked: boolean) {
+  const next = new Set(current)
+  for (const row of rows) {
+    if (checked) next.add(row.renderId)
+    else next.delete(row.renderId)
+  }
+  return next
+}
+
+function RenderSelection({ rows, selected, label, disabled, onChange }: {
+  rows: RenderedVideo[]; selected: Set<string>; label: string; disabled?: boolean; onChange: (checked: boolean) => void
+}) {
+  const count = rows.filter(row => selected.has(row.renderId)).length
+  return <label className="renders-scope-select">
+    <input type="checkbox" checked={rows.length > 0 && count === rows.length}
+      ref={node => { if (node) node.indeterminate = count > 0 && count < rows.length }}
+      disabled={disabled || !rows.length} onChange={event => onChange(event.target.checked)} />
+    <span>{label}</span><small>{count}/{rows.length}</small>
+  </label>
+}
+
 export default function RendersPage({ onBack, onEdit }: { onBack: () => void; onEdit: (projectId: string) => Promise<void> }) {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
@@ -49,14 +83,28 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
   const [textSaving, setTextSaving] = useState(false)
   const [activeTab, setActiveTab] = useState<'all' | 'video' | 'image' | 'audio' | 'srt'>('all')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
   const [deleteConfirmation, setDeleteConfirmation] = useState<{ message: string; run: () => Promise<void> } | null>(null)
 
   useEffect(() => { setPage(1); setSelectedIds(new Set()) }, [activeTab])
+
+  function selectRows(rows: RenderedVideo[], checked: boolean) {
+    setSelectedIds(current => selectRenderItems(current, rows, checked))
+  }
 
   const filteredItems = items.filter(item => activeTab === 'all' || item.type === activeTab || (!item.type && activeTab === 'video'))
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize))
   const safePage = Math.min(page, totalPages)
   const pageItems = filteredItems.slice((safePage - 1) * pageSize, safePage * pageSize)
+  const mergedItems = pageItems.filter(isMergedMedia)
+  const folderGroups = Array.from(pageItems.filter((item) => !isMergedMedia(item)).reduce((groups, item) => {
+    const folder = item.outputFolder || t('Không có thư mục', 'No folder')
+    const group = groups.get(folder) || []
+    group.push(item)
+    groups.set(folder, group)
+    return groups
+  }, new Map<string, RenderedVideo[]>()))
+  if (mergedItems.length) folderGroups.unshift(['__merged__', mergedItems])
 
   const currentViewingIndex = viewing ? filteredItems.findIndex((i) => i.renderId === viewing.renderId) : -1
   const moveViewing = useCallback((delta: number) => {
@@ -78,6 +126,7 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
     try {
       const result = await api.renders()
       setItems(result.items)
+      setSelectedIds(current => new Set(result.items.filter(item => current.has(item.renderId)).map(item => item.renderId)))
       setCanReveal(result.canReveal)
       setPage(1)
     } catch (err) {
@@ -153,6 +202,7 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
     try {
       await api.deleteRender(item.renderId)
       setItems((current) => current.filter((row) => row.renderId !== item.renderId))
+      selectRows([item], false)
       if (viewing?.renderId === item.renderId) setViewing(null)
       toast.success(t('Đã xóa video.', 'Video deleted.'))
     } catch (err) {
@@ -229,16 +279,17 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
             ? t(`${filteredItems.length} media · mới nhất trước`, `${filteredItems.length} media · newest first`)
             : t('Tất cả media xuất từ Clone, Review và công cụ sẽ xuất hiện tại đây.', 'All media exported from Clone, Review, and tools will appear here.')}</p>
         </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <div className="renders-head-actions">
+          <RenderSelection rows={filteredItems} selected={selectedIds} disabled={loading}
+            label={t('Chọn tất cả kết quả', 'Select all results')} onChange={checked => selectRows(filteredItems, checked)} />
           {selectedIds.size > 0 && (
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', background: 'var(--border, #e2e8f0)', padding: '6px 12px', borderRadius: '8px' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: 650, color: 'var(--ink, #172033)' }}>{t(`Đã chọn ${selectedIds.size}`, `Selected ${selectedIds.size}`)}</span>
-              <button type="button" onClick={() => setSelectedIds(new Set())} style={{ background: 'none', border: 'none', color: 'var(--muted-foreground, #64748b)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>{t('Bỏ chọn', 'Deselect')}</button>
-              <button type="button" onClick={() => setSelectedIds(new Set(filteredItems.map(i => i.renderId)))} style={{ background: 'none', border: 'none', color: 'var(--primary, #2684d9)', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600 }}>{t('Chọn tất cả', 'Select all')}</button>
-              <button type="button" onClick={() => void deleteSelected()} style={{ background: '#ef4444', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '0.8rem', padding: '4px 10px', borderRadius: '6px', fontWeight: 650, marginLeft: '4px' }}>{t('Xóa đã chọn', 'Delete selected')}</button>
+            <div className="renders-selection-bar">
+              <span>{t(`Đã chọn ${selectedIds.size}`, `Selected ${selectedIds.size}`)}</span>
+              <button type="button" onClick={() => setSelectedIds(new Set())}>{t('Bỏ chọn', 'Deselect')}</button>
+              <button type="button" className="danger" onClick={() => void deleteSelected()}>{t('Xóa đã chọn', 'Delete selected')}</button>
             </div>
           )}
-          <div className="drawing-preview-tabs" style={{ margin: 0 }}>
+          <div className="drawing-preview-tabs renders-type-tabs">
             <button type="button" className={activeTab === 'all' ? 'is-active' : ''} onClick={() => setActiveTab('all')}>{t('Tất cả', 'All')}</button>
             <button type="button" className={activeTab === 'video' ? 'is-active' : ''} onClick={() => setActiveTab('video')}>{t('Video', 'Video')}</button>
             <button type="button" className={activeTab === 'image' ? 'is-active' : ''} onClick={() => setActiveTab('image')}>{t('Ảnh', 'Image')}</button>
@@ -269,15 +320,29 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
       ) : filteredItems.length === 0 ? (
         <div className="renders-state renders-empty"><IconFilm size={36} /><strong>{t('Chưa có media đã render', 'No rendered media yet')}</strong><span>{t('Xuất media từ Clone, Review hoặc công cụ để xem tại đây.', 'Export media from Clone, Review, or a tool to see it here.')}</span></div>
       ) : (
-        <section className="renders-grid" aria-label={t('Danh sách media đã render', 'Rendered media list')}>
-          {pageItems.map((item) => (
+        <section className="renders-folders-list" aria-label={t('Danh sách media đã render', 'Rendered media list')}>
+          {folderGroups.map(([folder, groupItems]) => {
+            const isMergedGroup = folder === '__merged__'
+            const folderName = isMergedGroup ? t('File ghép / file chính', 'Merged / primary files') : (folder.split(/[\\/]/).pop() || folder)
+            const expanded = isMergedGroup || expandedFolders.has(folder)
+            const folderScope = isMergedGroup ? filteredItems.filter(isMergedMedia) : renderSelectionScope(filteredItems, groupItems[0], 'folder')
+            const jobScope = isMergedGroup ? folderScope : renderSelectionScope(filteredItems, groupItems[0], 'job')
+            return <div className={`render-folder-group${expanded ? ' is-expanded' : ''}`} key={folder}>
+              <div className="render-folder-header">
+                <div className="render-folder-scopes">
+                  <RenderSelection rows={jobScope} selected={selectedIds} disabled={loading}
+                    label={isMergedGroup ? t('File chính', 'Primary') : t('J', 'J')} onChange={checked => selectRows(jobScope, checked)} />
+                  {!isMergedGroup && <RenderSelection rows={folderScope} selected={selectedIds} disabled={loading}
+                    label={t('F', 'F')} onChange={checked => selectRows(folderScope, checked)} />}
+                </div>
+              <button type="button" className={`render-folder-toggle${isMergedGroup ? ' is-primary-group' : ''}`} onClick={() => { if (isMergedGroup) return; setExpandedFolders((current) => { const next = new Set(current); if (next.has(folder)) next.delete(folder); else next.add(folder); return next }) }} aria-expanded={expanded}>
+                <span className="render-folder-chevron">{expanded ? '▾' : '▸'}</span><strong>{folderName}</strong><span>{groupItems.length} {t('file', 'files')}</span>
+              </button>
+              </div>
+              {expanded && <div className="renders-grid renders-grid-folder">{groupItems.map((item) => (
             <article className={`render-card ${selectedIds.has(item.renderId) ? 'is-selected' : ''}`} key={item.renderId}>
-              <input type="checkbox" className="render-select-cb" checked={selectedIds.has(item.renderId)} onChange={(e) => {
-                const s = new Set(selectedIds)
-                if (e.target.checked) s.add(item.renderId)
-                else s.delete(item.renderId)
-                setSelectedIds(s)
-              }} aria-label="Chọn item" />
+              <input type="checkbox" className="render-select-cb" checked={selectedIds.has(item.renderId)}
+                onChange={event => selectRows([item], event.target.checked)} aria-label={t(`Chọn file ${renderName(item)}`, `Select file ${renderName(item)}`)} />
               <button type="button" className="render-thumb" onClick={() => setViewing(item)} aria-label={`Xem video ${item.renderId}`}>
                 <img src={item.thumbnailUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true }} />
                 <span className="render-thumb-fallback">{getThumbIcon(item.type)}</span>
@@ -331,7 +396,9 @@ export default function RendersPage({ onBack, onEdit }: { onBack: () => void; on
                 <button type="button" className="render-delete" onClick={() => void deleteRender(item)}>Xóa</button>
               </div>
             </article>
-          ))}
+              ))}</div>}
+            </div>
+          })}
         </section>
       )}
 

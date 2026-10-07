@@ -444,7 +444,7 @@ export default function TtsStudio({
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null)
   const [previewGeneratingVoiceId, setPreviewGeneratingVoiceId] = useState<string | null>(null)
   // The preview sentence must follow the selected voice language; never send
-  // a Vietnamese/English sentence to a Chinese Audio8 voice after a language switch.
+  // a Vietnamese/English sentence to a Chinese MOSS-TTS-Nano voice after a language switch.
   useEffect(() => {
     setPreviewSample('')
   }, [lang])
