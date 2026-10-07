@@ -52,7 +52,7 @@ type TimelineDragDeps = {
   selectedIds: string[]
   selectedMediaIds: string[]
   selectedOverlayIds: string[]
-  selectedBox: PixelBox
+  selectedBox: PixelBox | null
   fallbackBox: PixelBox
   bboxDraft: Box | null
   applyCaptionToAll: boolean
@@ -82,7 +82,6 @@ type TimelineDragDeps = {
   setSelectedOverlayIds: React.Dispatch<React.SetStateAction<string[]>>
   setTrackFocus: React.Dispatch<React.SetStateAction<TrackId>>
   setPropTab: React.Dispatch<React.SetStateAction<PropTab>>
-  setTool: React.Dispatch<React.SetStateAction<'select' | 'cover' | 'text'>>
   setVideoClips: React.Dispatch<React.SetStateAction<MediaClip[]>>
   setBgClips: React.Dispatch<React.SetStateAction<MediaClip[]>>
   // Hàm component
@@ -159,7 +158,6 @@ export function useTimelineDrag(deps: TimelineDragDeps) {
     setSelectedOverlayIds,
     setTrackFocus,
     setPropTab,
-    setTool,
     setVideoClips,
     setBgClips,
     expandGroupSelection,
@@ -179,6 +177,9 @@ export function useTimelineDrag(deps: TimelineDragDeps) {
   } = deps
 
   function commitCaptionBoxResult(next: Segment, skipHistory: boolean) {
+    // Moving text must not create a source mask for captions without OCR.
+    const original = segments.find((segment) => segment.id === next.id)
+    next = { ...next, bbox: original?.bbox ?? null, coverBox: original?.coverBox ?? null }
     if (!applyCaptionToAll || (!next.captionBox && !next.bbox)) {
       editSegment(next, { skipHistory })
       return
@@ -201,18 +202,20 @@ export function useTimelineDrag(deps: TimelineDragDeps) {
           sourceWidth,
           sourceHeight,
         )
-        return segmentWithLayout({ ...peer, captionBox: box }, {
+        const result = segmentWithLayout({ ...peer, captionBox: box }, {
           cover: box,
           caption: laid.caption,
           lines: laid.lines,
           fontPx: laid.fontPx,
         }, laid.fontPx)
+        return { ...result, bbox: peer.bbox ?? null, coverBox: peer.coverBox ?? null }
       }
       if (settings.burnSubs) {
         const laid = getCachedPreviewLayout(peer, box)
         if (laid) {
           const fontPx = laid.fontPx ?? autoFontFromBbox(laid.cover, peer.translation, 0)
-          return segmentWithLayout({ ...peer, captionBox: box }, laid, fontPx)
+          const result = segmentWithLayout({ ...peer, captionBox: box }, laid, fontPx)
+          return { ...result, bbox: peer.bbox ?? null, coverBox: peer.coverBox ?? null }
         }
       }
       return { ...peer, captionBox: box, captionLayout: null }
@@ -749,7 +752,8 @@ export function useTimelineDrag(deps: TimelineDragDeps) {
     targetSeg?: Segment | null,
   ) {
     const seg = targetSeg ?? selected
-    if (!seg || busy || tool === 'text' || trackLocked.caption) return
+    event.stopPropagation()
+    if (event.button !== 0 || !seg || busy || timelineEditLocked || tool === 'text' || trackLocked.caption) return
     // One visual editor target at a time: selecting a caption bbox must not
     // leave a manual blur/effect looking active underneath it.
     setSelectedOverlayId(null)
@@ -760,9 +764,9 @@ export function useTimelineDrag(deps: TimelineDragDeps) {
     const canvas = canvasRef.current
     if (!canvas) return
     event.preventDefault()
-    event.stopPropagation()
-    setPropTab('mask')
-    setTool('cover')
+    const target = event.currentTarget
+    target.setPointerCapture?.(event.pointerId)
+    setPropTab('caption')
     const rect = canvas.getBoundingClientRect()
     // Bắt đầu từ khung đang hiện (selectedBox), không nhảy về OCR raw / fitHardsub
     const original = clampCoverBox(
@@ -770,8 +774,9 @@ export function useTimelineDrag(deps: TimelineDragDeps) {
       sourceWidth,
       sourceHeight,
     )
-  const minSize = 12
+    const minSize = 12
     const histGate = { current: false }
+    bboxDraftRef.current = null
     setDraggingBox(true)
     setSnapGuides({ h: false, v: false })
 
@@ -784,6 +789,7 @@ export function useTimelineDrag(deps: TimelineDragDeps) {
     }
 
     const update = (move: PointerEvent) => {
+      if (move.pointerId !== event.pointerId) return
       const dx = ((move.clientX - event.clientX) / rect.width) * crop.w
       const dy = ((move.clientY - event.clientY) / rect.height) * crop.h
       let left = original.x, top = original.y
@@ -818,9 +824,12 @@ export function useTimelineDrag(deps: TimelineDragDeps) {
       bboxDraftRef.current = next; setBboxDraft(next)
     }
 
-    const commit = () => {
+    const commit = (up: PointerEvent) => {
+      if (up.pointerId !== event.pointerId) return
       window.removeEventListener('pointermove', update)
       window.removeEventListener('pointerup', commit)
+      window.removeEventListener('pointercancel', commit)
+      if (target.hasPointerCapture?.(event.pointerId)) target.releasePointerCapture(event.pointerId)
       setDraggingBox(false)
       setSnapGuides({ h: false, v: false })
       const next = bboxDraftRef.current
@@ -869,7 +878,8 @@ export function useTimelineDrag(deps: TimelineDragDeps) {
       }
     }
     window.addEventListener('pointermove', update)
-    window.addEventListener('pointerup', commit, { once: true })
+    window.addEventListener('pointerup', commit)
+    window.addEventListener('pointercancel', commit)
   }
 
   return {

@@ -24,6 +24,8 @@ from urllib.parse import urlsplit
 _log = logging.getLogger(__name__)
 
 from pipeline.core.config import PUBLIC_DATA
+from pipeline.core.jobs import Cancelled
+from pipeline.core.network import network_available, wait_for_network
 from pipeline.core.output_paths import safe_output_part, selected_or_default
 from . import store
 
@@ -61,6 +63,36 @@ _VIDEO_UI_MODELS = {
 # Temporarily disabled upstream; remove this entry to re-enable when Flow restores it.
 _DISABLED_VIDEO_MODELS = {"Veo 3.1 - Lite [Lower Priority]"}
 _DEFAULT_VIDEO_MODEL = "Veo 3.1 - Fast"
+
+
+class _FlowNetworkInterrupted(Exception):
+    """Close the failed browser once, then resume the same generation identity."""
+
+
+def _network_ready_for_flow_job(service: "FlowService", job_id: str, *, force: bool = False) -> float:
+    """Gate external Flow work while preserving a cancellable queued job."""
+    def cancelled() -> bool:
+        row = store.get_row("jobs", job_id)
+        return job_id in service._cancelled or row is None or row.get('status') == 'cancelled'
+
+    def report_wait(_delay: float) -> None:
+        with service._account_condition:
+            if not cancelled():
+                store.patch_row("jobs", job_id, {
+                    "status": "processing", "stage": "waiting_network",
+                    "updatedAt": time.time(),
+                })
+
+    try:
+        paused = wait_for_network(cancel_check=cancelled, on_wait=report_wait, force_check=force)
+    except Cancelled:
+        raise asyncio.CancelledError from None
+    with service._account_condition:
+        if cancelled():
+            raise asyncio.CancelledError
+        if paused:
+            store.patch_row('jobs', job_id, {'stage': 'starting', 'updatedAt': time.time()})
+    return paused
 
 
 def _normalize_video_model(value: Any) -> str:
@@ -3045,35 +3077,43 @@ class FlowService:
         try:
             if job_id in self._cancelled:
                 return
-            try:
-                verified_account = self._verify_account_plan_before_enqueue(account_id, str(job.get("kind") or "video"))
-            except ValueError as verify_exc:
-                # Account offline / reconnecting — fail-fast, free the slot,
-                # shared reconnect owns login. Do not hold concurrency.
-                if _session_needs_login(verify_exc):
-                    store.patch_row("jobs", job_id, {
-                        "status": "action_required",
-                        "stage": "action_required",
-                        "error": str(verify_exc),
-                        "updatedAt": time.time(),
-                    })
-                    account_row = store.get_row("accounts", account_id) or {}
-                    if account_row.get("status") not in {"connecting", "online"}:
-                        store.patch_row("accounts", account_id, {
-                            "status": "reconnect",
+            # Never launch entitlement sync or Chrome while the machine has no
+            # external route.  The old path opened/closed Chrome on every
+            # three-second retry during a Wi-Fi outage.
+            _network_ready_for_flow_job(self, job_id)
+            while True:
+                try:
+                    verified_account = self._verify_account_plan_before_enqueue(account_id, str(job.get("kind") or "video"))
+                except ValueError as verify_exc:
+                    if _network_ready_for_flow_job(self, job_id, force=True):
+                        continue
+                    # Account offline / reconnecting — fail-fast, free the slot,
+                    # shared reconnect owns login. Do not hold concurrency.
+                    if _session_needs_login(verify_exc):
+                        store.patch_row("jobs", job_id, {
+                            "status": "action_required",
+                            "stage": "action_required",
                             "error": str(verify_exc),
                             "updatedAt": time.time(),
                         })
-                    self._ensure_shared_reconnect(account_id, job_id=job_id, reason=str(verify_exc))
-                    self._log(
-                        "warning",
-                        "session_expired",
-                        job_id=job_id,
-                        account_id=account_id,
-                        message="Phiên hết hạn — sẽ tự kết nối lại / Session expired — will auto-reconnect",
-                    )
-                    return
-                raise
+                        account_row = store.get_row("accounts", account_id) or {}
+                        if account_row.get("status") not in {"connecting", "online"}:
+                            store.patch_row("accounts", account_id, {
+                                "status": "reconnect",
+                                "error": str(verify_exc),
+                                "updatedAt": time.time(),
+                            })
+                        self._ensure_shared_reconnect(account_id, job_id=job_id, reason=str(verify_exc))
+                        self._log(
+                            "warning",
+                            "session_expired",
+                            job_id=job_id,
+                            account_id=account_id,
+                            message="Phiên hết hạn — sẽ tự kết nối lại / Session expired — will auto-reconnect",
+                        )
+                        return
+                    raise
+                break
             credits = verified_account.get("credits")
             if job.get("kind", "video") == "video" and isinstance(credits, (int, float)) and int(credits) <= 0:
                 raise ValueError("FLOW_CREDITS_EMPTY: Hết tín dụng — nạp thêm hoặc đợi reset (Out of Flow credits)")
@@ -4870,6 +4910,30 @@ class FlowService:
         headless_override: bool | None = None,
         generation_token: str = "",
     ) -> None:
+        while True:
+            current = store.get_row('jobs', job_id)
+            if not current or current.get('status') in {'done', 'cancelled'}:
+                return
+            if generation_token and str(current.get('generationToken') or '') != generation_token:
+                return
+            await asyncio.to_thread(_network_ready_for_flow_job, self, job_id)
+            try:
+                await self._run_once(job_id, profile_dir=profile_dir,
+                                     headless_override=headless_override, generation_token=generation_token)
+                return
+            except _FlowNetworkInterrupted:
+                # _run_once has closed Chrome. Keep submission/media/output
+                # identity; the existing recovery path must never resubmit it.
+                await asyncio.to_thread(_network_ready_for_flow_job, self, job_id, force=True)
+
+    async def _run_once(
+        self,
+        job_id: str,
+        *,
+        profile_dir: Path | None = None,
+        headless_override: bool | None = None,
+        generation_token: str = "",
+    ) -> None:
         job = store.get_row("jobs", job_id)
         account = store.get_row("accounts", str(job.get("accountId"))) if job else None
         if not job or not account or job.get("status") in {"done", "cancelled"}:
@@ -5329,6 +5393,13 @@ class FlowService:
                     message=str(exc),
                 )
                 return
+            self._check_cancel(job_id)
+            if not await asyncio.to_thread(network_available, force=True):
+                store.patch_row('jobs', job_id, {
+                    'status': 'processing', 'stage': 'waiting_network',
+                    'networkError': str(exc), 'updatedAt': time.time(),
+                })
+                raise _FlowNetworkInterrupted from exc
             needs_login = _session_needs_login(exc)
             error = str(exc)
             if not needs_login and not error.startswith("FLOW_QUOTA_EXHAUSTED:"):

@@ -18,6 +18,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from pipeline.core.network import active_monotonic, wait_for_network
+
 BASE = "https://editor-api-sg.capcutapi.com"
 
 DEFAULT_DEVICE = {
@@ -262,7 +264,7 @@ def _wait(seconds: float, cancel_check=None, deadline: float | None = None) -> N
     while True:
         _check_cancel(cancel_check)
         now = time.monotonic()
-        if deadline is not None and now >= deadline:
+        if deadline is not None and active_monotonic() >= deadline:
             raise TimeoutError('CAPCUT_TTS_TIMEOUT')
         if now >= end:
             return
@@ -277,7 +279,7 @@ def _request(method: str, url: str, *, cancel_check=None, deadline=None, **kwarg
             try:
                 while True:
                     _check_cancel(cancel_check)
-                    if deadline is not None and time.monotonic() >= deadline:
+                    if deadline is not None and active_monotonic() >= deadline:
                         raise TimeoutError('CAPCUT_TTS_TIMEOUT')
                     done, _ = await asyncio.wait({task}, timeout=0.1)
                     if done:
@@ -288,7 +290,18 @@ def _request(method: str, url: str, *, cancel_check=None, deadline=None, **kwarg
                     task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
 
-    return asyncio.run(run())
+    while True:
+        wait_for_network(cancel_check=lambda: _check_cancel(cancel_check))
+        try:
+            return asyncio.run(run())
+        except httpx.TransportError as exc:
+            paused = wait_for_network(cancel_check=lambda: _check_cancel(cancel_check), force_check=True)
+            # A lost response to task creation may already have spent credits.
+            # Replay only unsent requests or read-only polling/downloads.
+            safe = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) or method == 'GET' or '/common_task/query' in url
+            if paused and safe:
+                continue
+            raise
 
 
 def _device_path() -> Path:
@@ -376,7 +389,8 @@ def _post_json(path: str, body: dict[str, Any], device: dict[str, Any], *, babi:
             break
         except httpx.TransportError as e:
             last_err = e
-            if attempt == 0:
+            safe = isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout)) or path.endswith('/query')
+            if attempt == 0 and safe:
                 _wait(0.5, cancel_check, deadline)
                 continue
             raise RuntimeError(f"CAPCUT_TTS_NETWORK_ERROR|POST {BASE}{path}; {type(e).__name__}: {e}") from e
@@ -470,7 +484,7 @@ def _find_audio_url(obj: Any) -> str | None:
 def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, rate: str = "1.0", timeout_s: float = 60.0, cancel_check: Callable[[], bool] | None = None) -> Path:
     """Create CapCut TTS task, poll, download mp3. Shark → xoay device_id rồi thử lại."""
     last_err: BaseException | None = None
-    deadline = time.monotonic() + timeout_s
+    deadline = active_monotonic() + timeout_s
     for attempt in range(3):
         _wait(0, cancel_check, deadline)
         device = load_device()
@@ -478,7 +492,7 @@ def synthesize_mp3(text: str, voice: str, resource_id: str, out_mp3: Path, *, ra
             tid, token = tts_create(text, voice, resource_id, rate, device, cancel_check=cancel_check, deadline=deadline)
             last: dict[str, Any] = {}
             url: str | None = None
-            while time.monotonic() < deadline:
+            while active_monotonic() < deadline:
                 _check_cancel(cancel_check)
                 last = tts_query(tid, token, device, cancel_check=cancel_check, deadline=deadline)
                 tasks = ((last.get("data") or {}).get("tasks")) or []

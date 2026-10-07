@@ -90,6 +90,14 @@ test('CapCut errors produce Vietnamese and English messages while preserving dia
   }
 })
 
+test('network waiting has Vietnamese and English labels in Flow and background tasks', () => {
+  for (const path of ['pages/FlowPage.tsx', 'shared/components/BackgroundTasks.tsx', 'features/flow/flow.explain.ts']) {
+    assert.match(read(path), /waiting_network/)
+    assert.match(read(path), /Đang chờ mạng/)
+    assert.match(read(path), /Waiting for network/)
+  }
+})
+
 test('static English catalog entries are non-empty', () => {
   const catalog = JSON.parse(read('app/ui.en.json'))
   assert.ok(Object.keys(catalog).length > 0)

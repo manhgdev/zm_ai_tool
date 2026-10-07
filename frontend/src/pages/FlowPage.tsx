@@ -906,6 +906,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const jobStatusText = (job: FlowJob) => {
     if (job.status !== "processing") return statusText(job.status);
     if (job.stage === "retrying") return t("Đang thử tạo lại", "Retrying generation");
+    if (job.stage === "waiting_network") return t("Đang chờ mạng", "Waiting for network");
     if (job.stage === "recovering") return t("Đang tìm kết quả đã gửi", "Recovering submitted result");
     if (job.stage === "resubmitting" || job.stage === "submitting") return t("Đang gửi yêu cầu", "Submitting request");
     if (job.stage === "downloading") return t("Đang tải kết quả", "Downloading result");

@@ -39,6 +39,7 @@ const STAGE_LABELS: Record<string, [string, string]> = {
   recovering: ["Đang tìm kết quả đã gửi", "Recovering submitted result"],
   downloading: ["Đang tải file", "Downloading"],
   retrying: ["Đang thử lại", "Retrying"],
+  waiting_network: ["Đang chờ mạng", "Waiting for network"],
   model_fallback: ["Đang chuyển sang Nano Banana 2.1", "Switching to Nano Banana 2.1"],
   failed: ["Thất bại", "Failed"],
   cancelled: ["Đã hủy", "Cancelled"],

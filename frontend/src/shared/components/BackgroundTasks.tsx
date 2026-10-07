@@ -29,6 +29,8 @@ export default function BackgroundTasks({ onOpen, project }: {
 }) {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
+  const progressLabel = (job: BackgroundJob) => job.stage === 'waiting_network'
+    ? t('Đang chờ mạng', 'Waiting for network') : `${Math.round(job.progress)}%`
   const [jobs, setJobs] = useState<BackgroundJob[]>([])
   const cancellingRef = useRef(new Set<string>())
   const [cancelling, setCancelling] = useState<Set<string>>(new Set())
@@ -163,7 +165,7 @@ export default function BackgroundTasks({ onOpen, project }: {
         return <div key={`${job.topic}:${job.id}`} className="flex items-center"><button type="button" onClick={() => setSelectedJob(job)}
           title={t('Mở trang tác vụ', 'Open task page')}
           className="min-w-0 flex-1 rounded-lg px-2 py-2 text-left hover:bg-accent/40">
-          <span className="flex items-center justify-between gap-2 text-xs"><strong>{label} · {job.id.slice(0, 8)}</strong><span>{Math.round(job.progress)}%</span></span>
+          <span className="flex items-center justify-between gap-2 text-xs"><strong>{label} · {job.id.slice(0, 8)}</strong><span>{progressLabel(job)}</span></span>
           <progress aria-label={label} max={100} value={job.progress} className="block h-1 w-full accent-primary" />
         </button>{cancelButton(job)}</div>
       })}
@@ -172,7 +174,7 @@ export default function BackgroundTasks({ onOpen, project }: {
       const latest = rows[0]
       const tool = latest && tools[latest.topic]
       return tool ? <div className="flex items-center"><button type="button" onClick={() => setSelectedJob(latest)} className="min-w-0 flex-1 rounded-lg px-2 py-1 text-left hover:bg-accent/40">
-        <span className="flex items-center justify-between gap-2 text-xs"><strong>{t(tool[1], tool[2])}</strong><span>{Math.round(latest.progress)}%</span></span>
+        <span className="flex items-center justify-between gap-2 text-xs"><strong>{t(tool[1], tool[2])}</strong><span>{progressLabel(latest)}</span></span>
         <progress aria-label={t(tool[1], tool[2])} max={100} value={latest.progress} className="mt-1 block h-1 w-full accent-primary" />
       </button>{cancelButton(latest)}</div> : null
     })()}
@@ -186,7 +188,7 @@ export default function BackgroundTasks({ onOpen, project }: {
           <div className="flex items-start justify-between gap-4"><div><p className="text-xs text-muted-foreground">{detailLabel}</p><h2 className="mt-1 text-lg font-semibold">{selectedJob.id}</h2></div><button type="button" aria-label={t('Đóng chi tiết tác vụ', 'Close task details')} onClick={() => setSelectedJob(null)} className="h-8 w-8 rounded text-xl text-muted-foreground hover:bg-accent/50">×</button></div>
           <div className="mt-5 flex items-center justify-between text-sm"><strong>{t('Tiến độ', 'Progress')}</strong><strong>{Math.round(currentJob.progress)}%</strong></div>
           <progress max={100} value={currentJob.progress} className="mt-2 block h-2 w-full accent-primary" />
-          <p className="mt-4 min-h-12 rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">{currentJob.message || t('Đang xử lý…', 'Processing…')}</p>
+          <p className="mt-4 min-h-12 rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">{currentJob.stage === 'waiting_network' ? t('Đang chờ mạng. Tự tiếp tục khi có kết nối; vẫn có thể huỷ.', 'Waiting for network. Resumes when connected; you can still cancel.') : currentJob.message || t('Đang xử lý…', 'Processing…')}</p>
           <div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => void cancelJob(selectedJob)} disabled={cancelling.has(`${selectedJob.topic}:${selectedJob.id}`)} className="rounded-lg border border-destructive/40 px-3 py-2 text-sm text-destructive hover:bg-destructive/10">{cancelling.has(`${selectedJob.topic}:${selectedJob.id}`) ? t('Đang huỷ…', 'Cancelling…') : t('Huỷ tác vụ', 'Cancel task')}</button><button type="button" onClick={() => { setSelectedJob(null); if (detailTool) onOpen(detailTool[0]) }} className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-accent/50">{t('Mở trang', 'Open page')}</button></div>
         </section>
       </div>, document.body)

@@ -26,9 +26,12 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 import httpx
 
+from pipeline.core.network import active_monotonic, wait_for_network
+
 from pipeline.tts.capcut import BASE, base_headers, common_query, compact_json, load_device, make_sign_header
 from pipeline.core.config import DATA
 from pipeline.core.media import _ff_bin
+from pipeline.asr.capcut_cues import validated_words
 
 _VOD_REGION = "sdwdmwlll"
 _VOD_SERVICE = "vod"
@@ -65,8 +68,23 @@ def _cancelled(check: Callable[[], bool] | None) -> None:
         raise InterruptedError("Đã hủy xuất phụ đề CapCut")
 
 
-def _json(client: httpx.Client, method: str, url: str, *, headers: dict[str, str], content: Any = None, timeout: float = 60) -> dict[str, Any]:
-    response = client.request(method, url, headers=headers, content=content, timeout=timeout)
+def _json(client: httpx.Client, method: str, url: str, *, headers: dict[str, str], content: Any = None, timeout: float = 60, check: Callable[[], bool] | None = None) -> dict[str, Any]:
+    stream_offset = content.tell() if hasattr(content, 'tell') else None
+    while True:
+        _cancelled(check)
+        wait_for_network(cancel_check=check)
+        try:
+            response = client.request(method, url, headers=headers, content=content, timeout=timeout)
+            break
+        except httpx.TransportError as exc:
+            paused = wait_for_network(cancel_check=check, force_check=True)
+            # Preserve task IDs; never replay an ambiguous creation response.
+            # Upload part 0 is replaceable, but its file body must be rewound.
+            safe = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) or method == 'GET' or '/common_task/query' in url or 'phase=transfer' in url
+            if not paused or not safe:
+                raise
+            if stream_offset is not None:
+                content.seek(stream_offset)
     try:
         data = response.json()
     except Exception as exc:
@@ -80,12 +98,12 @@ def _json(client: httpx.Client, method: str, url: str, *, headers: dict[str, str
     return data
 
 
-def _post_task(client: httpx.Client, path: str, body: dict[str, Any], device: dict[str, Any], *, babi: dict[str, Any] | None, appid: bool) -> dict[str, Any]:
+def _post_task(client: httpx.Client, path: str, body: dict[str, Any], device: dict[str, Any], *, babi: dict[str, Any] | None, appid: bool, check: Callable[[], bool] | None = None) -> dict[str, Any]:
     body_text = compact_json(body)
     url = BASE + path + "?" + urlencode(common_query(device, babi, include_region=babi is not None))
     headers = base_headers(device, body_text, appid=appid)
     headers["sign"] = make_sign_header(url, str(device["appvr"]), headers["device-time"], str(device["tdid"]))
-    return _json(client, "POST", url, headers=headers, content=body_text.encode("utf-8"))
+    return _json(client, "POST", url, headers=headers, content=body_text.encode("utf-8"), check=check)
 
 
 def _file_hashes(path: Path, check: Callable[[], bool] | None) -> tuple[str, str]:
@@ -108,10 +126,22 @@ def _load_cached_cues(md5: str, source_lang: str, target_lang: str) -> tuple[lis
     try:
         cached = json.loads(_cache_path(md5, source_lang, target_lang).read_text(encoding="utf-8"))
         source, translated = cached.get("source"), cached.get("translated")
-        if isinstance(source, list) and source and isinstance(translated, list):
+        if cached.get("wordTimingVersion") == 1 and isinstance(source, list) and source and isinstance(translated, list):
             return source, translated
     except (OSError, json.JSONDecodeError, AttributeError):
         pass
+    # Replay archived provider data when older normalized caches dropped words.
+    # Do not upload again merely to recover fields already saved on this host.
+    raw_dir = _CAPCUT_RAW_DIR / _cache_path(md5, source_lang, target_lang).stem
+    for path in sorted(raw_dir.glob("*.json"), reverse=True):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            source, translated = subtitle_cues(_task_payload(record))
+            if source:
+                _write_cached_cues(md5, source_lang, target_lang, source, translated)
+                return source, translated
+        except (OSError, ValueError, TypeError, AttributeError, CapCutSttError):
+            continue
     return None
 
 
@@ -120,7 +150,7 @@ def _write_cached_cues(md5: str, source_lang: str, target_lang: str, source: lis
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-        temporary.write_text(json.dumps({"source": source, "translated": translated}, ensure_ascii=False), encoding="utf-8")
+        temporary.write_text(json.dumps({"source": source, "translated": translated, "wordTimingVersion": 1}, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, path)
     except OSError:
         # ponytail: cache must never make a successful CapCut result fail; retry next run if disk is unavailable.
@@ -254,7 +284,9 @@ def _split_audio_chunks(
 
 def _offset_cues(cues: list[dict[str, Any]], offset: float) -> list[dict[str, Any]]:
     return [
-        {**cue, "start": round(float(cue["start"]) + offset, 3), "end": round(float(cue["end"]) + offset, 3)}
+        {**cue, "start": round(float(cue["start"]) + offset, 3), "end": round(float(cue["end"]) + offset, 3),
+         **({"words": [{**word, "start": round(word["start"] + offset, 3),
+                        "end": round(word["end"] + offset, 3)} for word in cue["words"]]} if cue.get("words") else {})}
         for cue in cues
     ]
 
@@ -399,14 +431,14 @@ def _upload_once(path: Path, client: httpx.Client, device: dict[str, Any], check
         progress("CapCut: đang chuẩn bị video…")
     md5, crc32 = _file_hashes(path, check)
     _cancelled(check)
-    sign = _post_task(client, "/lv/v1/upload_sign", {"biz": "cc_pc_text_recognize", "key_version": "v5"}, device, babi=None, appid=True)
+    sign = _post_task(client, "/lv/v1/upload_sign", {"biz": "cc_pc_text_recognize", "key_version": "v5"}, device, babi=None, appid=True, check=check)
     credentials = sign.get("data") or {}
     required = ("domain", "access_key_id", "secret_access_key", "session_token", "space_name")
     if any(not credentials.get(key) for key in required):
         raise CapCutSttError("CapCut không cấp quyền upload video")
     base = f"https://{credentials['domain']}/top/v1?"
     apply_url = base + urlencode({"Action": "ApplyUploadInner", "SpaceName": credentials["space_name"], "UseQuic": "false", "Version": "2020-11-19", "device_platform": "win"})
-    apply = _json(client, "GET", apply_url, headers=_vod_headers("GET", apply_url, b"", credentials, device))
+    apply = _json(client, "GET", apply_url, headers=_vod_headers("GET", apply_url, b"", credentials, device), check=check)
     try:
         node = apply["Result"]["InnerUploadAddress"]["UploadNodes"][0]
         store = node["StoreInfos"][0]
@@ -417,13 +449,13 @@ def _upload_once(path: Path, client: httpx.Client, device: dict[str, Any], check
     transfer_url = f"https://{node['UploadHost']}/upload/v1/{store['StoreUri']}?" + urlencode({"uploadid": store["UploadID"], "part_number": "0", "phase": "transfer"})
     transfer_headers = {"Authorization": store["Auth"], "X-Upload-Content-CRC32": crc32, "User-Agent": "BDFileUpload", "accept-encoding": "identity"}
     with path.open("rb") as stream:
-        _json(client, "POST", transfer_url, headers=transfer_headers, content=stream, timeout=900)
+        _json(client, "POST", transfer_url, headers=transfer_headers, content=stream, timeout=900, check=check)
     _cancelled(check)
     finish_url = f"https://{node['UploadHost']}/upload/v1/{store['StoreUri']}?" + urlencode({"uploadmode": "part", "phase": "finish", "uploadid": store["UploadID"]})
-    _json(client, "POST", finish_url, headers={"Authorization": store["Auth"], "User-Agent": "BDFileUpload", "accept-encoding": "identity"}, content=f"0:{crc32}".encode())
+    _json(client, "POST", finish_url, headers={"Authorization": store["Auth"], "User-Agent": "BDFileUpload", "accept-encoding": "identity"}, content=f"0:{crc32}".encode(), check=check)
     commit_url = base + urlencode({"Action": "CommitUploadInner", "SpaceName": credentials["space_name"], "Version": "2020-11-19", "device_platform": "win"})
     commit_body = compact_json({"Functions": [{"Input": {"SnapshotTime": 0.0}, "Name": "Snapshot"}], "SessionKey": node["SessionKey"]}).encode()
-    committed = _json(client, "POST", commit_url, headers=_vod_headers("POST", commit_url, commit_body, credentials, device), content=commit_body, timeout=120)
+    committed = _json(client, "POST", commit_url, headers=_vod_headers("POST", commit_url, commit_body, credentials, device), content=commit_body, timeout=120, check=check)
     try:
         result = committed["Result"]["Results"][0]
         duration = int(float((result.get("VideoMeta") or {}).get("Duration") or 0) * 1000)
@@ -462,6 +494,16 @@ def subtitle_cues(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[d
         target = str(item.get("translation_text") or item.get("translation") or item.get("translated_text") or item.get("target_text") or item.get("translate_text") or "").strip()
         if target:
             translated.append({**cue, "text": target})
+        # Source word clocks must never be attached to translated text.
+        try:
+            words = [{"word": str(w["text"]), "start": float(w["start_time"]) / 1000,
+                      "end": float(w["end_time"]) / 1000}
+                     for w in item.get("words", []) if str(w["text"]).strip()]
+            words = validated_words({**cue, "words": words})
+            if words:
+                cue["words"] = words
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass  # Broken/incomplete word metadata must not discard the cue.
     return source, translated
 
 
@@ -540,24 +582,24 @@ def transcribe_and_translate(path: Path, source_lang: str, target_lang: str, *, 
             progress("CapCut: đang nhận dạng và dịch…")
         babi = {"feature_entrance": "editor", "feature_entrance_detail": "editor-elements-captions-subtitle_recognition", "feature_key": "subtitle_recognition", "scenario": "video_editor"}
         cap_json = {"adjust_endtime": 200, "audio": vid, "audio_type": "vid", "caption_type": 0, "client_request_id": str(uuid.uuid4()), "duration": max(1, duration), "enable_cache": not force_refresh, "enter_from": "asr", "language": _language(source_lang, default="auto"), "max_lines": 1, "md5": md5, "pack_options": {"need_attribute": True}, "songs_info": [{"end_time": max(1, duration) - 10.334, "id": "", "start_time": 0}], "translation_language": _language(target_lang, default="vi-VN"), "use_translation": True, "words_per_line": 15}
-        created = _post_task(client, "/lv/v1/common_task/new", {"bind_id": str(uuid.uuid4()).upper(), "can_queue": True, "enter_from": "asr", "tasks": [{"context": str(uuid.uuid4()), "payload": compact_json({"cap_json": cap_json}), "req_key": "cc_audio_subtitle_asr", "task_version": "v3"}]}, device, babi=babi, appid=False)
+        created = _post_task(client, "/lv/v1/common_task/new", {"bind_id": str(uuid.uuid4()).upper(), "can_queue": True, "enter_from": "asr", "tasks": [{"context": str(uuid.uuid4()), "payload": compact_json({"cap_json": cap_json}), "req_key": "cc_audio_subtitle_asr", "task_version": "v3"}]}, device, babi=babi, appid=False, check=cancelled)
         tasks = ((created.get("data") or {}).get("tasks") or [])
         if not tasks or not tasks[0].get("id") or not tasks[0].get("token"):
             raise CapCutSttError("CapCut không tạo được tác vụ dịch phụ đề")
         task_id, token = str(tasks[0]["id"]), str(tasks[0]["token"])
-        started = time.monotonic()
+        started = active_monotonic()
         deadline = started + 20 * 60
         polls = 0
         missing_status_polls = 0
         last_report_at = -6.0
         last_status = ""
         last_percent: int | None = None
-        while time.monotonic() < deadline:
+        while active_monotonic() < deadline:
             _cancelled(cancelled)
-            query = _post_task(client, "/lv/v1/common_task/query", {"tasks": [{"bind_id": "", "id": task_id, "req_key": "cc_audio_subtitle_asr", "task_version": "v3", "token": token}]}, device, babi=None, appid=False)
+            query = _post_task(client, "/lv/v1/common_task/query", {"tasks": [{"bind_id": "", "id": task_id, "req_key": "cc_audio_subtitle_asr", "task_version": "v3", "token": token}]}, device, babi=None, appid=False, check=cancelled)
             task, status = _task_status(query)
             polls += 1
-            elapsed = time.monotonic() - started
+            elapsed = active_monotonic() - started
             if not status:
                 missing_status_polls += 1
                 if progress and (elapsed - last_report_at >= 6.0):

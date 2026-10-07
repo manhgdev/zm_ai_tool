@@ -12,7 +12,8 @@ from typing import Any
 
 import httpx
 
-from pipeline.core.jobs import check_cancel
+from pipeline.core.jobs import check_cancel, set_job_context
+from pipeline.core.network import is_remote_url, wait_for_network
 from pipeline.core.project import set_status
 from pipeline.core.resources import progress_msg
 
@@ -219,6 +220,8 @@ def _openai_compatible_chat(
         transport_attempt = 0
         first_429: int | None = None
         while True:
+            if is_remote_url(url):
+                wait_for_network()
             # ponytail: multi-key skips shared NVIDIA pacing so a 429 on one key
             # does not stall the others; single-key keeps the 40 RPM slot.
             if is_nvidia and not multi:
@@ -253,6 +256,8 @@ def _openai_compatible_chat(
                     },
                 )
             except httpx.HTTPError:
+                if is_remote_url(url) and wait_for_network(force_check=True):
+                    continue
                 if transport_attempt < 2:
                     time.sleep(2 ** transport_attempt)
                     transport_attempt += 1
@@ -352,6 +357,8 @@ def _gemini_generate(
         failed_keys = 0
         first_429: int | None = None
         while True:
+            if is_remote_url(url):
+                wait_for_network()
             # Multi-key: never share the Gemini cooldown — a 429 on one key must
             # not stall the others. Single-key keeps the previous wait behavior.
             if not multi:
@@ -367,6 +374,8 @@ def _gemini_generate(
                     },
                 )
             except httpx.TransportError:
+                if is_remote_url(url) and wait_for_network(force_check=True):
+                    continue
                 # DNS/connect/reset errors have no HTTP status, so they used
                 # to skip the retry policy and fail the whole Review at once.
                 if transport_attempt >= 2:
@@ -473,6 +482,7 @@ def translate_cloud(
     done_lock = __import__("threading").Lock()
 
     def _batch(start: int) -> tuple[int, list[str]]:
+        set_job_context(project_id)
         check_cancel(project_id)
         chunk = texts[start : start + bs]
         if riva_translate:

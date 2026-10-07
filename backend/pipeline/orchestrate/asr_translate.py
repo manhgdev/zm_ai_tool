@@ -74,9 +74,6 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
     # settings.previewSec ở đây = cửa sổ LẦN CHẠY (api_run đã tách khỏi ô UI)
     preview_sec = max(0, int(settings.get("previewSec") or 0))
     tag = preview_tag(preview_sec)
-    # v2: vertical speech/SRT cues are split into readable 9:16 display
-    # units before translating.  Keep old cache rows from restoring long
-    # sentence-sized cues after this behavior changes.
     run_settings = {**settings, "previewSec": preview_sec, "portraitCueLayout": 2}
     a_key = asr_cache_key(run_settings, source_fp)
     t_key = trans_cache_key(run_settings)
@@ -202,6 +199,7 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
             str(settings.get("translator") or "").lower().strip() == "capcut"
             and configured_engine == "capcut"
         )
+        engine = str(settings.get("engine") or "whisper")
         # —— ASR (reuse segments if same engine+lang+video+preview) ——
         if cache.get("asrKey") == a_key and cached_segments:
             segments = cached_segments
@@ -247,6 +245,7 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
                 segments = [
                     {
                         "start": row["start"], "end": row["end"], "source": row["text"],
+                        **({"words": row["words"]} if row.get("words") else {}),
                         **({
                             "translation": (
                                 str(row["text"] or "")
@@ -261,6 +260,9 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
                 ]
                 if capcut_translator and any(not str(item.get("translation") or "").strip() for item in segments):
                     raise RuntimeError("CapCut không trả bản dịch khớp với toàn bộ timecode.")
+                from pipeline.asr.capcut_cues import regroup_capcut_segments
+
+                segments = regroup_capcut_segments(segments, source_lang=str(settings.get("sourceLang") or "auto"))
                 use_ocr = False
             else:
                 wav = cache_audio(project_id, audio_cache_tag(preview_sec, match_mode, speed=work_speed))
@@ -382,15 +384,13 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
 
             append_job_event(project_id, "ASR_CHUNK_READY", {"range": [0, float(ffprobe_duration(video) or 0)], "segments": segments})
 
-            # Whisper/SRT timestamps describe speech, not the small batches of
-            # text visible on a vertical video.  Split only true portrait input
-            # here; 16:9 keeps sentence-sized cues.  OCR below still finds the
-            # actual on-screen position for every resulting cue.
+            # CapCut is already grouped on its word clock. Never run its rows
+            # through the proportional portrait splitter (including translation).
             try:
                 input_w, input_h = video_size(video)
             except Exception:
                 input_w, input_h = 0, 0
-            if input_h > input_w > 0 and engine in ("whisper", "subtitle", "capcut"):
+            if input_h > input_w > 0 and engine in ("whisper", "subtitle"):
                 from pipeline.subtitles import split_portrait_caption_segments
 
                 segments = split_portrait_caption_segments(segments)

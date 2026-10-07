@@ -15,6 +15,8 @@ import signal
 from pathlib import Path
 from typing import Any
 
+from pipeline.core.network import network_available
+
 
 def _capture_active_window() -> Any:
     """Return an opaque token representing the current foreground window.
@@ -189,6 +191,10 @@ class BrowserManager:
         executable = chrome_executable()
         if executable is None:
             raise RuntimeError("FLOW_CHROME_REQUIRED: Google Chrome was not found. Install Google Chrome, then connect again.")
+        # All callers (jobs, login, credit sync, project recovery) pass here.
+        # Workers own the cancellable wait; synchronous API calls fail promptly.
+        if not await asyncio.to_thread(network_available):
+            raise RuntimeError('FLOW_NETWORK_UNAVAILABLE: Internet connection is unavailable')
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         while not self._profile_lock.acquire(blocking=False):
             await asyncio.sleep(0.1)

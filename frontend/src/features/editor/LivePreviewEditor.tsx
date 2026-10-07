@@ -1170,11 +1170,13 @@ export default function LivePreviewEditor({
   const getCachedPreviewLayout = (s: Segment, override?: PixelBox) => {
     const cl = s.captionLayout
     const cb = s.captionBox
+    const mask = s.coverBox
     // Cover mode changes the geometry (caption must be inside the mask), so it
     // must invalidate a layout calculated for above/below mode.
     const key = `v18|${s.id}|${s.translation}|${s.layout}|${s.bboxInherited}|${s.bboxDetected}|${s.bbox ? `${s.bbox.x},${s.bbox.y},${s.bbox.w},${s.bbox.h}` : ''}|${cb ? `${cb.x},${cb.y},${cb.w},${cb.h}` : ''}|${cl ? `${cl.x},${cl.y},${cl.w},${cl.h},${cl.fontSize},${(cl.lines || []).join('\\n')}` : ''}|${settings.burnSubs}|${settings.coverHardsubs}|${settings.captionPlacement}|${settings.subtitleFontSize}|${s.fontFamily || settings.subtitleFontFamily}|${crop.x},${crop.y},${crop.w},${crop.h}|${override ? `${override.x},${override.y},${override.w},${override.h}` : ''}`
+    const layoutKey = `${key}|${s.fontSize}|${mask ? `${mask.x},${mask.y},${mask.w},${mask.h}` : ''}`
     const cached = layoutCacheRef.current[s.id]
-    if (cached && cached.key === key) {
+    if (cached && cached.key === layoutKey) {
       return cached.val
     }
     const val = resolvePreviewOverLayout(
@@ -1185,7 +1187,7 @@ export default function LivePreviewEditor({
       crop,
       override,
     )
-    layoutCacheRef.current[s.id] = { key, val }
+    layoutCacheRef.current[s.id] = { key: layoutKey, val }
     return val
   }
   const cropPortrait = crop.h >= crop.w
@@ -1550,7 +1552,7 @@ export default function LivePreviewEditor({
               ? getCachedPreviewLayout(s)?.mask ?? resolveCoverMaskOnly(s, sourceWidth, sourceHeight, crop)
               : resolveCoverMaskOnly(s, sourceWidth, sourceHeight, crop)
             if (!mask || !overCoverMode || s.layout === 'vertical' || s.layout === 'label') return mask
-            if (s.bboxInherited === false) return mask
+            if (s.coverBox || s.bboxInherited === false) return mask
             const sourceMask = replacementSourceMask(mask, layoutSegs.flatMap((peer) =>
               peer.bboxDetected === true && peer.bbox && peer.layout !== 'vertical' && peer.layout !== 'label'
                 ? [peer.bbox] : [],
@@ -1628,7 +1630,17 @@ export default function LivePreviewEditor({
       return null as null | { box: PixelBox; fontPx: number; lines: string[] }
     }
     if (captionTimelineSeg.layout === 'vertical' || captionTimelineSeg.layout === 'label') return null
-    if (captionTimelineSeg.bboxInherited === false) return null
+    const manualBox = captionTimelineSeg.id === selected?.id && bboxDraft
+      ? bboxDraft
+      : captionTimelineSeg.captionBox
+    if (manualBox) {
+      const laid = getCachedPreviewLayout(captionTimelineSeg, manualBox)
+      return laid ? {
+        box: laid.cover,
+        fontPx: laid.fontPx ?? resolveCaptionFontSize(captionTimelineSeg, settings, sourceWidth, sourceHeight),
+        lines: laid.lines,
+      } : null
+    }
     const lane = captionBandForSegment(captionTimelineSeg) ?? hardsubLaneForSegment(
       layoutSegs,
       sourceWidth,
@@ -1775,7 +1787,7 @@ export default function LivePreviewEditor({
   // Caption bbox is always clickable during its own time range, just like a
   // manual blur region. It must not depend on first selecting the timeline row.
   const bboxInteractiveAtPlayhead = (() => {
-    if (tool === 'text') return false
+    if (tool === 'text' || !overlayBurnOn || trackHidden.caption || !selectedBox) return false
     if (bboxDraft) return true
     const target = bboxSeg ?? selected
     // Editor handles follow caption timecode exactly. Only the mask may use
@@ -1801,7 +1813,7 @@ export default function LivePreviewEditor({
     }
   }, [settings.captionPlacement, settings.coverHardsubs])
   useEffect(() => {
-    if (activeBboxId || selectedOverlayId || (activeAutoBlurBand && trackFocus !== 'text')) {
+    if (activeBboxId || selectedOverlayId || (activeAutoBlurBand && trackFocus !== 'fx')) {
       setActiveAutoBlurBand(false)
     }
   }, [activeBboxId, selectedOverlayId, trackFocus, activeAutoBlurBand])
@@ -2132,7 +2144,7 @@ export default function LivePreviewEditor({
     setActiveBboxId(null)
     setSelectedOverlayId(null)
     setActiveAutoBlurBand(true)
-    setTrackFocus('text')
+    setTrackFocus('fx')
     setTool('select')
     setPropTab('caption')
     onSettings({ ...settings, blurBandMode: 'manual', blurBandRegion: region })
@@ -2194,7 +2206,6 @@ export default function LivePreviewEditor({
     setSelectedOverlayIds,
     setTrackFocus,
     setPropTab,
-    setTool,
     setVideoClips,
     setBgClips,
     expandGroupSelection,
@@ -2744,12 +2755,15 @@ export default function LivePreviewEditor({
   }
 
   function beginOverlayDrag(event: ReactPointerEvent, overlay: TextOverlay) {
+    event.stopPropagation()
     const overlayTrack = isWatermarkOverlay(overlay) ? 'watermark' : overlay.track === 'ocr' ? 'ocr' : 'text'
     const overlayLocked = trackLocked[overlayTrack]
-    if (timelineEditLocked || tool === 'text' || overlayLocked) return
+    if (event.button !== 0 || timelineEditLocked || tool === 'text' || overlayLocked) return
     const canvas = canvasRef.current
     if (!canvas) return
     event.preventDefault()
+    const target = event.currentTarget
+    target.setPointerCapture?.(event.pointerId)
     const rect = canvas.getBoundingClientRect()
     const original = { x: overlay.x, y: overlay.y }
     // One visual editor target at a time: an effect takes focus from bbox.
@@ -2786,13 +2800,17 @@ export default function LivePreviewEditor({
         paint(last)
       })
     }
-    const onMove = (move: PointerEvent) => update(move.clientX, move.clientY)
+    const onMove = (move: PointerEvent) => {
+      if (move.pointerId === event.pointerId) update(move.clientX, move.clientY)
+    }
     const commit = (up: PointerEvent) => {
+      if (up.pointerId !== event.pointerId) return
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', commit)
       window.removeEventListener('pointercancel', commit)
+      if (target.hasPointerCapture?.(event.pointerId)) target.releasePointerCapture(event.pointerId)
       if (raf) cancelAnimationFrame(raf)
-      update(up.clientX, up.clientY)
+      if (up.type === 'pointerup') update(up.clientX, up.clientY)
       if (raf) cancelAnimationFrame(raf)
       paint(last)
       if (Math.abs(last.x - original.x) > 1 || Math.abs(last.y - original.y) > 1) {
@@ -2803,8 +2821,8 @@ export default function LivePreviewEditor({
       overlayDragDraftRef.current = null
     }
     window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', commit, { once: true })
-    window.addEventListener('pointercancel', commit, { once: true })
+    window.addEventListener('pointerup', commit)
+    window.addEventListener('pointercancel', commit)
   }
 
   function relayoutCaptionSegment(
@@ -3136,13 +3154,15 @@ export default function LivePreviewEditor({
     overlay: TextOverlay,
     edge: 'nw' | 'ne' | 'sw' | 'se' | 'e' | 's' | 'w' | 'n',
   ) {
+    event.stopPropagation()
     const overlayTrack = isWatermarkOverlay(overlay) ? 'watermark' : overlay.track === 'ocr' ? 'ocr' : 'text'
     const overlayLocked = trackLocked[overlayTrack]
-    if (timelineEditLocked || overlayLocked) return
+    if (event.button !== 0 || timelineEditLocked || overlayLocked) return
     const canvas = canvasRef.current
     if (!canvas) return
     event.preventDefault()
-    event.stopPropagation()
+    const target = event.currentTarget
+    target.setPointerCapture?.(event.pointerId)
     const rect = canvas.getBoundingClientRect()
     const orig = { x: overlay.x, y: overlay.y, w: overlay.w, h: overlay.h }
     setSelectedOverlayId(overlay.id)
@@ -3195,13 +3215,17 @@ export default function LivePreviewEditor({
         paint(last)
       })
     }
-    const onMove = (move: PointerEvent) => update(move.clientX, move.clientY)
+    const onMove = (move: PointerEvent) => {
+      if (move.pointerId === event.pointerId) update(move.clientX, move.clientY)
+    }
     const commit = (up: PointerEvent) => {
+      if (up.pointerId !== event.pointerId) return
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', commit)
       window.removeEventListener('pointercancel', commit)
+      if (target.hasPointerCapture?.(event.pointerId)) target.releasePointerCapture(event.pointerId)
       if (raf) cancelAnimationFrame(raf)
-      update(up.clientX, up.clientY)
+      if (up.type === 'pointerup') update(up.clientX, up.clientY)
       if (raf) cancelAnimationFrame(raf)
       paint(last)
       if (
@@ -3217,12 +3241,14 @@ export default function LivePreviewEditor({
       overlayDragDraftRef.current = null
     }
     window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', commit, { once: true })
-    window.addEventListener('pointercancel', commit, { once: true })
+    window.addEventListener('pointerup', commit)
+    window.addEventListener('pointercancel', commit)
   }
 
   function focusCaption(seg: Segment, opts?: { additive?: boolean; range?: boolean }) {
-    setActiveBboxId(seg.id)
+    // Selecting a timeline caption must not open its bbox/mask editor. The
+    // frame is only activated by an explicit pointer-down on the preview.
+    setActiveBboxId(null)
     setSelectedOverlayId(null)
     setSelectedMediaId(null)
     setTrackFocus('caption')
@@ -4479,7 +4505,7 @@ export default function LivePreviewEditor({
         : baked.captionLayout
       if (!cl || !updatedSettings.burnSubs) return baked
       const baseMask = getCachedPreviewLayout(seg)?.mask ?? resolveCoverMaskOnly(seg, sourceWidth, sourceHeight, crop)
-      const sourceMask = baseMask && overCoverMode && !isVertLabel && seg.bboxInherited !== false
+      const sourceMask = baseMask && overCoverMode && !isVertLabel && !seg.coverBox && seg.bboxInherited !== false
         ? replacementSourceMask(baseMask, layoutSegs.flatMap((peer) => peer.bboxDetected === true && peer.bbox && peer.layout !== 'vertical' && peer.layout !== 'label' ? [peer.bbox] : []), sourceWidth, sourceHeight)
         : baseMask
       // Snapshot exactly what is painted.
@@ -5025,7 +5051,7 @@ export default function LivePreviewEditor({
                       ref={canvasRef}
                       className={cn(
                         // Không gắn container-type lên root — containment giết backdrop-filter → mask «Làm mờ» mất tác dụng
-                        'relative shadow-lg',
+                        'relative shadow-lg touch-none',
                         previewZoom === 'fit' && 'max-h-full max-w-full',
                         previewZoom === 'fit' && (cropPortrait ? 'h-full w-auto' : 'w-full h-auto'),
                         tool === 'text' ? 'cursor-crosshair' : tool === 'cover' ? 'cursor-cell' : 'cursor-default',
@@ -5324,7 +5350,7 @@ export default function LivePreviewEditor({
                             setSelectedOverlayId(null)
                             setActiveBlurBandIndex(i)
                             setActiveAutoBlurBand(true)
-                            setTrackFocus('text')
+                            setTrackFocus('fx')
                             setTool('select')
                             setPropTab('caption')
                           }}
@@ -5460,7 +5486,6 @@ export default function LivePreviewEditor({
                       {/* Bbox caption: same thin, unobtrusive frame as manual blur. */}
                       {bboxSeg && selectedBox && bboxInteractiveAtPlayhead && tool !== 'text' && (
                         <div
-                          data-cover-mask-preview={showBboxAtPlayhead && !maskBoxes.length && showCoverBlur && overCoverMode ? '' : undefined}
                           className={cn(
                             // Preview subtitles render above the mask. Keep its editable hitbox
                             // above them as well, otherwise a transparent caption layer swallows clicks.
@@ -5472,12 +5497,7 @@ export default function LivePreviewEditor({
                             showBboxAtPlayhead && (!showCoverBlur || !overCoverMode) && 'bg-white/5',
                             draggingBox && 'opacity-80',
                           )}
-                          style={{
-                            ...sourceToDisplayStyle(selectedBox, crop),
-                            ...(showBboxAtPlayhead && !maskBoxes.length && showCoverBlur && overCoverMode
-                              ? coverMaskPreviewStyle(coverMaskStyle, coverMaskColor, coverMaskOpacity)
-                              : {}),
-                          }}
+                          style={sourceToDisplayStyle(selectedBox, crop)}
                           onPointerDown={(e) => { setActiveBboxId(bboxSeg.id); beginBboxDrag(e, 'move', bboxSeg) }}
                         >
                           {/* 8 resize handles — invisible hit areas, only cursor changes on hover */}
@@ -5665,7 +5685,7 @@ export default function LivePreviewEditor({
                               boxSizing: 'border-box',
                             }}
                           >
-                            {activeCaptionMeta?.lines.map((line, i) => (
+                            {activeCaptionMeta?.lines.map((line: string, i: number) => (
                               <span key={i} className="block max-w-full whitespace-nowrap">
                                 {line}
                               </span>
@@ -5703,7 +5723,10 @@ export default function LivePreviewEditor({
                             && display.y + display.h > layout.cover.y,
                           )
                           return (
-                            <div key={overlay.id} className={cn('group absolute z-[25] cursor-move overflow-visible outline outline-1 outline-transparent hover:outline-cyan-300/70', isLogoDraft && 'outline-dashed !outline-amber-300', sel && !isLogoDraft && 'outline-2 !outline-cyan-300')} style={{ ...sourceToDisplayStyle(display, crop), containerType: 'size', opacity: blockedByCaption ? 0 : frame.opacity * (isLogoDraft ? .55 : 1) }} onPointerDown={(e) => {
+                            <div key={overlay.id} ref={(element) => {
+                              if (element) overlayElementRefs.current.set(overlay.id, element)
+                              else overlayElementRefs.current.delete(overlay.id)
+                            }} className={cn('group absolute z-[25] cursor-move overflow-visible outline outline-1 outline-transparent hover:outline-cyan-300/70', isLogoDraft && 'outline-dashed !outline-amber-300', sel && !isLogoDraft && 'outline-2 !outline-cyan-300')} style={{ ...sourceToDisplayStyle(display, crop), containerType: 'size', opacity: blockedByCaption ? 0 : frame.opacity * (isLogoDraft ? .55 : 1) }} onPointerDown={(e) => {
                               if (isWatermarkOverlay(overlay)) {
                                 beginOverlayDrag(e, overlay)
                               } else if (isLogoDraft) {
@@ -5831,6 +5854,10 @@ export default function LivePreviewEditor({
                         return (
                           <div
                             key={overlay.id}
+                            ref={(element) => {
+                              if (element) overlayElementRefs.current.set(overlay.id, element)
+                              else overlayElementRefs.current.delete(overlay.id)
+                            }}
                             className={cn(
                               '@container [container-type:size] absolute cursor-move overflow-visible z-[15]',
                               sel && 'ring-1 ring-yellow-300',
@@ -5851,7 +5878,10 @@ export default function LivePreviewEditor({
                                 border: sel ? '1px dashed #ffd166' : '1px dashed transparent',
                               }}
                               value={overlay.text}
-                              onPointerDown={(e) => beginOverlayDrag(e, overlay)}
+                              onPointerDown={(e) => {
+                                e.stopPropagation()
+                                setSelectedOverlayId(overlay.id)
+                              }}
                               onFocus={() => setSelectedOverlayId(overlay.id)}
                               onChange={(e) => editOverlay({ ...overlay, text: e.target.value })}
                             />

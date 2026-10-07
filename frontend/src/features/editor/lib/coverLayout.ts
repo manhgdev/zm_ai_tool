@@ -256,7 +256,7 @@ export function resolveOverLayout(
   }
 
   // Caption đáy/over horizontal — cần chế độ che chữ
-  if (!(settings.coverHardsubs && settings.burnSubs)) return null
+  if (!settings.coverHardsubs && !effOverride) return null
 
   // Đang kéo hoặc có captionBox riêng: bám đúng khung
   if (effOverride) {
@@ -348,7 +348,7 @@ function fitBoxToCrop(box: PixelBox, crop: CropRect): PixelBox {
   }
 }
 
-export type PreviewOverLayout = OverLayout & { mask: PixelBox }
+export type PreviewOverLayout = OverLayout & { mask: PixelBox | null }
 
 /** Mask che chữ gốc — không cần bản dịch (mid/label/dọc OCR). */
 export function resolveCoverMaskOnly(
@@ -381,10 +381,14 @@ export function resolvePreviewOverLayout(
   const effOverride = coverOverride ?? (seg?.captionBox ? clampCoverBox(seg.captionBox, frameW, frameH) : undefined)
   const base = resolveOverLayout(seg, settings, frameW, frameH, effOverride)
   if (!base) return null
+  // Text placement and source coverage are independent. A caption drag must
+  // never move (or synthesize) the mask, including after saving/reopening.
+  const sourceMask = seg ? resolveCoverMaskOnly(seg, frameW, frameH, crop) : null
   // Nếu segment có bbox/captionBox HOẶC thuộc layout mid/label/vertical
   // -> GIỮ NGUYÊN tọa độ đè đúng chỗ. Không tự động shift/fallback xuống đáy màn hình.
   const overlayLay = seg ? effectiveOverlayLayout(seg, frameH, frameW) : null
   if (
+    effOverride ||
     overlayLay === 'mid' ||
     overlayLay === 'label' ||
     overlayLay === 'vertical' ||
@@ -414,7 +418,7 @@ export function resolvePreviewOverLayout(
     const fullCrop = cropCoversFull(crop, frameW, frameH)
     const cover = fullCrop ? finalBase.cover : fitBoxToCrop(finalBase.cover, crop)
     const caption = fullCrop ? finalBase.caption : fitBoxToCrop(finalBase.caption, crop)
-    return { ...finalBase, cover, caption, mask: cover }
+    return { ...finalBase, cover, caption, mask: sourceMask }
   }
 
   // Dưới đây là logic dành cho Whisper (dịch giọng nói, KHÔNG CÓ BBOX)
@@ -431,7 +435,7 @@ export function resolvePreviewOverLayout(
     const y = Math.max(crop.y, caption.y - padY)
     const bottom = Math.min(crop.y + crop.h, caption.y + caption.h + padY)
     const cover = { ...base.cover, y, h: Math.max(4, bottom - y) }
-    return { ...base, cover, caption, mask: cover }
+    return { ...base, cover, caption, mask: sourceMask }
   }
   const fullCrop = cropCoversFull(crop, frameW, frameH)
   const fittedCover = fullCrop ? base.cover : fitBoxToCrop(base.cover, crop)
@@ -465,15 +469,6 @@ export function resolvePreviewOverLayout(
   const shiftedCover = { ...fittedCover, y: fittedCover.y + shiftY }
   caption = { ...caption, y: caption.y + shiftY }
   const union = unionBox(shiftedCover, caption)
-  const maskSeed = unionBox(fittedCover, caption)
-  const maskBottom = Math.min(
-    crop.y + crop.h,
-    maskSeed.y + maskSeed.h + Math.round(fontPx * 0.65),
-  )
-  const mask = intersectBox({
-    ...maskSeed,
-    h: maskBottom - maskSeed.y,
-  }, crop) ?? maskSeed
   const padY = Math.max(2, Math.round(fontPx * 0.08))
   const coverY = Math.max(crop.y, caption.y - padY)
   const coverBottom = Math.min(crop.y + crop.h, caption.y + caption.h + padY)
@@ -489,7 +484,7 @@ export function resolvePreviewOverLayout(
     caption,
     lines,
     fontPx,
-    mask,
+    mask: sourceMask,
   }
 }
 

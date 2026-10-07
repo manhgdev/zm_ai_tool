@@ -1,6 +1,6 @@
 import type { RealtimeEvent } from './types'
 
-export type BackgroundJob = { id: string; topic: string; progress: number; message: string; queued: boolean; updatedAt: number }
+export type BackgroundJob = { id: string; topic: string; progress: number; message: string; stage?: string; queued: boolean; updatedAt: number }
 
 export function updateBackgroundJobs(current: BackgroundJob[], event: RealtimeEvent): BackgroundJob[] {
   const normalize = (id: string, value: unknown): BackgroundJob[] => {
@@ -13,7 +13,7 @@ export function updateBackgroundJobs(current: BackgroundJob[], event: RealtimeEv
     if (!running) return []
     const pct = Number(row.pct ?? row.progress ?? 0)
     return [{ id, topic: event.topic, progress: Number.isFinite(pct) ? Math.max(0, Math.min(100, pct)) : 0,
-      message: String(row.message || row.name || row.filename || row.title || ''), queued: state === 'queued' || state === 'pending',
+      message: String(row.message || row.name || row.filename || row.title || ''), stage: String(row.stage || ''), queued: state === 'queued' || state === 'pending',
       updatedAt: Number.isFinite(event.timestamp) ? event.timestamp : Date.now() }]
   }
   if (event.type === 'snapshot') {

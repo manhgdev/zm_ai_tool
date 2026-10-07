@@ -12,6 +12,7 @@ from fastapi import UploadFile
 
 from api.routes.tts_studio import _transcript_rows_to_srt, _transcript_rows_to_text, _transcript_word_styles, api_tts_studio_transcribe
 from pipeline.capcut_stt import subtitle_cues
+from pipeline.asr.capcut_cues import regroup_capcut_segments
 from pipeline.export.srt import parse_srt, SRT_STYLES
 from pipeline.asr.whisper import _segments_from_whisper
 from pipeline.tts.studio import get_job_progress
@@ -27,6 +28,63 @@ def timed_row():
 
 
 class CapCutTimelineTest(unittest.TestCase):
+    def test_continuous_clock_rejoins_single_word_provider_fragment(self):
+        provider_rows = [
+            [("hôm", .66, .78), ("nay", 1.34, 1.5), ("mình", 1.5, 1.74)],
+            [("sẽ", 1.74, 1.94), ("hướng", 1.94, 2.14), ("dẫn", 2.14, 2.34)],
+            [("Anh", 2.34, 2.42), ("em", 2.58, 2.62), ("cách", 2.74, 2.9)],
+            [("thuyết", 2.9, 3.14)],
+            [("Minh", 3.14, 3.26), ("giọng", 3.38, 3.5), ("Nam", 3.58, 3.78)],
+            [("nữ", 3.78, 3.86), ("Cho", 3.98, 4.06), ("video", 4.1, 4.14)],
+        ]
+        source = [{"start": words[0][1], "end": words[-1][2],
+                   "source": " ".join(word[0] for word in words),
+                   "words": [{"word": w, "start": s, "end": e} for w, s, e in words]}
+                  for words in provider_rows]
+        before = copy.deepcopy(source)
+        grouped = regroup_capcut_segments(source, source_lang="vi")
+        phrase = next(row for row in grouped if "Anh em cách thuyết Minh" in row["source"])
+        self.assertEqual(phrase["start"], 2.34)
+        self.assertEqual(phrase["end"], 3.78)
+        self.assertNotIn("thuyết", [row["source"] for row in grouped])
+        self.assertEqual([w for row in grouped for w in row["words"]],
+                         [w for row in source for w in row["words"]])
+        for row in grouped:
+            self.assertEqual(row["start"], row["words"][0]["start"])
+            self.assertEqual(row["end"], row["words"][-1]["end"])
+        self.assertEqual(source, before)
+
+    def test_regroup_keeps_unaligned_translations_and_speaker_boundaries(self):
+        source = [{"source": "Hello", "start": 0., "end": .2, "speaker": "one",
+                   "words": [{"word": "Hello", "start": 0., "end": .2}]},
+                  {"source": "everyone", "start": .2, "end": .5, "speaker": "two",
+                   "words": [{"word": "everyone", "start": .2, "end": .5}]}]
+        self.assertEqual(len(regroup_capcut_segments(source, source_lang="en")), 2)
+        for row in source:
+            row["translation"] = "Bản dịch"
+        grouped = regroup_capcut_segments(source, source_lang="en")
+        self.assertEqual([(r["source"], r["translation"], r["start"], r["end"]) for r in grouped],
+                         [(r["source"], r["translation"], r["start"], r["end"]) for r in source])
+
+    def test_capcut_words_group_greeting_without_inventing_time(self):
+        source = [
+            {"start": 0.18, "end": 0.62, "source": "hê lô Anh", "translation": "hê lô Anh",
+             "words": [{"word": "hê", "start": 0.18, "end": 0.26},
+                       {"word": "lô", "start": 0.26, "end": 0.50},
+                       {"word": "Anh", "start": 0.50, "end": 0.62}]},
+            {"start": 0.62, "end": 1.74, "source": "em hôm nay mình", "translation": "em hôm nay mình",
+             "words": [{"word": "em", "start": 0.62, "end": 0.66},
+                       {"word": "hôm", "start": 0.66, "end": 0.78},
+                       {"word": "nay", "start": 1.34, "end": 1.50},
+                       {"word": "mình", "start": 1.50, "end": 1.74}]},
+        ]
+        grouped = regroup_capcut_segments(source, source_lang="vi")
+        self.assertEqual(grouped[0]["source"], "hê lô Anh em")
+        self.assertEqual(grouped[0]["start"], 0.18)
+        self.assertEqual(grouped[0]["end"], 0.66)
+        self.assertEqual(grouped[1]["source"], "hôm nay mình")
+        self.assertEqual(grouped[1]["start"], 0.66)
+
     def test_source_and_translation_keep_each_capcut_timestamp(self):
         source, translated = subtitle_cues({"utterances": [
             {"text": "hê lô Anh", "start_time": 0, "end_time": 380, "translation_text": "hello everyone"},
@@ -38,6 +96,22 @@ class CapCutTimelineTest(unittest.TestCase):
         ])
         self.assertEqual(translated[0]["start"], source[0]["start"])
         self.assertEqual(translated[1]["end"], source[1]["end"])
+
+    def test_capcut_parser_keeps_word_clocks_from_input_video(self):
+        source, _ = subtitle_cues({"utterances": [{
+            "text": "hê lô Anh", "start_time": 180, "end_time": 620,
+            "words": [
+                {"text": "hê", "start_time": 180, "end_time": 260},
+                {"text": " ", "start_time": 260, "end_time": 260},
+                {"text": "lô", "start_time": 260, "end_time": 500},
+                {"text": "Anh", "start_time": 500, "end_time": 620},
+            ],
+        }]})
+        self.assertEqual(source[0]["words"], [
+            {"word": "hê", "start": 0.18, "end": 0.26},
+            {"word": "lô", "start": 0.26, "end": 0.5},
+            {"word": "Anh", "start": 0.5, "end": 0.62},
+        ])
 
     def test_srt_serializer_does_not_estimate_inner_timing(self):
         rows = [
