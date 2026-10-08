@@ -269,17 +269,24 @@ def api_replace_segments(project_id: str, body: list[SegmentIn]):
     return mutate_meta(project_id, apply)
 
 
-def _sync_changed_segment_text(segment: dict, previous: dict) -> None:
+def _sync_changed_segment_text(segment: dict, previous: dict) -> bool:
     """A new translation invalidates audio/layout, including compound children."""
     if segment.get("source") != previous.get("source"):
         segment["sourceSubtitle"] = str(segment.get("source") or "")
-    if segment.get("translation") != previous.get("translation"):
+    changed = segment.get("translation") != previous.get("translation")
+    if changed:
         segment["dubSubtitle"] = str(segment.get("translation") or "")
         for field in ("audioFile", "audioUrl", "audioDuration", "captionLayout"):
             segment.pop(field, None)
     previous_children = {child.get("id"): child for child in previous.get("compoundChildren") or []}
     for child in segment.get("compoundChildren") or []:
-        _sync_changed_segment_text(child, previous_children.get(child.get("id")) or {})
+        if _sync_changed_segment_text(child, previous_children.get(child.get("id")) or {}):
+            changed = True
+    if changed:
+        # A compound's mixed audio also contains every child's old dialogue.
+        for field in ("audioFile", "audioUrl", "audioDuration", "captionLayout"):
+            segment.pop(field, None)
+    return changed
 
 
 @router.post("/api/projects/{project_id}/segments/compound")

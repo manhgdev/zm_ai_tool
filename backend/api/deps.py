@@ -240,6 +240,19 @@ class ReviewTranslationIn(BaseModel):
     ollamaLocalTier: str | None = None
 
 
+class ScriptCueIn(BaseModel):
+    id: str = Field(min_length=1, max_length=128)
+    source: str = Field(min_length=1, max_length=8000)
+    draft: str = Field(default="", max_length=8000)
+    start: float = Field(ge=0, allow_inf_nan=False)
+    end: float = Field(ge=0, allow_inf_nan=False)
+    speaker: str | None = Field(default=None, max_length=128)
+
+
+class ReviewScriptIn(ReviewTranslationIn):
+    cues: list[ScriptCueIn] = Field(min_length=1, max_length=2000)
+
+
 class StudioSynthIn(BaseModel):
     jobId: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,64}$")
     text: str = ""

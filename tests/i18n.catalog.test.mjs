@@ -22,6 +22,8 @@ for (const paths of [
   ['pages/VideoCleanerPage.tsx'],
   ['pages/RendersPage.tsx'],
   ['features/project/TranslationReview.tsx'],
+  ['features/project/ScriptTranslationReview.tsx', 'features/studio/CloneBatchSettingsPanel.tsx', 'features/project/ProjectSidebar.tsx', 'features/editor/EditorProjectPanel.tsx', 'features/editor/EditorPropertiesPanel.tsx'],
+  ['features/project/useTranslationProviders.ts'],
 ]) {
   test(`inline Vietnamese/English pairs are complete: ${paths.join(', ')}`, () => {
     for (const path of paths) {

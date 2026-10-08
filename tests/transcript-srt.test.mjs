@@ -83,6 +83,7 @@ function mountPanel(overrides = {}) {
     if (id === 'react/jsx-runtime') return { jsx: (type, props, key) => ({ type, props, key }), jsxs: (type, props, key) => ({ type, props, key }) }
     if (id.endsWith('/i18n')) return { useLocale: () => ({ locale: 'en' }), localize: (_locale, _vi, en) => en }
     if (id.endsWith('/configModal.helpers')) return { PROVIDER_PRESET_MODELS: {} }
+    if (id === '@/features/project/useTranslationProviders') return { useTranslationProviders: () => ({ configuredProviders: ['ollama'], isAvailable: () => true, providerLabel: (_id, label) => label }) }
     if (id === './TtsIcons') return { IconUpload: () => null }
     if (id === './lib/srt') return styles
     if (id === './lib/transcriptSrt') return { formatTranscriptSrt: format }

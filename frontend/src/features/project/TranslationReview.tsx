@@ -4,32 +4,25 @@ import { canReviewTranslatedDraft, translationReviewOptions } from '@/app/appSet
 import { IconWand } from '@/shared/components/Icons'
 import { api } from './project.api'
 import type { ProjectSettings, Segment } from './project.types'
+import { useTranslationProviders } from './useTranslationProviders'
 
-export function TranslationReviewSettings({ settings, onChange, disabled = false }: {
+export function TranslationReviewSettings({ settings, onChange, disabled = false, wholeScript = false }: {
   settings: ProjectSettings
   onChange: (settings: ProjectSettings) => void
   disabled?: boolean
+  wholeScript?: boolean
 }) {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
-  const [providers, setProviders] = useState<string[]>([])
+  const { configuredProviders: providers, isAvailable: providerConfigured, providerLabel } = useTranslationProviders()
   const [models, setModels] = useState<{ id: string; label: string; free: boolean }[]>([])
   const [model, setModel] = useState('')
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const provider = providerConfigured(settings.translationReviewTranslator) ? settings.translationReviewTranslator : ''
   useEffect(() => {
-    let active = true
-    const refresh = () => void api.getConfig().then((cfg) => {
-      if (active) setProviders(Object.entries(cfg.cloud || {}).filter(([, value]) => value.apiKeySet).map(([id]) => id))
-    }).catch(() => { if (active) setProviders([]) })
-    refresh()
-    window.addEventListener('focus', refresh)
-    return () => { active = false; window.removeEventListener('focus', refresh) }
-  }, [])
-  const provider = providers.includes(settings.translationReviewTranslator) ? settings.translationReviewTranslator : ''
-  useEffect(() => {
-    if (!provider || settings.translationReviewMode === 'off') { setModels([]); return }
+    if (!provider || provider === 'ollama' || (!wholeScript && settings.translationReviewMode === 'off')) { setModels([]); return }
     let active = true
     setLoading(true)
     setError('')
@@ -47,7 +40,7 @@ export function TranslationReviewSettings({ settings, onChange, disabled = false
       setModels((data.models || []).filter((item) => item.id && (!item.capabilities?.length || item.capabilities.includes('text')) && !/embedding|moderation|whisper|audio|speech|tts|guard|riva-translate/i.test(item.id)).map((item) => ({ id: item.id, label: item.label || item.id, free: item.free === true })))
     }).catch(() => { if (active) setModels([]) }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [provider, settings.translationReviewMode])
+  }, [provider, settings.translationReviewMode, wholeScript])
   async function selectModel(value: string) {
     if (!provider || saving) return
     setSaving(true)
@@ -59,11 +52,11 @@ export function TranslationReviewSettings({ settings, onChange, disabled = false
       setError(t('Không lưu được model AI. Thử lại.', 'Could not save the AI model. Retry.'))
     } finally { setSaving(false) }
   }
-  if (!canReviewTranslatedDraft(settings.translator) || !providers.length) return null
+  if (!wholeScript && (!canReviewTranslatedDraft(settings.translator) || !providers.length)) return null
   const selectClass = 'h-8 min-w-0 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground disabled:opacity-50'
   return (
     <div className="grid grid-cols-2 gap-2">
-      <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+      {!wholeScript && <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
         <span>{t('AI chỉnh bản dịch', 'AI translation review')}</span>
         <select className={selectClass} value={settings.translationReviewMode} disabled={disabled}
           title={t('Tự động chỉnh sau khi dịch; thủ công xem đề xuất trước khi áp dụng.', 'Automatic reviews after translation; manual lets you review suggestions before applying.')}
@@ -72,8 +65,8 @@ export function TranslationReviewSettings({ settings, onChange, disabled = false
           <option value="manual">{t('Thủ công', 'Manual')}</option>
           <option value="auto">{t('Tự động sau khi dịch', 'Automatic after translation')}</option>
         </select>
-      </label>
-      {settings.translationReviewMode !== 'off' && (
+      </label>}
+      {(wholeScript || settings.translationReviewMode !== 'off') && (
         <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
           <span>{t('Công cụ AI', 'AI provider')}</span>
           <select className={selectClass} value={provider} disabled={disabled || saving}
@@ -83,11 +76,11 @@ export function TranslationReviewSettings({ settings, onChange, disabled = false
               : t('Dùng API key và model trong Cấu hình → API dịch.', 'Uses the API key and model in Settings → Translation APIs.')}
             onChange={(e) => onChange({ ...settings, translationReviewTranslator: e.target.value as ProjectSettings['translationReviewTranslator'] })}>
             {!provider && <option value="" disabled>{t('Chọn công cụ AI', 'Select AI provider')}</option>}
-            {translationReviewOptions().filter(({ id }) => providers.includes(id)).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+            {translationReviewOptions().map(({ id, label }) => <option key={id} value={id} disabled={!providerConfigured(id)}>{providerLabel(id, label)}</option>)}
           </select>
         </label>
       )}
-      {settings.translationReviewMode !== 'off' && provider && (
+      {(wholeScript || settings.translationReviewMode !== 'off') && provider && provider !== 'ollama' && (
         <label className="col-span-2 flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
           <span>{t('Model AI', 'AI model')}</span>
           <select className={selectClass} value={model} disabled={disabled || loading || saving || !models.length} onChange={(event) => void selectModel(event.target.value)}>
@@ -102,6 +95,10 @@ export function TranslationReviewSettings({ settings, onChange, disabled = false
           </select>
         </label>
       )}
+      {wholeScript && provider === 'ollama' && <>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground"><span>Ollama</span><select className={selectClass} disabled={disabled} value={settings.ollamaMode} onChange={(e) => onChange({ ...settings, ollamaMode: e.target.value as ProjectSettings['ollamaMode'] })}><option value="cloud">{t('Đám mây', 'Cloud')}</option><option value="local">{t('Trên máy', 'Local')}</option></select></label>
+        <label className="col-span-2 flex flex-col gap-1 text-xs text-muted-foreground"><span>{t('Model AI', 'AI model')}</span><input className={selectClass} value={settings.ollamaModel} disabled={disabled} onChange={(e) => onChange({ ...settings, ollamaModel: e.target.value })} /></label>
+      </>}
       {error && <p role="alert" className="col-span-2 text-xs text-destructive">{error}</p>}
     </div>
   )

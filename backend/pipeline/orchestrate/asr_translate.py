@@ -64,6 +64,77 @@ def _is_project_cancelled(project_id: str) -> bool:
     return False
 
 
+def _attach_project_speakers(project_id, video, segments, settings, meta, asr_key, audio_tag):
+    """Diarization is independent of transcript source, including cached OCR/SRT."""
+    if not settings.get("speakerDiarization"):
+        return
+    from pipeline.asr.speaker import (
+        assign_speakers, default_speaker_role, default_speaker_voice,
+        diarize_audio, is_generated_speaker_role,
+    )
+    from pipeline.export.compound import expand_compound_segments
+
+    key = f"v1|{asr_key}|{int(settings.get('speakerCount') or 0)}"
+    fresh = meta.get("speakerDiarizationKey") != key
+    turns = meta.get("speakerTurns")
+    if fresh or not isinstance(turns, list):
+        check_cancel(project_id)
+        set_status(project_id, step="asr", progress=44, message="Đang tách người nói…", running=True)
+        wav = cache_audio(project_id, audio_tag)
+        if not wav.exists() or wav.stat().st_mtime < video.stat().st_mtime:
+            extract_audio(video, wav, project_id=project_id)
+        provider_info: dict[str, str] = {}
+        turns = diarize_audio(wav, DATA / "models" / "pyannote",
+                              int(settings.get("speakerCount") or 0), provider_out=provider_info)
+        check_cancel(project_id)
+        meta["speakerTurns"] = turns
+        meta["speakerDiarizationKey"] = key
+        meta["speakerDiarizationProvider"] = provider_info.get("provider", "cpu")
+        fresh = True
+
+    # OCR may also contain titles/logo masks: these are not spoken dialogue.
+    rows = [dict(seg) for seg in expand_compound_segments(segments)
+            if not seg.get("maskOnly") and seg.get("dub") is not False
+            and (seg.get("layout") not in ("label", "vertical") or seg.get("dub") is True)]
+    for row in rows:
+        if fresh:
+            row.pop("speaker", None)
+    assign_speakers([row for row in rows if not row.get("speaker")], turns)
+    by_id = {row["id"]: row for row in rows}
+    profiles = settings.get("speakerProfiles") or {}
+    voices = settings.get("speakerVoices") or {}
+    palette = ("#0ea5a8", "#8b5cf6", "#e58a2b", "#3b82f6", "#ec4899", "#22c55e", "#ef4444", "#a855f7")
+    for position, speaker in enumerate(sorted({str(row["speaker"]) for row in rows if row.get("speaker")})):
+        old = profiles.get(speaker) or {}
+        profiles[speaker] = {
+            "id": speaker,
+            "name": default_speaker_role(position) if is_generated_speaker_role(old.get("name")) else old["name"],
+            "color": old.get("color") or palette[position % len(palette)],
+            "voice": old.get("voice") or voices.get(speaker) or default_speaker_voice(position, settings.get("defaultVoice") or "system"),
+        }
+    settings["speakerProfiles"] = profiles
+    settings["speakerVoices"] = {key: value.get("voice") or "" for key, value in profiles.items()}
+
+    def apply(rows):
+        changed = False
+        for seg in rows:
+            child_changed = apply(seg.get("compoundChildren") or [])
+            row = by_id.get(seg.get("id"))
+            old_voice = seg.get("voice")
+            if row is not None:
+                speaker = row.get("speaker")
+                seg["speaker"] = speaker
+                if speaker and (fresh or not seg.get("voice") or seg.get("voice") == "system"):
+                    seg["voice"] = profiles[speaker]["voice"]
+            if child_changed or old_voice != seg.get("voice"):
+                for field in ("audioFile", "audioUrl", "audioDuration"):
+                    seg.pop(field, None)
+                changed = True
+        return changed
+
+    apply(segments)
+
+
 def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
     meta = load_meta(project_id)
     source = Path(meta["videoPath"])
@@ -334,42 +405,6 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
                     segments = hybrid_asr(wav, engine, settings.get("sourceLang", "auto"), project_id=project_id, on_chunk=lambda index, rows: append_job_event(project_id, "ASR_CHUNK_READY", {"chunkId": index, "segments": rows}))
                 else:
                     segments = asr_whisper(wav, settings.get("sourceLang", "auto"), workers=w, project_id=project_id)
-                if settings.get("speakerDiarization"):
-                    from pipeline.asr.speaker import (
-                        assign_speakers,
-                        default_speaker_role,
-                        default_speaker_voice,
-                        diarize_audio,
-                        is_generated_speaker_role,
-                    )
-
-                    set_status(project_id, step="asr", progress=44, message="Đang tách người nói…", running=True)
-                    model_dir = DATA / "models" / "pyannote"
-                    provider_info: dict[str, str] = {}
-                    turns = diarize_audio(
-                        wav, model_dir, int(settings.get("speakerCount") or 0), provider_out=provider_info,
-                    )
-                    assign_speakers(segments, turns)
-                    speaker_voices = settings.get("speakerVoices") or {}
-                    profiles = settings.get("speakerProfiles") or {}
-                    palette = ("#0ea5a8", "#8b5cf6", "#e58a2b", "#3b82f6", "#ec4899", "#22c55e", "#ef4444", "#a855f7")
-                    for position, speaker in enumerate(sorted({str(s.get("speaker")) for s in segments if s.get("speaker")})):
-                        old_profile = profiles.get(speaker) if isinstance(profiles.get(speaker), dict) else {}
-                        fallback_voice = str(settings.get("defaultVoice") or "system")
-                        profiles[speaker] = {
-                            "id": speaker,
-                            "name": default_speaker_role(position) if is_generated_speaker_role(old_profile.get("name")) else str(old_profile["name"]),
-                            "color": str(old_profile.get("color") or palette[position % len(palette)]),
-                            "voice": str(old_profile.get("voice") or speaker_voices.get(speaker) or default_speaker_voice(position, fallback_voice)),
-                        }
-                    settings["speakerProfiles"] = profiles
-                    settings["speakerVoices"] = {key: str(value.get("voice") or "") for key, value in profiles.items()}
-                    for seg in segments:
-                        speaker = str(seg.get("speaker") or "")
-                        if speaker and profiles.get(speaker, {}).get("voice"):
-                            seg["voice"] = profiles[speaker]["voice"]
-                    meta["speakerTurns"] = turns
-                    meta["speakerDiarizationProvider"] = provider_info.get("provider", "cpu")
 
             if not segments:
                 raise RuntimeError("Không nhận được đoạn thoại nào từ video.")
@@ -472,6 +507,11 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
                 cache["transKey"] = t_key
             elif cache.get("transKey") != t_key:
                 cache.pop("transKey", None)
+
+        _attach_project_speakers(
+            project_id, video, segments, settings, meta, a_key,
+            audio_cache_tag(preview_sec, match_mode, speed=work_speed),
+        )
 
         # Preserve Whisper's sentence boundaries. The old CJK fragment merger
         # joined any short, adjacent segments, including complete sentences,

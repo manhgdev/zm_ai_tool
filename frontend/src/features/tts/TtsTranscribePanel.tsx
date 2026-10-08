@@ -1,6 +1,6 @@
 /** Chép lời — Whisper / CapCut / OCR / phụ đề → text cho TTS Studio. */
 import { useEffect, useMemo, useState, type DragEvent } from 'react'
-import { PROVIDER_PRESET_MODELS } from '@/features/configuration/configModal.helpers'
+import { useTranslationProviders } from '@/features/project/useTranslationProviders'
 import { localize, useLocale } from '@/app/i18n'
 import { IconUpload } from './TtsIcons'
 import { SRT_STYLE_OPTIONS, srtPreviewLines } from './lib/srt'
@@ -39,6 +39,10 @@ type Props = {
   onRewrite: (text: string) => void
 }
 
+type TranslationModel = { id: string; label: string; free: boolean }
+const NON_TRANSLATION_MODEL_MARKERS = ['prompt-guard', 'safeguard', 'content-safety', 'nemoguard', 'embedding', 'moderation', 'whisper', 'orpheus', 'audio', 'speech', 'tts']
+const CLOUD_TRANSLATORS = ['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral']
+
 export default function TtsTranscribePanel({
   file,
   lang,
@@ -60,7 +64,10 @@ export default function TtsTranscribePanel({
   onRewrite,
 }: Props) {
   const { locale } = useLocale()
+  const { isAvailable, providerLabel } = useTranslationProviders()
   const t = (vi: string, en: string) => localize(locale, vi, en)
+  const [translationModels, setTranslationModels] = useState<TranslationModel[]>([])
+  const [translationModelsLoading, setTranslationModelsLoading] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [resultTab, setResultTab] = useState<'txt' | 'srt'>(() => { try { return localStorage.getItem('tts-result-format') === 'srt' ? 'srt' : 'txt' } catch { return 'txt' } })
   const [variant, setVariant] = useState(() => { try { return localStorage.getItem('tts-result-variant') || 'source' } catch { return 'source' } })
@@ -87,6 +94,33 @@ export default function TtsTranscribePanel({
   const styleEnglish = { hard: 'Short cues', v916: 'Portrait 9:16', h169: 'Landscape 16:9', clause: 'Short clauses', sentence: 'Sentences' }
   const styleLabel = srtStyle === 'original' ? t('Giữ cue gốc', 'Original cues')
     : t(SRT_STYLE_OPTIONS.find(option => option.id === srtStyle)!.label, styleEnglish[srtStyle])
+
+  useEffect(() => {
+    const provider = translation.translator
+    if (!isAvailable(provider)) {
+      setTranslationModels([])
+      setTranslationModelsLoading(false)
+      return
+    }
+    let active = true
+    setTranslationModelsLoading(true)
+    fetch(`/api/chat/models?provider=${encodeURIComponent(provider)}&includePaid=true`)
+      .then((response) => response.ok
+        ? response.json() as Promise<{ models?: Array<{ id?: string; label?: string; free?: boolean; capabilities?: string[] }> }>
+        : Promise.reject(new Error('model discovery failed')))
+      .then((data) => {
+        const models = (data.models || []).filter((item) => {
+          const id = String(item.id || '').trim().toLowerCase()
+          const capabilities = Array.isArray(item.capabilities) ? item.capabilities.map(String) : []
+          return id && !NON_TRANSLATION_MODEL_MARKERS.some(marker => id.includes(marker))
+            && (!capabilities.length || capabilities.includes('text'))
+        }).map(item => ({ id: String(item.id), label: String(item.label || item.id), free: item.free === true }))
+        if (active) setTranslationModels(models)
+      })
+      .catch(() => { if (active) setTranslationModels([]) })
+      .finally(() => { if (active) setTranslationModelsLoading(false) })
+    return () => { active = false }
+  }, [translation.translator, isAvailable])
 
   const accept = useMemo(() => {
     if (engine === 'subtitle') return '.srt,.vtt,text/vtt,application/x-subrip'
@@ -229,14 +263,23 @@ export default function TtsTranscribePanel({
 
         {translation.enabled && <>
           <label className="tts-field"><span>{t('Ngôn ngữ đích', 'Target language')}</span><select disabled={busy} value={translation.targetLang} onChange={e => onTranslationChange({ ...translation, targetLang: e.target.value })}>{[['vi', t('Tiếng Việt', 'Vietnamese')], ['en', t('Tiếng Anh', 'English')], ['zh', t('Tiếng Trung', 'Chinese')], ['ja', t('Tiếng Nhật', 'Japanese')], ['ko', t('Tiếng Hàn', 'Korean')]].map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
-          <label className="tts-field"><span>{t('API dịch', 'Translation API')}</span><select disabled={busy} value={translation.translator} onChange={e => onTranslationChange({ ...translation, translator: e.target.value, model: '' })}>{Object.keys(PROVIDER_PRESET_MODELS).map(id => <option key={id} value={id}>{id}</option>)}</select></label>
-          <label className="tts-field"><span>{t('Model dịch', 'Translation model')}</span><select disabled={busy} required value={translation.model} onChange={e => onTranslationChange({ ...translation, model: e.target.value })}><option value="" disabled>{t('Chọn model dịch', 'Select translation model')}</option>{translation.model && !(PROVIDER_PRESET_MODELS[translation.translator as keyof typeof PROVIDER_PRESET_MODELS] || []).some(model => model.id === translation.model) && <option value={translation.model}>{translation.model}</option>}{(PROVIDER_PRESET_MODELS[translation.translator as keyof typeof PROVIDER_PRESET_MODELS] || []).map(model => <option key={model.id} value={model.id}>{t(model.labelVi, model.labelEn)}</option>)}</select></label>
+          <label className="tts-field"><span>{t('API dịch', 'Translation API')}</span><select disabled={busy} value={translation.translator} onChange={e => onTranslationChange({ ...translation, translator: e.target.value, model: '' })}>{CLOUD_TRANSLATORS.map(id => <option key={id} value={id} disabled={!isAvailable(id)}>{providerLabel(id, id)}</option>)}</select></label>
+          <label className="tts-field"><span>{t('Model dịch', 'Translation model')}</span><select disabled={busy || !isAvailable(translation.translator) || translationModelsLoading || !translationModels.length} required value={translation.model} onChange={e => onTranslationChange({ ...translation, model: e.target.value })}>
+            <option value="" disabled>{!isAvailable(translation.translator) ? t('Cần nhập API key trước', 'Enter an API key first') : translationModelsLoading ? t('Đang tải model…', 'Loading models…') : !translationModels.length ? t('Không tải được danh sách model', 'Could not load model list') : t('Chọn model dịch', 'Select translation model')}</option>
+            {translation.model && !translationModels.some(model => model.id === translation.model) && <option value={translation.model}>{translation.model}</option>}
+            {translationModels.some(model => model.free) && <optgroup label={t('Model miễn phí', 'Free models')}>
+              {translationModels.filter(model => model.free).map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
+            </optgroup>}
+            {translationModels.some(model => !model.free) && <optgroup label={t('Model cần credit', 'Models requiring credit')}>
+              {translationModels.filter(model => !model.free).map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
+            </optgroup>}
+          </select></label>
         </>}
         <div className="tts-transcribe-actions">
           <button
             type="button"
             className="tts-btn tts-btn-blue"
-            disabled={busy || !file || (translation.enabled && !translation.model)}
+            disabled={busy || !file || (translation.enabled && (!translation.model || !isAvailable(translation.translator)))}
             onClick={() => onSubmit()}
           >
             {busy ? t('Đang nhận dạng…', 'Transcribing…') : t('Nhận dạng', 'Transcribe')}

@@ -23,6 +23,7 @@ from api.deps import (
     PreviewTtsIn,
     RebakeSpeedIn,
     ReviewTranslationIn,
+    ReviewScriptIn,
     RetranslateIn,
     SEG_PRESERVE,
     SegmentIn,
@@ -217,6 +218,45 @@ def api_retranslate(project_id: str, seg_id: str, body: RetranslateIn):
     meta["segments"] = segs
     save_meta(project_id, meta)
     return {"translation": tr, "segment": seg}
+
+
+@router.post("/api/projects/{project_id}/review-script")
+async def api_review_script(project_id: str, body: ReviewScriptIn, request: Request):
+    """Proposal only: use the editor snapshot and never overwrite project state."""
+    import asyncio
+    from pipeline.mt.review import translate_script
+
+    meta = require_meta(project_id)
+    settings = meta.get("settings") or {}
+    if any(cue.end <= cue.start or not cue.source.strip() for cue in body.cues):
+        raise HTTPException(400, "Invalid script cue")
+    stopped = threading.Event()
+    task = asyncio.create_task(asyncio.to_thread(
+        translate_script, [cue.model_dump() for cue in body.cues],
+        body.targetLang or settings.get("targetLang") or "vi",
+        translator=body.translator or settings.get("translationReviewTranslator") or "ollama",
+        ollama_mode=body.ollamaMode or settings.get("ollamaMode") or "cloud",
+        ollama_model=body.ollamaModel or settings.get("ollamaModel") or "minimax-m3:cloud",
+        ollama_local_tier=body.ollamaLocalTier or settings.get("ollamaLocalTier") or "balanced",
+        cancelled=stopped.is_set,
+    ))
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=0.5)
+            if await request.is_disconnected():
+                stopped.set()
+                raise HTTPException(499, "Cancelled")
+        return {"translations": task.result()}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+    finally:
+        stopped.set()
+        if not task.done():
+            task.cancel()
 
 
 @router.post("/api/projects/{project_id}/segments/{seg_id}/review-translation")

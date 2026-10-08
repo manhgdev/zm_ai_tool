@@ -301,6 +301,9 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+    }).then(config => {
+      window.dispatchEvent(new Event('zm-cloud-config-changed'))
+      return config
     }),
 
   voices: (lang = 'vi') =>
@@ -871,6 +874,22 @@ export const api = {
       },
       60_000,
     ),
+
+  reviewScript: (
+    projectId: string,
+    cues: { id: string; source: string; draft: string; start: number; end: number; speaker?: string | null }[],
+    settings: ProjectSettings,
+    signal?: AbortSignal,
+  ) => fetchJson<{ translations: { id: string; translation: string }[] }>(
+    `${base}/projects/${projectId}/review-script`,
+    {
+      method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cues, targetLang: settings.targetLang,
+        translator: settings.translationReviewTranslator, ollamaMode: settings.ollamaMode,
+        ollamaModel: settings.ollamaModel, ollamaLocalTier: settings.ollamaLocalTier }),
+    },
+    1_800_000,
+  ),
 
   reviewTranslation: (
     projectId: string,

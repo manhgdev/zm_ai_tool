@@ -4,6 +4,7 @@ import { api } from '@/features/project/project.api'
 import { resolvedSpeakerProfiles, speakerRoleOptions } from '@/features/project/speakerProfiles'
 import { localize, useLocale } from '@/app/i18n'
 import { normalizeTranslatorForEngine, translatorOptions } from '@/app/appSettings'
+import { useTranslationProviders } from '@/features/project/useTranslationProviders'
 import { TranslationReviewSettings } from '@/features/project/TranslationReview'
 import { ScrollArea } from '@/shared/ui/scroll-area'
 import ProgressPopup from '@/shared/components/ProgressPopup'
@@ -29,6 +30,7 @@ type Props = {
 
 export function EditorProjectPanel({ projectId, tab, segments, settings, voices, busy, jobStep, jobProgress, onSettings, onRunPipeline, onCancel, onDub, onExport, applyCaptionModeAll, onUpdateSpeakerProfile }: Props) {
   const { locale } = useLocale()
+  const { isAvailable, providerLabel } = useTranslationProviders()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const [previewSec, setPreviewSec] = React.useState(() => Math.max(5, Number(settings.previewSec) || 30))
   React.useEffect(() => setPreviewSec(Math.max(5, Number(settings.previewSec) || 30)), [settings.previewSec])
@@ -69,7 +71,7 @@ export function EditorProjectPanel({ projectId, tab, segments, settings, voices,
       <p className="text-[11px] leading-snug text-muted-foreground">{t('Thiết lập và chạy toàn bộ pipeline cho dự án này.', 'Configure and run this project’s complete pipeline.')}</p>
       <div className="grid grid-cols-2 gap-2">
         <PropLabel label={t('Nhận dạng', 'Recognition')}><select className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs" value={settings.engine} disabled={busy} onChange={(e) => selectRecognitionEngine(e.target.value as ProjectSettings['engine'])}><option value="whisper">Whisper · {t('chất lượng', 'quality')}</option><option value="capcut">{t('CapCut cloud', 'CapCut cloud')}</option><option value="paddleocr">OCR</option><option value="subtitle">SRT</option></select></PropLabel>
-        <PropLabel label={t('Công cụ dịch', 'Translator')}><select className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs" value={settings.translator} disabled={busy} onChange={(e) => onSettings({ ...settings, translator: e.target.value as ProjectSettings['translator'] })}>{translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}</select></PropLabel>
+        <PropLabel label={t('Công cụ dịch', 'Translator')}><select className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs" value={settings.translator} disabled={busy} onChange={(e) => onSettings({ ...settings, translator: e.target.value as ProjectSettings['translator'] })}>{translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id} disabled={!isAvailable(id)}>{providerLabel(id, label)}</option>)}</select></PropLabel>
         <PropLabel label={t('Ngôn ngữ gốc', 'Source language')}><select className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs" value={settings.sourceLang} disabled={busy} onChange={(e) => onSettings({ ...settings, sourceLang: e.target.value })}><option value="auto">{t('Tự động', 'Auto')}</option><option value="zh">中文</option><option value="en">English</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="vi">Tiếng Việt</option></select></PropLabel>
         <PropLabel label={t('Dịch sang', 'Translate to')}><select className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs" value={settings.targetLang} disabled={busy} onChange={(e) => onSettings({ ...settings, targetLang: e.target.value })}><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="zh">中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="none">{t('Không dịch', 'No translation')}</option></select></PropLabel>
         <PropLabel label={t('Phụ đề', 'Subtitles')}>
@@ -123,8 +125,8 @@ export function EditorProjectPanel({ projectId, tab, segments, settings, voices,
         </PropLabel>
       </div>
       <TranslationReviewSettings settings={settings} onChange={onSettings} disabled={busy} />
-      <label className="flex cursor-pointer items-center justify-between gap-2 rounded-md border border-border px-2 py-2 text-xs"><span><b className="block text-foreground">{t('Tách người nói', 'Separate speakers')}</b><span className="text-[10px] text-muted-foreground">{t('Phân vai và dùng giọng riêng.', 'Assign roles and individual voices.')}</span></span><input type="checkbox" className="size-4 accent-primary" checked={Boolean(settings.speakerDiarization)} disabled={busy || settings.engine !== 'whisper'} onChange={(e) => onSettings({ ...settings, speakerDiarization: e.target.checked })} /></label>
-      {settings.speakerDiarization && settings.engine === 'whisper' && (
+      <label className="flex cursor-pointer items-center justify-between gap-2 rounded-md border border-border px-2 py-2 text-xs"><span><b className="block text-foreground">{t('Tách người nói', 'Separate speakers')}</b><span className="text-[10px] text-muted-foreground">{t('Phân vai từ audio gốc cho mọi nguồn nhận dạng.', 'Assign speakers from original audio for every recognition source.')}</span></span><input type="checkbox" className="size-4 accent-primary" checked={Boolean(settings.speakerDiarization)} disabled={busy} onChange={(e) => onSettings({ ...settings, speakerDiarization: e.target.checked })} /></label>
+      {settings.speakerDiarization && (
         <div className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1.5 text-xs">
           <span>{t('Số người nói', 'Speaker count')}</span>
           <select

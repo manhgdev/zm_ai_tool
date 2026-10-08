@@ -2,6 +2,7 @@ fastapi>=0.115.0
 packaging>=24.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.12
+psutil>=5.9.0
 # flow package inlined at backend/pipeline/flow/_flow/ — no external pip dep needed
 faster-whisper>=1.1.0
 av==16.0.1

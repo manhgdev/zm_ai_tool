@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import shutil
 import subprocess
@@ -71,6 +72,7 @@ from pipeline.tts import engines_status
 from pipeline.tts.text_split import normalize_tts_text
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _transcript_rows_to_srt(rows: list[dict]) -> str:
@@ -326,16 +328,19 @@ async def api_tts_studio_transcribe(
     def _run() -> None:
         from pipeline.tts.studio import _jobs_lock, _running
 
+        phase = "starting"
         with _jobs_lock:
             _running[job_id] = True
         try:
             rows: list = []
             if eng == "subtitle":
+                phase = "read_subtitle"
                 set_job_progress_pct(job_id, 20, "Đang đọc phụ đề…")
                 from pipeline.subtitles import subtitle_segments
 
                 rows = subtitle_segments(raw_path)
             elif eng == "capcut":
+                phase = "capcut_transcribe"
                 set_job_progress_pct(job_id, 5, "CapCut: đang chuẩn bị nhận dạng…")
                 from pipeline.capcut_stt import transcribe_and_translate
                 cap_progress = 5
@@ -357,6 +362,7 @@ async def api_tts_studio_transcribe(
                 # a sentence. Splitting inside one requires word timestamps.
                 rows = source_rows
             elif eng == "paddleocr":
+                phase = "paddleocr"
                 set_job_progress_pct(job_id, 15, "Đang OCR chữ trên màn…")
                 from pipeline.ocr.extract import asr_paddleocr
 
@@ -369,8 +375,10 @@ async def api_tts_studio_transcribe(
                     source_lang=source_lang,
                 )
             else:
+                phase = "whisper_extract_audio"
                 set_job_progress_pct(job_id, 8, "Đang chuẩn bị âm thanh…")
                 extract_audio(raw_path, wav_path)
+                phase = "whisper_transcribe"
                 set_job_progress_pct(job_id, 20, "Đang nhận dạng (Whisper)…")
                 from pipeline.asr import asr_whisper
 
@@ -379,6 +387,7 @@ async def api_tts_studio_transcribe(
             speaker_warning = None
             speakers = []
             if speaker_diarization and eng in {"whisper", "capcut"}:
+                phase = "speaker_diarization"
                 try:
                     from pipeline.asr.speaker import assign_speakers, default_speaker_role, diarize_audio
                     diarize_wav = wav_path
@@ -389,9 +398,15 @@ async def api_tts_studio_transcribe(
                     ids = sorted({str(row.get("speaker")) for row in rows if row.get("speaker")})
                     speakers = [{"id": value, "label": default_speaker_role(i), "voice": ""} for i, value in enumerate(ids)]
                 except Exception as exc:
+                    logger.exception(
+                        "tts_studio_transcribe speaker diarization fallback "
+                        "job_id=%s engine=%s phase=%s exception=%s: %s",
+                        job_id, eng, phase, type(exc).__name__, exc,
+                    )
                     speaker_warning = f"Không tách được người nói; đang dùng một giọng chung. / Speaker separation unavailable; using one voice. ({exc})"
             elif speaker_diarization:
                 speaker_warning = "Nguồn này không có audio để tách người nói. / This source has no audio for speaker separation."
+            phase = "serialize_transcript"
             text = _transcript_rows_to_text(rows, separator="\n")
             set_job_progress_pct(job_id, 85, "Đang chuẩn hóa các câu chép lời…")
             srt = _transcript_rows_to_srt(rows)
@@ -408,6 +423,7 @@ async def api_tts_studio_transcribe(
             if eng == "whisper":
                 payload["srt_styles"] = _transcript_word_styles(rows)
             if translate:
+                phase = "translate_transcript"
                 try:
                     from pipeline.mt.api import translate_segments
                     source_rows = [dict(row) for row in rows if normalize_tts_text(str(row.get("source") or row.get("text") or "")).strip()]
@@ -416,12 +432,23 @@ async def api_tts_studio_transcribe(
                     payload["translated_text"] = "\n".join(normalize_tts_text(str(value)).strip() for value in translated if str(value).strip()).strip()
                     payload["translated_srt"] = _transcript_rows_to_srt([dict(row, source=value) for row, value in zip(source_rows, translated)])
                 except Exception as translation_error:
+                    logger.exception(
+                        "tts_studio_transcribe translation fallback "
+                        "job_id=%s engine=%s source_lang=%s target_lang=%s "
+                        "translator=%s exception=%s: %s",
+                        job_id, eng, source_lang, target_lang, translator,
+                        type(translation_error).__name__, translation_error,
+                    )
                     payload["translation_error"] = str(translation_error)
             set_job_complete(job_id, "Đã chép lời xong.", **payload)
         except Exception as e:
             set_job_error(job_id, e, message="Chép lời thất bại.")
-            import logging
-            logging.getLogger(__name__).error("tts_studio_transcribe error: %s", e)
+            logger.exception(
+                "tts_studio_transcribe error job_id=%s engine=%s phase=%s "
+                "source_lang=%s target_lang=%s exception=%s: %s",
+                job_id, eng, phase, source_lang, target_lang,
+                type(e).__name__, e,
+            )
         finally:
             raw_path.unlink(missing_ok=True)
             wav_path.unlink(missing_ok=True)

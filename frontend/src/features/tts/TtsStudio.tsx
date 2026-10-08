@@ -272,45 +272,52 @@ export default function TtsStudio({
     if (progressId && (progress.done || progress.error)) ttsWaitersRef.current.get(progressId)?.(progress)
   }, [])
   const realtimeStatus = useRealtimeEvents('tts', onTtsRealtime)
+  const realtimeStatusRef = useRef(realtimeStatus)
+  realtimeStatusRef.current = realtimeStatus
   useEffect(() => {
     if (error) setTtsLogs((current) => [...current, `[${new Date().toLocaleTimeString()}] ${error}`].slice(-50))
   }, [error])
   const waitForTtsJob = useCallback((jobId: string, timeoutMs = 10 * 60 * 1000) => new Promise<TtsRealtimeProgress>((resolve, reject) => {
     const existing = ttsProgressRef.current.get(jobId)
     if (existing?.done || existing?.error) { resolve(existing); return }
+    let settled = false
+    let reading = false
     const timer = window.setTimeout(() => {
+      settled = true
       window.clearInterval(poll)
       ttsWaitersRef.current.delete(jobId)
       reject(new Error(t('TTS không gửi được sự kiện hoàn tất qua SSE trong thời gian cho phép.', 'TTS did not receive a completion event through SSE within the allowed time.')))
     }, timeoutMs)
     ttsWaitersRef.current.set(jobId, (progress) => {
+      settled = true
       window.clearTimeout(timer)
       window.clearInterval(poll)
       ttsWaitersRef.current.delete(jobId)
       resolve(progress)
     })
-    const poll = window.setInterval(() => {
-      if (cancelledJobIdsRef.current.has(jobId)) {
-        window.clearInterval(poll)
-        ttsWaitersRef.current.delete(jobId)
-        window.clearTimeout(timer)
-        resolve({ error: 'cancelled' })
-        return
-      }
+    const readProgress = () => {
+      if (settled || reading) return
+      reading = true
       void api.ttsStudioJobProgress(jobId).then((progress) => {
-        if (cancelledJobIdsRef.current.has(jobId)) return
+        if (settled || cancelledJobIdsRef.current.has(jobId)) return
         if (Number(progress.pct) > 0 && (!activeJobIdRef.current || activeJobIdRef.current === jobId)) {
           setBusyProgress(Math.max(1, Number(progress.pct)))
         }
         if (progress.message && (!activeJobIdRef.current || activeJobIdRef.current === jobId)) {
           setBusyCustomMessage(progress.message)
         }
-        if (progress.done || progress.error) {
-          window.clearInterval(poll)
-          ttsWaitersRef.current.get(jobId)?.(progress)
-        }
-      }).catch(() => undefined)
-    }, 2000)
+        if (progress.done || progress.error) ttsWaitersRef.current.get(jobId)?.(progress)
+      }).catch(() => undefined).finally(() => { reading = false })
+    }
+    const poll = window.setInterval(() => {
+      if (cancelledJobIdsRef.current.has(jobId)) {
+        ttsWaitersRef.current.get(jobId)?.({ error: 'cancelled' })
+        return
+      }
+      if (realtimeStatusRef.current !== 'connected') readProgress()
+    }, 5000)
+    // One snapshot covers a fast completion before the SSE waiter registered.
+    readProgress()
   }), [locale])
   const [duration, setDuration] = useState<number>(() => initialActiveJob?.duration || 0)
   const [playbackTime, setPlaybackTime] = useState(0)

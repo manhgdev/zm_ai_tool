@@ -4,6 +4,7 @@ import { fetchJson } from '@/shared/api/fetchJson'
 import { SRT_STYLE_OPTIONS } from '@/features/tts/lib/srt'
 import { IconDownload } from '@/shared/components/Icons'
 import { translatorOptions, normalizeTranslatorForEngine, loadSettings } from '@/app/appSettings'
+import { useTranslationProviders } from '@/features/project/useTranslationProviders'
 import { localize, useLocale } from '@/app/i18n'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
@@ -26,6 +27,7 @@ function loadKind(): SourceKind {
 
 export default function SrtExportPage({ onBack }: { onBack: () => void }) {
   const { locale } = useLocale()
+  const { isAvailable, providerLabel } = useTranslationProviders()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const inputRef = useRef<HTMLInputElement>(null)
   const [kind, setKind] = useState<SourceKind>(loadKind)
@@ -160,7 +162,7 @@ export default function SrtExportPage({ onBack }: { onBack: () => void }) {
         {kind === 'media' && <label><span>{t('Nhận dạng & dịch', 'Recognition & translation')}</span><select value={recognitionEngine} onChange={(event) => selectRecognitionEngine(event.target.value as RecognitionEngine)}><option value="whisper">{t('Whisper + công cụ dịch', 'Whisper + translation provider')}</option><option value="capcut">{t('CapCut dịch (không dùng Whisper)', 'CapCut Translate (no Whisper)')}</option></select></label>}
         <label><span>{t('Kiểu phụ đề', 'Subtitle output')}</span><select value={outputMode} onChange={(event) => setOutputMode(event.target.value as OutputMode)}>{!capcutTranslate && <option value="original">{t('Bản gốc', 'Original')}</option>}<option value="translated">{t('Bản dịch', 'Translation')}</option><option value="bilingual">{t('Song ngữ (2 bộ file: gốc và dịch)', 'Bilingual (two sets: source and translation)')}</option></select></label>
         <label><span>{t('Ngôn ngữ gốc', 'Source language')}</span><select value={sourceLang} onChange={(event) => setSourceLang(event.target.value)}><option value="auto">{t('Tự động nhận diện', 'Auto detect')}</option><option value="vi">{t('Tiếng Việt', 'Vietnamese')}</option><option value="en">{t('Tiếng Anh', 'English')}</option><option value="zh">{t('Tiếng Trung', 'Chinese')}</option><option value="ja">{t('Tiếng Nhật', 'Japanese')}</option><option value="ko">{t('Tiếng Hàn', 'Korean')}</option></select></label>
-        {outputMode !== 'original' && <><label><span>{t('Ngôn ngữ dịch', 'Translate to')}</span><select value={targetLang} onChange={(event) => setTargetLang(event.target.value)}><option value="vi">{t('Tiếng Việt', 'Vietnamese')}</option><option value="en">{t('Tiếng Anh', 'English')}</option><option value="zh">{t('Tiếng Trung', 'Chinese')}</option><option value="ja">{t('Tiếng Nhật', 'Japanese')}</option><option value="ko">{t('Tiếng Hàn', 'Korean')}</option></select></label>{!capcutTranslate && <label><span>{t('Công cụ dịch', 'Translation provider')}</span><select value={translator} onChange={(event) => setTranslator(event.target.value as typeof translator)}>{translatorOptions('whisper').map(({ id, label }) => <option key={id} value={id}>{label}</option>)}</select></label>}</>}
+        {outputMode !== 'original' && <><label><span>{t('Ngôn ngữ dịch', 'Translate to')}</span><select value={targetLang} onChange={(event) => setTargetLang(event.target.value)}><option value="vi">{t('Tiếng Việt', 'Vietnamese')}</option><option value="en">{t('Tiếng Anh', 'English')}</option><option value="zh">{t('Tiếng Trung', 'Chinese')}</option><option value="ja">{t('Tiếng Nhật', 'Japanese')}</option><option value="ko">{t('Tiếng Hàn', 'Korean')}</option></select></label>{!capcutTranslate && <label><span>{t('Công cụ dịch', 'Translation provider')}</span><select value={translator} onChange={(event) => setTranslator(event.target.value as typeof translator)}>{translatorOptions('whisper').map(({ id, label }) => <option key={id} value={id} disabled={!isAvailable(id)}>{providerLabel(id, label)}</option>)}</select></label>}</>}
       </div>
       <div className="srt-export-outputs">
         <strong>{t('File xuất tự động', 'Automatic output files')}</strong>

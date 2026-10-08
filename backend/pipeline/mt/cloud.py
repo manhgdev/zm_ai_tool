@@ -52,6 +52,7 @@ def _http_error(provider: str, status: int) -> RuntimeError:
         403: "ACCESS_DENIED",
         404: "MODEL_OR_REQUEST_INVALID",
         422: "MODEL_OR_REQUEST_INVALID",
+        402: "RATE_LIMITED_OR_QUOTA",
         429: "RATE_LIMITED_OR_QUOTA",
         500: "SERVICE_UNAVAILABLE",
         502: "SERVICE_UNAVAILABLE",
@@ -219,6 +220,7 @@ def _openai_compatible_chat(
         transient_attempt = 0
         transport_attempt = 0
         first_429: int | None = None
+        free_router_fallback = False
         while True:
             if is_remote_url(url):
                 wait_for_network()
@@ -300,6 +302,23 @@ def _openai_compatible_chat(
                 time.sleep(2 ** (transient_attempt + 1))
                 transient_attempt += 1
                 continue
+            if r.status_code == 404 and provider == "openrouter" and not free_router_fallback:
+                # OpenRouter retires individual `:free` slugs when their free
+                # entitlement changes. Retry once through its current free
+                # router instead of failing a translation with a stale model.
+                try:
+                    detail = r.json().get("error", {}).get("message", "")
+                except (TypeError, ValueError):
+                    detail = ""
+                if "unavailable for free" in str(detail).lower() or str(model).endswith(":free"):
+                    model = "openrouter/free"
+                    free_router_fallback = True
+                    key_index = 0
+                    failed_keys = 0
+                    rate_attempt = 0
+                    transient_attempt = 0
+                    first_429 = None
+                    continue
             break
         if r.status_code >= 400:
             # Never propagate httpx's URL here: Gemini auth is carried in the

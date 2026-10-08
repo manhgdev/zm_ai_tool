@@ -49,6 +49,72 @@ test('TTS restores the saved voice only after the full catalog loads', () => {
 
 const read = path => readFileSync(new URL(`../frontend/src/${path}`, import.meta.url), 'utf8')
 
+function ttsWaitHarness(getProgress, status = 'connected') {
+  const source = read('features/tts/TtsStudio.tsx')
+  const snippet = source.slice(source.indexOf('  const waitForTtsJob = useCallback('),
+                              source.indexOf('  const [duration, setDuration]'))
+  const compiled = ts.transpileModule(snippet, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const intervals = new Map(), timers = new Map(), waiters = new Map()
+  const connection = { current: status }
+  const updates = []
+  let id = 0
+  const window = {
+    setInterval: fn => { intervals.set(++id, fn); return id },
+    clearInterval: id => intervals.delete(id),
+    setTimeout: fn => { timers.set(++id, fn); return id },
+    clearTimeout: id => timers.delete(id),
+  }
+  const wait = new Function('useCallback', 'locale', 'window', 'ttsProgressRef', 'ttsWaitersRef',
+    'cancelledJobIdsRef', 'realtimeStatusRef', 'activeJobIdRef', 'api', 'setBusyProgress',
+    'setBusyCustomMessage', 't', `${compiled}\nreturn waitForTtsJob`)(
+      fn => fn, 'en', window, { current: new Map() }, { current: waiters },
+      { current: new Set() }, connection, { current: 'job' }, { ttsStudioJobProgress: getProgress },
+      value => updates.push(value), value => updates.push(value), (_vi, en) => en)
+  return { wait, waiters, connection, intervals, timers, updates,
+           tick: () => [...intervals.values()].forEach(fn => fn()) }
+}
+
+test('TTS uses SSE while connected and polls only during disconnection', async () => {
+  let calls = 0, finishRead
+  const h = ttsWaitHarness(() => {
+    calls++
+    return calls === 1 ? Promise.resolve({ pct: 10 }) : new Promise(resolve => { finishRead = resolve })
+  })
+  const result = h.wait('job')
+  await new Promise(setImmediate)
+  h.tick(); h.tick(); h.tick()
+  assert.equal(calls, 1, 'only the initial snapshot is fetched while SSE is connected')
+  h.connection.current = 'reconnecting'
+  h.tick(); h.tick()
+  assert.equal(calls, 2, 'a slow fallback request must not overlap with another request')
+  h.connection.current = 'connected'
+  h.tick()
+  assert.equal(calls, 2, 'fallback stops as soon as SSE reconnects')
+  h.waiters.get('job')({ done: true })
+  assert.deepEqual(await result, { done: true })
+  finishRead({ pct: 20, message: 'late update' })
+  await new Promise(setImmediate)
+  assert.deepEqual(h.updates, [10], 'late HTTP responses must not update a completed job')
+  assert.equal(h.intervals.size, 0)
+  assert.equal(h.timers.size, 0)
+})
+
+test('TTS snapshot recovers fast completion and fallback can finish without SSE', async () => {
+  const fast = ttsWaitHarness(() => Promise.resolve({ done: true, resultJobId: 'cached' }))
+  assert.equal((await fast.wait('job')).resultJobId, 'cached')
+  assert.equal(fast.intervals.size, 0)
+  assert.equal(fast.timers.size, 0)
+  let calls = 0
+  const h = ttsWaitHarness(() => Promise.resolve(++calls === 1 ? { pct: 1 } : { done: true }), 'fallback')
+  const result = h.wait('job')
+  await new Promise(setImmediate)
+  h.tick()
+  assert.deepEqual(await result, { done: true })
+  assert.equal(calls, 2)
+  assert.equal(h.intervals.size, 0)
+  assert.equal(h.timers.size, 0)
+})
+
 
 test('transcription rewrite uses app navigation and retains the prefill', () => {
   const studio = read('features/tts/TtsStudio.tsx')

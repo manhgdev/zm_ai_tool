@@ -3,6 +3,7 @@ import type { JobStatus, ProjectSettings } from '@/features/project/project.type
 import { api } from '@/features/project/project.api'
 import { localize, useLocale } from '@/app/i18n'
 import { canReviewTranslatedDraft, normalizeTranslatorForEngine, translationReviewOptions, translatorOptions } from '@/app/appSettings'
+import { useTranslationProviders } from '@/features/project/useTranslationProviders'
 
 type AnalysisRegion = { x: number; y: number; w: number; h: number }
 type LiveTranslationModel = { id: string; label: string; free: boolean }
@@ -132,6 +133,7 @@ export default function Sidebar({
   clearingCache = false,
 }: Props) {
   const { locale } = useLocale()
+  const { isAvailable, providerLabel, configuredProviders: configuredReviewProviders } = useTranslationProviders()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const inputRef = useRef<HTMLInputElement>(null)
   const subtitleInputRef = useRef<HTMLInputElement>(null)
@@ -147,22 +149,11 @@ export default function Sidebar({
   const [translationModelsLoading, setTranslationModelsLoading] = useState(false)
   const [translationModel, setTranslationModel] = useState('')
   const [ollamaLocalModels, setOllamaLocalModels] = useState<string[]>([])
-  const [configuredReviewProviders, setConfiguredReviewProviders] = useState<string[]>([])
   const reviewAvailable = canReviewTranslatedDraft(settings.translator)
     && configuredReviewProviders.includes(settings.translationReviewTranslator)
   const reviewActive = reviewAvailable && settings.translationReviewMode !== 'off'
   const modelProvider = reviewActive ? settings.translationReviewTranslator : settings.translator
-
-  useEffect(() => {
-    let cancelled = false
-    void api.getConfig().then((cfg) => {
-      const providers = Object.entries(cfg.cloud || {})
-        .filter(([, value]) => Boolean((value as { apiKeySet?: boolean }).apiKeySet))
-        .map(([id]) => id)
-      if (!cancelled) setConfiguredReviewProviders(providers)
-    }).catch(() => { if (!cancelled) setConfiguredReviewProviders([]) })
-    return () => { cancelled = true }
-  }, [])
+  const modelProviderAvailable = isAvailable(modelProvider)
   const [previewDraft, setPreviewDraft] = useState(
     String(settings.previewSec > 0 ? settings.previewSec : 20),
   )
@@ -176,8 +167,9 @@ export default function Sidebar({
   }, [projectId])
 
   useEffect(() => {
-    if (!CLOUD_TRANSLATORS.has(modelProvider)) {
+    if (!CLOUD_TRANSLATORS.has(modelProvider) || !modelProviderAvailable) {
       setTranslationModels([])
+      setTranslationModelsLoading(false)
       return
     }
     let cancelled = false
@@ -202,7 +194,7 @@ export default function Sidebar({
       .catch(() => { if (!cancelled) setTranslationModels([]) })
       .finally(() => { if (!cancelled) setTranslationModelsLoading(false) })
     return () => { cancelled = true }
-  }, [modelProvider])
+  }, [modelProvider, modelProviderAvailable])
 
   useEffect(() => {
     if ((settings.translator !== 'ollama' && !(reviewActive && settings.translationReviewTranslator === 'ollama')) || settings.ollamaMode !== 'local') {
@@ -620,7 +612,7 @@ export default function Sidebar({
               set('translator', e.target.value as ProjectSettings['translator'])
             }
           >
-            {translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+            {translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id} disabled={!isAvailable(id)}>{providerLabel(id, label)}</option>)}
           </select>
         </Field>
         {!reviewActive && CLOUD_TRANSLATORS.has(modelProvider) && (
@@ -633,7 +625,7 @@ export default function Sidebar({
           >
             <select
               value={translationModel}
-              disabled={busy || translationModelsLoading || !translationModels.length}
+              disabled={busy || translationModelsLoading || !translationModels.length || !isAvailable(modelProvider)}
               onChange={(e) => selectTranslationModel(e.target.value)}
             >
               {!translationModels.length && <option value="">{t('Chưa tải được model', 'No model list loaded')}</option>}
@@ -678,7 +670,7 @@ export default function Sidebar({
       )}
       {reviewActive && CLOUD_TRANSLATORS.has(modelProvider) && (
         <Field label={t('Model AI', 'AI model')}>
-          <select value={translationModel} disabled={busy || translationModelsLoading || !translationModels.length}
+          <select value={translationModel} disabled={busy || translationModelsLoading || !translationModels.length || !modelProviderAvailable}
             onChange={(e) => selectTranslationModel(e.target.value)}>
             {!translationModels.length && <option value="">{t('Chưa tải được model', 'No model list loaded')}</option>}
             {translationModel && !translationModels.some((model) => model.id === translationModel) && <option value={translationModel}>{translationModel}</option>}
@@ -1001,9 +993,7 @@ export default function Sidebar({
           </label>
           <label
             className="audio-filter-toggle"
-            title={settings.engine === 'whisper'
-              ? t('Tự phát hiện người nói và gán speaker cho từng câu khi chạy nhận dạng.', 'Automatically detect speakers and assign one to each transcript segment.')
-              : t('Tách người nói chỉ dùng với nhận dạng Whisper.', 'Speaker separation is available only with Whisper recognition.')}
+            title={t('Tách người nói từ audio gốc, áp dụng cả CapCut, OCR và SRT. Video cần có lời thoại.', 'Separate speakers from original audio for CapCut, OCR and SRT too. The video must contain speech.')}
           >
             <span className="field-label">
               <IconMic size={14} />
@@ -1012,12 +1002,12 @@ export default function Sidebar({
             <input
               type="checkbox"
               checked={Boolean(settings.speakerDiarization)}
-              disabled={busy || settings.engine !== 'whisper'}
+              disabled={busy}
               onChange={(e) => onSettings({ ...settings, speakerDiarization: e.target.checked })}
             />
           </label>
         </div>
-        {settings.speakerDiarization && settings.engine === 'whisper' && (
+        {settings.speakerDiarization && (
           <label className="speaker-count-row">
             <span>{t('Số người nói', 'Speaker count')}</span>
             <select

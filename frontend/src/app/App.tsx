@@ -16,6 +16,7 @@ import BackgroundTasks from '@/shared/components/BackgroundTasks'
 import ProjectSidebar from '@/features/project/ProjectSidebar'
 import PipelineStepper from '@/features/project/PipelineStepper'
 import SegmentList from '@/features/project/SegmentList'
+import { ScriptTranslationReview } from '@/features/project/ScriptTranslationReview'
 import ConfigModal from '@/features/configuration/ConfigModal'
 import { DEFAULT_CAPCUT_VOICE } from '@/features/tts/ttsSettings'
 
@@ -128,6 +129,7 @@ export default function App() {
   const [progressMinimized, setProgressMinimized] = useState(false)
   const [ttsSideOpen, setTtsSideOpen] = useState(false)
   const [clearingCache, setClearingCache] = useState(false)
+  const [scriptSaving, setScriptSaving] = useState(false)
   /** Guards project/video switches from late restore, upload, and poll responses. */
   const projectSwitchRef = useRef(0)
   const activeProjectRef = useRef<string | null>(null)
@@ -1095,7 +1097,7 @@ export default function App() {
           settings={settings}
           logoDetection={status.logoDetection}
           voices={voices}
-          busy={status.running}
+          busy={status.running || scriptSaving}
           onSettings={onSettings}
           onSubtitleApplied={(nextSegments, nextSettings) => {
             setSegments(nextSegments)
@@ -1141,11 +1143,11 @@ export default function App() {
             onExport={onExport}
             canDub={
               (segments.length > 0 || expandSegmentsForList(segments).length > 0)
-              && !status.running
+              && !status.running && !scriptSaving
             }
             canPreviewEditor={Boolean(projectId && videoUrl)}
             canExport={(() => {
-              if (status.running) return false
+              if (status.running || scriptSaving) return false
               // Alt+G: shell rỗng chữ — check children đã bung
               const flat = expandSegmentsForList(segments)
               if (!flat.length && !segments.length) return false
@@ -1170,6 +1172,15 @@ export default function App() {
               {duration > 0 && <span>{fmtDuration(duration)}</span>}
             </div>
           </div>
+          <ScriptTranslationReview projectId={projectId} segments={segments} settings={settings}
+            disabled={status.running} onSettings={onSettings} onSavingChange={setScriptSaving}
+            onApply={async (next) => {
+              if (!projectId) return
+              const pid = projectId
+              await flushSegmentSave()
+              const saved = await api.replaceSegments(pid, next)
+              if (activeProjectRef.current === pid) await onSegmentsReplace(asSegmentList(saved), { persist: false })
+            }} />
           {exportUrl && (
             <div className="export-banner">
               <div className="export-banner-text">
@@ -1206,7 +1217,7 @@ export default function App() {
             targetLang={settings.targetLang}
             sourceLang={settings.sourceLang}
             translator={settings.translator}
-            projectBusy={status.running}
+            projectBusy={status.running || scriptSaving}
             videoUrl={videoUrl}
             projectId={projectId}
             logoDetection={status.logoDetection}

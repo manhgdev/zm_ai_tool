@@ -1,15 +1,20 @@
-"""Process memory budget and idle release for heavyweight local models."""
+"""System RAM headroom and idle release for heavyweight local models."""
 from __future__ import annotations
 
 import contextlib
 import functools
 import gc
+import math
 import os
 import sys
 import threading
 import time
+import logging
 from dataclasses import dataclass
 from typing import Callable, Iterator
+
+
+logger = logging.getLogger(__name__)
 
 try:
     import resource
@@ -22,12 +27,12 @@ def _float_env(name: str, default: float) -> float:
         value = float(os.environ.get(name, ""))
     except (TypeError, ValueError):
         return default
-    return value if value >= 0 else default
+    return value if math.isfinite(value) and value >= 0 else default
 
 
 def max_rss_mb() -> float:
-    """Maximum RSS for this backend; 0 disables the budget."""
-    return _float_env("ZM_AI_TOOL_MAX_RSS_MB", 3072.0)
+    """Legacy status field; RSS is not used as an admission limit anymore."""
+    return 0.0
 
 
 def idle_seconds() -> float:
@@ -55,6 +60,30 @@ def _rss_mb() -> float:
         return value / (1024.0 * 1024.0) if sys.platform == "darwin" else value / 1024.0
 
 
+def _system_memory_mb() -> tuple[float, float]:
+    """Return (total, available) RAM; keep Linux usable before psutil install."""
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+        return memory.total / (1024.0 * 1024.0), memory.available / (1024.0 * 1024.0)
+    except ImportError:
+        if sys.platform.startswith("linux"):
+            values: dict[str, float] = {}
+            with open("/proc/meminfo", encoding="ascii") as stream:
+                for line in stream:
+                    key, separator, raw = line.partition(":")
+                    if separator and raw.strip().endswith(" kB"):
+                        values[key] = float(raw.strip()[:-3]) / 1024.0
+            total = values.get("MemTotal", 0.0)
+            available = values.get("MemAvailable", values.get("MemFree", 0.0))
+            if total > 0 and available >= 0:
+                return total, available
+        raise RuntimeError(
+            "Không đo được RAM hệ thống; cài psutil / Unable to measure system RAM; install psutil"
+        )
+
+
 @dataclass
 class _Entry:
     release: Callable[[], None]
@@ -66,6 +95,37 @@ _lock = threading.RLock()
 _entries: dict[str, _Entry] = {}
 _active_names: dict[str, int] = {}
 _monitor_started = False
+_last_memory_state: dict[str, float | str] = {}
+
+
+def _pressure_level(available_ratio: float) -> str:
+    if available_ratio < 0.05:
+        return "critical"
+    if available_ratio < 0.10:
+        return "high"
+    if available_ratio < 0.15:
+        return "elevated"
+    return "normal"
+
+
+def memory_pressure() -> dict[str, float | str]:
+    """Return current host RAM pressure without blocking a job admission."""
+    global _last_memory_state
+    try:
+        total_mb, available_mb = _system_memory_mb()
+    except Exception as exc:
+        logger.debug("Unable to sample system RAM: %s", exc, exc_info=True)
+        return {"totalMb": 0.0, "availableMb": 0.0, "availableRatio": 1.0, "level": "unknown"}
+    ratio = max(0.0, min(1.0, available_mb / max(1.0, total_mb)))
+    state: dict[str, float | str] = {
+        "totalMb": round(total_mb, 1),
+        "availableMb": round(available_mb, 1),
+        "availableRatio": ratio,
+        "level": _pressure_level(ratio),
+    }
+    with _lock:
+        _last_memory_state = state
+    return state
 
 
 def register(name: str, release: Callable[[], None]) -> None:
@@ -146,17 +206,30 @@ def _release_idle(force: bool = False) -> int:
 
 
 def ensure_budget(reserve_mb: float = 768.0) -> None:
-    """Release idle models before loading another model, or fail clearly."""
-    limit = max_rss_mb()
-    if not limit:
+    """Apply soft RAM pressure controls before loading another model.
+
+    This intentionally never rejects a job for low available RAM.  It releases
+    idle models and records a warning so callers can continue while adaptive
+    worker pools reduce concurrency. Reclaimable filesystem cache counts as
+    available RAM; peak process RSS is not a pressure signal.
+    """
+    reserve = max(0.0, reserve_mb)
+    state = memory_pressure()
+    if state["level"] == "unknown":
         return
-    if _rss_mb() + max(0.0, reserve_mb) <= limit:
-        return
-    _release_idle(force=True)
-    if _rss_mb() + max(0.0, reserve_mb) > limit:
-        raise MemoryError(
-            f"Backend RSS vượt ngân sách {limit:.0f} MB; "
-            "hãy tăng ZM_AI_TOOL_MAX_RSS_MB hoặc đóng bớt tác vụ."
+    total_mb = float(state["totalMb"])
+    available_mb = float(state["availableMb"])
+    ratio = float(state["availableRatio"])
+    # Start reclaiming before the critical 5% boundary. Force release is only
+    # used under high pressure; activity() keeps in-flight models pinned.
+    if ratio < 0.15 or available_mb < total_mb * 0.05 + reserve:
+        released = _release_idle(force=ratio < 0.10 or available_mb < total_mb * 0.05 + reserve)
+        refreshed = memory_pressure()
+        logger.warning(
+            "System RAM pressure=%s; available=%s/%s MB (%.1f%%), released_idle_models=%s, "
+            "requested_reserve=%s MB; continuing with adaptive throttling",
+            refreshed["level"], refreshed["availableMb"], refreshed["totalMb"],
+            float(refreshed["availableRatio"]) * 100.0, released, reserve,
         )
 
 
@@ -179,7 +252,15 @@ def start_monitor() -> None:
     threading.Thread(target=_run, name="model-memory-guard", daemon=True).start()
 
 
-def status() -> dict[str, float | int]:
+def status() -> dict[str, float | int | str]:
     with _lock:
         loaded = len(_entries)
-    return {"rssMb": round(_rss_mb(), 1), "maxRssMb": max_rss_mb(), "loadedModels": loaded}
+    state = memory_pressure()
+    return {
+        "rssMb": round(_rss_mb(), 1),
+        "maxRssMb": max_rss_mb(),
+        "loadedModels": loaded,
+        "availableMemoryMb": float(state["availableMb"]),
+        "availableMemoryRatio": float(state["availableRatio"]),
+        "memoryPressure": str(state["level"]),
+    }

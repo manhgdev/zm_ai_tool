@@ -247,6 +247,25 @@ class CapCutTimelineTest(unittest.TestCase):
                 else:
                     mt.assert_not_called()
 
+    def test_transcribe_error_logs_phase_and_traceback(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("pipeline.tts.voice_store.TTS_TEMP", Path(directory)), \
+                patch("api.routes.tts_studio.ensure_vieneu_dirs"), \
+                patch("threading.Thread") as thread, \
+                patch("pipeline.capcut_stt.transcribe_and_translate", side_effect=TimeoutError("provider timed out")), \
+                self.assertLogs("api.routes.tts_studio", level="ERROR") as logs:
+            thread.return_value.start.side_effect = lambda: thread.call_args.kwargs["target"]()
+            with io.BytesIO(b"mock video") as content:
+                asyncio.run(api_tts_studio_transcribe(
+                    engine="capcut", lang="vi", file=UploadFile(filename="sample.mp4", file=content),
+                ))
+        output = "\n".join(logs.output)
+        self.assertIn("tts_studio_transcribe error", output)
+        self.assertIn("phase=capcut_transcribe", output)
+        self.assertIn("exception=TimeoutError", output)
+        self.assertIn("provider timed out", output)
+        self.assertIn("Traceback", output)
+
 
 if __name__ == "__main__":
     unittest.main()

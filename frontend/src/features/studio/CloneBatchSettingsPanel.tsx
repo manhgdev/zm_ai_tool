@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { localize, useLocale } from '@/app/i18n'
 import { applyEngineProfile, normalizeTranslatorForEngine, snapshotEngineProfile, translatorOptions } from '@/app/appSettings'
+import { useTranslationProviders } from '@/features/project/useTranslationProviders'
 import { TranslationReviewSettings } from '@/features/project/TranslationReview'
 import type { ProjectSettings } from '@/features/project/project.types'
 
@@ -21,6 +22,7 @@ const LANGUAGES = [
 
 export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
   const { locale } = useLocale()
+  const { isAvailable, providerLabel } = useTranslationProviders()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const [ollamaLocalModels, setOllamaLocalModels] = useState<string[]>([])
   const set = <K extends keyof ProjectSettings>(key: K, value: ProjectSettings[K]) =>
@@ -100,7 +102,7 @@ export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
             value={settings.translator}
             onChange={(e) => set('translator', e.target.value as ProjectSettings['translator'])}
           >
-            {translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+            {translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id} disabled={!isAvailable(id)}>{providerLabel(id, label)}</option>)}
           </select>
         </label>
 
@@ -241,7 +243,7 @@ export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
           <input
             type="checkbox"
             checked={Boolean(settings.speakerDiarization)}
-            disabled={settings.engine !== 'whisper'}
+            title={t('Dùng audio gốc để tách người nói cho mọi nguồn nhận dạng.', 'Use original audio to separate speakers for every recognition source.')}
             onChange={(e) => set('speakerDiarization', e.target.checked)}
           />
           {t('Tách người nói', 'Separate speakers')}
@@ -262,7 +264,7 @@ export function CloneBatchSettingsPanel({ settings, voices, onChange }: Props) {
         </label>
       </div>
 
-      {settings.speakerDiarization && settings.engine === 'whisper' ? (
+      {settings.speakerDiarization ? (
         <div className="clone-settings-inline">
           <label>
             <span>{t('Số người nói', 'Speaker count')}</span>

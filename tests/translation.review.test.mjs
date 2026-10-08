@@ -35,6 +35,7 @@ function mount() {
     if (id === 'react/jsx-runtime') return { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) }
     if (id.endsWith('/i18n')) return { useLocale: () => ({ locale: 'en' }), localize: (_locale, _vi, en) => en, localizePipelineMessage: (_locale, message) => message }
     if (id.endsWith('/appSettings')) return { translationReviewOptions: () => [{ id: 'ollama', label: 'Ollama' }], canReviewTranslatedDraft: (provider) => ['google', 'mymemory', 'tiktok', 'capcut'].includes(provider) }
+    if (id === './useTranslationProviders') return { useTranslationProviders: () => ({ configuredProviders: ['ollama'], isAvailable: () => true, providerLabel: (_id, label) => label }) }
     if (id.endsWith('/Icons')) return { IconWand: () => null }
     if (id === './project.api') return { api }
     throw new Error(`Unexpected import: ${id}`)

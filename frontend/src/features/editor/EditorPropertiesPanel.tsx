@@ -7,6 +7,7 @@ import type { ProjectSettings, Segment, TextOverlay } from '@/features/project/p
 import { resolvedSpeakerProfiles, speakerRoleOptions } from '@/features/project/speakerProfiles'
 import { localize, useLocale } from '@/app/i18n'
 import { normalizeTranslatorForEngine, translatorOptions } from '@/app/appSettings'
+import { useTranslationProviders } from '@/features/project/useTranslationProviders'
 import { TranslationReviewField, TranslationReviewSettings } from '@/features/project/TranslationReview'
 import { cn } from '@/shared/lib/cn'
 import { randomId } from '@/shared/lib/randomId'
@@ -249,6 +250,7 @@ export function EditorPropertiesPanel({
   editLogo,
 }: Props) {
   const { locale } = useLocale()
+  const { isAvailable, providerLabel } = useTranslationProviders()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const captionScope = applyCaptionToAll ? 'all' : 'one'
   const [coverMaskOpacityDraft, setCoverMaskOpacityDraft] = React.useState(settings.coverMaskOpacity ?? 0)
@@ -390,7 +392,7 @@ export function EditorPropertiesPanel({
                               </PropLabel>
                               <PropLabel label={t('Công cụ dịch', 'Translator')}>
                                 <select className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs" value={settings.translator} disabled={busy} onChange={(event) => onSettings({ ...settings, translator: event.target.value as ProjectSettings['translator'] })}>
-                                  {translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+                                  {translatorOptions(settings.engine).map(({ id, label }) => <option key={id} value={id} disabled={!isAvailable(id)}>{providerLabel(id, label)}</option>)}
                                 </select>
                               </PropLabel>
                               <PropLabel label={t('Ngôn ngữ gốc', 'Source language')}>
@@ -1079,10 +1081,10 @@ export function EditorPropertiesPanel({
                             <section className="space-y-2 border-b border-border pb-2" aria-label={t('Thiết lập tách người nói', 'Speaker separation settings')}>
                               <label className="flex cursor-pointer items-center justify-between gap-3 text-xs">
                                 <span className="min-w-0"><b className="block text-foreground">{t('Tách người nói', 'Separate speakers')}</b><span className="block pt-0.5 text-[10px] leading-snug text-muted-foreground">{t('Phân vai và dùng giọng riêng cho từng người.', 'Assign roles and an individual voice to each speaker.')}</span></span>
-                                <input type="checkbox" className="size-4 shrink-0 accent-primary" checked={Boolean(settings.speakerDiarization)} disabled={busy || settings.engine !== 'whisper'} aria-label={t('Bật tách người nói', 'Enable speaker separation')} onChange={(event) => onSettings({ ...settings, speakerDiarization: event.target.checked })} />
+                                <input type="checkbox" className="size-4 shrink-0 accent-primary" checked={Boolean(settings.speakerDiarization)} disabled={busy} aria-label={t('Bật tách người nói', 'Enable speaker separation')} onChange={(event) => onSettings({ ...settings, speakerDiarization: event.target.checked })} />
                               </label>
-                              {settings.engine !== 'whisper' && <p className="text-[10px] text-amber-700 dark:text-amber-300">{t('Chỉ khả dụng khi nhận dạng bằng Whisper.', 'Available only with Whisper recognition.')}</p>}
-                              {settings.speakerDiarization && settings.engine === 'whisper' && (
+                              <p className="text-[10px] text-muted-foreground">{t('Dùng audio gốc cho cả CapCut, OCR và SRT. Video cần có lời thoại.', 'Uses original audio for CapCut, OCR and SRT too. The video must contain speech.')}</p>
+                              {settings.speakerDiarization && (
                                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-t border-border pt-2 text-[11px]">
                                   <span className="text-foreground">{t('Số người nói', 'Speaker count')}</span>
                                   <select className="h-7 rounded border border-border bg-background px-1.5 text-[11px]" value={settings.speakerCount || 0} disabled={busy} aria-label={t('Số người nói', 'Speaker count')} onChange={(event) => onSettings({ ...settings, speakerCount: Number(event.target.value) })}>

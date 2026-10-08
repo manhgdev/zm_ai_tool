@@ -269,7 +269,10 @@ def run_with_adaptive_workers(
             cur = state["w"]
             if want > cur:
                 # Duỗi: thêm permit
-                for _ in range(want - cur):
+                # A previous contraction may still be waiting for in-flight
+                # workers to finish. `held` is the actual permit budget; only
+                # the missing permits need to be released here.
+                for _ in range(max(0, want - state["held"])):
                     slots.release()
                     state["held"] += 1
                 state["w"] = want
@@ -349,13 +352,18 @@ def adaptive_workers(
         # CPU rảnh → gần hard_cpu_cap; bận → ~50%
         cpu_target = max(1, round(cores * (0.50 + 0.42 * cpu_idle)))
         cpu_target = min(cpu_target, hard_cpu_cap)
-        if memory_free < 0.08:
-            cpu_target = max(1, round(cpu_target * 0.45))
-        elif memory_free < 0.14:
+        # Soft host-RAM pressure: keep jobs alive, but progressively reduce
+        # concurrency before Linux/macOS starts thrashing near 100% usage.
+        if memory_free < 0.05:
+            cpu_target = max(1, round(cpu_target * 0.30))
+        elif memory_free < 0.10:
+            cpu_target = max(1, round(cpu_target * 0.50))
+        elif memory_free < 0.15:
             cpu_target = max(1, round(cpu_target * 0.72))
 
         if kind == "network":
-            value = max(2, min(limit, round(6 + 14 * cpu_idle)))
+            network_target = round(6 + 14 * cpu_idle)
+            value = max(1, min(limit, network_target))
         elif kind in ("gpu", "tts"):
             # OCR frame nhẹ hơn TTS neural
             per_mb = 1500 if kind == "tts" else 450
@@ -388,6 +396,15 @@ def adaptive_workers(
                     value = max(value, min(limit, fit))
         else:
             value = min(limit, cpu_target)
+
+        # Apply the same host-RAM throttle to network/GPU/TTS branches after
+        # their device-specific packing logic. Explicit requested counts stay
+        # unchanged; automatic mode is the safe adaptive path.
+        if kind != "cpu":
+            if memory_free < 0.05:
+                value = max(1, round(value * 0.50))
+            elif memory_free < 0.10:
+                value = max(1, round(value * 0.72))
 
     if tasks is not None:
         value = min(value, max(1, int(tasks)))
