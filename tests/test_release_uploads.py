@@ -22,7 +22,7 @@ class ReleaseUploadTests(unittest.TestCase):
         with patch('urllib.request.urlopen', return_value=Response()):
             self.assertEqual(system._latest_release()['tag_name'], 'v8.3.3')
 
-    def test_node24_and_only_three_installation_assets(self):
+    def test_node24_and_only_pkg_and_setup_installation_assets(self):
         mac = (ROOT / '.github/workflows/release-macos.yml').read_text()
         win = (ROOT / '.github/workflows/release-windows.yml').read_text()
         for workflow in (mac, win):
@@ -33,11 +33,21 @@ class ReleaseUploadTests(unittest.TestCase):
                 self.assertNotIn('$ZIP', line)
         for line in win.splitlines():
             if 'gh release upload' in line or 'gh release create' in line:
-                self.assertIn('"$INSTALLER" "$ZIP"', line)
+                self.assertIn('"$INSTALLER"', line)
+                self.assertNotIn('$ZIP', line)
                 self.assertNotIn('windows-audit', line)
                 self.assertNotIn('*', line)
         self.assertIn('name: windows-security-audit', win)
         self.assertIn('! -s "$PKG"', mac)
+        self.assertNotIn('steps.package.outputs.zip', win)
+        self.assertNotIn('Portable', win)
+        self.assertIn("BUILD_INSTALLER: '0'", win)
+        packager = (ROOT / 'build_app/package_windows.mjs').read_text()
+        self.assertNotIn('archiver', packager)
+        self.assertNotIn('Portable.zip', packager)
+        self.assertIn('installer=${setupExe}', packager)
+        build = (ROOT / 'build_app/build.mjs').read_text()
+        self.assertIn('isMac || isWin ||', build)
 
 
 if __name__ == '__main__':

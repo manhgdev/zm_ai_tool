@@ -51,6 +51,8 @@ jobs:
 
       - name: Build EXE
         shell: pwsh
+        env:
+          BUILD_INSTALLER: '0'
         run: |
           npm run build:app
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -65,9 +67,8 @@ jobs:
         shell: pwsh
         env:
           INSTALLER: ${{ steps.package.outputs.installer }}
-          ZIP: ${{ steps.package.outputs.zip }}
         run: |
-          foreach ($file in @($env:INSTALLER, $env:ZIP)) {
+          foreach ($file in @($env:INSTALLER)) {
             if (-not $file -or -not (Test-Path -LiteralPath $file -PathType Leaf)) {
               throw "Missing release artifact: $file"
             }
@@ -80,10 +81,9 @@ jobs:
         shell: pwsh
         env:
           INSTALLER: ${{ steps.package.outputs.installer }}
-          ZIP: ${{ steps.package.outputs.zip }}
         run: |
           New-Item -ItemType Directory -Force build_app/windows-audit | Out-Null
-          $assets = @($env:INSTALLER, $env:ZIP) | ForEach-Object {
+          $assets = @($env:INSTALLER) | ForEach-Object {
             @{ name = (Split-Path $_ -Leaf); sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
           }
           @{ assets = @($assets) } | ConvertTo-Json -Depth 4 | Set-Content build_app/windows-audit/windows-artifact-manifest.json -Encoding utf8
@@ -93,12 +93,11 @@ jobs:
         shell: pwsh
         env:
           INSTALLER: ${{ steps.package.outputs.installer }}
-          ZIP: ${{ steps.package.outputs.zip }}
           BUNDLE: ${{ steps.package.outputs.directory }}
         run: |
-          backend/.venv/Scripts/python.exe scripts/windows_release_audit.py --bundle "$env:BUNDLE" --installer "$env:INSTALLER" --portable "$env:ZIP" --output build_app/windows-audit
+          backend/.venv/Scripts/python.exe scripts/windows_release_audit.py --bundle "$env:BUNDLE" --installer "$env:INSTALLER" --output build_app/windows-audit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./scripts/audit-windows-release.ps1 -Bundle $env:BUNDLE -Installer $env:INSTALLER -Portable $env:ZIP -Output build_app/windows-audit
+          ./scripts/audit-windows-release.ps1 -Bundle $env:BUNDLE -Installer $env:INSTALLER -Output build_app/windows-audit
 
       - name: Save audit diagnostics (including failures)
         if: always() && (startsWith(github.ref, 'refs/tags/v') || inputs.security_audit == true)
@@ -113,12 +112,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          ZIP: ${{ steps.package.outputs.zip }}
           INSTALLER: ${{ steps.package.outputs.installer }}
         shell: bash
         run: |
           set -euo pipefail
-          for file in "$INSTALLER" "$ZIP"; do
+          for file in "$INSTALLER"; do
             if [[ -z "$file" || ! -s "$file" ]]; then
               echo "Missing or empty Windows artifact: $file" >&2
               exit 1
@@ -140,17 +138,16 @@ jobs:
             || echo '- Cải tiến và sửa lỗi')
 
           INSTALLER_BASE=$(basename "$INSTALLER")
-          ZIP_BASE=$(basename "$ZIP")
 
-          BODY=$(printf '## Tải về ZM AI TOOL %s\n\n- 📦 **Bản Cài đặt (Khuyên dùng):** `%s` (Trình cài đặt Wizard, tự tạo shortcut Desktop & Start Menu, hỗ trợ gỡ cài đặt)\n- 💼 **Bản Portable (Chạy ngay):** `%s` (Giải nén và chạy trực tiếp ZM AI TOOL.exe, không cần cài đặt)\n\n## Thay đổi trong %s\n\n%s' \
-            "$TAG" "$INSTALLER_BASE" "$ZIP_BASE" "$TAG" "$NOTES")
+          BODY=$(printf '## Tải về / Downloads — ZM AI TOOL %s\n\n- 📦 **Bản Cài đặt / Installer:** `%s` (Wizard, shortcut Desktop & Start Menu, hỗ trợ gỡ cài đặt / includes shortcuts and uninstall support)\n\n## Thay đổi / Changes — %s\n\n%s' \
+            "$TAG" "$INSTALLER_BASE" "$TAG" "$NOTES")
 
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$INSTALLER" "$ZIP" --clobber
-          elif ! gh release create "$TAG" "$INSTALLER" "$ZIP" --title "ZM AI TOOL $TAG" --notes "$BODY"; then
+            gh release upload "$TAG" "$INSTALLER" --clobber
+          elif ! gh release create "$TAG" "$INSTALLER" --title "ZM AI TOOL $TAG" --notes "$BODY"; then
             # macOS can create the same release between our view and create.
             gh release view "$TAG" >/dev/null
-            gh release upload "$TAG" "$INSTALLER" "$ZIP" --clobber
+            gh release upload "$TAG" "$INSTALLER" --clobber
           fi
 
       - name: Verify published asset digests

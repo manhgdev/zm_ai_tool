@@ -153,26 +153,22 @@ let bundledVersion = ''
 try { bundledVersion = JSON.parse(readFileSync(bundledPackage, 'utf8')).version } catch {}
 check('package.json version', bundledVersion === pkg.version && version === pkg.version, bundledVersion)
 
-// 10. Windows Portable ZIP — macOS chỉ phát hành .pkg
+// 10. macOS PKG / Linux ZIP; Windows uses Setup below.
 const platform = isWin ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
-const portableZip = path.join(releaseDir, `${verName}-windows-x64-Portable.zip`)
-const legacyZip = path.join(releaseDir, `${verName}-${platform}-${process.arch}.zip`)
-const zipPath = isWin && existsSync(portableZip) ? portableZip : legacyZip
+const zipPath = path.join(releaseDir, `${verName}-${platform}-${process.arch}.zip`)
 if (isMac) {
   const pkgs = existsSync(releaseDir)
     ? readdirSync(releaseDir).filter((n) => n.startsWith(`${verName}-macos-`) && n.endsWith('.pkg'))
     : []
   check('PKG package', pkgs.length > 0, pkgs[0] ? size(path.join(releaseDir, pkgs[0])) : '')
-} else {
-  check(isWin ? 'ZIP archive (Portable)' : 'ZIP archive', existsSync(zipPath), size(zipPath))
+} else if (!isWin) {
+  check('ZIP archive', existsSync(zipPath), size(zipPath))
 }
 
-// 11. Inno Setup installer (Windows optional / CI)
+// 11. Required Windows installer.
 if (isWin) {
   const setupExe = path.join(releaseDir, `${verName}-windows-x64-Setup.exe`)
-  if (existsSync(setupExe)) {
-    check('Inno Setup installer (.exe)', true, size(setupExe))
-  }
+  check('Inno Setup installer (.exe)', existsSync(setupExe), size(setupExe))
 }
 
 // Summary

@@ -11,20 +11,20 @@ from scripts.windows_release_audit import inventory
 
 
 class ArtifactAuditTests(unittest.TestCase):
-    def test_inventory_hashes_exe_binaries_and_both_release_assets(self):
+    def test_inventory_hashes_exe_binaries_and_setup_asset(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             bundle = root / 'bundle'
             bundle.mkdir()
             (bundle / 'ZM AI TOOL.exe').write_bytes(b'exe')
             (bundle / 'python312.dll').write_bytes(b'dll')
-            setup, portable = root / 'Setup.exe', root / 'Portable.zip'
+            setup = root / 'Setup.exe'
             setup.write_bytes(b'setup')
-            portable.write_bytes(b'zip')
-            data = inventory(bundle, setup, portable)
+            data = inventory(bundle, setup)
             self.assertEqual(len(data['files']), 2)
             self.assertTrue(all(row['binary'] for row in data['files']))
             self.assertEqual(data['assets'][0]['sha256'], hashlib.sha256(b'setup').hexdigest())
+            self.assertEqual([asset['name'] for asset in data['assets']], ['Setup.exe'])
 
     def test_audit_is_required_before_publish_and_does_not_weaken_defender(self):
         workflow = (ROOT / '.github/workflows/release-windows.yml').read_text()

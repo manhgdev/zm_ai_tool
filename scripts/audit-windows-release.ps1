@@ -1,14 +1,12 @@
 param(
     [Parameter(Mandatory=$true)][string]$Bundle,
     [Parameter(Mandatory=$true)][string]$Installer,
-    [Parameter(Mandatory=$true)][string]$Portable,
     [Parameter(Mandatory=$true)][string]$Output
 )
 $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 $Bundle = (Resolve-Path -LiteralPath $Bundle).Path
 $Installer = (Resolve-Path -LiteralPath $Installer).Path
-$Portable = (Resolve-Path -LiteralPath $Portable).Path
 $manifestPath = Join-Path $Output 'windows-artifact-manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'Artifact manifest must be created before scanning' }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -34,7 +32,7 @@ $command = Get-ChildItem -LiteralPath $platformDir -Filter MpCmdRun.exe -Recurse
 if (-not $command) { throw 'Defender scanner not found' }
 $scanReport = [ordered]@{ status = 'running'; signatureVersion = $status.AntivirusSignatureVersion; engineVersion = $status.AMEngineVersion; startedAt = $started.ToUniversalTime().ToString('o'); scans = @() }
 try {
-    foreach ($target in @($Bundle, $Installer, $Portable)) {
+    foreach ($target in @($Bundle, $Installer)) {
         $result = & $command.FullName -Scan -ScanType 3 -File $target 2>&1
         $code = $LASTEXITCODE
         $result | Out-File -LiteralPath (Join-Path $Output 'defender-scan.log') -Append -Encoding utf8
@@ -51,7 +49,8 @@ try {
         if (-not (Test-Path -LiteralPath $path) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $item.sha256) { throw "Payload changed or quarantined: $path" }
     }
     foreach ($asset in $manifest.assets) {
-        $path = if ($asset.name -eq (Split-Path $Installer -Leaf)) { $Installer } else { $Portable }
+        if ($asset.name -ne (Split-Path $Installer -Leaf)) { throw "Unexpected release artifact: $($asset.name)" }
+        $path = $Installer
         if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $asset.sha256) { throw "Artifact changed: $path" }
     }
     $scanReport.status = 'passed'

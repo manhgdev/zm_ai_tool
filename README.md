@@ -169,8 +169,8 @@ npm run dev:all
 | `npm run test:i18n` | Kiểm tra catalog Việt/Anh. |
 | `npm run build:app` | Đóng gói desktop; macOS cài đè `~/Applications`. Tăng patch: `BUMP_VERSION=1`. |
 | `npm run build:release:macos` | macOS giống CI: `CLEAN=1` → `.pkg`. |
-| `npm run build:release:windows` | Windows local giống `build:app` (Portable.zip + Setup.exe; cần Inno Setup). |
-| `npm run build:installer` | Chỉ chạy lại Inno Setup (Setup.exe) khi đã có thư mục portable. |
+| `npm run build:release:windows` | Windows local giống `build:app` (Setup.exe; cần Inno Setup). |
+| `npm run build:installer` | Chỉ chạy lại Inno Setup (Setup.exe) khi đã có thư mục ứng dụng đã build. |
 | `npm run check:build` | Kiểm tra artifact desktop. |
 | `npm run release -- patch` | Bump patch version, tạo tag và push lên GitHub (trigger CI build). |
 
@@ -204,11 +204,10 @@ Artifact local được tạo trong `build_app/release/`. GitHub Actions build m
 
 - **Version:** mặc định giữ nguyên. Tăng số thứ 3 (0–9): `BUMP_VERSION=1` → sau `.9` nhảy minor (`8.0.9` → `8.1.0`). Version chỉ lấy từ `package.json`; CI kiểm tra tag phải khớp version này.
 - **macOS:** `ZM AI TOOL.app` + `.pkg`; sau build cài đè `~/Applications`. `/Applications` (nếu root) dùng `sudo installer -pkg …`.
-- **Windows:** `…-windows-x64-Portable.zip` + `…-windows-x64-Setup.exe` (cần Inno Setup 6 / `ISCC` trên máy).
+- **Windows:** chỉ tạo `…-windows-x64-Setup.exe` (cần Inno Setup 6 / `ISCC` trên máy); không nén hoặc phát hành Portable ZIP.
 
 - **Windows (chi tiết):**
   - 📦 **Bản Cài đặt (Setup / Installer):** `ZM_AI_TOOL_v{version}-windows-x64-Setup.exe` — Bộ cài Wizard tiêu chuẩn (Inno Setup), tự động tạo shortcut Desktop/Start Menu, hỗ trợ gỡ cài đặt và lưu runtime/dữ liệu tại `%LOCALAPPDATA%\ZM_AI_TOOL`.
-  - 💼 **Bản Portable (Chạy ngay không cần cài đặt):** `ZM_AI_TOOL_v{version}-windows-x64-Portable.zip` — Giải nén và chạy ngay `ZM AI TOOL.exe`, dữ liệu và cache lưu trực tiếp trong thư mục ứng dụng (tiện lưu trữ trên ổ cứng di động/USB).
 - **macOS:** `ZM_AI_TOOL_v{version}-macos-arm64.pkg` / `ZM_AI_TOOL_v{version}-macos-x86_64.pkg` → cài thành `ZM AI TOOL.app`.
 
 Trước khi release:

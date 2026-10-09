@@ -1,8 +1,8 @@
 /**
- * package_windows.mjs — Portable.zip + Inno Setup.exe (same outputs as release-windows.yml).
+ * package_windows.mjs — Inno Setup.exe (same output as release-windows.yml).
  * Called from build.mjs on Windows and from GitHub Actions.
  */
-import { appendFileSync, existsSync, readdirSync, statSync, createWriteStream } from 'node:fs'
+import { appendFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { buildInstaller } from './build_installer.mjs'
@@ -42,23 +42,7 @@ if (!packageDir) {
 }
 
 const verName = path.basename(packageDir)
-const portableZip = path.join(releaseDir, `${verName}-windows-x64-Portable.zip`)
 const setupExe = path.join(releaseDir, `${verName}-windows-x64-Setup.exe`)
-
-if (!existsSync(portableZip)) {
-  console.log(`Đang tạo Portable ZIP: ${portableZip}`)
-  const { default: archiver } = await import('archiver')
-  await new Promise((resolve, reject) => {
-    const output = createWriteStream(portableZip)
-    const archive = archiver('zip', { zlib: { level: 6 } })
-    output.on('close', resolve)
-    output.on('error', reject)
-    archive.on('error', reject)
-    archive.pipe(output)
-    archive.directory(packageDir, false)
-    archive.finalize()
-  })
-}
 
 const version = verName.replace(new RegExp(`^${APP_ARTIFACT_NAME}_v`), '')
 const result = buildInstaller(version)
@@ -66,13 +50,12 @@ if (!result.ok || !existsSync(setupExe)) {
   fail(result.error || `Không tìm thấy Setup: ${setupExe}`)
 }
 
-console.log(`Portable: ${portableZip}`)
 console.log(`Setup: ${setupExe}`)
 
 const githubOutput = process.env.GITHUB_OUTPUT
 if (githubOutput) {
   appendFileSync(
     githubOutput,
-    `directory=${packageDir}\nzip=${portableZip}\ninstaller=${setupExe}\n`,
+    `directory=${packageDir}\ninstaller=${setupExe}\n`,
   )
 }

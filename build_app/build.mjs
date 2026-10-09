@@ -14,9 +14,9 @@ const workDir = path.join(root, 'build_app', '.work')
 // onedir = nhanh (Windows mặc định). ONEFILE=1 để gói 1 file (chậm vì bước PKG).
 const oneFile = process.env.ONEFILE === '1' || process.env.ONEFILE === 'true'
 const clean = process.env.CLEAN === '1' || process.env.CLEAN === 'true'
-// macOS: chỉ phát hành .pkg — không tạo zip. Windows: Portable.zip trừ khi SKIP_ARCHIVE=1.
+// macOS: .pkg; Windows: Setup.exe. Chỉ Linux tạo ZIP.
 const skipArchive =
-  isMac ||
+  isMac || isWin ||
   process.env.SKIP_ARCHIVE === '1' ||
   process.env.SKIP_ARCHIVE === 'true'
 const npmCommand = isWin ? process.env.ComSpec || 'cmd.exe' : 'npm'
@@ -591,9 +591,7 @@ if (packageTarget && !skipArchive) {
   const platform = isWin ? 'windows' : isMac ? 'macos' : 'linux'
   const archivePath = path.join(
     releaseDir,
-    isWin
-      ? `${verName}-windows-x64-Portable.zip`
-      : `${verName}-${platform}-${process.arch}.zip`
+    `${verName}-${platform}-${process.arch}.zip`
   )
   if (existsSync(archivePath)) rmSync(archivePath, { force: true })
   await new Promise((resolve, reject) => {
@@ -618,7 +616,7 @@ if (isMac && !oneFile && process.env.SKIP_PKG !== '1') {
   macPkgPath = path.join(releaseDir, `${APP_ARTIFACT_NAME}_v${appVersion}-macos-${arch}.pkg`)
 }
 
-// Windows Portable.zip + Setup.exe — same path as CI (local + GitHub); fail if Setup missing
+// Windows Setup.exe — same path as CI (local + GitHub); fail if Setup missing
 if (isWin && !oneFile && process.env.BUILD_INSTALLER !== '0') {
   run(process.execPath, [path.join(root, 'build_app', 'package_windows.mjs')])
 }
@@ -631,7 +629,6 @@ if (isMac && !oneFile && packageTarget) {
 console.log(`\nBuild hoàn tất: ${output}`)
 console.log(`Version: v${appVersion}`)
 if (isWin && !oneFile) {
-  console.log(`- Bản Portable: release/${verName}-windows-x64-Portable.zip`)
   console.log(`- Bản Cài đặt: release/${verName}-windows-x64-Setup.exe`)
 } else if (isMac && !oneFile) {
   console.log(`- Bản .app: release/${APP_EXECUTABLE_NAME}.app`)

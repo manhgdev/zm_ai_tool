@@ -17,7 +17,7 @@ def digest(path: Path) -> str:
     return result.hexdigest()
 
 
-def inventory(bundle: Path, installer: Path, portable: Path) -> dict:
+def inventory(bundle: Path, installer: Path) -> dict:
     files = []
     for path in sorted(bundle.rglob('*')):
         if path.is_symlink():
@@ -29,16 +29,16 @@ def inventory(bundle: Path, installer: Path, portable: Path) -> dict:
         raise ValueError('Main application EXE is missing')
     return {'schemaVersion': 1, 'signaturePolicy': 'Unsigned unless Authenticode report says Valid; not a safety verdict',
             'python': platform.python_version(), 'files': files,
-            'assets': [{'name': path.name, 'size': path.stat().st_size, 'sha256': digest(path)} for path in (installer, portable)]}
+            'assets': [{'name': installer.name, 'size': installer.stat().st_size, 'sha256': digest(installer)}]}
 
 
 def main():
     parser = argparse.ArgumentParser()
-    for key in ('bundle', 'installer', 'portable', 'output'):
+    for key in ('bundle', 'installer', 'output'):
         parser.add_argument('--' + key, type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    report = inventory(args.bundle, args.installer, args.portable)
+    report = inventory(args.bundle, args.installer)
     (args.output / 'windows-artifact-manifest.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     (args.output / 'windows-SHA256SUMS.txt').write_text(''.join(f"{a['sha256']}  {a['name']}\n" for a in report['assets']), encoding='utf-8')
     # Build environment inventory is explicitly separate from packaged files;
