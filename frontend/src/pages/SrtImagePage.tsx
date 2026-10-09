@@ -913,7 +913,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
                 </div>}
               </div>
               <div className="siv-logo">
-                <div className="siv-logo-head"><strong>{t('Logo / Watermark ZM AI TOOL', 'ZM AI TOOL logo / watermark')}</strong><label><input type="checkbox" checked={logoEnabled} onChange={(e) => setLogoEnabled(e.target.checked)} /> {t('Áp dụng', 'Apply')}</label></div>
+                <div className="siv-logo-head"><strong>{t('Logo / Watermark', 'Logo / Watermark')}</strong><label><input type="checkbox" checked={logoEnabled} onChange={(e) => setLogoEnabled(e.target.checked)} /> {t('Áp dụng', 'Apply')}</label></div>
                 <div className="siv-logo-sources">
                   {(['text', 'image', 'icon'] as const).map((source) => <button key={source} className={logoSource === source ? 'active' : ''} onClick={() => setLogoSource(source)}>{source === 'text' ? `T  ${t('Chữ', 'Text')}` : source === 'image' ? `▧  ${t('Ảnh', 'Image')}` : '★  Icon'}</button>)}
                 </div>

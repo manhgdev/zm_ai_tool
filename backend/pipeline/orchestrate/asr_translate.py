@@ -70,11 +70,12 @@ def _attach_project_speakers(project_id, video, segments, settings, meta, asr_ke
         return
     from pipeline.asr.speaker import (
         assign_speakers, default_speaker_role, default_speaker_voice,
-        diarize_audio, is_generated_speaker_role,
+        diarize_audio, is_generated_speaker_role, split_segments_by_speaker,
     )
     from pipeline.export.compound import expand_compound_segments
 
-    key = f"v1|{asr_key}|{int(settings.get('speakerCount') or 0)}"
+    # v3 invalidates turns produced before word-level speaker splitting.
+    key = f"v3|{asr_key}|{int(settings.get('speakerCount') or 0)}"
     fresh = meta.get("speakerDiarizationKey") != key
     turns = meta.get("speakerTurns")
     if fresh or not isinstance(turns, list):
@@ -92,14 +93,21 @@ def _attach_project_speakers(project_id, video, segments, settings, meta, asr_ke
         meta["speakerDiarizationProvider"] = provider_info.get("provider", "cpu")
         fresh = True
 
+    if fresh:
+        # Split Whisper/CapCut word-timed cues before any display timeline
+        # regrouping. SRT/OCR rows stay atomic and use conservative overlap.
+        segments[:] = split_segments_by_speaker(segments, turns)
+
     # OCR may also contain titles/logo masks: these are not spoken dialogue.
     rows = [dict(seg) for seg in expand_compound_segments(segments)
             if not seg.get("maskOnly") and seg.get("dub") is not False
             and (seg.get("layout") not in ("label", "vertical") or seg.get("dub") is True)]
+    assign_speakers(
+        [row for row in rows if not row.get("speaker") and not row.get("_speakerAmbiguous")],
+        turns,
+    )
     for row in rows:
-        if fresh:
-            row.pop("speaker", None)
-    assign_speakers([row for row in rows if not row.get("speaker")], turns)
+        row.pop("_speakerAmbiguous", None)
     by_id = {row["id"]: row for row in rows}
     profiles = settings.get("speakerProfiles") or {}
     voices = settings.get("speakerVoices") or {}
@@ -331,9 +339,6 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
                 ]
                 if capcut_translator and any(not str(item.get("translation") or "").strip() for item in segments):
                     raise RuntimeError("CapCut không trả bản dịch khớp với toàn bộ timecode.")
-                from pipeline.asr.capcut_cues import regroup_capcut_segments
-
-                segments = regroup_capcut_segments(segments, source_lang=str(settings.get("sourceLang") or "auto"))
                 use_ocr = False
             else:
                 wav = cache_audio(project_id, audio_cache_tag(preview_sec, match_mode, speed=work_speed))
@@ -419,6 +424,26 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
 
             append_job_event(project_id, "ASR_CHUNK_READY", {"range": [0, float(ffprobe_duration(video) or 0)], "segments": segments})
 
+            # Normalize a tiny, whitelisted set of Chinese ASR homophones before
+            # translation; this keeps the correction shared by Whisper and OCR.
+            fixed_sources = _ocr_fix_zh([str(s.get("source") or "") for s in segments], project_id)
+            for seg, fixed in zip(segments, fixed_sources):
+                if fixed:
+                    seg["source"] = fixed
+
+            # Speaker identity belongs to the transcript cue acquired from
+            # ASR/SRT/CapCut/OCR. Apply it before any display regrouping or
+            # portrait timeline split so derived cues inherit the right role.
+            _attach_project_speakers(
+                project_id, video, segments, settings, meta, a_key,
+                audio_cache_tag(preview_sec, match_mode, speed=work_speed),
+            )
+
+            if engine == "capcut":
+                from pipeline.asr.capcut_cues import regroup_capcut_segments
+
+                segments = regroup_capcut_segments(segments, source_lang=str(settings.get("sourceLang") or "auto"))
+
             # CapCut is already grouped on its word clock. Never run its rows
             # through the proportional portrait splitter (including translation).
             try:
@@ -429,13 +454,6 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
                 from pipeline.subtitles import split_portrait_caption_segments
 
                 segments = split_portrait_caption_segments(segments)
-
-            # Normalize a tiny, whitelisted set of Chinese ASR homophones before
-            # translation; this keeps the correction shared by Whisper and OCR.
-            fixed_sources = _ocr_fix_zh([str(s.get("source") or "") for s in segments], project_id)
-            for seg, fixed in zip(segments, fixed_sources):
-                if fixed:
-                    seg["source"] = fixed
 
             # giữ bản dịch + chỉnh preview (bbox, font…) khi cùng dòng chữ nguồn
             prev_by_source: dict[str, dict[str, Any]] = {}
@@ -507,11 +525,6 @@ def run_pipeline(project_id: str, settings: dict[str, Any]) -> None:
                 cache["transKey"] = t_key
             elif cache.get("transKey") != t_key:
                 cache.pop("transKey", None)
-
-        _attach_project_speakers(
-            project_id, video, segments, settings, meta, a_key,
-            audio_cache_tag(preview_sec, match_mode, speed=work_speed),
-        )
 
         # Preserve Whisper's sentence boundaries. The old CJK fragment merger
         # joined any short, adjacent segments, including complete sentences,

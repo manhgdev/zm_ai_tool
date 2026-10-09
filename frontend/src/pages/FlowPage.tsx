@@ -299,6 +299,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     null,
   );
   const [accountSaving, setAccountSaving] = useState(false);
+  const [accountLoginMode, setAccountLoginMode] = useState<"chrome" | "cookie">("cookie");
+  const [accountCookie, setAccountCookie] = useState("");
   const [accountDraft, setAccountDraft] = useState<{
     label: string;
     email: string;
@@ -1271,10 +1273,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   };
   const addAccount = () => {
+    if (accountSaving) return;
+    setAccountLoginMode(isDesktopApp ? "chrome" : "cookie");
+    setAccountCookie("");
     setAccountDraft({ label: "", email: "", plan: "Free" });
     setEditingAccount("new");
   };
   const editAccount = (account: FlowAccount) => {
+    if (accountSaving) return;
+    setAccountLoginMode("chrome");
+    setAccountCookie("");
     setAccountDraft({
       label: account.label,
       email: account.email,
@@ -1284,7 +1292,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const saveAccount = async () => {
     if (accountSaving) return;
-    if (!accountDraft.label.trim() || !accountDraft.email.trim()) return;
+    const importingCookie = editingAccount === "new" && accountLoginMode === "cookie";
+    if (!accountDraft.email.trim() || (importingCookie && !accountCookie.trim())) return;
     setAccountSaving(true);
     try {
       const editing = accounts.find((item) => item.id === editingAccount);
@@ -1297,17 +1306,22 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...accountDraft,
+          label: accountDraft.email.trim().split("@", 1)[0],
           plan: accountDraft.plan,
-          projectId: editing?.projectId || "",
+          ...(importingCookie ? { cookie: accountCookie.trim() } : {}),
           isDefault: editing?.isDefault || false,
         }),
       });
       setAccounts((current) => [savedAccount, ...current.filter((item) => item.id !== savedAccount.id)]);
       setEditingAccount(null);
       setAccountDraft({ label: "", email: "", plan: "Free" });
+      setAccountCookie("");
       setApiError("");
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setApiError(message.includes("FLOW_COOKIE_INVALID")
+        ? t("Cookie không hợp lệ. Hãy dán giá trị Cookie trong Request Headers (tối đa 32 KB).", "Invalid cookie. Paste the Cookie value from Request Headers (up to 32 KB).")
+        : message);
     } finally {
       setAccountSaving(false);
     }
@@ -2075,15 +2089,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       ? t("Thêm tài khoản", "Add account")
                       : t("Sửa tài khoản", "Edit account")}
                   </h3>
-                  <p>{t("Sau khi lưu, bấm Kết nối để đăng nhập Google trong Chrome.", "After saving, select Connect to sign in to Google in Chrome.")}</p>
-                <label>
-                  <span>{t("Tên hiển thị", "Display name")}</span>
-                  <input autoFocus value={accountDraft.label} onChange={(event) => setAccountDraft((current) => ({ ...current, label: event.target.value }))} placeholder="Ultra 01" />
-                </label>
+                  <p>{accountLoginMode === "cookie"
+                    ? t("Lưu để nhập cookie vào Chrome và xác minh tài khoản. Cookie hết hạn có thể cần đăng nhập lại.", "Save to import cookies into Chrome and verify the account. Expired cookies may require signing in again.")
+                    : t("Sau khi lưu, bấm Kết nối để đăng nhập Google trong Chrome.", "After saving, select Connect to sign in to Google in Chrome.")}</p>
                 </div>
                 <label>
                   <span>{t("Email Google", "Google email")}</span>
                   <input
+                    autoFocus
                     type="email"
                     required
                     value={accountDraft.email}
@@ -2096,10 +2109,25 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     placeholder="name@gmail.com"
                   />
                 </label>
-
+                {editingAccount === "new" && <label>
+                  <span>{t("Cách kết nối", "Connection method")}</span>
+                  <select disabled={accountSaving} value={accountLoginMode} onChange={(event) => {
+                    setAccountLoginMode(event.target.value as "chrome" | "cookie");
+                    setAccountCookie("");
+                  }}>
+                    <option value="chrome">{t("Đăng nhập Chrome", "Sign in with Chrome")}</option>
+                    <option value="cookie">{t("Dán Cookie Google Labs", "Paste Google Labs Cookie")}</option>
+                  </select>
+                </label>}
+                {accountLoginMode === "cookie" && <label className="flow-account-cookie">
+                  <span>{t("Cookie Google Labs *", "Google Labs Cookie *")}</span>
+                  <small id="flow-cookie-help">{t("Mở labs.google/fx/tools/flow đã đăng nhập → F12 → Network → chọn request tới labs.google → Request Headers → sao chép Cookie. Cookie là thông tin đăng nhập, không chia sẻ với người khác; phiên được lưu trong Chrome profile của tài khoản.", "Open labs.google/fx/tools/flow while signed in → F12 → Network → select a labs.google request → Request Headers → copy Cookie. Cookies are sign-in credentials; do not share them. The session is stored in the account's Chrome profile.")}</small>
+                  <textarea required rows={4} maxLength={32768} autoComplete="off" spellCheck={false} disabled={accountSaving} aria-describedby="flow-cookie-help" value={accountCookie} onChange={(event) => setAccountCookie(event.target.value)} placeholder={t("Dán Cookie Google Labs tại đây", "Paste Google Labs Cookie here")} />
+                </label>}
                 <footer>
                   <button type="button" disabled={accountSaving} onClick={() => {
                     setAccountDraft({ label: "", email: "", plan: "Free" });
+                    setAccountCookie("");
                     setEditingAccount(null);
                   }}>
                     {t("Hủy", "Cancel")}
@@ -2107,10 +2135,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <button
                     type="submit"
                     disabled={
-                      accountSaving || !accountDraft.label.trim() || !accountDraft.email.trim()
+                      accountSaving || !accountDraft.email.trim() || (accountLoginMode === "cookie" && !accountCookie.trim())
                     }
                   >
-                    {t("Lưu", "Save")}
+                    {accountSaving ? t("Đang lưu...", "Saving...") : accountLoginMode === "cookie" ? t("Lưu và kết nối", "Save and connect") : t("Lưu", "Save")}
                   </button>
                 </footer>
               </form>
@@ -2150,7 +2178,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   </div>
                   <div className="flow-account-name-row">
                     <h3>
-                      {account.label}
+                      {account.email || account.label}
                       {account.isDefault && (
                         <small>{t("Mặc định", "Default")}</small>
                       )}
@@ -2172,9 +2200,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       </button>
                     )}
                   </div>
-                  <p>{account.email}</p>
-
-
                   {Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000) && (
                     <div
                       className="flow-account-suspension-box"

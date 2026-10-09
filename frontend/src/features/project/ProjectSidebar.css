@@ -460,13 +460,19 @@
 
 .run-actions {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: stretch;
   margin-top: 4px;
 }
 
-.ai-review-all-btn { border-color: color-mix(in srgb, var(--primary) 35%, var(--line)); color: var(--primary); }
+.run-actions .cancel {
+  /* Keep Cancel on its own row even when the sidebar is narrower than the
+     combined action buttons. */
+  flex: 0 0 100%;
+  width: 100%;
+  min-width: 100%;
+}
 
 .clear-cache-btn {
   flex: 0 0 36%;

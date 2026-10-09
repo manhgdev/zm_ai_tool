@@ -1,8 +1,10 @@
 """Optional offline speaker diarization using Sherpa-ONNX."""
 from __future__ import annotations
 
+import math
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -209,20 +211,230 @@ def ensure_diarization_models(model_dir: Path, log=None, progress=None) -> tuple
 
 
 
-def assign_speakers(segments: list[dict[str, Any]], turns: list[dict[str, Any]]) -> None:
-    """Attach the speaker with the greatest temporal overlap to every ASR cue."""
+_MIN_TURN_SECONDS = 0.15
+_AUTO_CLUSTER_THRESHOLD = 0.94
+
+
+def normalize_speaker_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort, de-noise, and join tiny gaps in the diarizer output."""
+    cleaned: list[dict[str, Any]] = []
+    for turn in turns or []:
+        try:
+            start = float(turn["start"])
+            end = float(turn["end"])
+            speaker = str(turn["speaker"] or "").strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not speaker or not math.isfinite(start) or not math.isfinite(end):
+            continue
+        if end - start < _MIN_TURN_SECONDS:
+            continue
+        cleaned.append({"start": start, "end": end, "speaker": speaker})
+
+    merged: list[dict[str, Any]] = []
+    for turn in sorted(cleaned, key=lambda item: (item["start"], item["end"], item["speaker"])):
+        previous = merged[-1] if merged else None
+        if (
+            previous is not None
+            and previous["speaker"] == turn["speaker"]
+            and turn["start"] <= previous["end"] + 0.12
+        ):
+            previous["end"] = max(previous["end"], turn["end"])
+        else:
+            merged.append(turn)
+    return merged
+
+
+def _coverage_by_speaker(start: float, end: float, turns: list[dict[str, Any]]) -> dict[str, float]:
+    spans: dict[str, list[tuple[float, float]]] = {}
+    for turn in turns:
+        speaker = str(turn.get("speaker") or "").strip()
+        if not speaker:
+            continue
+        try:
+            left = max(start, float(turn["start"]))
+            right = min(end, float(turn["end"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if right > left:
+            spans.setdefault(speaker, []).append((left, right))
+
+    coverage: dict[str, float] = {}
+    for speaker, intervals in spans.items():
+        total = 0.0
+        previous_end = start
+        for left, right in sorted(intervals):
+            total += max(0.0, right - max(left, previous_end))
+            previous_end = max(previous_end, right)
+        coverage[speaker] = total
+    return coverage
+
+
+def _dominant_speaker(start: float, end: float, turns: list[dict[str, Any]]) -> str | None:
+    """Return a speaker only when one turn clearly owns the cue."""
+    if end <= start:
+        return None
+    coverage = _coverage_by_speaker(start, end, turns)
+    if not coverage:
+        return None
+    ranked = sorted(coverage.items(), key=lambda item: item[1], reverse=True)
+    best_speaker, best_overlap = ranked[0]
+    second_overlap = ranked[1][1] if len(ranked) > 1 else 0.0
+    duration = end - start
+    if best_overlap < max(0.2, duration * 0.2):
+        return None
+    if best_overlap < sum(coverage.values()) * 0.65:
+        return None
+    if second_overlap and best_overlap - second_overlap < max(0.15, duration * 0.1):
+        return None
+    return best_speaker
+
+
+def _word_speaker(start: float, end: float, turns: list[dict[str, Any]]) -> str | None:
+    """Assign one word only when its local turn overlap is unambiguous."""
+    if end <= start:
+        return None
+    coverage = _coverage_by_speaker(start, end, turns)
+    if not coverage:
+        return None
+    ranked = sorted(coverage.items(), key=lambda item: item[1], reverse=True)
+    best_speaker, best_overlap = ranked[0]
+    second_overlap = ranked[1][1] if len(ranked) > 1 else 0.0
+    duration = end - start
+    if best_overlap < max(0.04, duration * 0.65):
+        return None
+    if second_overlap and best_overlap - second_overlap < max(0.03, duration * 0.15):
+        return None
+    return best_speaker
+
+
+def _valid_words(segment: dict[str, Any]) -> list[dict[str, Any]]:
+    words: list[dict[str, Any]] = []
+    for raw in segment.get("words") or []:
+        try:
+            word = str(raw["word"] or "").strip()
+            start = float(raw["start"])
+            end = float(raw["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if word and math.isfinite(start) and math.isfinite(end) and start < end:
+            words.append({"word": word, "start": start, "end": end})
+    return words
+
+
+def _word_source_parts(source: str, words: list[dict[str, Any]]) -> list[str]:
+    """Slice the original source so CJK spacing and punctuation survive splits."""
+    text = str(source or "").strip()
+    compact = "".join(text.split())
+    word_compact = "".join("".join(str(item["word"]).split()) for item in words)
+    if compact != word_compact:
+        return [str(item["word"]).strip() for item in words]
+    positions = [index for index, char in enumerate(text) if not char.isspace()]
+    parts: list[str] = []
+    source_cursor = 0
+    compact_cursor = 0
+    for item in words:
+        length = len("".join(str(item["word"]).split()))
+        stop = positions[compact_cursor + length - 1] + 1
+        parts.append(text[source_cursor:stop])
+        source_cursor = stop
+        compact_cursor += length
+    return parts
+
+
+def split_segments_by_speaker(
+    segments: list[dict[str, Any]], turns: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Split word-timed cues at speaker changes before display timeline work."""
+    result: list[dict[str, Any]] = []
     for segment in segments:
+        words = _valid_words(segment)
+        translation = str(segment.get("translation") or "").strip()
+        source = str(segment.get("source") or "").strip()
+        # A translated CapCut cue has no source-to-target word alignment.
+        # Keep it atomic and use the conservative whole-cue assignment.
+        if not words or (translation and translation != source):
+            row = dict(segment)
+            speaker = _dominant_speaker(float(row.get("start") or 0), float(row.get("end") or 0), turns)
+            if speaker:
+                row["speaker"] = speaker
+            else:
+                row.pop("speaker", None)
+            result.append(row)
+            continue
+
+        labels = [_word_speaker(word["start"], word["end"], turns) for word in words]
+        known = {label for label in labels if label}
+        if len(known) == 1 and all(labels):
+            row = dict(segment)
+            speaker = next(iter(known), None) or _dominant_speaker(
+                float(row.get("start") or 0), float(row.get("end") or 0), turns
+            )
+            if speaker:
+                row["speaker"] = speaker
+            else:
+                row.pop("speaker", None)
+            result.append(row)
+            continue
+
+        if not known:
+            row = dict(segment)
+            speaker = _dominant_speaker(
+                float(row.get("start") or 0), float(row.get("end") or 0), turns
+            )
+            if speaker:
+                row["speaker"] = speaker
+            else:
+                row.pop("speaker", None)
+            result.append(row)
+            continue
+
+        parts = _word_source_parts(source, words)
+        run_start = 0
+        while run_start < len(words):
+            label = labels[run_start]
+            run_end = run_start + 1
+            while run_end < len(words) and labels[run_end] == label:
+                run_end += 1
+            row = dict(segment)
+            row["id"] = segment.get("id") if not result or result[-1].get("id") != segment.get("id") else uuid.uuid4().hex
+            row["start"] = float(segment.get("start") or words[run_start]["start"]) if run_start == 0 else words[run_start]["start"]
+            row["end"] = float(segment.get("end") or words[run_end - 1]["end"]) if run_end == len(words) else words[run_end - 1]["end"]
+            row["words"] = words[run_start:run_end]
+            row["source"] = "".join(parts[run_start:run_end]).strip()
+            if translation == source:
+                row["translation"] = row["source"]
+            else:
+                row["translation"] = ""
+            if label:
+                row["speaker"] = label
+            else:
+                row.pop("speaker", None)
+                row["_speakerAmbiguous"] = True
+            for field in ("audioFile", "audioUrl", "audioDuration"):
+                row.pop(field, None)
+            result.append(row)
+            run_start = run_end
+
+    for index, row in enumerate(result):
+        row["index"] = index
+    return result
+
+
+def assign_speakers(segments: list[dict[str, Any]], turns: list[dict[str, Any]]) -> None:
+    """Attach a speaker only when one turn clearly owns the whole cue.
+
+    A transcript cue can span a turn change. Picking the first longest overlap
+    assigns those mixed cues arbitrarily, so leave them unassigned for the
+    editor instead of claiming the wrong speaker.
+    """
+    for segment in segments:
+        segment.pop("speaker", None)
         start = float(segment.get("start") or 0)
         end = max(start, float(segment.get("end") or start))
-        best = max(
-            turns,
-            key=lambda turn: max(0.0, min(end, float(turn["end"])) - max(start, float(turn["start"]))),
-            default=None,
-        )
-        if best is not None:
-            overlap = max(0.0, min(end, float(best["end"])) - max(start, float(best["start"])))
-            if overlap > 0:
-                segment["speaker"] = str(best["speaker"])
+        speaker = _dominant_speaker(start, end, turns)
+        if speaker:
+            segment["speaker"] = speaker
 
 
 def diarization_provider_for_device(device: dict[str, Any]) -> str:
@@ -309,10 +521,11 @@ def diarize_audio(
             embedding.provider = provider
             embedding.num_threads = threads
             clustering = sherpa_onnx.FastClusteringConfig(
-                # threshold: distance-based — cao hơn = merge nhiều hơn = ít speaker.
-                # Sweep thực tế: 0.9→40sp, 0.95→31sp, 0.98→26sp, 0.99→24sp.
-                # Khi speakerCount được đặt, num_clusters override threshold.
-                num_clusters=num_speakers if num_speakers >= 2 else -1, threshold=0.98,
+                # Auto stays deliberately conservative: a lower threshold
+                # avoids merging two voices into one label. When the user
+                # supplies a count, Sherpa uses the fixed number of clusters.
+                num_clusters=num_speakers if num_speakers >= 2 else -1,
+                threshold=_AUTO_CLUSTER_THRESHOLD,
             )
             config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
                 segmentation=segmentation, embedding=embedding, clustering=clustering,
@@ -331,7 +544,7 @@ def diarize_audio(
             last_error = exc
     if result is None:
         raise RuntimeError(f"Không chạy được speaker diarization: {last_error}") from last_error
-    return [
+    return normalize_speaker_turns([
         {"start": float(turn.start), "end": float(turn.end), "speaker": f"SPEAKER_{int(turn.speaker):02d}"}
-        for turn in result if float(turn.end) - float(turn.start) >= 0.05
-    ]
+        for turn in result
+    ])

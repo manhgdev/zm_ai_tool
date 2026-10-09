@@ -5,13 +5,14 @@ import shutil
 import subprocess
 import sys
 import mimetypes
+import re
 import uuid
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from pipeline.flow import service, series
 from pipeline.flow import store
@@ -26,6 +27,31 @@ class AccountIn(BaseModel):
     plan: str = Field(default="Free", pattern="^(Pro|Plus|Ultra|Free)$")
     projectId: str = Field(default="", max_length=160)
     isDefault: bool = False
+
+
+class AccountCreateIn(AccountIn):
+    cookie: SecretStr | None = Field(default=None, repr=False)
+
+
+def _labs_cookies(raw: str) -> list[dict[str, Any]]:
+    """Import only a Cookie request header, scoped to its original Labs host."""
+    raw = raw.strip()
+    if raw.lower().startswith("cookie:"):
+        raw = raw[7:].strip()
+    if not raw or len(raw) > 32768 or any(ord(char) < 32 or ord(char) > 126 for char in raw):
+        raise HTTPException(400, "FLOW_COOKIE_INVALID")
+    cookies = {}
+    for part in raw.rstrip(";").split(";"):
+        name, separator, value = part.strip().partition("=")
+        if not separator or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise HTTPException(400, "FLOW_COOKIE_INVALID")
+        if not re.fullmatch(r'[\x21\x23-\x2b\x2d-\x3a\x3c-\x5b\x5d-\x7e]*', value):
+            raise HTTPException(400, "FLOW_COOKIE_INVALID")
+        cookies[name] = {"name": name, "value": value, "secure": True}
+    # Google auth cookies are commonly issued for .google.com, so preserve
+    # that scope for Labs/Flow and accounts.google.com without broadening it
+    # to unrelated domains.
+    return [{**cookie, "domain": ".google.com", "path": "/"} for cookie in cookies.values()]
 
 
 class GenerateIn(BaseModel):
@@ -194,8 +220,10 @@ def accounts_list():
 
 
 @router.post("/accounts")
-def accounts_create(body: AccountIn):
-    return service.save_account(body.model_dump())
+def accounts_create(body: AccountCreateIn):
+    cookies = _labs_cookies(body.cookie.get_secret_value()) if body.cookie is not None else None
+    account = service.save_account(body.model_dump(exclude={"cookie"}))
+    return service.connect(account["id"], cookies=cookies) if cookies else account
 
 
 @router.put("/accounts/{account_id}")

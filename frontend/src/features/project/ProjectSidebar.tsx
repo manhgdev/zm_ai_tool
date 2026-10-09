@@ -64,7 +64,6 @@ type Props = {
   onSubtitleApplied?: (segments: import('@/features/project/project.types').Segment[], settings: ProjectSettings) => void
   onUpload: (file: File) => void
   onTranslateAll: () => void
-  onReviewAll: () => void
   /** previewSec = số giây từ ô Preview (đã commit draft) */
   onPreview: (previewSec: number) => void
   onCancel: () => void
@@ -126,7 +125,6 @@ export default function Sidebar({
   onSubtitleApplied,
   onUpload,
   onTranslateAll,
-  onReviewAll,
   onPreview,
   onCancel,
   onClearCache,
@@ -1164,20 +1162,9 @@ export default function Sidebar({
             </>
           )}
         </button>
-        {reviewAvailable && settings.translationReviewMode !== 'off' && (
-          <button
-            type="button"
-            className="secondary ai-review-all-btn"
-            disabled={busy || !videoUrl || clearingCache}
-            onClick={onReviewAll}
-            title={t('AI sửa tất cả bản dịch, giữ nguyên ý', 'Polish all translations with AI while preserving meaning')}
-          >
-            {t('AI sửa tất cả', 'AI review all')}
-          </button>
-        )}
         {showCancel && (
           <button type="button" className="cancel" onClick={onCancel}>
-            Huỷ
+            {t('Hủy', 'Cancel')}
           </button>
         )}
       </div>

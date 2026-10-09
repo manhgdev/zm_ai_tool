@@ -26,14 +26,14 @@ class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(eval(condition, {}, {'is_auth': False, 'project_id': ''}))
         self.assertFalse(eval(condition, {}, {'is_auth': True, 'project_id': 'project-id'}))
 
-    def test_save_account_preserves_display_name_and_drops_legacy_password(self):
+    def test_save_account_derives_name_from_email_and_drops_legacy_password(self):
         service = FlowService()
         existing = {'id': 'account-1', 'label': 'Personal', 'email': 'example@gmail.com', 'password': 'old-secret'}
         with patch('pipeline.flow.service.store.get_row', return_value=existing), \
              patch('pipeline.flow.service.store.list_rows', return_value=[]), \
              patch('pipeline.flow.service.store.put_row', side_effect=lambda table, row: dict(row)) as put:
             account = service.save_account({'label': 'Work'}, 'account-1')
-        self.assertEqual(account['label'], 'Work')
+        self.assertEqual(account['label'], 'example')
         self.assertNotIn('password', put.call_args.args[1])
 
     def test_login_wall_triggers_session_login(self):

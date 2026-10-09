@@ -83,3 +83,33 @@ def test_diarization_runs_on_each_source_and_reuses_turns(tmp_path, engine):
         assert diarize.call_count == 2
     assert [(row["id"], row["start"], row["end"], row["source"]) for row in rows] == before
 
+
+def test_whisper_word_timed_cue_is_split_before_speaker_profiles(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"test")
+    wav = tmp_path / "audio.wav"
+    rows = [{
+        "id": "cue",
+        "start": 0.0,
+        "end": 1.2,
+        "source": "Hello there again",
+        "translation": "",
+        "voice": "system",
+        "words": [
+            {"word": "Hello", "start": 0.0, "end": 0.4},
+            {"word": "there", "start": 0.4, "end": 0.8},
+            {"word": "again", "start": 0.8, "end": 1.2},
+        ],
+    }]
+    settings = {"engine": "whisper", "speakerDiarization": True, "speakerCount": 2}
+    turns = [{"start": 0.0, "end": 0.75, "speaker": "SPEAKER_00"},
+             {"start": 0.75, "end": 1.3, "speaker": "SPEAKER_01"}]
+    with patch.object(pipeline, "cache_audio", return_value=wav), \
+         patch.object(pipeline, "extract_audio", side_effect=lambda *a, **kw: wav.write_bytes(b"audio")), \
+         patch.object(pipeline, "set_status"), patch.object(pipeline, "check_cancel"), \
+         patch("pipeline.asr.speaker.diarize_audio", return_value=turns):
+        pipeline._attach_project_speakers("p", video, rows, settings, {}, "whisper", "tag")
+    assert [(row["source"], row["speaker"]) for row in rows] == [
+        ("Hello there", "SPEAKER_00"),
+        ("again", "SPEAKER_01"),
+    ]

@@ -73,6 +73,21 @@ test('shared chrome and runtime dictionaries have complete translations', () => 
   }
 })
 
+test('Flow cookie account inputs have Vietnamese and English labels', () => {
+  const pairs = new Map()
+  visit(parse('pages/FlowPage.tsx'), node => {
+    if (ts.isCallExpression(node) && node.expression.getText() === 't') {
+      pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
+    }
+  })
+  for (const vi of ['Email Google', 'Cách kết nối', 'Dán Cookie Google Labs', 'Cookie Google Labs *', 'Lưu và kết nối']) {
+    assert.ok(pairs.get(vi)?.trim(), `Missing English label for ${vi}`)
+    assert.notEqual(pairs.get(vi), vi)
+  }
+  assert.doesNotMatch(read('pages/FlowPage.tsx'), /Tên hiển thị|Định danh tài khoản/)
+  assert.doesNotMatch(read('pages/FlowPage.tsx'), /Project ID/)
+})
+
 test('CapCut errors produce Vietnamese and English messages while preserving diagnostics', () => {
   const tree = parse('app/i18n.tsx')
   const fn = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name.text === 'localizePipelineMessage')

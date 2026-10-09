@@ -229,7 +229,13 @@ def asr_cache_key(settings: dict[str, Any], source_fp: str, speed: float = 1.0) 
     ver = "o20" if engine in ("paddleocr", "screen") else "c4" if engine == "capcut" else "a17"
     # speed = tốc độ file thật sự ASR (chỉ khác 1× sau khi người dùng bake).
     subtitle = str(settings.get("subtitleSource") or "") if engine == "subtitle" else ""
-    return f"{engine}|{src}|{subtitle}|{source_fp}|p{prev}|{ver}|{_speed_key_tag(speed)}"
+    # sp4 forces a fresh source-cue pass when word-level speaker splitting is
+    # enabled; otherwise an old cache could only assign speakers after splits.
+    speaker_stage = (
+        f"|sp4|n{int(settings.get('speakerCount') or 0)}"
+        if settings.get("speakerDiarization") else "|sp0"
+    )
+    return f"{engine}|{src}|{subtitle}|{source_fp}|p{prev}|{ver}{speaker_stage}|{_speed_key_tag(speed)}"
 
 
 def trans_cache_key(settings: dict[str, Any]) -> str:

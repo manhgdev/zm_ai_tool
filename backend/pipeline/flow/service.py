@@ -1219,11 +1219,13 @@ class FlowService:
     def save_account(self, payload: dict[str, Any], account_id: str | None = None) -> dict[str, Any]:
         now = time.time()
         existing = store.get_row("accounts", account_id or "") or {}
+        email = str(payload.get("email") or existing.get("email") or "").strip()
+        email_name = email.split("@", 1)[0].strip()
         row = {
             **existing,
             "id": account_id or uuid.uuid4().hex[:12],
-            "label": str(payload.get("label") or existing.get("label") or payload.get("email") or "Flow account").strip(),
-            "email": str(payload.get("email") or existing.get("email") or "").strip(),
+            "label": email_name or str(payload.get("label") or existing.get("label") or "Flow account").strip(),
+            "email": email,
             "plan": str(payload.get("plan") or existing.get("plan") or "Free"),
             "projectId": str(payload.get("projectId") or existing.get("projectId") or "").strip(),
             "status": existing.get("status", "reconnect"),
@@ -1530,7 +1532,7 @@ class FlowService:
         threading.Thread(target=_cleanup_files, daemon=True, name="flow-folder-delete-cleanup").start()
         return len(removed)
 
-    def connect(self, account_id: str, *, force_interactive: bool = False) -> dict[str, Any]:
+    def connect(self, account_id: str, *, force_interactive: bool = False, cookies: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         account = store.get_row("accounts", account_id)
         if not account:
             raise KeyError(account_id)
@@ -1541,7 +1543,7 @@ class FlowService:
             store.patch_row("accounts", account_id, {"status": "connecting", "error": None, "updatedAt": time.time()})
         self._log("info", "account_connecting", account_id=account_id)
         threading.Thread(
-            target=lambda: asyncio.run(self._login(account_id, force_interactive=force_interactive)),
+            target=lambda: asyncio.run(self._login(account_id, force_interactive=force_interactive, cookies=cookies)),
             daemon=True,
             name=f"flow-login-{account_id}",
         ).start()
@@ -2242,7 +2244,7 @@ class FlowService:
 
 
 
-    async def _login(self, account_id: str, *, force_interactive: bool = False) -> None:
+    async def _login(self, account_id: str, *, force_interactive: bool = False, cookies: list[dict[str, Any]] | None = None) -> None:
         """Open a visible Chrome window to authenticate and sync the Flow account.
 
         If the account already has a saved projectId (was previously connected),
@@ -2253,7 +2255,7 @@ class FlowService:
         existing_project_id = str(account.get("projectId") or "")
 
         # Fast-path: try headless first when there's a saved session
-        if existing_project_id and not force_interactive:
+        if existing_project_id and not force_interactive and not cookies:
             try:
                 ok = await self._try_headless_reconnect(account_id, existing_project_id)
                 if ok:
@@ -2289,6 +2291,12 @@ class FlowService:
                 page_zoom=1.0,
             )
             await browser.start()
+            if cookies:
+                try:
+                    await browser.context.add_cookies(cookies)
+                except Exception:
+                    # Playwright validation can include cookie values in its error.
+                    raise RuntimeError("FLOW_COOKIE_IMPORT_FAILED") from None
             page = await browser.page()
 
             # Theo dõi khi user đóng Chrome để thoát loop ngay lập tức
@@ -2307,7 +2315,11 @@ class FlowService:
             existing_email = str(account.get("email") or "").strip()
             from urllib.parse import quote
 
-            if existing_project_id:
+            if cookies:
+                start_url = "https://labs.google/fx/tools/flow"
+                if existing_project_id:
+                    start_url += f"/project/{quote(existing_project_id, safe='')}"
+            elif existing_project_id:
                 # Tài khoản cũ: login_hint + continue về project cụ thể
                 project_url = f"https://flow.google.com/project/{existing_project_id}"
                 start_url = (
