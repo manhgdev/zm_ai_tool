@@ -9,7 +9,7 @@ export const APP_MODES = ['clone', 'live-preview', 'renders', 'film', 'batch', '
  * localStorage nên mở /download-video vẫn có thể rơi vào tab đã dùng lần trước.
  */
 export const APP_MODE_PATHS: Record<AppMode, string> = {
-  clone: '/',
+  clone: '/video-clone',
   'live-preview': '/live-preview',
   renders: '/renders',
   download: '/download-video',
@@ -48,7 +48,7 @@ export function loadAppMode(): AppMode {
   // URL được ưu tiên để link trực tiếp (đặc biệt /download-video) luôn đúng.
   if (typeof window !== 'undefined') {
     const fromPath = appModeFromPath(window.location.pathname)
-    if (fromPath && window.location.pathname !== '/') return fromPath
+    if (fromPath) return fromPath
   }
   try {
     return parseAppMode(localStorage.getItem(APP_MODE_LS))

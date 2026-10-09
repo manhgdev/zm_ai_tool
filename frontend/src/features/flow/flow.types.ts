@@ -73,6 +73,7 @@ export type FlowAccount = {
   label: string;
   plan: "Ultra" | "Pro" | "Plus" | "Free";
   email: string;
+  authMethod?: "chrome" | "cookie";
   status: "online" | "reconnect" | "connecting";
   credits: number | null;
   used: number;

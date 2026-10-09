@@ -660,11 +660,19 @@ APP_VERSION = app_version()
 os.environ["ZM_AI_TOOL_VERSION"] = APP_VERSION
 
 from fastapi.staticfiles import StaticFiles  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
 from main import app  # noqa: E402
 import uvicorn  # noqa: E402
 import webview  # noqa: E402
 
 web_dir = bundle / "dist"
+
+
+@app.get("/video-clone", include_in_schema=False)
+def clone_page():
+    return FileResponse(web_dir / "index.html")
+
+
 app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
 
 
@@ -878,7 +886,7 @@ def run_desktop() -> int:
         try:
             window = webview.create_window(
                 f"{APP_DISPLAY_NAME} v{APP_VERSION}",
-                f"{base}/?v={APP_VERSION}",
+                f"{base}/video-clone?v={APP_VERSION}",
                 **win_kw,
             )
         except TypeError:
@@ -887,7 +895,7 @@ def run_desktop() -> int:
             win_kw.pop("text_select", None)
             window = webview.create_window(
                 f"{APP_DISPLAY_NAME} v{APP_VERSION}",
-                f"{base}/?v={APP_VERSION}",
+                f"{base}/video-clone?v={APP_VERSION}",
                 **win_kw,
             )
         try:

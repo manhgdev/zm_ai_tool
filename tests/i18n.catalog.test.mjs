@@ -22,6 +22,7 @@ for (const paths of [
   ['pages/FlowPage.tsx', 'pages/FlowSeriesPanel.tsx'],
   ['pages/VideoCleanerPage.tsx'],
   ['pages/RendersPage.tsx'],
+  ['pages/LandingPage.tsx'],
   ['features/project/TranslationReview.tsx'],
   ['features/project/ScriptTranslationReview.tsx', 'features/studio/CloneBatchSettingsPanel.tsx', 'features/project/ProjectSidebar.tsx', 'features/editor/EditorProjectPanel.tsx', 'features/editor/EditorPropertiesPanel.tsx'],
   ['features/project/useTranslationProviders.ts'],
@@ -46,6 +47,24 @@ for (const paths of [
     }
   })
 }
+
+test('landing usage guide has bilingual navigation and all four topics', () => {
+  const pairs = new Map()
+  visit(parse('pages/LandingPage.tsx'), node => {
+    if (ts.isCallExpression(node) && node.expression.getText() === 't') {
+      pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
+    }
+  })
+  for (const vi of ['Hướng dẫn', 'Xem hướng dẫn', 'Cài đặt ứng dụng', 'Cấu hình lần đầu', 'Dịch & lồng tiếng video', 'Chỉnh sửa & xuất bản', 'Từ cài đặt, cấu hình đến chỉnh sửa và xuất video — đầy đủ các bước bên dưới.']) {
+    assert.ok(pairs.get(vi)?.trim(), `Missing English guide label for ${vi}`)
+    assert.notEqual(pairs.get(vi), vi)
+  }
+  const source = read('pages/LandingPage.tsx')
+  assert.match(source, /guides\.map\(\(guide, index\) => <details className="lp-guide-card" key=\{guide.title\} open>/)
+  assert.match(source, /<summary className="lp-guide-header">/)
+  assert.match(source, /className="lp-guide-toggle" aria-hidden="true">\+<\/span>/)
+  assert.match(read('pages/LandingPage.css'), /\.lp-guide-grid\s*\{[^}]*align-items: stretch/)
+})
 
 test('shared chrome and runtime dictionaries have complete translations', () => {
   for (const [path, dictionaries, size] of [

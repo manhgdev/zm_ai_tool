@@ -69,6 +69,16 @@ class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(account['label'], 'example')
         self.assertNotIn('password', put.call_args.args[1])
 
+    def test_save_account_accepts_short_gmail_name(self):
+        service = FlowService()
+        with patch('pipeline.flow.service.store.get_row', return_value=None), \
+             patch('pipeline.flow.service.store.list_rows', return_value=[]), \
+             patch('pipeline.flow.service.store.put_row', side_effect=lambda table, row: dict(row)) as put:
+            account = service.save_account({'email': 'name', 'authMethod': 'cookie'})
+        self.assertEqual(account['email'], 'name@gmail.com')
+        self.assertEqual(account['label'], 'name')
+        self.assertEqual(put.call_args.args[1]['authMethod'], 'cookie')
+
     def test_login_wall_triggers_session_login(self):
         err = Exception(
             "LOGIN_REQUIRED: HTTP 401 on batchCheckAsyncVideoGenerationStatus: "

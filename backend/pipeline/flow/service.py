@@ -1220,12 +1220,15 @@ class FlowService:
         now = time.time()
         existing = store.get_row("accounts", account_id or "") or {}
         email = str(payload.get("email") or existing.get("email") or "").strip()
+        if email and "@" not in email:
+            email = f"{email}@gmail.com"
         email_name = email.split("@", 1)[0].strip()
         row = {
             **existing,
             "id": account_id or uuid.uuid4().hex[:12],
             "label": email_name or str(payload.get("label") or existing.get("label") or "Flow account").strip(),
             "email": email,
+            "authMethod": str(payload.get("authMethod") or existing.get("authMethod") or "chrome"),
             "plan": str(payload.get("plan") or existing.get("plan") or "Free"),
             "projectId": str(payload.get("projectId") or existing.get("projectId") or "").strip(),
             "status": existing.get("status", "reconnect"),

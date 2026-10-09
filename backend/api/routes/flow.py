@@ -27,9 +27,14 @@ class AccountIn(BaseModel):
     plan: str = Field(default="Free", pattern="^(Pro|Plus|Ultra|Free)$")
     projectId: str = Field(default="", max_length=160)
     isDefault: bool = False
+    authMethod: str = Field(default="chrome", pattern="^(chrome|cookie)$")
 
 
 class AccountCreateIn(AccountIn):
+    cookie: SecretStr | None = Field(default=None, repr=False)
+
+
+class AccountUpdateIn(AccountIn):
     cookie: SecretStr | None = Field(default=None, repr=False)
 
 
@@ -227,10 +232,12 @@ def accounts_create(body: AccountCreateIn):
 
 
 @router.put("/accounts/{account_id}")
-def accounts_update(account_id: str, body: AccountIn):
+def accounts_update(account_id: str, body: AccountUpdateIn):
     if not store.get_row("accounts", account_id):
         raise HTTPException(404, "Flow account not found")
-    return service.save_account(body.model_dump(), account_id)
+    cookies = _labs_cookies(body.cookie.get_secret_value()) if body.cookie is not None else None
+    account = service.save_account(body.model_dump(exclude={"cookie"}), account_id)
+    return service.connect(account_id, cookies=cookies) if cookies else account
 
 
 @router.delete("/accounts/{account_id}")

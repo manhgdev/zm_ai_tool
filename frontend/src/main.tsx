@@ -44,10 +44,14 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
   }
 }
 
+if (window.location.pathname.replace(/\/+$/, '') === '/landing') {
+  window.history.replaceState(null, '', '/' + window.location.search + window.location.hash)
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      {window.location.pathname === '/landing' ? <LandingPage /> : <App />}
+      {window.location.pathname === '/' ? <LandingPage /> : <App />}
     </ErrorBoundary>
   </StrictMode>,
 )

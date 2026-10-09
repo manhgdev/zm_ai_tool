@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import html
 import hashlib
 import math
 import os
@@ -14,6 +15,7 @@ import time
 import traceback
 import uuid
 import urllib.request
+import xml.etree.ElementTree as ET
 import contextlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -152,6 +154,8 @@ def _clear_install_log() -> dict[str, Any]:
     except OSError as exc:
         return {"ok": False, "path": str(_install_log_path()), "error": str(exc)}
 _UPDATE_REPOSITORY = "manhgdev/zm_ai_tool_vip"
+_DOWNLOAD_RELEASE_LOCK = threading.Lock()
+_DOWNLOAD_RELEASE_CACHE: dict[str, Any] = {"release": None, "expires": 0.0}
 _UPDATE_LOCK = threading.Lock()
 _UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 30 * 60
 _UPDATE_RANGE_IDLE_TIMEOUT_SECONDS = 45
@@ -193,7 +197,7 @@ def _desktop_version() -> str:
     return str(os.environ.get("ZM_AI_TOOL_VERSION") or "0.0.0").strip()
 
 
-def _latest_release() -> dict[str, Any]:
+def _latest_release(*, allow_prerelease_fallback: bool = False) -> dict[str, Any]:
     request = urllib.request.Request(
         f"https://api.github.com/repos/{_UPDATE_REPOSITORY}/releases?per_page=20",
         headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AI-TOOL"},
@@ -202,10 +206,71 @@ def _latest_release() -> dict[str, Any]:
         payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, list):
         return {}
-    releases = [item for item in payload if isinstance(item, dict)
-                and not item.get('draft') and not item.get('prerelease')
-                and _version_key(str(item.get('tag_name') or '')) != (0, 0, 0)]
+    published = [item for item in payload if isinstance(item, dict)
+                 and not item.get('draft')
+                 and _version_key(str(item.get('tag_name') or '')) != (0, 0, 0)]
+    releases = [item for item in published if not item.get('prerelease')]
+    if not releases and allow_prerelease_fallback:
+        releases = published
     return max(releases, key=lambda item: _version_key(str(item.get('tag_name') or '')), default={})
+
+
+def _public_download_release() -> dict[str, Any]:
+    """Read published tags and actual asset links when the REST API is unavailable.
+
+    This metadata is only for browser downloads; updater execution still requires
+    GitHub API checksums from _latest_release().
+    """
+    base = f"https://github.com/{_UPDATE_REPOSITORY}"
+
+    def read(url: str) -> str:
+        request = urllib.request.Request(url, headers={"User-Agent": "ZM-AI-TOOL"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.read().decode("utf-8")
+
+    feed = ET.fromstring(read(f"{base}/releases.atom"))
+    prefix = f"{base}/releases/tag/"
+    tags = [link.get("href", "").removeprefix(prefix)
+            for link in feed.findall("{http://www.w3.org/2005/Atom}entry/{http://www.w3.org/2005/Atom}link")
+            if link.get("href", "").startswith(prefix)]
+    tags = [tag for tag in tags if _version_key(tag) != (0, 0, 0)]
+    tag = max(tags, key=_version_key, default="")
+    if not tag:
+        return {}
+    # Semantic version validation above also prevents injecting a URL path.
+    markup = read(f"{base}/releases/expanded_assets/{tag}")
+    asset_prefix = f"/{_UPDATE_REPOSITORY}/releases/download/{tag}/"
+    assets = []
+    for href in re.findall(r'href=[\"\']([^\"\']+)[\"\']', markup):
+        href = html.unescape(href)
+        if href.startswith(asset_prefix):
+            name = href.removeprefix(asset_prefix)
+            if name and "/" not in name:
+                assets.append({"name": name, "browser_download_url": f"https://github.com{href}"})
+    return {"tag_name": tag, "assets": assets}
+
+
+def _download_release() -> dict[str, Any]:
+    # One refresh per process avoids spending GitHub's anonymous quota on page views.
+    with _DOWNLOAD_RELEASE_LOCK:
+        cached = _DOWNLOAD_RELEASE_CACHE["release"]
+        if cached is not None and time.monotonic() < _DOWNLOAD_RELEASE_CACHE["expires"]:
+            return cached
+        try:
+            try:
+                release = _latest_release(allow_prerelease_fallback=True)
+            except Exception:
+                release = _public_download_release()
+            if not release.get("assets") and cached:
+                raise RuntimeError("DOWNLOAD_RELEASE_EMPTY")
+        except Exception:
+            if cached is None:
+                raise
+            # Keep known published links available during a temporary outage.
+            _DOWNLOAD_RELEASE_CACHE["expires"] = time.monotonic() + 60
+            return cached
+        _DOWNLOAD_RELEASE_CACHE.update(release=release, expires=time.monotonic() + 300)
+        return release
 
 
 
@@ -218,15 +283,20 @@ def _is_windows_installed_build() -> bool:
     return marker.is_file()
 
 
-def _release_asset(release: dict[str, Any]) -> dict[str, Any] | None:
+def _release_asset(
+    release: dict[str, Any], *, target_platform: str | None = None,
+    machine: str | None = None, installed: bool | None = None,
+) -> dict[str, Any] | None:
     tag = str(release.get("tag_name") or "")
     version = _release_version(tag)
     if _version_key(tag) == (0, 0, 0):
         return None
     assets = release.get("assets") or []
-    if sys.platform == "win32":
+    target_platform = target_platform or sys.platform
+    if target_platform == "win32":
         # Bản Installed → ưu tiên Setup.exe; bản Portable → ưu tiên Portable.zip
-        if _is_windows_installed_build():
+        use_installer = installed if installed is not None else _is_windows_installed_build()
+        if use_installer:
             candidates = [
                 f"ZM_AI_TOOL_v{version}-windows-x64-Setup.exe",
                 f"ZM_AI_TOOL_v{version}-windows-x64-Portable.zip",
@@ -237,9 +307,9 @@ def _release_asset(release: dict[str, Any]) -> dict[str, Any] | None:
                 f"ZM_AI_TOOL_v{version}-windows-x64-Portable.zip",
                 f"ZM_AI_TOOL_v{version}-windows-x64.zip",
             ]
-    elif sys.platform == "darwin":
+    elif target_platform == "darwin":
         import platform as _platform
-        machine = _platform.machine().lower()
+        machine = (machine or _platform.machine()).lower()
         if machine in {"arm64", "aarch64"}:
             arch_tags = ("arm64",)
         elif machine in {"x86_64", "amd64"}:
@@ -1757,6 +1827,34 @@ def api_system_restart():
     subprocess.Popen([sys.executable, "--restart-after", str(os.getpid())])
     threading.Timer(0.8, lambda: os._exit(0)).start()
     return {"ok": True, "message": "Đang khởi động lại…"}
+
+
+@router.get("/api/system/downloads")
+def api_desktop_downloads():
+    """Public installer links from the same release and asset selector as updates."""
+    try:
+        release = _download_release()
+    except Exception as exc:
+        raise HTTPException(502, "DOWNLOAD_RELEASE_UNAVAILABLE") from exc
+    downloads = {}
+    for key, target, arch in (
+        ("windows", "win32", "x64"),
+        ("macos-arm64", "darwin", "arm64"),
+        ("macos-x64", "darwin", "x86_64"),
+    ):
+        asset = _release_asset(release, target_platform=target, machine=arch, installed=True)
+        if not asset:
+            continue
+        url = str(asset.get("browser_download_url") or "")
+        # Only expose actual GitHub release assets, never an arbitrary redirect.
+        if not url.startswith(f"https://github.com/{_UPDATE_REPOSITORY}/releases/download/"):
+            continue
+        downloads[key] = {"url": url, "name": str(asset.get("name") or "")}
+    return {
+        "version": _release_version(str(release.get("tag_name") or "")),
+        "prerelease": bool(release.get("prerelease")),
+        "downloads": downloads,
+    }
 
 
 @router.get("/api/system/update/check")

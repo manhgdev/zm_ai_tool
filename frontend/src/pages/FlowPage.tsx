@@ -1281,7 +1281,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const editAccount = (account: FlowAccount) => {
     if (accountSaving) return;
-    setAccountLoginMode("chrome");
+    setAccountLoginMode(account.authMethod === "cookie" ? "cookie" : "chrome");
     setAccountCookie("");
     setAccountDraft({
       label: account.label,
@@ -1292,7 +1292,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const saveAccount = async () => {
     if (accountSaving) return;
-    const importingCookie = editingAccount === "new" && accountLoginMode === "cookie";
+    const normalizedEmail = accountDraft.email.trim().includes("@")
+      ? accountDraft.email.trim()
+      : `${accountDraft.email.trim()}@gmail.com`;
+    const importingCookie = accountLoginMode === "cookie";
     if (!accountDraft.email.trim() || (importingCookie && !accountCookie.trim())) return;
     setAccountSaving(true);
     try {
@@ -1306,7 +1309,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...accountDraft,
-          label: accountDraft.email.trim().split("@", 1)[0],
+          email: normalizedEmail,
+          label: normalizedEmail.split("@", 1)[0],
+          authMethod: accountLoginMode,
           plan: accountDraft.plan,
           ...(importingCookie ? { cookie: accountCookie.trim() } : {}),
           isDefault: editing?.isDefault || false,
@@ -2097,7 +2102,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <span>{t("Email Google", "Google email")}</span>
                   <input
                     autoFocus
-                    type="email"
+                    type="text"
+                    inputMode="email"
                     required
                     value={accountDraft.email}
                     onChange={(event) =>
@@ -2106,10 +2112,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         email: event.target.value,
                       }))
                     }
-                    placeholder="name@gmail.com"
+                    placeholder="name"
                   />
                 </label>
-                {editingAccount === "new" && <label>
+                <label>
                   <span>{t("Cách kết nối", "Connection method")}</span>
                   <select disabled={accountSaving} value={accountLoginMode} onChange={(event) => {
                     setAccountLoginMode(event.target.value as "chrome" | "cookie");
@@ -2118,7 +2124,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     <option value="chrome">{t("Đăng nhập Chrome", "Sign in with Chrome")}</option>
                     <option value="cookie">{t("Dán Cookie Google Labs", "Paste Google Labs Cookie")}</option>
                   </select>
-                </label>}
+                </label>
                 {accountLoginMode === "cookie" && <label className="flow-account-cookie">
                   <span>{t("Cookie Google Labs *", "Google Labs Cookie *")}</span>
                   <small id="flow-cookie-help">{t("Mở labs.google/fx/tools/flow đã đăng nhập → F12 → Network → chọn request tới labs.google → Request Headers → sao chép Cookie. Cookie là thông tin đăng nhập, không chia sẻ với người khác; phiên được lưu trong Chrome profile của tài khoản.", "Open labs.google/fx/tools/flow while signed in → F12 → Network → select a labs.google request → Request Headers → copy Cookie. Cookies are sign-in credentials; do not share them. The session is stored in the account's Chrome profile.")}</small>
