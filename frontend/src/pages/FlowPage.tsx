@@ -2325,7 +2325,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         {utilityView === "help" && (
           <FlowTemplatesPanel />
         )}
-        {utilityView === "series" && (
+        <div
+          style={{ display: utilityView === "series" ? "contents" : "none" }}
+          aria-hidden={utilityView !== "series"}
+        >
           <FlowSeriesPanel
             onOpenSrtImage={onOpenSrtImage}
             onOpenQueue={() => {
@@ -2366,7 +2369,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               return added[0]?.id || "";
             }}
           />
-        )}
+        </div>
         {!utilityView && showCreate && (
           <div className="flow-create-grid">
             {seriesDraft && (

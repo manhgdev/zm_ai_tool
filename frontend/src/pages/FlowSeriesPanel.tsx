@@ -911,6 +911,18 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                 </button>
               </div>
 
+              {drafting && (
+                <div className="fsp-ai-progress" role="status" aria-live="polite">
+                  <div className="fsp-ai-progress-label">
+                    <span>{t('AI đang tạo bản nháp Series…', 'AI is creating the Series draft…')}</span>
+                    <span>{t('Có thể chuyển tab, tiến trình vẫn được giữ.', 'You can switch tabs; progress is preserved.')}</span>
+                  </div>
+                  <div className="fsp-ai-progress-track" aria-hidden="true">
+                    <div className="fsp-ai-progress-fill" />
+                  </div>
+                </div>
+              )}
+
               {!aiLoading && !aiProviders.some(chatProviderUsable) && (
                 <p className="fsp-create-hint">{t('Thêm API key trong Cài đặt → AI Provider, hoặc đăng nhập ChatGPT ở tab Chat.', 'Add an API key in Settings → AI Provider, or sign in to ChatGPT in the Chat tab.')}</p>
               )}

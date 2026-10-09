@@ -6,6 +6,29 @@
   font-size: 0.92rem;
 }
 
+/* Keep full diagnostics scrollable without clipping Sonner's close button. */
+[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-content] {
+  max-height: min(320px, calc(100vh - 112px));
+  max-height: min(320px, calc(100dvh - 112px));
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: currentColor transparent;
+  overflow-wrap: anywhere;
+}
+
+[data-sonner-toaster] [data-sonner-toast] [data-content] > * {
+  flex-shrink: 0;
+}
+
+[data-sonner-toaster] [data-content]::-webkit-scrollbar { width: 6px; }
+[data-sonner-toaster] [data-content]::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+  background: currentColor;
+}
+
 /* License gate has no Header.  Do not keep the normal 58px Header grid row:
    WebView2 can then paint the full-height gate outside its grid hit region. */
 .app.app-license-gate { grid-template-rows: minmax(0, 1fr); }

@@ -137,6 +137,32 @@
 .fsp-create-row .fsp-field:nth-child(2) { flex: 1.5 1 160px; }
 .fsp-create-row .fsp-field:nth-child(3) { flex: 0 0 70px; min-width: 60px; max-width: 80px; }
 .fsp-create-go { min-height: 36px; padding: 0 18px; align-self: flex-end; }
+.fsp-ai-progress { display: grid; gap: 6px; margin-top: 2px; }
+.fsp-ai-progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.fsp-ai-progress-label span:first-child { color: var(--ink); font-weight: 700; }
+.fsp-ai-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface));
+}
+.fsp-ai-progress-fill {
+  width: 38%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  animation: fsp-ai-progress-slide 1.25s ease-in-out infinite;
+}
+@keyframes fsp-ai-progress-slide {
+  0% { transform: translateX(-110%); }
+  55%, 100% { transform: translateX(290%); }
+}
 /* Switch field inside create-row — reuses .fsp-headless-cb for the actual toggle */
 .fsp-field-switch { flex: 0 0 auto !important; min-width: 0 !important; align-items: center; gap: 6px; cursor: pointer; }
 .fsp-create-hint { margin: 0; font-size: 12px; color: var(--muted-foreground); }

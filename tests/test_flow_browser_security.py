@@ -7,8 +7,57 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-from pipeline.flow.browser import BrowserManager, _visible_window_geometry, profile_lock
+from pipeline.flow.browser import BrowserManager, _visible_window_geometry, profile_lock, chrome_executable
 from pipeline.flow.service import _PROJECT_RE, FlowService
+
+
+class ChromeDiscoveryTests(unittest.TestCase):
+    def test_linux_system_and_path_binaries(self):
+        for binary in ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+                       '/opt/google/chrome/chrome', '/usr/bin/chromium-browser',
+                       '/custom/bin/google-chrome']:
+            with self.subTest(binary=binary), patch('sys.platform', 'linux'), \
+                 patch('pipeline.flow.browser.shutil.which', return_value=binary), \
+                 patch.object(Path, 'glob', return_value=[]), \
+                 patch.object(Path, 'is_file', lambda path: str(path) == binary), \
+                 patch('pipeline.flow.browser.os.access', return_value=True):
+                self.assertEqual(chrome_executable(), Path(binary))
+
+    def test_linux_cache_fallbacks_require_executable_files(self):
+        for relative in ['puppeteer/chrome/linux-147.0/chrome-linux64/chrome',
+                         'ms-playwright/chromium-1234/chrome-linux/chrome',
+                         'ms-playwright/chromium-1234/chrome-linux64/chrome']:
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as raw:
+                binary = Path(raw) / relative
+                binary.parent.mkdir(parents=True)
+                binary.touch()
+                with patch('sys.platform', 'linux'), \
+                     patch.dict(os.environ, {'XDG_CACHE_HOME': raw, 'PUPPETEER_CACHE_DIR': '', 'PLAYWRIGHT_BROWSERS_PATH': ''}), \
+                     patch('pipeline.flow.browser.shutil.which', return_value=None), \
+                     patch.object(Path, 'is_file', lambda path: path == binary), \
+                     patch('pipeline.flow.browser.os.access', return_value=True):
+                    self.assertEqual(chrome_executable(), binary)
+                    with patch('pipeline.flow.browser.os.access', return_value=False):
+                        self.assertIsNone(chrome_executable())
+
+    def test_system_install_has_priority_over_cache(self):
+        with patch('sys.platform', 'linux'), patch.object(Path, 'is_file', return_value=True), \
+             patch.object(Path, 'glob', return_value=[Path('/cache/chrome')]), \
+             patch('pipeline.flow.browser.os.access', return_value=True), \
+             patch('pipeline.flow.browser.shutil.which', return_value=None):
+            self.assertEqual(chrome_executable(), Path('/usr/bin/google-chrome'))
+
+    def test_custom_cache_directory(self):
+        with tempfile.TemporaryDirectory() as raw:
+            binary = Path(raw) / 'chrome/linux-147.0/chrome-linux64/chrome'
+            binary.parent.mkdir(parents=True)
+            binary.touch()
+            with patch('sys.platform', 'linux'), \
+                 patch.dict(os.environ, {'PUPPETEER_CACHE_DIR': raw}), \
+                 patch('pipeline.flow.browser.shutil.which', return_value=None), \
+                 patch.object(Path, 'is_file', lambda path: path == binary), \
+                 patch('pipeline.flow.browser.os.access', return_value=True):
+                self.assertEqual(chrome_executable(), binary)
 
 
 class FlowBrowserGeometryTest(unittest.TestCase):
@@ -68,6 +117,23 @@ class FlowBrowserGeometryTest(unittest.TestCase):
 
 
 class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_only_linux_root_disables_sandbox(self):
+        for platform, uid, sandbox in [('linux', 0, False), ('linux', 1000, True), ('darwin', 0, True), ('win32', 0, True)]:
+            context = SimpleNamespace(add_init_script=AsyncMock(), close=AsyncMock())
+            launch = AsyncMock(return_value=context)
+            playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch), stop=AsyncMock())
+            with self.subTest(platform=platform, uid=uid), tempfile.TemporaryDirectory() as raw, \
+                 patch('sys.platform', platform), patch('os.geteuid', return_value=uid, create=True), \
+                 patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome')), \
+                 patch('pipeline.flow.browser.network_available', return_value=True), \
+                 patch('pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))):
+                manager = BrowserManager(headless=True, profile_dir=Path(raw))
+                await manager.start()
+                self.assertEqual(launch.call_args.kwargs['chromium_sandbox'], sandbox)
+                self.assertEqual(launch.await_count, 1)
+                await manager.stop()
+                self.assertFalse(manager._profile_lock.locked())
+
     async def test_linux_without_display_ignores_visible_browser_request(self):
         with patch.object(sys, 'platform', 'linux'), patch.dict(os.environ, {'DISPLAY': '', 'WAYLAND_DISPLAY': ''}):
             manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-headless-test'))
@@ -117,7 +183,10 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
         context = SimpleNamespace(add_init_script=AsyncMock())
         launch = AsyncMock(return_value=context)
         playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch), stop=AsyncMock())
-        with tempfile.TemporaryDirectory() as raw, patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome.exe')), patch(
+        with patch('sys.platform', 'darwin'), \
+             patch('pipeline.flow.browser.network_available', return_value=True), \
+             patch('pipeline.flow.browser._capture_active_window', return_value=None), \
+             tempfile.TemporaryDirectory() as raw, patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome.exe')), patch(
             'pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))
         ):
             for headless in (False, True):
@@ -148,7 +217,9 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
     async def test_blocked_launch_stops_driver_without_disabling_sandbox(self):
         launch = AsyncMock(side_effect=RuntimeError('blocked by policy'))
         playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch), stop=AsyncMock())
-        with tempfile.TemporaryDirectory() as raw, patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome.exe')), patch(
+        with patch('os.geteuid', return_value=1000, create=True), \
+             patch('pipeline.flow.browser.network_available', return_value=True), \
+             tempfile.TemporaryDirectory() as raw, patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome.exe')), patch(
             'pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))
         ):
             manager = BrowserManager(headless=True, profile_dir=Path(raw))
@@ -156,6 +227,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 await manager.start()
             playwright.stop.assert_awaited_once()
             self.assertEqual(launch.await_count, 1)
+            self.assertTrue(launch.call_args.kwargs['chromium_sandbox'])
 
 
 class SessionTests(unittest.TestCase):

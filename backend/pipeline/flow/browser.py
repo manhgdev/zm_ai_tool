@@ -12,6 +12,7 @@ import subprocess
 import threading
 import sys
 import signal
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -151,7 +152,7 @@ def profile_lock(path: Path):
 
 
 def chrome_executable() -> Path | None:
-    """Locate a supported Chrome installation without relying on PATH."""
+    """Locate Chrome from system installs, PATH, or known automation caches."""
     candidates: list[Path]
     if sys.platform == "darwin":
         candidates = [Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")]
@@ -159,8 +160,15 @@ def chrome_executable() -> Path | None:
         roots = [Path(os.environ.get("PROGRAMFILES", "")), Path(os.environ.get("PROGRAMFILES(X86)", "")), Path(os.environ.get("LOCALAPPDATA", ""))]
         candidates = [root / "Google/Chrome/Application/chrome.exe" for root in roots if str(root)]
     else:
-        candidates = [Path("/usr/bin/google-chrome"), Path("/usr/bin/google-chrome-stable"), Path("/usr/bin/chromium")]
-    return next((path for path in candidates if path.is_file()), None)
+        candidates = [Path("/usr/bin/google-chrome"), Path("/usr/bin/google-chrome-stable"), Path("/opt/google/chrome/chrome"), Path("/usr/bin/chromium"), Path("/usr/bin/chromium-browser")]
+        candidates.extend(Path(found) for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser") if (found := shutil.which(name)))
+        cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        puppeteer_cache = Path(os.environ.get("PUPPETEER_CACHE_DIR") or cache / "puppeteer")
+        playwright_cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or cache / "ms-playwright")
+        candidates.extend(sorted(puppeteer_cache.glob("chrome/linux-*/chrome-linux64/chrome"), reverse=True))
+        candidates.extend(sorted(playwright_cache.glob("chromium-*/chrome-linux/chrome"), reverse=True))
+        candidates.extend(sorted(playwright_cache.glob("chromium-*/chrome-linux64/chrome"), reverse=True))
+    return next((path for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
 
 
 class BrowserManager:
@@ -212,6 +220,9 @@ class BrowserManager:
             if self.google_login_compat:
                 launch_args.append("--disable-blink-features=AutomationControlled")
             launch_args.extend(["--disable-infobars", *visible_args])
+            # Linux root cannot use Chromium's sandbox. Keep it enabled for all
+            # non-root sessions; do not retry arbitrary failures unsandboxed.
+            sandbox = not (sys.platform.startswith("linux") and getattr(os, "geteuid", lambda: -1)() == 0)
             self._ctx = await asyncio.wait_for(
                 self._pw.chromium.launch_persistent_context(
                     str(self.profile_dir),
@@ -223,7 +234,7 @@ class BrowserManager:
                     accept_downloads=True,
                     locale="en-US",
                     extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-                    chromium_sandbox=True,
+                    chromium_sandbox=sandbox,
                     args=launch_args,
                 ),
                 timeout=60,
