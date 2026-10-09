@@ -937,10 +937,11 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                       <div>
                         <strong>{stats.title || t('(chưa có tên)', '(untitled)')}</strong>
                         <span>{t(`${stats.episodes} tập · ${stats.scenes} cảnh`, `${stats.episodes} episodes · ${stats.scenes} scenes`)}</span>
+                        {!stats.scenes && <span className="fsp-draft-warning">{t('Chưa nhận diện được dòng cảnh; bạn vẫn có thể sửa rồi lưu.', 'No scene lines detected; you can still edit and save.')}</span>}
                       </div>
                       <div className="fsp-draft-actions">
                         <button type="button" className="fsp-btn" onClick={() => setDraft(null)}>{t('Bỏ bản nháp', 'Discard draft')}</button>
-                        <button type="button" className="fsp-btn fsp-btn-primary" onClick={() => void importDraft()} disabled={!stats.scenes}>
+                        <button type="button" className="fsp-btn fsp-btn-primary" onClick={() => void importDraft()} disabled={!draft.text.trim() || drafting}>
                           {t('Lưu thành Series', 'Save as Series')}
                         </button>
                       </div>

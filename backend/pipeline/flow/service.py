@@ -2290,6 +2290,8 @@ class FlowService:
                 fullscreen=True,
                 page_zoom=1.0,
             )
+            # Linux without a display normalizes visible requests to headless.
+            headless_login = browser.headless
             await browser.start()
             if cookies:
                 try:
@@ -2407,6 +2409,11 @@ class FlowService:
                         break  # Chrome closed by user
 
                     is_auth, pid = await _is_flow_authenticated()
+                    if headless_login and not is_auth and (
+                        urlsplit(str(page.url or "")).hostname == "accounts.google.com"
+                        or "/about" in str(page.url or "")
+                    ):
+                        raise RuntimeError("FLOW_LOGIN_VERIFICATION_REQUIRED")
                     if is_auth:
                         if pid:
                             project_id = pid

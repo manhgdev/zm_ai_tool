@@ -11,6 +11,39 @@ from pipeline.flow.service import FlowService, _session_needs_login
 
 
 class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_effective_headless_login_stops_at_login_wall_and_releases_account(self):
+        for url in ('https://accounts.google.com/ServiceLogin', 'https://labs.google/fx/tools/flow/about'):
+            with self.subTest(url=url):
+                service = FlowService()
+                service._connecting_accounts.add('acc1')
+                page = MagicMock(url=url)
+                page.goto = AsyncMock()
+                page.locator.return_value.first.wait_for = AsyncMock(side_effect=RuntimeError('no email field'))
+                page.locator.return_value.first.count = AsyncMock(return_value=0)
+                # Bound the old buggy loop too, so a regression fails without waiting 10 minutes.
+                page.is_closed.side_effect = [False, True]
+                browser = MagicMock(headless=True)
+                browser.start = AsyncMock()
+                browser.stop = AsyncMock()
+                browser.page = AsyncMock(return_value=page)
+                browser.context.add_cookies = AsyncMock()
+                cookies = [{'name': 'test', 'value': 'test', 'domain': '.google.com', 'path': '/'}]
+                with patch('pipeline.flow.browser.BrowserManager', return_value=browser) as manager, \
+                     patch('pipeline.flow.service.store.get_row', return_value={'id': 'acc1'}), \
+                     patch('pipeline.flow.service.store.patch_row') as update, \
+                     patch('pipeline.flow.service.asyncio.sleep', new_callable=AsyncMock), \
+                     patch('pipeline.core.desktop_window.request_desktop_foreground'), \
+                     patch.object(service, '_log'), patch.object(service, '_wake_account_waiters'), \
+                     patch.object(service, '_requeue_auth_failed_jobs') as requeue:
+                    await service._login('acc1', cookies=cookies)
+                self.assertFalse(manager.call_args.kwargs['headless'])
+                self.assertEqual(update.call_args.args[2]['error'], 'FLOW_LOGIN_VERIFICATION_REQUIRED')
+                self.assertEqual(update.call_args.args[2]['status'], 'reconnect')
+                browser.context.add_cookies.assert_awaited_once_with(cookies)
+                browser.stop.assert_awaited_once()
+                self.assertNotIn('acc1', service._connecting_accounts)
+                requeue.assert_not_called()
+
     def test_authenticated_lobby_still_enters_project_selection(self):
         import ast
         import inspect

@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
+import { explainFlowError } from '../frontend/src/features/flow/flow.explain.ts'
 
 const read = path => readFileSync(new URL(`../frontend/src/${path}`, import.meta.url), 'utf8')
 const parse = path => ts.createSourceFile(path, read(path), ts.ScriptTarget.Latest, true)
@@ -86,6 +87,18 @@ test('Flow cookie account inputs have Vietnamese and English labels', () => {
   }
   assert.doesNotMatch(read('pages/FlowPage.tsx'), /Tên hiển thị|Định danh tài khoản/)
   assert.doesNotMatch(read('pages/FlowPage.tsx'), /Project ID/)
+})
+
+test('headless Flow login explains cookie and desktop recovery in both languages', () => {
+  const error = explainFlowError('FLOW_LOGIN_VERIFICATION_REQUIRED')
+  assert.equal(error.code, 'FLOW_LOGIN_VERIFICATION_REQUIRED')
+  assert.notEqual(error.titleVi, error.titleEn)
+  assert.match(error.actionVi, /Cookie Google Labs mới/)
+  assert.match(error.actionEn, /fresh Google Labs cookies/)
+  for (const action of [error.actionVi, error.actionEn]) {
+    assert.match(action, /desktop\/VNC/)
+    assert.doesNotMatch(action, /[Pp]assword/)
+  }
 })
 
 test('CapCut errors produce Vietnamese and English messages while preserving diagnostics', () => {

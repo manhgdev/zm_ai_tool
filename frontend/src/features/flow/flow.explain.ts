@@ -100,10 +100,10 @@ export function explainFlowError(message: string): FlowExplain {
       summaryVi: "", summaryEn: "",
       actionVi: code === "FLOW_LOGIN_PASSWORD_REQUIRED"
         ? "Sửa tài khoản, nhập lại Password rồi bấm Lưu và kết nối. Mật khẩu không được lưu sau khi khởi động lại."
-        : "Kiểm tra Email/Password. Nếu Google yêu cầu OTP/CAPTCHA hoặc chặn đăng nhập, cần xác minh trong Chrome có màn hình trên máy chạy backend (VPS cần desktop/VNC).",
+        : "Phiên Google chưa đăng nhập hoặc cookie đã hết hạn. Kết nối bằng Cookie Google Labs mới, hoặc hoàn tất đăng nhập/xác minh trong Chrome có màn hình trên máy chạy backend (VPS cần desktop/VNC).",
       actionEn: code === "FLOW_LOGIN_PASSWORD_REQUIRED"
         ? "Edit the account, enter the password, then select Save and connect. Passwords do not survive a restart."
-        : "Check the email/password. If Google requires OTP/CAPTCHA or blocks sign-in, complete verification in visible Chrome on the backend host (a VPS needs a desktop/VNC).",
+        : "The Google session is signed out or its cookies have expired. Connect with fresh Google Labs cookies, or complete sign-in/verification in visible Chrome on the backend host (a VPS needs a desktop/VNC).",
     };
   }
 
