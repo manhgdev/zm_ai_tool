@@ -66,6 +66,33 @@ test('landing usage guide has bilingual navigation and all four topics', () => {
   assert.match(read('pages/LandingPage.css'), /\.lp-guide-grid\s*\{[^}]*align-items: stretch/)
 })
 
+test('landing value proposition and creation paths have bilingual copy and real previews', () => {
+  const pairs = new Map()
+  visit(parse('pages/LandingPage.tsx'), node => {
+    if (ts.isCallExpression(node) && node.expression.getText() === 't') {
+      pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
+    }
+  })
+  for (const vi of ['Làm video.', 'Đậm chất của bạn.', 'AI xử lý. Bạn làm chủ câu chuyện.', 'VIDEO CÓ SẴN', 'KỊCH BẢN CỦA BẠN', 'Ý TƯỞNG MỚI', 'Giao diện thật. Quyền kiểm soát thật.', 'AI làm phần nặng.', 'Bạn giữ phần sáng tạo.']) {
+    assert.ok(pairs.get(vi)?.trim(), `Missing English landing copy for ${vi}`)
+    assert.notEqual(pairs.get(vi), vi)
+  }
+  const source = read('pages/LandingPage.tsx')
+  assert.match(source, /const \[preview, setPreview\] = useState\(0\)/)
+  assert.match(source, /const previews = \[\s*\{[^\n]*image: '\/previews\/live-previews\.png'/)
+  assert.match(source, /id="use-cases"/)
+  assert.match(source, /outcomes\.map/)
+  assert.match(source, /download=\{asset.name\}/)
+  const css = read('pages/LandingPage.css')
+  assert.match(css, /--lp-bg: #fff;/)
+  assert.match(css, /\.landing\[data-theme="dark"\] \.lp-hero\s*\{/)
+  assert.match(css, /\.landing\[data-theme="dark"\] \.lp-workflow-section\s*\{/)
+  assert.match(css, /\.lp-preview-tabs\s*\{[^}]*background: var\(--lp-surface\)/)
+  assert.match(css, /\.lp-preview-screen img\s*\{[^}]*width: 100%; height: auto;/)
+  assert.match(css, /\.lp-preview-screen img\s*\{[^}]*border-radius: 0 0 3% 3%/)
+  assert.doesNotMatch(css, /\.lp-preview-screen\s*\{[^}]*aspect-ratio:/)
+})
+
 test('shared chrome and runtime dictionaries have complete translations', () => {
   for (const [path, dictionaries, size] of [
     ['app/i18n.tsx', ['MESSAGES'], 2],

@@ -58,6 +58,11 @@ export default function LandingPage() {
     { title: t('Phụ đề theo phong cách bạn.', 'Subtitles in your style.'), text: t('Tùy chỉnh font, màu sắc, vị trí và xuất phụ đề cho video của bạn.', 'Customize fonts, colors and placement, then export subtitles for your video.'), image: '/previews/caption.png', path: '/subtitle-export', icon: IconGlobe, tag: t('PHỤ ĐỀ & CAPTION', 'SUBTITLES & CAPTIONS') },
     { title: t('Khung hình gọn, sạch hơn.', 'A cleaner frame.'), text: t('Xử lý vùng chữ, logo và chi tiết thừa trước khi dựng lại video.', 'Process text, logos and unwanted details before editing your video.'), image: '/previews/clean-video.png', path: '/video-cleaner', icon: IconFilm, tag: t('VIDEO CLEANER', 'VIDEO CLEANER') },
   ]
+  const outcomes = [
+    { icon: IconGlobe, tag: t('VIDEO CÓ SẴN', 'AN EXISTING VIDEO'), title: t('Một câu chuyện. Thêm ngôn ngữ.', 'One story. More languages.'), text: t('Đưa video đến khán giả mới với bản dịch, giọng lồng tiếng và phụ đề bạn có thể kiểm tra, chỉnh sửa.', 'Bring your video to a new audience with translations, dubbing and subtitles you can review and edit.'), steps: t('Nhận dạng → Dịch → Lồng tiếng', 'Transcribe → Translate → Dub'), path: products[0].path },
+    { icon: IconMic, tag: t('KỊCH BẢN CỦA BẠN', 'YOUR SCRIPT'), title: t('Kịch bản. Thành giọng kể.', 'Your script. A new voice.'), text: t('Chọn giọng, nghe thử từng câu và chỉnh timing để lời đọc đi cùng nhịp video.', 'Choose a voice, preview each line and adjust the timing to match your video.'), steps: t('Kịch bản → Giọng đọc → Timing', 'Script → Voice → Timing'), path: products[2].path },
+    { icon: IconFilm, tag: t('Ý TƯỞNG MỚI', 'A NEW IDEA'), title: t('Từ một prompt. Đến cảnh quay.', 'From a prompt. To a scene.'), text: t('Phát triển ý tưởng thành storyboard, keyframe và cảnh quay với Flow, rồi hoàn thiện trong editor.', 'Develop your idea into storyboards, keyframes and scenes with Flow, then finish it in the editor.'), steps: t('Ý tưởng → Flow → Biên tập', 'Idea → Flow → Edit'), path: products[1].path },
+  ]
   const workflow = [
     [t('Đưa ý tưởng vào', 'Bring your idea'), t('Bắt đầu từ video, SRT, văn bản hoặc một prompt.', 'Start with a video, SRT, text or a prompt.')],
     [t('Để AI hỗ trợ', 'Let AI help'), t('Nhận dạng, dịch, tạo giọng hoặc dựng cảnh theo nhu cầu.', 'Transcribe, translate, generate voices or build scenes.')],
@@ -118,16 +123,25 @@ export default function LandingPage() {
     <main id="main">
       <section className="lp-hero">
         <div className="lp-container">
-          <div className="lp-eyebrow lp-hero-badge"><span className="lp-status-dot" />{t('STUDIO AI CHO NHÀ SÁNG TẠO', 'AI STUDIO FOR CREATORS')}<span className="lp-badge-tag">Windows + macOS</span></div>
-          <h1>{t('Ý tưởng của bạn.', 'Your idea.')}<br /><span>{t('Cả một studio để tạo nên.', 'A whole studio to create it.')}</span></h1>
-          <p className="lp-hero-intro">{t('Dịch video, lồng tiếng, tạo cảnh quay và biên tập với AI.', 'Translate, dub, generate scenes and edit with AI.')}<br />{' '}{t('Từ nội dung đầu tiên đến thành phẩm — trong một workspace.', 'From your first idea to the finished video — in one workspace.')}</p>
+          <div className="lp-hero-top">
+          <div className="lp-hero-copy">
+            <div className="lp-eyebrow lp-hero-badge"><span className="lp-status-dot" />{t('STUDIO AI CHO NHÀ SÁNG TẠO', 'AI STUDIO FOR CREATORS')}<span className="lp-badge-tag">Windows + macOS</span></div>
+            <h1>{t('Làm video.', 'Make videos.')}<br /><span>{t('Đậm chất của bạn.', 'Make them yours.')}</span></h1>
+            <div className="lp-hero-signature"><span aria-hidden="true">✦</span>{t('AI xử lý. Bạn làm chủ câu chuyện.', 'AI does the processing. You own the story.')}</div>
+          </div>
+          <div className="lp-hero-pitch">
+          <p className="lp-hero-intro">{t('Dịch & lồng tiếng video. Tạo giọng đọc. Dựng cảnh với Flow.', 'Translate & dub videos. Generate voices. Create scenes with Flow.')} <strong>{t('Từ ý tưởng đến timeline — trong một ứng dụng.', 'From your idea to the timeline — in one app.')}</strong></p>
           <div className="lp-hero-actions">
             {downloadLink('windows', t('Tải cho Windows', 'Download for Windows'))}
             {downloadLink(macArch, t('Tải cho macOS', 'Download for macOS'), 'lp-button lp-button-secondary')}
             <a className="lp-text-link" href="#guide"><IconPlay size={16} />{t('Xem hướng dẫn', 'View guide')}</a>
           </div>
-          <div className="lp-hero-meta"><span><IconCheck size={15} />{t('Một bộ công cụ kết nối', 'One connected toolkit')}</span><span><IconCheck size={15} />{t('Chủ động chỉnh từng chi tiết', 'Control every detail')}</span><a href="#download">macOS: {macArch === 'macos-arm64' ? 'Apple Silicon' : 'Intel'} · {t('Chọn bản khác', 'Choose another version')}<IconArrowRight size={13} /></a></div>
+          <div className="lp-hero-meta"><span><IconCheck size={15} />{t('Chỉnh trực tiếp trên timeline', 'Edit directly on the timeline')}</span><a href="#download">macOS: {macArch === 'macos-arm64' ? 'Apple Silicon' : 'Intel'} · {t('Chọn bản khác', 'Choose another version')}<IconArrowRight size={13} /></a></div>
           {downloadState === 'error' && <p className="lp-download-error" role="status">{t('Chưa kết nối được nguồn tải.', 'Could not connect to the download source.')} <button type="button" onClick={() => setRetry(value => value + 1)}>{t('Thử lại', 'Retry')}</button></p>}
+          </div>
+          </div>
+          <div className="lp-preview-stage">
+          <div className="lp-studio-caption"><span><IconLayers size={16} />{t('KHÔNG GIAN SÁNG TẠO CỦA BẠN', 'YOUR CREATIVE SPACE')}</span><span>{t('Giao diện thật. Quyền kiểm soát thật.', 'Real interface. Real control.')}<IconArrowRight size={16} /></span></div>
           <div className="lp-preview">
             <div className="lp-preview-bar"><span className="lp-window-dots" aria-hidden="true"><i /><i /><i /></span><span>ZM AI TOOL <span className="lp-preview-bar-divider">/</span> {previews[preview].title}</span><span className="lp-preview-label">{t('GIAO DIỆN ỨNG DỤNG', 'APP PREVIEW')}</span></div>
             <div className="lp-preview-screen" id="workspace-preview" role="tabpanel" aria-labelledby={'preview-tab-' + preview}><img src={previews[preview].image} alt={previews[preview].title} fetchPriority="high" /></div>
@@ -141,13 +155,22 @@ export default function LandingPage() {
               }}><item.icon size={17} />{item.title}</button>)}
             </div>
           </div>
+          <div className="lp-preview-note"><span><span className="lp-status-dot" />{t('Xem trước. Chỉnh lại. Rồi xuất bản.', 'Preview. Refine. Then publish.')}</span><span>{t('Bốn workspace · Một quy trình liền mạch', 'Four workspaces · One connected workflow')}</span></div>
+          </div>
         </div>
       </section>
 
       <div className="lp-capabilities lp-container"><span><IconGlobe size={19} />{t('Dịch theo ngữ cảnh', 'Contextual translation')}</span><span><IconMic size={19} />{t('Giọng đọc AI', 'AI voices')}</span><span><IconFilm size={19} />{t('Tạo video với Flow', 'Create videos with Flow')}</span><span><IconBatch size={19} />{t('Xử lý hàng loạt', 'Batch processing')}</span></div>
 
+      <section className="lp-section lp-container lp-outcomes-section" id="use-cases">
+        <div className="lp-section-heading lp-heading-split"><div><div className="lp-eyebrow">{t('BẠN MUỐN TẠO ĐIỀU GÌ?', 'WHAT WILL YOU CREATE?')}</div><h2>{t('Bắt đầu từ thứ bạn có.', 'Start with what you have.')}<br /><span>{t('Làm nên thứ bạn muốn.', 'Make what you imagine.')}</span></h2></div><p>{t('Một video cần dịch, một kịch bản cần giọng kể, hay một ý tưởng cần thành hình. Có một lối đi cho bạn.', 'A video to translate, a script that needs a voice, or an idea waiting to take shape. There is a path for you.')}</p></div>
+        <div className="lp-outcomes-grid">{outcomes.map((item, index) => <article className="lp-outcome-card" key={item.path}>
+          <div className="lp-outcome-top"><item.icon size={25} /><span>0{index + 1}</span></div><span className="lp-outcome-tag">{item.tag}</span><h3>{item.title}</h3><p>{item.text}</p><div className="lp-outcome-bottom"><span>{item.steps}</span><a href={item.path} aria-label={t('Khám phá: ', 'Explore: ') + item.title}><IconArrowRight size={21} /></a></div>
+        </article>)}</div>
+      </section>
+
       <section className="lp-section lp-container" id="product">
-        <div className="lp-section-heading"><div className="lp-eyebrow">{t('MỘT WORKSPACE. NHIỀU KHẢ NĂNG.', 'ONE WORKSPACE. MANY POSSIBILITIES.')}</div><h2>{t('Không chỉ dịch video.', 'More than translation.')}<br /><span>{t('Làm nên cả một sản phẩm.', 'Make the whole production.')}</span></h2><p>{t('Sáu công cụ chuyên dụng, kết nối từng bước sáng tạo.', 'Six dedicated tools, connected at every creative step.')}</p></div>
+        <div className="lp-section-heading lp-heading-split"><div><div className="lp-eyebrow">{t('BỘ CÔNG CỤ CỦA BẠN', 'YOUR CREATIVE TOOLKIT')}</div><h2>{t('AI làm phần nặng.', 'AI handles the heavy work.')}<br /><span>{t('Bạn giữ phần sáng tạo.', 'You keep the creative control.')}</span></h2></div><p>{t('Không dừng ở nút tự động. Duyệt từng câu dịch, chọn từng giọng và chỉnh từng chi tiết trước khi xuất.', 'Go beyond an automatic result. Review every translation, choose every voice and refine each detail before exporting.')}</p></div>
         <div className="lp-product-grid">{products.map(item => <article className={'lp-product-card' + (item.featured ? ' lp-product-featured' : '')} key={item.path}>
           <div className="lp-product-copy"><span className="lp-product-tag"><item.icon size={16} />{item.tag}</span><h3>{item.title}</h3><p>{item.text}</p><a className="lp-text-link" href={item.path}>{t('Mở công cụ', 'Open tool')}<IconArrowRight size={17} /></a></div>
           <div className="lp-product-image"><img src={item.image} alt={item.tag} loading="lazy" /></div>
@@ -155,7 +178,7 @@ export default function LandingPage() {
       </section>
 
       <section className="lp-workflow-section" id="workflow"><div className="lp-container lp-section">
-        <div className="lp-section-heading"><div className="lp-eyebrow">{t('TỪ Ý TƯỞNG ĐẾN THÀNH PHẨM', 'FROM IDEA TO FINISHED VIDEO')}</div><h2>{t('Ít chuyển công cụ.', 'Fewer tool switches.')}<br /><span>{t('Nhiều thời gian sáng tạo.', 'More time to create.')}</span></h2></div>
+        <div className="lp-section-heading"><div className="lp-eyebrow">{t('TỪ Ý TƯỞNG ĐẾN THÀNH PHẨM', 'FROM IDEA TO FINISHED VIDEO')}</div><h2>{t('Đừng để ý tưởng mắc kẹt', 'Do not let your idea get stuck')}<br /><span>{t('giữa quá nhiều công cụ.', 'between too many tools.')}</span></h2><p>{t('Đưa nội dung vào. Để AI hỗ trợ. Tự tay hoàn thiện. Một luồng làm việc, từ đầu đến cuối.', 'Bring in your content. Let AI help. Make it yours. One workflow, from start to finish.')}</p></div>
         <div className="lp-workflow">{workflow.map(([title, text], index) => <article key={title}><span className="lp-step-number">0{index + 1}</span><h3>{title}</h3><p>{text}</p></article>)}</div>
         <a className="lp-button lp-button-secondary" href="/video-clone">{t('Khám phá workspace', 'Explore the workspace')}<IconArrowRight size={17} /></a>
       </div></section>
@@ -171,7 +194,7 @@ export default function LandingPage() {
       </section>
 
       <section className="lp-section lp-container" id="download">
-        <div className="lp-download-heading"><div><div className="lp-eyebrow">{t('SÁNG TẠO TRÊN MÁY CỦA BẠN', 'CREATE ON YOUR COMPUTER')}</div><h2>{t('Studio của bạn.', 'Your studio.')}<br /><span>{t('Sẵn sàng tải về.', 'Ready to download.')}</span></h2></div><p>{t('Chọn bộ cài phù hợp và bắt đầu với ZM AI TOOL.', 'Choose your installer and start creating with ZM AI TOOL.')}<span className="lp-release-version">{downloadState === 'ready' && release?.version ? t('Phiên bản mới nhất', 'Latest version') + ' · v' + release.version : t('Windows & macOS', 'Windows & macOS')}</span></p></div>
+        <div className="lp-download-heading"><div><div className="lp-eyebrow">{t('ĐẾN LƯỢT BẠN SÁNG TẠO', 'YOUR TURN TO CREATE')}</div><h2>{t('Video tiếp theo.', 'Your next video.')}<br /><span>{t('Bắt đầu ngay tại đây.', 'Starts right here.')}</span></h2></div><p>{t('Cài ZM AI TOOL, mở project đầu tiên và đưa ý tưởng của bạn lên timeline.', 'Install ZM AI TOOL, open your first project and bring your idea to the timeline.')}<span className="lp-release-version">{downloadState === 'ready' && release?.version ? t('Phiên bản mới nhất', 'Latest version') + ' · v' + release.version : t('Windows & macOS', 'Windows & macOS')}</span></p></div>
         <div className="lp-download-grid">
           <article className="lp-download-card"><div className="lp-os-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="27" height="27" fill="currentColor"><path d="M2 4.5 11 3v8H2zm10-1.7L22 1v10H12zM2 12h9v8l-9-1.5zm10 0h10v10l-10-1.8z" /></svg></div><h3>Windows</h3><p>{t('Bộ cài cho máy tính Windows 64-bit.', 'Installer for 64-bit Windows computers.')}</p><span className="lp-os-detail">x64 · {t('Bộ cài Setup', 'Setup installer')}</span>{downloadLink('windows', t('Tải cho Windows', 'Download for Windows'))}</article>
           <article className="lp-download-card"><div className="lp-os-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="29" height="29" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="3" width="18" height="13" rx="2" /><path d="M9 21h6m-3-5v5" /></svg></div><h3>macOS</h3><p>{t('Chọn đúng bộ xử lý của máy Mac.', 'Choose the processor in your Mac.')}</p><label className="lp-mac-choice"><span>{t('Bộ xử lý', 'Processor')}</span><select value={macArch} onChange={event => setMacArch(event.target.value as typeof macArch)}><option value="macos-arm64">Apple Silicon (M1+)</option><option value="macos-x64">Intel (x64)</option></select></label>{downloadLink(macArch, t('Tải cho macOS', 'Download for macOS'))}</article>
