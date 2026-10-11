@@ -75,6 +75,7 @@ class RetryIn(BaseModel):
     settings: dict[str, Any] = {}
     fresh: bool = False
     headless: bool = True
+    manual: bool = False
 
 
 class OutputFolderIn(BaseModel):
@@ -257,6 +258,18 @@ def accounts_connect(account_id: str):
         return service.connect(account_id)
     except KeyError as exc:
         raise HTTPException(404, "Flow account not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/accounts/{account_id}/open-session")
+def accounts_open_session(account_id: str, kind: str = "image"):
+    try:
+        return service.open_account_session(account_id, kind=kind)
+    except KeyError as exc:
+        raise HTTPException(404, "Flow account not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/accounts/sync")
@@ -282,6 +295,18 @@ async def accounts_sync_one(account_id: str):
         if "Auth" in exc_name or "401" in str(exc):
             raise HTTPException(409, f"FLOW_SESSION_EXPIRED: {exc}") from exc
         raise HTTPException(500, str(exc)) from exc
+
+
+@router.post("/accounts/{account_id}/reset-session")
+def accounts_reset_session(account_id: str):
+    """Clear local Chrome/session/project identity while keeping account settings."""
+    try:
+        account = service.reset_account_session(account_id)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not account:
+        raise HTTPException(404, "Flow account not found")
+    return account
 
 
 @router.post("/accounts/{account_id}/clear-suspension")

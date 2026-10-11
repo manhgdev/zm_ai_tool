@@ -96,12 +96,26 @@ class FlowUI:
         if already_open:
             return True
 
+        triggers = page.locator('.settings-trigger-button:visible')
+        for index in range(await triggers.count()):
+            await triggers.nth(index).click()
+            await asyncio.sleep(0.4)
+            if await self._settings_visible(page):
+                return True
+
         # Strategy 1: click by known pill text fragments
         for text in _SETTINGS_PILL_TEXTS:
             clicked = await page.evaluate(f"""
                 () => {{
                     const btns = [...document.querySelectorAll('{_FLOW_TRIGGER_SELECTOR}')];
-                    const b = btns.find(btn => btn.textContent.includes('{text}'));
+                    const b = btns.find(btn => {{
+                        const rect = btn.getBoundingClientRect();
+                        const style = window.getComputedStyle(btn);
+                        return rect.width > 0 && rect.height > 0
+                            && style.visibility !== 'hidden'
+                            && style.display !== 'none'
+                            && btn.textContent.includes('{text}');
+                    }});
                     if (b) {{ b.click(); return true; }}
                     return false;
                 }}
@@ -113,14 +127,14 @@ class FlowUI:
                     return True
 
         # Strategy 2: click the count selector (always has "x1" or "x2" etc.)
-        clicked = await page.evaluate("""
-            () => {
+        clicked = await page.evaluate(f"""
+            () => {{
                 const btns = [...document.querySelectorAll('{_FLOW_TRIGGER_SELECTOR}')];
                 // The count pill has exactly the pattern "x1", "x2", etc. in its text
                 const pill = btns.find(b => /x[1-4]/.test(b.textContent.trim()));
-                if (pill) { pill.click(); return pill.textContent.trim(); }
+                if (pill) {{ pill.click(); return pill.textContent.trim(); }}
                 return null;
-            }
+            }}
         """)
         if clicked:
             await asyncio.sleep(0.8)
@@ -133,11 +147,23 @@ class FlowUI:
 
     async def _settings_visible(self, page) -> bool:
         """Check if the mode/aspect/count tabs are visible (settings panel open)."""
-        count = await page.evaluate("""
+        count = await page.evaluate(r"""
             () => {
-                // Current Flow uses radio controls; older builds used tabs.
-            const tabs = document.querySelectorAll('[role="tab"], [role="radio"]');
-                return tabs.length;
+                // Current Flow keeps hidden radios mounted after the panel
+                // closes. Count only controls with a rendered box so a stale
+                // hidden radio cannot short-circuit the real trigger click.
+                const tabs = [...document.querySelectorAll(
+                    '[role="tab"], [role="radio"]'
+                )];
+                return tabs.filter((node) => {
+                    const rect = node.getBoundingClientRect();
+                    const style = window.getComputedStyle(node);
+                    const label = `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''} ${node.getAttribute('data-value') || ''} ${node.getAttribute('data-mode') || ''} ${node.textContent || ''}`;
+                    return rect.width > 0 && rect.height > 0
+                        && style.visibility !== 'hidden'
+                        && style.display !== 'none'
+                        && /(?:image|hình ảnh|video|frames|x[1-4])\b/i.test(label);
+                }).length;
             }
         """)
         return int(count or 0) > 0
@@ -149,22 +175,27 @@ class FlowUI:
     async def switch_mode(self, page, mode: GenerationMode) -> bool:
         await self.open_settings_panel(page)
         label_map = {
-            GenerationMode.IMAGE:          ["Image", "image Image"],
+            GenerationMode.IMAGE:          ["Image", "Hình ảnh", "image Image"],
             GenerationMode.VIDEO:          ["Video", "videocam Video"],
             # "crop_free" is the tab's icon ligature — matches any UI language.
             GenerationMode.FRAME_TO_VIDEO: ["Frames", "crop_free"],
         }
         for label in label_map.get(mode, []):
-            tab = page.get_by_role("tab", name=label, exact=True).first
-            if await tab.count() > 0:
-                await tab.click()
+            pattern = re.compile(rf"^\s*{re.escape(label)}\s*$", re.I)
+            for role in ("radio", "tab"):
+                tab = page.get_by_role(role, name=pattern).first
+                if await tab.count() > 0 and await tab.is_visible():
+                    await tab.click(force=True)
+                    await asyncio.sleep(0.4)
+                    return True
+            tab = page.locator(_FLOW_CONTROL_SELECTOR).filter(
+                has_text=label.split()[-1]
+            ).first
+            if await tab.count() > 0 and await tab.is_visible():
+                await tab.click(force=True)
                 await asyncio.sleep(0.4)
                 return True
-            tab = page.locator(_FLOW_CONTROL_SELECTOR).filter(has_text=label.split()[-1]).first
-            if await tab.count() > 0:
-                await tab.click()
-                await asyncio.sleep(0.4)
-                return True
+
         log.warning("Could not find mode tab for %s", mode.value)
         return False
 

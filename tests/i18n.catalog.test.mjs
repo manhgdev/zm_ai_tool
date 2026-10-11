@@ -128,7 +128,7 @@ test('Flow cookie account inputs have Vietnamese and English labels', () => {
       pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
     }
   })
-  for (const vi of ['Email Google', 'Cách kết nối', 'Dán Cookie Google Labs', 'Cookie Google Labs *', 'Lưu và kết nối']) {
+  for (const vi of ['Email Google', 'Cách kết nối', 'Dán Cookie Google Labs', 'Cookie Google Labs *', 'Lưu và kết nối', 'Mở phiên']) {
     assert.ok(pairs.get(vi)?.trim(), `Missing English label for ${vi}`)
     assert.notEqual(pairs.get(vi), vi)
   }

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 from pipeline.flow.browser import BrowserManager, _visible_window_geometry, profile_lock, chrome_executable
@@ -61,12 +61,12 @@ class ChromeDiscoveryTests(unittest.TestCase):
 
 
 class FlowBrowserGeometryTest(unittest.TestCase):
-    def test_first_two_windows_fill_right_column_top_to_bottom(self):
+    def test_first_two_windows_fill_one_horizontal_row(self):
         positions = [_visible_window_geometry(i, 1440, 900) for i in range(2)]
 
         self.assertEqual(positions, [
-            (733, 0, 707, 437),
-            (733, 462, 707, 437),
+            (733, 0, 707, 900),
+            (0, 0, 707, 900),
         ])
         self.assertEqual(len({(x, y) for x, y, _, _ in positions}), 2)
 
@@ -82,21 +82,22 @@ class FlowBrowserGeometryTest(unittest.TestCase):
 
     def test_next_group_moves_to_left_column(self):
         first = _visible_window_geometry(0, 1440, 900)
-        next_group = _visible_window_geometry(2, 1440, 900)
+        next_group = _visible_window_geometry(1, 1440, 900)
 
         self.assertNotEqual(first[:2], next_group[:2])
+        self.assertEqual(next_group[1], 0)
         self.assertGreaterEqual(next_group[0], 0)
         self.assertGreaterEqual(next_group[1], 0)
 
     def test_six_windows_fill_screen_to_left_edge(self):
         positions = [_visible_window_geometry(i, 1512, 949) for i in range(6)]
-        self.assertEqual(len(set(positions)), 6)
-        self.assertEqual([positions[i][0] for i in (0, 2, 4)], [1012, 506, 0])
+        self.assertEqual(len(set(positions)), 3)
+        self.assertEqual([positions[i][0] for i in (0, 1, 2)], [1012, 506, 0])
         for x, y, width, height in positions:
             self.assertLessEqual(x + width, 1512)
             self.assertLessEqual(y + height, 949)
-        self.assertEqual(_visible_window_geometry(6, 1512, 949), positions[0])
-        self.assertEqual(positions[0], (1012, 0, 500, 461))
+        self.assertEqual(_visible_window_geometry(3, 1512, 949), positions[0])
+        self.assertEqual(positions[0], (1012, 0, 500, 949))
 
     def test_large_work_areas_add_rows_and_columns(self):
         for screen_width, screen_height, columns, rows in (
@@ -106,7 +107,7 @@ class FlowBrowserGeometryTest(unittest.TestCase):
                 positions = [_visible_window_geometry(i, screen_width, screen_height)
                              for i in range(columns * rows)]
                 self.assertEqual(len({x for x, _, _, _ in positions}), columns)
-                self.assertEqual(len({y for _, y, _, _ in positions}), rows)
+                self.assertEqual(len({y for _, y, _, _ in positions}), 1)
                 for x, y, width, height in positions:
                     self.assertGreaterEqual(x, 0)
                     self.assertGreaterEqual(y, 0)
@@ -117,6 +118,68 @@ class FlowBrowserGeometryTest(unittest.TestCase):
 
 
 class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_job_browser_cleanup_force_kills_owned_browser_after_stop_error(self):
+        service = FlowService()
+        browser = SimpleNamespace(
+            cdp_url=None,
+            stop=AsyncMock(side_effect=RuntimeError("Playwright stop failed")),
+            kill_now=Mock(),
+        )
+        with patch.object(service, "_log"):
+            await service._close_job_browser(browser, "job-1")
+        browser.stop.assert_awaited_once()
+        browser.kill_now.assert_called_once()
+
+    async def test_job_browser_cleanup_never_kills_manual_cdp_chrome(self):
+        service = FlowService()
+        browser = SimpleNamespace(
+            cdp_url="http://127.0.0.1:9222",
+            stop=AsyncMock(side_effect=RuntimeError("tab close failed")),
+            kill_now=Mock(),
+        )
+        with patch.object(service, "_log"):
+            await service._close_job_browser(browser, "job-2")
+        browser.stop.assert_awaited_once()
+        browser.kill_now.assert_not_called()
+
+    async def test_cdp_attach_uses_existing_flow_page_without_closing_remote_context(self):
+        flow_page = SimpleNamespace(url='https://flow.google.com/project/project-id', is_closed=lambda: False)
+        context = SimpleNamespace(pages=[flow_page], close=AsyncMock())
+        cdp_browser = SimpleNamespace(contexts=[context], close=AsyncMock())
+        connect = AsyncMock(return_value=cdp_browser)
+        playwright = SimpleNamespace(
+            chromium=SimpleNamespace(connect_over_cdp=connect),
+            stop=AsyncMock(),
+        )
+        with patch('pipeline.flow.browser.network_available', return_value=True), \
+             patch('pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))):
+            manager = BrowserManager.from_cdp('http://127.0.0.1:4567')
+            await manager.start()
+            self.assertEqual(await manager.page(), flow_page)
+            connect.assert_awaited_once_with('http://127.0.0.1:4567')
+            await manager.stop()
+            cdp_browser.close.assert_not_awaited()
+            context.close.assert_not_awaited()
+
+    async def test_cdp_job_tab_isolated_and_closed_without_closing_chrome(self):
+        flow_page = SimpleNamespace(url='https://flow.google.com/project/project-id', is_closed=lambda: False)
+        job_page = SimpleNamespace(url='', is_closed=lambda: False, close=AsyncMock())
+        context = SimpleNamespace(pages=[flow_page], new_page=AsyncMock(return_value=job_page), close=AsyncMock())
+        cdp_browser = SimpleNamespace(contexts=[context], close=AsyncMock())
+        playwright = SimpleNamespace(
+            chromium=SimpleNamespace(connect_over_cdp=AsyncMock(return_value=cdp_browser)),
+            stop=AsyncMock(),
+        )
+        with patch('pipeline.flow.browser.network_available', return_value=True), \
+             patch('pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))):
+            manager = BrowserManager.from_cdp('http://127.0.0.1:4567', new_page=True)
+            await manager.start()
+            self.assertEqual(await manager.page(), job_page)
+            await manager.stop()
+            job_page.close.assert_awaited_once()
+            cdp_browser.close.assert_not_awaited()
+            context.close.assert_not_awaited()
+
     async def test_only_linux_root_disables_sandbox(self):
         for platform, uid, sandbox in [('linux', 0, False), ('linux', 1000, True), ('darwin', 0, True), ('win32', 0, True)]:
             context = SimpleNamespace(add_init_script=AsyncMock(), close=AsyncMock())
@@ -158,9 +221,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
 
         page.bring_to_front.assert_not_awaited()
         page.keyboard.press.assert_not_awaited()
-        manager._ctx.new_page.assert_awaited_once()
-        self.assertIn('setDefaultZoom(0.4', settings_page.evaluate.call_args.args[0])
-        settings_page.close.assert_awaited_once()
+        manager._ctx.new_page.assert_not_awaited()
 
     async def test_window_uses_work_area_offset_and_clamps_native_size(self):
         page = SimpleNamespace(evaluate=AsyncMock(return_value={
@@ -201,7 +262,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
                 self.assertIn('--disable-extensions', launch.call_args.kwargs['args'])
                 self.assertNotIn('--no-sandbox', launch.call_args.kwargs['args'])
-                self.assertEqual(context.add_init_script.await_count, 0)
+                self.assertEqual(context.add_init_script.await_count, 1)
                 self.assertNotIn('ignore_default_args', launch.call_args.kwargs)
                 await manager.stop()
 

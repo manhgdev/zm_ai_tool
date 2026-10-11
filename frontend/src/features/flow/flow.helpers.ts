@@ -109,10 +109,25 @@ export function settingsForCreateKind(settings: FlowSettings, kind: CreateKind):
   const account = kind === "image"
     ? (settings.imageAccount || settings.account)
     : (settings.videoAccount || settings.account);
+  const nextModel = model || (kind === "image" ? "Nano Banana 2.1" : "Veo 3.1 - Fast");
+  const nextAccount = account || settings.account;
+  const videoResolution = settings.videoResolution || (settings.resolution.match(/^\d{3,4}p$/i) ? settings.resolution : "");
+  const imageResolution = settings.imageResolution || (settings.resolution.match(/^[1-9]\d{0,1}k$/i) ? settings.resolution : "");
   return {
     ...settings,
-    model: model || (kind === "image" ? "Nano Banana 2.1" : "Veo 3.1 - Fast"),
-    account: account || settings.account,
+    model: nextModel,
+    account: nextAccount,
+    resolution: kind === "image" ? (imageResolution || "1K") : (videoResolution || ""),
+    videoResolution,
+    imageResolution,
+    ...(kind === "image"
+      ? {
+          imageModel: nextModel,
+          imageAccount: nextAccount,
+          ratio: settings.imageRatio || settings.ratio,
+          count: Math.max(1, Math.min(4, Number(settings.imageCount ?? settings.count ?? 1))),
+        }
+      : {}),
   };
 }
 
@@ -195,13 +210,15 @@ export function readSettings(): FlowSettings {
     videoAccount: "Ultra 01",
     imageAccount: "Ultra 01",
     outputDir: defaultFlowOutputFolder(), quality: "720p", resolution: "1K",
-    concurrency: "3", format: "PNG", filePrefix: "flow", referenceStrength: 70, autoDownload: true, headless: true,
+    concurrency: "3", format: "JPG", filePrefix: "flow", referenceStrength: 70, autoDownload: true, headless: true,
   };
   try {
     const { enhancePrompt: _ep, seed: _s, ...saved } = JSON.parse(
       localStorage.getItem(SETTINGS_KEY) || "{}",
     ) as Partial<FlowSettings> & { enhancePrompt?: boolean; seed?: string };
     const merged = { ...fallback, ...saved };
+    // Migrate the old persisted PNG default; JPEG is the default output format.
+    if (!String(saved.format || "").trim() || String(saved.format).toLowerCase() === "png") merged.format = "JPG";
     if (!String(merged.videoAccount || "").trim()) merged.videoAccount = merged.account || fallback.videoAccount;
     if (!String(merged.imageAccount || "").trim()) merged.imageAccount = merged.account || fallback.imageAccount;
     if (merged.model === "Veo 3.1 Fast") merged.model = "Veo 3.1 - Fast";
@@ -274,7 +291,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       prompt: String(raw.prompt || ""),
       inputType: ["txt", "csv", "json"].includes(raw.inputType as string) ? raw.inputType as "txt" | "csv" | "json" : "prompt",
       createdAt: Number(raw.createdAt || Date.now() / 1000),
-      status: ["processing", "queued", "done", "cancelled"].includes(raw.status as string) ? raw.status as FlowJob["status"] : "failed",
+      status: ["processing", "queued", "done", "cancelled", "action_required"].includes(raw.status as string) ? raw.status as FlowJob["status"] : "failed",
       stage: String(raw.stage || ""),
       progress: Number(raw.progress || 0),
       accountId: String(raw.accountId || ""),

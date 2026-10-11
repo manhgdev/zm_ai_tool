@@ -64,6 +64,29 @@ class TestFlowSelectedAccount(unittest.TestCase):
                 })
         self.assertIn("FLOW_QUOTA_EXHAUSTED", str(ctx.exception))
 
+    def test_selected_automation_block_account_is_rejected_before_enqueue(self):
+        import time
+        service = FlowService()
+        account = {
+            "id": "acc_selected",
+            "label": "Selected",
+            "plan": "Pro",
+            "status": "online",
+            "projectId": "project",
+            "credits": 10,
+            "suspendedUntil": time.time() + 7200,
+            "suspendReason": "FLOW_AUTOMATION_BLOCKED: abnormal activity",
+        }
+        with patch("pipeline.flow.store.get_row", return_value=account), \
+             patch("pipeline.flow.store.list_rows", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "FLOW_AUTOMATION_BLOCKED"):
+                service.enqueue({
+                    "prompts": ["scene"],
+                    "kind": "image",
+                    "accountId": "acc_selected",
+                    "settings": {"model": "Nano Banana 2.1"},
+                })
+
     def test_concrete_account_disables_fallback_by_default(self):
         service = FlowService()
         account = {

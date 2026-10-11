@@ -105,6 +105,20 @@ function selectedFlowAccount(accounts: FlowAccount[], accountLabel: string) {
   return resolveSelectedFlowAccount(accounts, accountLabel);
 }
 
+function isFlowAccountAvailable(account: FlowAccount): boolean {
+  if (!isFlowAccountConnected(account)) return false;
+  const suspendedUntil = Number(account.suspendedUntil || 0);
+  const reason = String(account.suspendReason || "");
+  if (/FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit/i.test(reason)) return true;
+  return !(suspendedUntil > Date.now() / 1000);
+}
+
+function isFlowAccountSuspendedForKind(account: FlowAccount, kind: CreateKind): boolean {
+  if (!(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000)) return false;
+  const reason = String(account.suspendReason || "");
+  return !(kind === "image" && /FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit/i.test(reason));
+}
+
 function formatRemainingCooldown(untilSec: number, t: (vi: string, en: string) => string): string {
   const diffSec = Math.max(0, Math.floor(untilSec - Date.now() / 1000));
   if (diffSec <= 0) return t("Hết hạn", "Expired");
@@ -137,7 +151,7 @@ function applyAccountCapabilities(
     const base = settingsWithSelectedModel(current, kind, requestedModel);
     const next = {
       ...base,
-      quality: kind === "video" ? quality : "",
+      quality: kind === "video" ? quality : current.quality,
       resolution: kind === "image"
         ? clampFlowImageResolution(base.resolution, account?.plan)
         : (isFlowVideoUiResolution(base.resolution) ? base.resolution : ""),
@@ -182,7 +196,7 @@ function applyAccountCapabilities(
     [ratioKey]: ratio,
     duration,
     resolution,
-    quality,
+    quality: kind === "video" ? quality : current.quality,
   };
   return next.model === current.model
     && next.videoModel === current.videoModel
@@ -294,12 +308,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const [seriesDraft, setSeriesDraft] = useState<FlowSeriesSceneContext | null>(null);
   const [accounts, setAccounts] = useState<FlowAccount[]>(readAccounts);
   const [syncingAccountIds, setSyncingAccountIds] = useState<Set<string>>(new Set());
+  const [openingAccountIds, setOpeningAccountIds] = useState<Set<string>>(new Set());
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [editingAccount, setEditingAccount] = useState<string | "new" | null>(
     null,
   );
   const [accountSaving, setAccountSaving] = useState(false);
-  const [accountLoginMode, setAccountLoginMode] = useState<"chrome" | "cookie">("cookie");
+  const [accountLoginMode, setAccountLoginMode] = useState<"chrome" | "cookie">(() => {
+    const saved = readText("zm-flow-veo:account-login-mode:v1", "cookie");
+    return saved === "chrome" ? "chrome" : "cookie";
+  });
   const [accountCookie, setAccountCookie] = useState("");
   const [accountDraft, setAccountDraft] = useState<{
     label: string;
@@ -824,7 +842,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
     ...Object.fromEntries(
       accounts.map((account) => {
-        const isSuspended = Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000);
+        const isSuspended = isFlowAccountSuspendedForKind(account, createKind);
         const suspendTag = isSuspended ? ` · ⚠️ ${t("Tạm cách ly", "Suspended")}` : "";
         return [
           account.label,
@@ -856,17 +874,19 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       ? capabilityModel.durations
       : [...FLOW_OMNI_FLASH_DURATIONS])
     : [];
-  // Resolution: chỉ Omni Flash video mới có catalog resolutions.
-  // Veo 3.1 không có resolution control trên Flow UI → ẩn.
+  // Keep video resolution selectable when the account catalog is unavailable.
   // Image: theo plan tier (1K/2K/4K) — never keep leftover video Np.
   const accountPlan = displayedAccount?.plan ?? "Free";
   const imageResolutionOptions = flowImageResolutions(accountPlan);
   const videoDownloadQualityOptions = flowVideoDownloadQualities(accountPlan);
-  const resolutionOptions = capabilityModel?.resolutions.length
+  const catalogResolutionOptions = capabilityModel?.resolutions.length
     ? (createKind === "video"
       ? capabilityModel.resolutions.filter((value) => isFlowVideoUiResolution(value))
       : capabilityModel.resolutions.filter((value) => isFlowImageUiResolution(value)))
-    : createKind === "image" ? imageResolutionOptions : [];
+    : createKind === "image" ? imageResolutionOptions : ["360p", "720p"];
+  const resolutionOptions = catalogResolutionOptions.length
+    ? catalogResolutionOptions
+    : createKind === "video" ? ["360p", "720p"] : imageResolutionOptions;
   // Catalog may omit image tiers — still expose plan options so leftover Omni 360p cannot stick.
   const effectiveImageResolutionOptions = createKind === "image"
     ? (resolutionOptions.length ? resolutionOptions : imageResolutionOptions)
@@ -891,6 +911,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     : retryTarget?.job.kind === "image" ? flowImageResolutions(retryAccount?.plan || "Free") : [];
   const retryQualityOptions = retryTarget?.job.kind === "video"
     ? flowVideoDownloadQualities(retryAccount?.plan || "Free")
+    : [];
+  const retrySuspendedAccounts = retryTarget
+    ? retryTarget.groups
+      .map((group) => accounts.find((account) => account.id === group.accountId))
+      .filter((account): account is FlowAccount => Boolean(
+        account && account.suspendedUntil && account.suspendedUntil > Date.now() / 1000,
+      ))
     : [];
   const previewOutput = preview?.job.outputs?.[preview.outputIndex] || "";
   const previewMediaKind = preview ? flowOutputMediaKind(previewOutput, preview.job.kind) : "file";
@@ -1029,12 +1056,22 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       .map((item) => item.trim())
       .filter(Boolean);
     const account = selectedFlowAccount(accounts, settings.account);
-    if (!prompts.length || !account) {
-      if (!account) {
+    const hasAvailableAccount = accounts.some(isFlowAccountAvailable);
+    const accountUnavailable = !account || !isFlowAccountAvailable(account) || !hasAvailableAccount;
+    if (!prompts.length || accountUnavailable) {
+      if (accountUnavailable) {
         setUtilityView("accounts");
         writeFlowRoutePanel("accounts");
         if (!accounts.length) addAccount();
-        toast.info(t("Vui lòng kết nối tài khoản Flow trước khi tạo.", "Please connect a Flow account before generating."));
+        toast.info(t(
+          !accounts.length
+            ? "Vui lòng thêm và kết nối tài khoản Flow trước khi tạo."
+            : "Tất cả tài khoản Flow hiện không khả dụng. Hãy kết nối hoặc bỏ tạm cách ly trước khi tạo."
+          ,
+          !accounts.length
+            ? "Add and connect a Flow account before generating."
+            : "All Flow accounts are currently unavailable. Connect one or clear its suspension before generating.",
+        ));
       } else {
         setApiError(t("Cần nhập prompt.", "A prompt is required."));
       }
@@ -1046,8 +1083,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setTab("queue");
     writeFlowRoutePanel("queue");
     if (settings.account === "random") {
-      const hasOnline = accounts.some(isFlowAccountConnected);
-      if (!hasOnline) {
+      if (!hasAvailableAccount) {
+        setUtilityView("accounts");
+        writeFlowRoutePanel("accounts");
         setApiError(t("Không có tài khoản Flow nào đang online.", "No Flow accounts are currently online."));
         return;
       }
@@ -1088,6 +1126,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         : { ...settings, outputDir: defaultFlowOutputFolder() };
       effectiveSettings = {
         ...effectiveSettings,
+        ...(createKind === "image"
+          ? {
+              model: effectiveSettings.imageModel || effectiveSettings.model,
+              count: Math.max(1, Math.min(4, Number(effectiveSettings.imageCount ?? effectiveSettings.count ?? 1))),
+            }
+          : {}),
         ratio: createKind === "image" ? effectiveSettings.imageRatio : effectiveSettings.ratio,
         // Veo has no duration tabs — never send a leftover "8" that workers then chase.
         duration: createKind === "video"
@@ -1116,7 +1160,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           ? (videoDownloadQualityOptions.includes(effectiveSettings.quality)
             ? effectiveSettings.quality
             : videoDownloadQualityOptions[0])
-          : "",
+          : effectiveSettings.quality,
       };
 
       if (settings.account !== "random" && createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
@@ -1282,7 +1326,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const addAccount = () => {
     if (accountSaving) return;
-    setAccountLoginMode(isDesktopApp ? "chrome" : "cookie");
+    const savedMode = readText("zm-flow-veo:account-login-mode:v1", isDesktopApp ? "chrome" : "cookie");
+    setAccountLoginMode(savedMode === "chrome" ? "chrome" : "cookie");
     setAccountCookie("");
     setAccountDraft({ label: "", email: "", plan: "Free" });
     setEditingAccount("new");
@@ -1443,7 +1488,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       return group.jobs.map((job) => flowRequest<Record<string, unknown>>(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId: group.accountId, mode: group.mode, settings: retrySettings, fresh: retryTarget.fresh, headless: retryTarget.headless }),
+      body: JSON.stringify({ accountId: group.accountId, mode: group.mode, settings: retrySettings, fresh: retryTarget.fresh, headless: retryTarget.headless, manual: true }),
       }).then(updateJob));
     });
     void Promise.allSettled(retryRequests)
@@ -1530,7 +1575,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const canRetryJob = (job: FlowJob) =>
     job.status === "done"
     || job.status === "failed"
-    || job.status === "cancelled";
+    || job.status === "cancelled"
+    || job.status === "action_required";
   const isFreshCreateJob = (job: FlowJob) => job.status === "done";
   const retryActionLabel = (jobsOrJob: FlowJob | FlowJob[]) => {
     const list = Array.isArray(jobsOrJob) ? jobsOrJob : [jobsOrJob];
@@ -1718,6 +1764,43 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }).catch((error) => {
       const msg = error instanceof Error ? error.message : String(error);
       toast.error(t("Kết nối thất bại", "Connection failed") + ": " + msg);
+    });
+  };
+  const openAccountSession = async (account: FlowAccount) => {
+    if (openingAccountIds.has(account.id)) return;
+    setOpeningAccountIds((current) => new Set(current).add(account.id));
+    try {
+      await flowRequest<{ opened: boolean }>(`/api/flow/accounts/${account.id}/open-session?kind=${createKind}`, { method: "POST" });
+      toast.success(t(`Đã mở phiên Playwright riêng cho luồng ${createKind === "image" ? "ảnh" : "video"}.`, `A separate Playwright session is open for ${createKind} generation.`));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      toast.error(msg.includes("FLOW_PROFILE_BUSY")
+        ? t("Profile đang được sử dụng. Đóng phiên Chrome hoặc chờ thao tác hiện tại kết thúc rồi mở lại.", "The profile is in use. Close its Chrome session or wait for the current operation to finish, then reopen.")
+        : msg.includes("FLOW_DISPLAY_REQUIRED")
+          ? t("Cần desktop/VNC trên máy backend để mở phiên Chrome.", "A desktop/VNC session on the backend host is required to open Chrome.")
+          : t("Không thể mở phiên Chrome", "Could not open Chrome session") + ": " + msg);
+    } finally {
+      setOpeningAccountIds((current) => { const next = new Set(current); next.delete(account.id); return next; });
+    }
+  };
+  const resetAccountSession = (account: FlowAccount) => {
+    setConfirmAction({
+      message: t(
+        `Reset project Flow của ${account.label} và giữ cookie Google? Lịch sử job vẫn được giữ. Nếu Flow vẫn báo hoạt động bất thường, đó là giới hạn phía Google/Flow.`,
+        `Reset ${account.label}'s Flow project while keeping Google cookies? Job history is kept. If Flow still reports unusual activity, the block is on Google's/Flow's side.`,
+      ),
+      confirmLabel: t("Reset phiên", "Reset session"),
+      run: () => flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/reset-session`, { method: "POST" })
+        .then((updated) => {
+          setAccounts((current) => current.map((item) => item.id === updated.id ? normalizeFlowAccounts([updated])[0] : item));
+          toast.success(t("Đã reset project Flow và giữ đăng nhập Google.", "Flow project reset; Google sign-in was kept."));
+        })
+        .catch((error) => {
+          const msg = error instanceof Error ? error.message : String(error);
+          toast.error(msg.includes("FLOW_PROFILE_BUSY")
+            ? t("Profile đang bận. Đóng Chrome hoặc chờ job hiện tại kết thúc rồi thử lại.", "The profile is busy. Close Chrome or wait for the current job to finish, then try again.")
+            : t("Không thể reset phiên", "Could not reset session") + ": " + msg);
+        }),
     });
   };
   const syncAccount = (account: FlowAccount) => {
@@ -2126,7 +2209,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 <label>
                   <span>{t("Cách kết nối", "Connection method")}</span>
                   <select disabled={accountSaving} value={accountLoginMode} onChange={(event) => {
-                    setAccountLoginMode(event.target.value as "chrome" | "cookie");
+                    const mode = event.target.value as "chrome" | "cookie";
+                    setAccountLoginMode(mode);
+                    try { localStorage.setItem("zm-flow-veo:account-login-mode:v1", mode); } catch { /* ponytail: storage may be unavailable */ }
                     setAccountCookie("");
                   }}>
                     <option value="chrome">{t("Đăng nhập Chrome", "Sign in with Chrome")}</option>
@@ -2317,8 +2402,22 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     </button>
                     <button
                       type="button"
+                      disabled={account.status === "connecting" || syncingAccountIds.has(account.id) || openingAccountIds.has(account.id)}
+                      title={t("Mở Chrome với profile đã lưu và đăng nhập Google đầy đủ để kiểm tra thủ công", "Open Chrome with the saved profile and full Google sign-in for manual inspection")}
+                      onClick={() => void openAccountSession(account)}
+                    >
+                      {openingAccountIds.has(account.id) ? t("Đang mở…", "Opening…") : t("Mở phiên", "Open session")}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={account.status === "connecting" || syncingAccountIds.has(account.id) || openingAccountIds.has(account.id)}
+                      onClick={() => resetAccountSession(account)}
+                    >
+                      {t("Reset phiên", "Reset session")}
+                    </button>
+                    <button
+                      type="button"
                       className="is-danger"
-                      disabled={account.isDefault}
                       onClick={() => deleteAccount(account)}
                     >
                       {t("Xóa", "Delete")}
@@ -2330,8 +2429,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             <aside className="flow-account-note">
               <IconGear size={18} />
               {t(
-                "Mỗi tài khoản có Chrome profile riêng. Bấm Kết nối rồi đăng nhập Google trong cửa sổ Chrome.",
-                "Each account has its own Chrome profile. Select Connect, then sign in to Google in Chrome.",
+                "Mỗi tài khoản có Chrome profile riêng. Mở phiên để đăng nhập/kiểm tra; job sẽ dùng lại đúng phiên Playwright đang mở.",
+                "Each account has its own Chrome profile. Open a session to sign in/check it; jobs reuse the exact Playwright session that remains open.",
               )}
             </aside>
           </section>
@@ -2703,11 +2802,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       {resolutionOptions.length > 0 ? (
                         <FlowSelect
                           label={t("Độ phân giải", "Resolution")}
-                          value={resolutionOptions.includes(settings.resolution) ? settings.resolution : resolutionOptions[0]}
+                          value={resolutionOptions.includes(settings.videoResolution || settings.resolution) ? (settings.videoResolution || settings.resolution) : resolutionOptions[0]}
                           onChange={(resolution) =>
                             setSettings((current) => ({
                               ...current,
                               resolution,
+                              videoResolution: resolution,
                               // Selecting Flow's 360p generation tier also
                               // selects the matching download tier. Changing
                               // download quality remains independent.
@@ -2770,12 +2870,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     <FlowSelect
                       label={t("Độ phân giải", "Resolution")}
                       value={
-                        effectiveImageResolutionOptions.includes(settings.resolution)
-                          ? settings.resolution
+                        effectiveImageResolutionOptions.includes(settings.imageResolution || settings.resolution)
+                          ? (settings.imageResolution || settings.resolution)
                           : effectiveImageResolutionOptions[0]
                       }
                       onChange={(resolution) =>
-                        setSettings((current) => ({ ...current, resolution }))
+                        setSettings((current) => ({ ...current, resolution, imageResolution: resolution }))
                       }
                       options={effectiveImageResolutionOptions}
                     />
@@ -2851,7 +2951,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     role="switch"
                     aria-checked={!settings.headless}
                     onClick={() =>
-                      setSettings((current) => ({ ...current, headless: !current.headless }))
+                      setSettings((current) => {
+                        const next = { ...current, headless: !current.headless };
+                        try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(next)); } catch { }
+                        return next;
+                      })
                     }
                   >
                     <span className="flow-headless-switch-track" aria-hidden="true" />
@@ -3560,6 +3664,20 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 <div><strong id="flow-retry-title">{retryTarget.jobs.every(isFreshCreateJob) ? t("Cài đặt tạo mới", "Create-new settings") : t("Cài đặt chạy lại", "Retry settings")}</strong><small>{t(`${retryTarget.jobs.length} job sẽ tạo media mới`, `${retryTarget.jobs.length} jobs will generate new media`)}</small></div>
                 <button type="button" onClick={() => setRetryTarget(null)} aria-label={t("Đóng", "Close")}>×</button>
               </header>
+              {retrySuspendedAccounts.length > 0 && (
+                <div
+                  role="note"
+                  style={{ margin: "8px 0", padding: "8px 10px", border: "1px solid rgba(234, 88, 12, 0.35)", borderRadius: 7, background: "rgba(234, 88, 12, 0.1)" }}
+                >
+                  <strong>{t("Tài khoản đang tạm cách ly", "Selected account is temporarily quarantined")}</strong>
+                  <div>
+                    {t(
+                      `Chạy lại bằng tay sẽ gỡ cách ly trước khi đưa job vào hàng đợi: ${retrySuspendedAccounts.map((account) => account.label).join(", ")}.`,
+                      `Manual retry will clear the quarantine before queueing the job: ${retrySuspendedAccounts.map((account) => account.label).join(", ")}.`,
+                    )}
+                  </div>
+                </div>
+              )}
               <div className="flow-retry-fields">
                 <div className="flow-retry-check-row">
                   {retryTarget.showIncludeDone && (
@@ -3630,6 +3748,19 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             <FlowSelect label={t("Chế độ", "Mode")} value={group.mode} options={group.kind === "video" ? ["text", "frame"] : ["text", "edit", "reference"]} onChange={(mode) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, mode: mode as ImageMode | VideoMode } : item) } : current)} optionLabels={{ text: t("Văn bản", "Text"), frame: t("Khung hình", "Frames"), edit: t("Chỉnh sửa", "Edit"), reference: t("Tham chiếu", "Reference") }} disabled={group.jobs.some((item) => Boolean(item.seriesContext))} />
                             <FlowSelect label={t("Model", "Model")} value={group.model} options={models} onChange={(model) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, model } : item) } : current)} />
                             <FlowSelect label={t("Tỷ lệ", "Ratio")} value={group.ratio} options={ratios} onChange={(ratio) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, ratio } : item) } : current)} />
+                            {(() => {
+                              const groupResolutions = capability?.resolutions?.length
+                                ? capability.resolutions
+                                : group.kind === "image" ? flowImageResolutions(groupAccount?.plan || "Free") : [];
+                              return groupResolutions.length > 0 ? (
+                                <FlowSelect
+                                  label={t("Độ phân giải", "Resolution")}
+                                  value={groupResolutions.includes(group.resolution) ? group.resolution : groupResolutions[0]}
+                                  options={groupResolutions}
+                                  onChange={(resolution) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, resolution } : item) } : current)}
+                                />
+                              ) : null;
+                            })()}
                             <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={["random", ...accounts.filter(isFlowAccountConnected).map((account) => account.id)]} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={{ random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"), ...Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}${account.suspendedUntil && account.suspendedUntil > Date.now() / 1000 ? ` · ⚠️ ${t("Tạm cách ly", "Suspended")}` : ""}`])) }} />
                           </div>
                         </div>

@@ -189,8 +189,8 @@ export function explainFlowError(message: string): FlowExplain {
   if (code === "FLOW_AUTOMATION_BLOCKED" || /FLOW_AUTOMATION_BLOCKED/i.test(raw)) {
     return make(
       "FLOW_AUTOMATION_BLOCKED",
-      "Không tự chạy lại liên tục. Chờ vài giây, giảm số job đồng thời và chạy lại thủ công; nếu còn lặp, dùng trực tiếp trên Flow.",
-      "Do not retry repeatedly. Wait a few seconds, reduce concurrent jobs, and retry manually; if it persists, use Flow directly.",
+      "Flow sẽ tự đăng nhập lại và thử một lần. Nếu vẫn bị chặn, hãy Reset phiên hoặc kiểm tra tài khoản trực tiếp trên Flow.",
+      "Flow will reconnect and retry once. If it is still blocked, reset the session or check the account directly in Flow.",
     );
   }
   if (code === "FLOW_GENERATION_TIMEOUT") {

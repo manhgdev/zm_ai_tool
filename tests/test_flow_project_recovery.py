@@ -8,10 +8,45 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 from pipeline.flow import store
-from pipeline.flow.service import FlowService
+from pipeline.flow.service import FlowService, _flow_project_id
 
 
 class ProjectRecoveryTest(unittest.TestCase):
+    def test_kind_specific_project_ids_keep_legacy_image_fallback(self):
+        account = {"projectId": "legacy"}
+        self.assertEqual(_flow_project_id(account, "image"), "legacy")
+        self.assertEqual(_flow_project_id(account, "video"), "")
+        self.assertEqual(_flow_project_id(account, "video", legacy_for_video=True), "legacy")
+
+    def test_video_gets_a_dedicated_project_without_replacing_image_project(self):
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, 'ROOT', Path(raw)):
+            store._write('accounts', [{
+                'id': 'acc1', 'status': 'online', 'projectId': 'image-project',
+                'email': 'a@b.c',
+            }])
+            service = FlowService()
+            page = SimpleNamespace(
+                url='https://flow.google.com/',
+                locator=lambda *_args, **_kwargs: SimpleNamespace(count=AsyncMock(return_value=1)),
+            )
+            api = SimpleNamespace(project_id='image-project', _project_page_url='')
+            client = SimpleNamespace(
+                project_id='image-project', _project_url='',
+                _ensure_project_page=AsyncMock(),
+            )
+            account = store.get_row('accounts', 'acc1')
+            with patch.object(service, '_create_flow_project_ui', AsyncMock(return_value='video-project')):
+                refreshed = asyncio.run(service._ensure_account_project_page(
+                    page, api=api, client=client, account=account,
+                    job_id='job1', kind='video',
+                ))
+            self.assertEqual(refreshed['projectId'], 'image-project')
+            self.assertEqual(refreshed['videoProjectId'], 'video-project')
+            self.assertEqual(store.get_row('accounts', 'acc1')['projectId'], 'image-project')
+            self.assertEqual(store.get_row('accounts', 'acc1')['videoProjectId'], 'video-project')
+            self.assertEqual(api.project_id, 'video-project')
+            self.assertEqual(client.project_id, 'video-project')
+
     def test_bind_flow_project_updates_api_and_client(self):
         api = SimpleNamespace(project_id='old', _project_page_url='https://flow.google.com/project/old')
         client = SimpleNamespace(project_id='old', _project_url='https://flow.google.com/project/old')

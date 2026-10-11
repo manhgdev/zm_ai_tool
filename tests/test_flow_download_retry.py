@@ -85,3 +85,32 @@ class FlowDownloadRetryTest(unittest.TestCase):
             with self.assertRaises(asyncio.CancelledError):
                 asyncio.run(self.service._download_video_via_flow_menu(None, 0, Path(self.directory.name) / 'v.mp4', '720p', job_id='j'))
         self.assertEqual(downloader.await_count, 1)
+
+    def test_project_media_url_fallback_downloads_completed_video(self):
+        output = Path(self.directory.name) / 'fallback.mp4'
+        api = AsyncMock()
+        api.get_project_data.return_value = {
+            'projectContents': {
+                'media': [{
+                    'name': 'video-1',
+                    'video': {'generatedVideo': {'fifeUrl': 'https://flow.example/video.mp4'}},
+                    'mediaMetadata': {
+                        'mediaStatus': {'mediaGenerationStatus': 'MEDIA_GENERATION_STATUS_SUCCESS'},
+                    },
+                }],
+            },
+        }
+
+        async def download(_url, path):
+            Path(path).write_bytes(b'video')
+
+        api.download.side_effect = download
+        media_id = asyncio.run(self.service._download_video_from_project_media(
+            api,
+            {'id': 'j', 'submissionStartedAt': 0, 'baselineMediaIds': []},
+            output,
+            1,
+        ))
+        self.assertEqual(media_id, 'video-1')
+        self.assertEqual(output.read_bytes(), b'video')
+        api.download.assert_awaited_once_with('https://flow.example/video.mp4', output)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import socket
 import subprocess
 import threading
 import sys
@@ -122,8 +123,10 @@ def _visible_window_geometry(
     horizontal_gap = min(gap, max(0, screen_width - columns * 500) // max(1, columns - 1))
     width = (screen_width - horizontal_gap * (columns - 1)) // columns
     # Keep readable cells on larger work areas instead of limiting every screen to two rows.
-    rows = max(1, (screen_height + gap) // (420 + gap))
-    height = (screen_height - gap * (rows - 1)) // rows
+    # Keep Flow windows in one horizontal row; page zoom is intentionally
+    # untouched so each visible session remains a normal browser page.
+    rows = 1
+    height = screen_height
     width = min(width, screen_width)
     height = min(height, screen_height)
     row = index % rows
@@ -171,23 +174,33 @@ def chrome_executable() -> Path | None:
     return next((path for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
 
 
+def free_local_port() -> int:
+    """Reserve a localhost port number for a visible manual session."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 class BrowserManager:
     """Subset of flow-py's browser contract backed by installed Google Chrome."""
 
-    def __init__(self, *, headless: bool, profile_dir: Path, slow_mo: int = 0, google_login_compat: bool = False, fullscreen: bool = False, page_zoom: float = 0.4) -> None:
-        self.cdp_url = None  # flow-py checks this optional upstream attribute.
+    def __init__(self, *, headless: bool = True, profile_dir: Path | None = None, slow_mo: int = 0, google_login_compat: bool = False, fullscreen: bool = False, page_zoom: float = 1.0, cdp_url: str | None = None, remote_debugging_port: int | None = None) -> None:
+        self.cdp_url = cdp_url  # flow-py checks this optional upstream attribute.
         # Old clients can still request visible Chrome. A headless Linux VPS
         # has no window server; normalize here for every Flow caller.
         self.headless = headless or (sys.platform.startswith('linux')
                                     and not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')))
-        self.profile_dir = Path(profile_dir)
+        self.profile_dir = Path(profile_dir or Path.cwd() / ".flow-profile")
         self.slow_mo = slow_mo
         self.google_login_compat = google_login_compat
         self.fullscreen = fullscreen
         self.page_zoom = page_zoom
+        self.remote_debugging_port = remote_debugging_port
         self._pw: Playwright | None = None
         self._ctx: BrowserContext | None = None
+        self._cdp_browser: Any = None
         self._page: Page | None = None
+        self._owns_page = False
         self._zoom_applied = False
         self._window_placed = False
         self._profile_lock = profile_lock(self.profile_dir)
@@ -195,7 +208,27 @@ class BrowserManager:
         # ponytail: captured only for visible windows; restored in stop().
         self._prior_app: Any = None
 
+    @classmethod
+    def from_cdp(cls, cdp_url: str, *, new_page: bool = False) -> "BrowserManager":
+        manager = cls(cdp_url=cdp_url)
+        manager._owns_page = new_page
+        return manager
+
     async def start(self) -> "BrowserManager":
+        if self.cdp_url:
+            if not await asyncio.to_thread(network_available):
+                raise RuntimeError('FLOW_NETWORK_UNAVAILABLE: Internet connection is unavailable')
+            try:
+                self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
+                self._cdp_browser = await self._pw.chromium.connect_over_cdp(self.cdp_url)
+                contexts = self._cdp_browser.contexts
+                if not contexts:
+                    raise RuntimeError("FLOW_CDP_NO_CONTEXT: Existing Chrome has no browser context")
+                self._ctx = contexts[0]
+                return self
+            except BaseException:
+                await self.stop()
+                raise
         executable = chrome_executable()
         if executable is None:
             raise RuntimeError("FLOW_CHROME_REQUIRED: Google Chrome was not found. Install Google Chrome, then connect again.")
@@ -217,6 +250,12 @@ class BrowserManager:
             self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
             visible_args = [] if self.headless else _visible_window_args(fullscreen=self.fullscreen)
             launch_args = ["--lang=en-US", "--disable-extensions"]
+            if self.remote_debugging_port:
+                self.cdp_url = f"http://127.0.0.1:{int(self.remote_debugging_port)}"
+                launch_args.extend([
+                    f"--remote-debugging-port={int(self.remote_debugging_port)}",
+                    "--remote-debugging-address=127.0.0.1",
+                ])
             if self.google_login_compat:
                 launch_args.append("--disable-blink-features=AutomationControlled")
             launch_args.extend(["--disable-infobars", *visible_args])
@@ -239,6 +278,13 @@ class BrowserManager:
                 ),
                 timeout=60,
             )
+            # Keep headless and visible Flow sessions consistent. Chromium's
+            # automation flag can survive the launch argument and is exposed
+            # as navigator.webdriver on pages opened after context startup.
+            # Flow treats that signal as unusual activity during generation.
+            await self._ctx.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
             if visible_args and visible_launch_owned:
                 _visible_launch_guard.release()
                 visible_launch_owned = False
@@ -257,7 +303,17 @@ class BrowserManager:
         return self
 
     async def stop(self) -> None:
-        if self._ctx:
+        # CDP is an attachment to the user's already-running Chrome. Stopping
+        # Playwright must only disconnect its transport; Browser.close() would
+        # terminate the user's one visible session and invalidate the next job.
+        if self._owns_page and self._page:
+            try:
+                await self._page.close()
+            except Exception:
+                pass
+        if self.cdp_url and self._cdp_browser:
+            self._cdp_browser = None
+        elif self._ctx:
             try:
                 await self._ctx.close()
             except Exception:
@@ -268,6 +324,7 @@ class BrowserManager:
             except Exception:
                 pass
         self._ctx = None
+        self._cdp_browser = None
         self._pw = None
         self._page = None
         if self._owns_profile:
@@ -317,6 +374,14 @@ class BrowserManager:
                 await self._apply_visible_zoom(self._page)
             return self._page
         pages = self.context.pages
+        if self.cdp_url:
+            if self._owns_page:
+                self._page = await self.context.new_page()
+                return self._page
+            for candidate in pages:
+                if "flow.google.com" in candidate.url or "labs.google" in candidate.url:
+                    self._page = candidate
+                    return candidate
         self._page = pages[0] if pages else await self.context.new_page()
         if not self.headless:
             if not self._window_placed:
@@ -344,7 +409,14 @@ class BrowserManager:
             index = _visible_window_index
             _visible_window_index += 1
         x, y, width, height = _visible_window_geometry(index, area['width'], area['height'])
-        session = await self.context.new_cdp_session(page)
+        new_cdp_session = getattr(self.context, "new_cdp_session", None)
+        if new_cdp_session is None:
+            # Lightweight test doubles and non Chromium contexts may not
+            # expose CDP; keep the visible fallback local to the document.
+            await page.evaluate("(scale) => { document.documentElement.style.zoom = String(scale); }", self.page_zoom)
+            self._zoom_applied = True
+            return
+        session = await new_cdp_session(page)
         try:
             window = await session.send('Browser.getWindowForTarget')
             window_id = window['windowId']
@@ -370,19 +442,21 @@ class BrowserManager:
             await session.detach()
 
     async def _apply_visible_zoom(self, page: Page) -> None:
-        if self._zoom_applied:
+        if self._zoom_applied or self.page_zoom == 1.0:
             return
-        # Playwright key events do not trigger Chrome's native zoom shortcuts.
-        # Use Chrome's own settings page; closing it preserves the Flow tab.
-        settings_page = await self.context.new_page()
+        # Keep the profile and Chrome settings untouched.  Applying the scale
+        # only to the active tab avoids opening chrome://settings, which can
+        # interfere with Flow's anti-automation checks.
+        new_cdp_session = getattr(self.context, "new_cdp_session", None)
+        if new_cdp_session is None:
+            evaluate = getattr(page, "evaluate", None)
+            if evaluate is not None:
+                await evaluate("(scale) => { document.documentElement.style.zoom = String(scale); }", self.page_zoom)
+            self._zoom_applied = True
+            return
+        session = await new_cdp_session(page)
         try:
-            await settings_page.goto('chrome://settings/appearance', wait_until='domcontentloaded')
-            await settings_page.evaluate("""() => new Promise((resolve, reject) => {
-                    chrome.settingsPrivate.setDefaultZoom(%s, () => {
-                    if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-                    else resolve();
-                });
-            })""" % self.page_zoom)
+            await session.send("Emulation.setPageScaleFactor", {"pageScaleFactor": float(self.page_zoom)})
             self._zoom_applied = True
         finally:
-            await settings_page.close()
+            await session.detach()

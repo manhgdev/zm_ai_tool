@@ -156,7 +156,7 @@ class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_completed_api_image_does_not_require_dom_thumbnail(self):
         service = FlowService()
-        media = {'name': 'image-1', 'image': {'fifeUrl': 'https://example.invalid/image'}}
+        media = {'name': 'image-1', 'image': {'generatedImage': {'fifeUrl': 'https://example.invalid/image'}}}
         api = SimpleNamespace(get_project_data=AsyncMock(return_value={'projectContents': {'media': [media]}}))
         with patch.object(service, '_project_media_elements', AsyncMock(return_value=[])), patch('pipeline.flow.service._media_prompt_matches', return_value=True), patch('pipeline.flow.service._media_created_timestamp', return_value=100), patch('pipeline.flow.service.store.patch_row'):
             result = await service._wait_for_project_media(None, set(), 'image', 1, 'job', api=api, job={'prompt': 'cat', 'createdAt': 100})
@@ -168,6 +168,74 @@ class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
         api = SimpleNamespace(get_project_data=AsyncMock(return_value={'projectContents': {'media': [{'name': 'wrong', 'image': {'fifeUrl': 'https://example.invalid/wrong'}}]}}))
         with patch('pipeline.flow.service._media_prompt_matches', return_value=False):
             self.assertEqual(await service._find_existing_project_media(api, None, {'prompt': 'cat'}, 'image', 1), [])
+
+    async def test_parallel_recovery_accepts_late_api_media_without_prompt_metadata(self):
+        service = FlowService()
+        media = {'name': 'late-image', 'image': {'fifeUrl': 'https://example.invalid/late'}}
+        api = SimpleNamespace(get_project_data=AsyncMock(return_value={
+            'projectContents': {'media': [media]},
+        }))
+        job = {
+            'id': 'job', 'prompt': 'cat', 'parallelSession': True,
+            'submissionStartedAt': 100, 'baselineMediaIds': [],
+        }
+        with patch('pipeline.flow.service._media_prompt_matches', return_value=False):
+            self.assertEqual(await service._find_existing_project_media(api, None, job, 'image', 1), [])
+            recovered = await service._find_existing_project_media(
+                api, None, {**job, 'recoveryOnly': True}, 'image', 1,
+            )
+        self.assertEqual(recovered[0]['id'], 'late-image')
+        self.assertEqual(recovered[0]['src'], 'https://example.invalid/late')
+
+    def test_retry_timeout_preserves_submission_for_recovery(self):
+        service = FlowService()
+        account = {
+            'id': 'a', 'status': 'online', 'projectId': 'p',
+            'plan': 'Ultra', 'credits': 100,
+        }
+        job = {
+            'id': 'j', 'accountId': 'a', 'kind': 'image', 'mode': 'text',
+            'status': 'failed', 'error': 'no completed image media appeared after submit',
+            'submissionStartedAt': 100, 'submissionProjectId': 'p',
+            'baselineMediaIds': ['old'], 'baselineThumbs': [], 'mediaIds': [],
+            'outputs': [], 'settings': {'model': 'Nano Banana 2', 'ratio': '16:9', 'count': 1},
+        }
+
+        def get_row(table, row_id):
+            return account if table == 'accounts' else job
+
+        def patch_row(table, row_id, data):
+            job.update(data)
+            return job
+
+        with patch('pipeline.flow.service.store.get_row', side_effect=get_row), \
+             patch('pipeline.flow.service.store.list_rows', return_value=[]), \
+             patch('pipeline.flow.service.store.patch_row', side_effect=patch_row), \
+             patch('pipeline.flow.service.threading.Thread'), patch.object(service, '_log'):
+            retried = service.retry('j')
+
+        self.assertEqual(retried['submissionStartedAt'], 100)
+        self.assertEqual(retried['submissionProjectId'], 'p')
+        self.assertEqual(retried['baselineMediaIds'], ['old'])
+        self.assertTrue(retried['resumeOnly'])
+        self.assertEqual(retried['status'], 'queued')
+
+    async def test_submitted_recovery_does_not_claim_old_visible_error_tile(self):
+        service = FlowService()
+        job = {
+            'id': 'j', 'accountId': 'a', 'kind': 'image', 'settings': {'count': 1},
+            'submissionStartedAt': 100, 'resumeOnly': True,
+        }
+        claim = AsyncMock(return_value='FLOW_AUTOMATION_BLOCKED: old tile')
+        with patch.object(service, '_find_existing_project_media', AsyncMock(return_value=[])), \
+             patch.object(service, '_claim_visible_flow_error', claim), \
+             patch.object(service, '_check_cancel'), \
+             patch('pipeline.flow.service.store.patch_row'), \
+             patch('pipeline.flow.service.asyncio.sleep', AsyncMock()), \
+             patch('pipeline.flow.service.time.monotonic', side_effect=[0, 2]):
+            with self.assertRaisesRegex(RuntimeError, 'FLOW_GENERATION_TIMEOUT'):
+                await service._recover_submitted_media(None, None, job, timeout_s=1)
+        claim.assert_not_awaited()
 
     def test_prompt_match_accepts_flow_normalized_text(self):
         from pipeline.flow.service import _media_prompt_matches

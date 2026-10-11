@@ -253,7 +253,7 @@ test("distinguishes Flow unusual-activity blocks from content rejection — raw 
 });
 
 
- test("technical detail preserves distinct nested codes and provider diagnostics", () => {
+test("technical detail preserves distinct nested codes and provider diagnostics", () => {
   const raw = "FLOW_WORKER_FAILED: FLOW_PLAN_SYNC_FAILED: Page.goto: net::ERR_INTERNET_DISCONNECTED at https://flow.google.com/project/example";
   assert.equal(technicalFlowDetail(raw), raw);
   assert.equal(technicalFlowDetail("FLOW_QUOTA_EXHAUSTED: quota exceeded"), "FLOW_QUOTA_EXHAUSTED: quota exceeded");
@@ -365,3 +365,22 @@ test('Flow queue bulk folding is bilingual, covers both kinds and persists', () 
   assert.deepEqual(state, { 'video-same': false, 'image-same': false, unrelated: true })
   assert.deepEqual(saved, state)
 })
+
+test('image capability normalization preserves persisted video download quality', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('function applyAccountCapabilities('), source.indexOf('function flowRouteQueryPanel('));
+  const code = ts.transpileModule(body + '\nreturn applyAccountCapabilities;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const apply = new Function('flowVideoDownloadQualities', 'settingsWithSelectedModel', 'clampFlowImageResolution', 'isFlowVideoUiResolution', 'isFlowImageUiResolution', 'FLOW_IMAGE_MODELS', code)(
+    () => ['360p', '720p'], (settings, kind, model) => ({ ...settings, model }), () => '1K', () => false, () => true, ['Nano Banana 2.1'],
+  );
+  for (const quality of ['720p', '1080p', '4K']) {
+    const current = { model: 'Nano Banana 2.1', imageModel: 'Nano Banana 2.1', imageRatio: '16:9', resolution: '1K', quality };
+    const model = { name: current.model, ratios: ['16:9'], resolutions: ['1K'], durations: [] };
+    for (const account of [undefined, { capabilityStatus: 'verified', capabilityCatalog: { image: { models: [model] } } }]) {
+      const next = apply(account, current, 'image', current.model);
+      const persisted = JSON.parse(JSON.stringify(next));
+      assert.equal(persisted.quality, quality);
+    }
+  }
+  assert.match(source, /: videoDownloadQualityOptions\[0\]\)\s*: effectiveSettings.quality/);
+});

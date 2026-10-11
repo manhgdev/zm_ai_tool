@@ -3,7 +3,7 @@
 export type FlowTab = "create" | "queue" | "history" | "logs";
 export type FlowRoutePanel = "image" | "video" | "series" | "queue" | "history" | "logs" | "accounts" | "help";
 export type RailItem = "createImage" | "createVideo" | "queue" | "history" | "accounts" | "series" | "logs" | "help";
-export type JobStatus = "processing" | "queued" | "done" | "failed" | "cancelled";
+export type JobStatus = "processing" | "queued" | "done" | "failed" | "cancelled" | "action_required";
 export type CreateKind = "video" | "image";
 export type ImageMode = "text" | "edit" | "reference";
 export type VideoMode = "text" | "frame";
@@ -80,6 +80,9 @@ export type FlowAccount = {
   creditsSyncedAt?: number | null;
   isDefault?: boolean;
   projectId?: string;
+  /** Kind-specific Flow galleries; projectId is kept as the legacy image id. */
+  imageProjectId?: string;
+  videoProjectId?: string;
   error?: string;
   planStatus?: "verified" | "unknown";
   planSource?: string;
@@ -123,6 +126,9 @@ export type FlowSettings = {
   outputDir: string;
   quality: string;
   resolution: string;
+  /** Per-kind selections survive switching between image and video tabs. */
+  videoResolution?: string;
+  imageResolution?: string;
   concurrency: string;
   format: string;
   filePrefix: string;
