@@ -10,12 +10,12 @@ from api.routes import system
 
 
 def release_with(*suffixes):
-    names = [f"ZM_AI_TOOL_v8.6.23-{suffix}" for suffix in suffixes]
+    names = [f"ZM_AI_TOOL_v8.6.24-{suffix}" for suffix in suffixes]
     return {
-        "tag_name": "v8.6.23",
+        "tag_name": "v8.6.24",
         "assets": [{
             "name": name,
-            "browser_download_url": f"https://github.com/{system._UPDATE_REPOSITORY}/releases/download/v8.6.23/{name}",
+            "browser_download_url": f"https://github.com/{system._UPDATE_REPOSITORY}/releases/download/v8.6.24/{name}",
         } for name in names],
     }
 
@@ -40,15 +40,15 @@ class LandingDownloadTests(unittest.TestCase):
             def read(self): return self.text.encode()
 
         base = f"https://github.com/{system._UPDATE_REPOSITORY}"
-        feed = f'<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="{base}/releases/tag/v8.6.21"/></entry><entry><link href="{base}/releases/tag/v8.6.23"/></entry><entry><link href="https://example.com/releases/tag/v9.0.0"/></entry></feed>'
-        assets = ''.join(f'<a href="/{system._UPDATE_REPOSITORY}/releases/download/v8.6.23/{asset["name"]}">Download</a>' for asset in release_with("windows-x64-Setup.exe", "macos-arm64.pkg")["assets"])
+        feed = f'<feed xmlns="http://www.w3.org/2005/Atom"><entry><link href="{base}/releases/tag/v8.6.21"/></entry><entry><link href="{base}/releases/tag/v8.6.24"/></entry><entry><link href="https://example.com/releases/tag/v9.0.0"/></entry></feed>'
+        assets = ''.join(f'<a href="/{system._UPDATE_REPOSITORY}/releases/download/v8.6.24/{asset["name"]}">Download</a>' for asset in release_with("windows-x64-Setup.exe", "macos-arm64.pkg")["assets"])
         error = urllib.error.HTTPError("https://api.github.com", 403, "rate limit exceeded", {}, None)
         with patch.object(system, "_latest_release", side_effect=error), patch("urllib.request.urlopen", side_effect=[Response(feed), Response(assets)]) as fetch:
             result = system.api_desktop_downloads()
-        self.assertEqual(result["version"], "8.6.23")
+        self.assertEqual(result["version"], "8.6.24")
         self.assertEqual(set(result["downloads"]), {"windows", "macos-arm64"})
         self.assertEqual(fetch.call_args_list[0].args[0].full_url, f"{base}/releases.atom")
-        self.assertEqual(fetch.call_args_list[1].args[0].full_url, f"{base}/releases/expanded_assets/v8.6.23")
+        self.assertEqual(fetch.call_args_list[1].args[0].full_url, f"{base}/releases/expanded_assets/v8.6.24")
 
     def test_known_downloads_survive_temporary_source_outage(self):
         with patch.object(system, "_latest_release", return_value=release_with("macos-arm64.pkg")):
@@ -82,7 +82,7 @@ class LandingDownloadTests(unittest.TestCase):
         )
         with patch.object(system, "_latest_release", return_value=release), patch.object(system.sys, "platform", "linux"):
             result = system.api_desktop_downloads()
-        self.assertEqual(result["version"], "8.6.23")
+        self.assertEqual(result["version"], "8.6.24")
         self.assertEqual(set(result["downloads"]), {"windows", "macos-arm64", "macos-x64"})
         for key, suffix in (("windows", "Setup.exe"), ("macos-arm64", "arm64.pkg"), ("macos-x64", "x86_64.pkg")):
             self.assertTrue(result["downloads"][key]["name"].endswith(suffix))

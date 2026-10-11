@@ -49,8 +49,8 @@ test('Root renders landing regardless of storage; old landing links keep query a
   assert.deepEqual(renderEntry('/video-clone'), { path: '/video-clone', page: 'App' })
   assert.deepEqual(renderEntry('/text-to-speech'), { path: '/text-to-speech', page: 'App' })
   for (const path of ['/landing', '/landing/']) {
-    assert.deepEqual(renderEntry(path + '?v=8.6.23#download'), {
-      path: '/?v=8.6.23#download', page: 'LandingPage',
+    assert.deepEqual(renderEntry(path + '?v=8.6.24#download'), {
+      path: '/?v=8.6.24#download', page: 'LandingPage',
     })
   }
 })

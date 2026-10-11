@@ -26,7 +26,7 @@ class DesktopRoutingTest(unittest.TestCase):
                 'app': app, 'web_dir': web_dir, 'FileResponse': FileResponse, 'StaticFiles': StaticFiles,
             })
             with TestClient(app) as client:
-                for path in ['/', '/text-to-speech?v=8.6.23', '/text-to-speech/', '/video-clone?v=8.6.23', '/video-clone/']:
+                for path in ['/', '/text-to-speech?v=8.6.24', '/text-to-speech/', '/video-clone?v=8.6.24', '/video-clone/']:
                     response = client.get(path)
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.text, '<html>ZM AI TOOL</html>')
