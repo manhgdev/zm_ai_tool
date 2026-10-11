@@ -121,8 +121,8 @@ export function explainFlowError(message: string): FlowExplain {
       titleVi: "Đã tạo video, tải file thất bại",
       titleEn: "Video generated, download failed",
       summaryVi: "", summaryEn: "",
-      actionVi: "Kết quả trên Flow được giữ lại. Mở project Flow để tải video; Chạy lại sẽ tạo mới.",
-      actionEn: "The result is preserved on Flow. Open the Flow project to download it; Retry creates a new generation.",
+      actionVi: "Kết quả trên Flow được giữ lại. Chạy lại sẽ thử tải file lần nữa, không tạo video mới.",
+      actionEn: "The result is preserved on Flow. Retry will download the file again without generating a new video.",
     };
   }
   if (code === "FLOW_RESULT_NOT_FOUND") {

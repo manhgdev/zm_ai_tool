@@ -1577,7 +1577,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     || job.status === "failed"
     || job.status === "cancelled"
     || job.status === "action_required";
-  const isFreshCreateJob = (job: FlowJob) => job.status === "done";
+  const isFreshCreateJob = (job: FlowJob) =>
+    job.status === "done" && !job.error;
   const retryActionLabel = (jobsOrJob: FlowJob | FlowJob[]) => {
     const list = Array.isArray(jobsOrJob) ? jobsOrJob : [jobsOrJob];
     if (list.length && list.every(isFreshCreateJob)) {
@@ -3661,7 +3662,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           <div className="flow-preview-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRetryTarget(null); }}>
             <section className="flow-confirm-dialog flow-retry-dialog" data-multi-kind={retryTarget.groups.length > 1 ? "true" : undefined} role="dialog" aria-modal="true" aria-labelledby="flow-retry-title">
               <header>
-                <div><strong id="flow-retry-title">{retryTarget.jobs.every(isFreshCreateJob) ? t("Cài đặt tạo mới", "Create-new settings") : t("Cài đặt chạy lại", "Retry settings")}</strong><small>{t(`${retryTarget.jobs.length} job sẽ tạo media mới`, `${retryTarget.jobs.length} jobs will generate new media`)}</small></div>
+                <div><strong id="flow-retry-title">{retryTarget.jobs.every(isFreshCreateJob) ? t("Cài đặt tạo mới", "Create-new settings") : t("Cài đặt chạy lại", "Retry settings")}</strong><small>{retryTarget.jobs.every(isFreshCreateJob)
+                  ? t(`${retryTarget.jobs.length} job sẽ tạo media mới`, `${retryTarget.jobs.length} jobs will generate new media`)
+                  : t("Job sẽ thử lại theo trạng thái hiện tại; video đã tạo sẽ được tải lại nếu có.", "Jobs retry from their current state; completed videos are downloaded again when available.")}</small></div>
                 <button type="button" onClick={() => setRetryTarget(null)} aria-label={t("Đóng", "Close")}>×</button>
               </header>
               {retrySuspendedAccounts.length > 0 && (

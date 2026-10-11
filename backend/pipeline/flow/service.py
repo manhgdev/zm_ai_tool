@@ -1138,7 +1138,10 @@ class FlowService:
     def _ensure_session_profile(self, account_id: str, kind: str) -> Path:
         target = self._session_profile_dir(account_id, kind)
         base = Path(store.profile_dir(account_id))
-        if not target.exists() and base.exists():
+        if base.exists():
+            # Login/reconnect writes fresh Google cookies to the canonical
+            # account profile. Refresh each media profile before opening its
+            # Chrome session so image/video jobs do not reuse stale cookies.
             shutil.copytree(base, target, dirs_exist_ok=True)
         return target
 
@@ -1401,8 +1404,7 @@ class FlowService:
             elif re.search(r"FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit", r, re.I):
                 duration_seconds = _COOLDOWN_CREDITS_S
             elif re.search(
-                r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)|"
-                r"FLOW_RESULT_NOT_FOUND",
+                r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)",
                 r,
                 re.I,
             ):
@@ -3541,9 +3543,21 @@ class FlowService:
             self._running_jobs.add(job_id)
         account_id = str(job["accountId"])
         generation_token = str(job.get("generationToken") or "")
-        concurrency = _job_concurrency(job.get("settings") or {})
         order = int(job.get("queueOrder", job.get("inputIndex", 0)))
         with self._account_condition:
+            def account_concurrency_limit() -> int:
+                # Image and video share one account budget. Use the highest
+                # requested Flow lane count across this account's queued or
+                # active jobs instead of blocking one media kind at another
+                # kind's smaller per-job setting.
+                values = [
+                    _job_concurrency(row.get("settings") or {})
+                    for row in store.list_rows("jobs")
+                    if str(row.get("accountId") or "") == account_id
+                    and row.get("status") in {"queued", "processing"}
+                ]
+                return max(values or [_job_concurrency(job.get("settings") or {})])
+
             def next_queued_order() -> int | None:
                 # store.list_rows only — self.jobs() under this lock starves delete_all notify_all.
                 pending_orders = [
@@ -3560,7 +3574,7 @@ class FlowService:
                 self._account_next_start[account_id] = order if first_order is None else first_order
             while (
                 order != self._account_next_start[account_id]
-                or self._account_active.get(account_id, 0) >= concurrency
+                or self._account_active.get(account_id, 0) >= account_concurrency_limit()
                 or self._account_session_blocked(account_id)
                 or self._account_suspended(account_id)
             ):
@@ -3882,7 +3896,7 @@ class FlowService:
                             "updatedAt": time.time(),
                         })
                 elif re.search(
-                    r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)|FLOW_RESULT_NOT_FOUND",
+                    r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)",
                     err_msg, re.I,
                 ):
                     self.suspend_account(account_id, err_msg)
@@ -3891,8 +3905,7 @@ class FlowService:
                     self._try_fallback_account(job_id, account_id, err_msg)
                 elif re.search(
                     r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED|"
-                    r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)|"
-                    r"FLOW_RESULT_NOT_FOUND",
+                    r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)",
                     err_msg,
                     re.I,
                 ):
@@ -5255,14 +5268,48 @@ class FlowService:
             except Exception:
                 pass
             await tile.locator(".thumbnail").first.click(force=True, timeout=10_000)
+        # Current Flow edit view exposes download under the three-dot menu:
+        # open More actions, then open the nested "Download media" item.
+        more_btn = page.locator(
+            'button[aria-label*="Thêm"], button[aria-label*="More"], '
+            'button[aria-label*="more"], button[aria-label*="Tùy chọn"], button[aria-label*="Tuỳ chọn"], button[title*="More"], '
+            'button:has(mat-icon:text("more_vert")), '
+            '[role="button"]:has-text("more_vert")'
+        ).last
+        download_parent = page.locator(
+            'button[aria-label*="Tải nội dung"], [role="menuitem"]:has-text("Tải nội dung"), text=/Tải nội dung nghe nhìn xuống|Download media/i'
+        ).last
+        menu_opened = False
+        if await more_btn.count() > 0:
+            try:
+                await more_btn.click(timeout=5_000)
+                await download_parent.wait_for(state="visible", timeout=5_000)
+                await download_parent.hover()
+                await download_parent.click()
+                await asyncio.sleep(0.3)
+                menu_opened = True
+            except Exception:
+                # Older Flow builds expose a direct download action instead.
+                pass
         dl_btn = page.locator(
             'button[aria-label*="Tải"], button[aria-label*="Download"], '
-            'button[aria-label*="download"], button:has-text("download"), button:has-text("Tải")'
+            'button[aria-label*="download"], button[title*="Download"], '
+            'button[data-testid*="download" i], [role="button"][aria-label*="Download"], '
+            'button:has-text("download"), button:has-text("Download"), button:has-text("Tải")'
         ).first
         try:
-            await dl_btn.wait_for(state="visible", timeout=10_000)
-            await dl_btn.click()
-            menu_items = page.get_by_role("menuitem")
+            # The current three-dot flow opens the quality submenu directly;
+            # there is no second direct-download button to wait for.
+            if not menu_opened:
+                await dl_btn.wait_for(state="visible", timeout=10_000)
+                await dl_btn.click()
+            # Flow has shipped both ARIA menuitems and Angular Material
+            # menu buttons/options. Use the visible menu surface rather than
+            # one role so the current edit-page menu remains downloadable.
+            menu_items = page.locator(
+                '[role="menuitem"]:visible, mat-menu-item:visible, '
+                '[role="menu"] button:visible, [role="menu"] [role="option"]:visible'
+            )
             await menu_items.first.wait_for(state="visible", timeout=5_000)
             texts = [await menu_items.nth(i).inner_text() for i in range(await menu_items.count())]
             index = _pick_video_menu_item(texts, preferred)
@@ -5640,9 +5687,16 @@ class FlowService:
             if use_manual_session and isinstance(manual_session, dict) and manual_session.get("cdp_url"):
                 # Concurrent jobs share the saved login, but each owns a tab so
                 # prompt/settings edits cannot overwrite another job's composer.
+                with self._guard:
+                    has_active_kind_job = any(
+                        key != job_id and value is not None
+                        for key, value in self._active_browsers.items()
+                    )
                 browser = BrowserManager.from_cdp(
                     str(manual_session["cdp_url"]),
-                    new_page=_job_concurrency(job.get("settings") or {}) > 1,
+                    # Reuse the first manually opened tab for the first job;
+                    # only concurrent jobs need additional tabs.
+                    new_page=_job_concurrency(job.get("settings") or {}) > 1 and has_active_kind_job,
                 )
                 self._log(
                     "info", "browser_mode", job_id=job_id, account_id=account["id"],
@@ -5773,12 +5827,31 @@ class FlowService:
                                     return src === target || (targetClean && clean(src) === targetClean);
                                 });
                             }""", thumb)
-                            if int(tile_index) < 0:
-                                raise RuntimeError("FLOW_RESULT_NOT_FOUND: completed video tile disappeared")
                             output = self._output_path(job, index, "mp4")
                             account_plan = str(account.get("plan") or "")
+                            if int(tile_index) < 0:
+                                # The completed media can disappear from the
+                                # virtualized SPA grid while remaining in the
+                                # authenticated project payload. Download it
+                                # directly instead of submitting a new video.
+                                await self._download_video_from_project_media(api, job, output, index)
+                                outputs.append(str(output))
+                                self._log("success", "output_downloaded_from_project_media", job_id=job_id,
+                                          account_id=account["id"], details={"outputIndex": index, "tileMissing": True})
+                                continue
                             quality = _video_download_quality(settings, account_plan)
-                            await self._download_video_via_flow_menu(page, int(tile_index), output, quality, job_id=job_id)
+                            try:
+                                await self._download_video_via_flow_menu(page, int(tile_index), output, quality, job_id=job_id)
+                            except Exception as menu_exc:
+                                # Flow's edit-page menu changes frequently. The
+                                # completed project payload is an authenticated
+                                # fallback and must not trigger a new generation.
+                                try:
+                                    await self._download_video_from_project_media(api, job, output, index)
+                                    self._log("warning", "video_download_menu_fallback", job_id=job_id,
+                                              account_id=account["id"], message=str(menu_exc))
+                                except Exception:
+                                    raise menu_exc
                             outputs.append(str(output))
                             self._log("success", "output_downloaded", job_id=job_id,
                                       account_id=account["id"], details={"outputIndex": index, "quality": quality})
@@ -6229,8 +6302,13 @@ class FlowService:
     def _kill_job_browser(self, job_id: str) -> None:
         with self._guard:
             browser = self._active_browsers.get(str(job_id))
-        if browser is not None:
+        if browser is None:
+            return
+        try:
             browser.kill_now()
+        except Exception as exc:
+            # Cleanup must never abort bulk deletion or kill its worker thread.
+            self._log("warning", "browser_kill_failed", job_id=str(job_id), message=str(exc))
 
     def _close_auto_session_if_idle(self, account_id: str, kind: str = "image") -> None:
         """Close a session opened implicitly by prompt generation.
@@ -6322,7 +6400,13 @@ class FlowService:
         if not job_ids:
             return
         with ThreadPoolExecutor(max_workers=min(8, len(job_ids))) as pool:
-            list(pool.map(self._kill_job_browser, job_ids))
+            # _kill_job_browser is defensive; consume all futures so one
+            # unexpected executor error cannot escape this background thread.
+            for future in [pool.submit(self._kill_job_browser, job_id) for job_id in job_ids]:
+                try:
+                    future.result()
+                except Exception as exc:
+                    self._log("warning", "bulk_browser_kill_failed", message=str(exc))
 
     def cancel(self, job_id: str) -> dict[str, Any] | None:
         with self._account_condition:
@@ -6344,8 +6428,18 @@ class FlowService:
         if not existing:
             return None
         overrides = overrides or {}
-        force_new = bool(overrides.get("fresh"))
         manual_retry = bool(overrides.get("manual"))
+        download_recovery = bool(
+            existing.get("kind") == "video"
+            and existing.get("mediaIds")
+            and not existing.get("outputs")
+            and re.search(r"FLOW_DOWNLOAD_FAILED", str(existing.get("error") or ""), re.I)
+        )
+        # A completed Flow video must never be regenerated just because the
+        # UI sent a stale fresh flag; retrying this error means download only.
+        force_new = bool(overrides.get("fresh")) and not download_recovery and bool(
+            existing.get("status") == "done" and not existing.get("error")
+        )
         # A timeout can be reported before Flow finishes rendering. Retrying
         # that job should resume the persisted submission and claim its late
         # media, rather than submitting a duplicate generation. Explicit
@@ -6359,7 +6453,7 @@ class FlowService:
                 r"FLOW_GENERATION_TIMEOUT|no completed\s+(?:image|video)\s+media appeared after submit",
                 str(existing.get("error") or ""), re.I,
             )
-        )
+        ) or download_recovery
         requested_account_id = str(overrides.get("accountId") or existing.get("accountId") or "").strip()
         account_id = requested_account_id
         settings = dict(existing.get("settings") or {})

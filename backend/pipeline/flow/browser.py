@@ -119,9 +119,9 @@ def _visible_window_geometry(
     # Leave room for Chrome's native title bar/frame; launch dimensions are
     # outer-window hints and can grow slightly on macOS.
     gap = max(16, min(28, screen_height // 36))
-    columns = max(1, screen_width // 500)
+    columns = max(2, screen_width // 1080)
     horizontal_gap = min(gap, max(0, screen_width - columns * 500) // max(1, columns - 1))
-    width = (screen_width - horizontal_gap * (columns - 1)) // columns
+    width = max(1080, (screen_width - horizontal_gap * (columns - 1)) // columns)
     # Keep readable cells on larger work areas instead of limiting every screen to two rows.
     # Keep Flow windows in one horizontal row; page zoom is intentionally
     # untouched so each visible session remains a normal browser page.
@@ -132,7 +132,10 @@ def _visible_window_geometry(
     row = index % rows
     # ponytail: wrap full grids; overlap is preferable to off-screen windows.
     group = (index // rows) % columns
-    x = 0 if group == columns - 1 else screen_width - width - group * (width + horizontal_gap)
+    raw_x = 0 if group == columns - 1 else screen_width - width - group * (width + horizontal_gap)
+    # Keep every oversized window inside the work area; newer windows are
+    # brought to front by page() and therefore appear above earlier ones.
+    x = max(0, min(raw_x, max(0, screen_width - width)))
     y = row * (height + gap)
     return x, y, width, height
 
@@ -210,7 +213,10 @@ class BrowserManager:
 
     @classmethod
     def from_cdp(cls, cdp_url: str, *, new_page: bool = False) -> "BrowserManager":
-        manager = cls(cdp_url=cdp_url)
+        # CDP attaches to the already visible Chrome profile used by Flow.
+        # Keep this distinct from headless CDP consumers so page zoom/layout
+        # adjustments run on the real account tab.
+        manager = cls(headless=False, cdp_url=cdp_url, page_zoom=1.0)
         manager._owns_page = new_page
         return manager
 
@@ -256,6 +262,9 @@ class BrowserManager:
                     f"--remote-debugging-port={int(self.remote_debugging_port)}",
                     "--remote-debugging-address=127.0.0.1",
                 ])
+            # Use the compatibility flag only while logging in, connecting,
+            # or opening a manual account session. Direct image/video workers
+            # keep the normal Chrome launch surface.
             if self.google_login_compat:
                 launch_args.append("--disable-blink-features=AutomationControlled")
             launch_args.extend(["--disable-infobars", *visible_args])
@@ -345,11 +354,14 @@ class BrowserManager:
         profile = str(self.profile_dir.resolve())
         try:
             import psutil  # type: ignore
-            for proc in psutil.process_iter(["pid", "cmdline"]):
-                if proc.pid == os.getpid():
-                    continue
+            # Request only pid metadata during iteration. On macOS, asking
+            # psutil for cmdline in process_iter can raise PermissionError or
+            # SystemError from KERN_PROCARGS2 for unrelated protected PIDs.
+            for proc in psutil.process_iter(["pid"]):
                 try:
-                    cmdline = " ".join(proc.info.get("cmdline") or [])
+                    if proc.pid == os.getpid():
+                        continue
+                    cmdline = " ".join(proc.cmdline() or [])
                     if profile not in cmdline:
                         continue
                     proc.send_signal(signal.SIGTERM)
@@ -357,9 +369,9 @@ class BrowserManager:
                         proc.wait(timeout=0.5)
                     except psutil.TimeoutExpired:
                         proc.kill()
-                except (psutil.Error, OSError, PermissionError):
+                except (psutil.Error, OSError, PermissionError, SystemError):
                     continue
-        except ImportError:
+        except (ImportError, psutil.Error, OSError, PermissionError, SystemError):
             return
 
     @property
@@ -377,10 +389,14 @@ class BrowserManager:
         if self.cdp_url:
             if self._owns_page:
                 self._page = await self.context.new_page()
+                if not self.headless:
+                    await self._apply_visible_zoom(self._page)
                 return self._page
             for candidate in pages:
                 if "flow.google.com" in candidate.url or "labs.google" in candidate.url:
                     self._page = candidate
+                    if not self.headless:
+                        await self._apply_visible_zoom(candidate)
                     return candidate
         self._page = pages[0] if pages else await self.context.new_page()
         if not self.headless:
@@ -442,7 +458,7 @@ class BrowserManager:
             await session.detach()
 
     async def _apply_visible_zoom(self, page: Page) -> None:
-        if self._zoom_applied or self.page_zoom == 1.0:
+        if self.page_zoom == 1.0:
             return
         # Keep the profile and Chrome settings untouched.  Applying the scale
         # only to the active tab avoids opening chrome://settings, which can
@@ -454,9 +470,10 @@ class BrowserManager:
                 await evaluate("(scale) => { document.documentElement.style.zoom = String(scale); }", self.page_zoom)
             self._zoom_applied = True
             return
-        session = await new_cdp_session(page)
-        try:
-            await session.send("Emulation.setPageScaleFactor", {"pageScaleFactor": float(self.page_zoom)})
-            self._zoom_applied = True
-        finally:
-            await session.detach()
+        # CSS zoom changes the actual desktop layout and is visible in Flow's
+        # narrow/wide responsive surfaces; pageScaleFactor only simulates pinch
+        # zoom and leaves the page layout effectively at 100%.
+        evaluate = getattr(page, "evaluate", None)
+        if evaluate is not None:
+            await evaluate("(scale) => { document.documentElement.style.zoom = String(scale); }", self.page_zoom)
+        self._zoom_applied = True

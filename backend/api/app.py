@@ -56,6 +56,13 @@ def _allowed_origins() -> list[str]:
 
 
 def create_app() -> FastAPI:
+    # Install before starting any background worker so uncaught thread errors
+    # are captured by the app logger instead of printing an unhandled traceback.
+    try:
+        from pipeline.core.app_log import install_process_hooks
+        install_process_hooks()
+    except Exception:
+        pass
     access_logger = logging.getLogger('uvicorn.access')
     if not any(isinstance(item, StatusAccessFilter) for item in access_logger.filters):
         access_logger.addFilter(StatusAccessFilter())
