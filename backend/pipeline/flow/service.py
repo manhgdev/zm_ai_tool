@@ -3357,7 +3357,6 @@ class FlowService:
                     re.I,
                 ):
                     self._stop_account_after_automation_block(account_id, job_id)
-                    self._try_fallback_account(job_id, account_id, err_msg)
                 elif current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
                     self._try_fallback_account(job_id, account_id, err_msg)
                 elif re.search(

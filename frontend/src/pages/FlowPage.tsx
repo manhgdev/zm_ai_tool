@@ -1269,6 +1269,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       setApiError(message);
       // Clear optimistic stubs so the queue does not keep fake jobs after a hard block.
       setJobs((current) => current.filter((j) => !j.id.startsWith("_opt_")));
+      if (/FLOW_NO_ONLINE_ACCOUNTS|NO_ONLINE_ACCOUNTS/i.test(message)) {
+        setUtilityView("accounts");
+        writeFlowRoutePanel("accounts");
+        toast.info(t(
+          "Không có tài khoản Flow online. Hãy kết nối tài khoản trước khi tạo.",
+          "No Flow accounts are online. Connect an account before generating.",
+        ));
+      }
       if (isFlowLimitError(message)) showLimitNotice(message);
     }
   };
