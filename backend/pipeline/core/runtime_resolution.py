@@ -47,7 +47,7 @@ def select_wheels(lock: dict) -> list[Wheel]:
     return result
 
 
-def resolve(uv: str, profile: str, core: tuple[str, ...], root: Path, run, emit) -> list[Wheel]:
+def resolve(uv: str, profile: str, core: tuple[str, ...], root: Path, run, emit, *, features: tuple[str, ...] | None = None) -> list[Wheel]:
     # The Windows cp312 resolver needs TOML; importing the shared CPU recipe
     # on native Linux Python 3.10 must not require the Python 3.11 stdlib.
     import tomllib
@@ -56,14 +56,18 @@ def resolve(uv: str, profile: str, core: tuple[str, ...], root: Path, run, emit)
     torch_backend = profile.removeprefix('nvidia-') if cuda else 'cpu'
     torch_version = '2.7.1' if torch_backend == 'cu128' else '2.6.0'
     provider = {'cpu': 'onnxruntime==1.20.1', 'directml': 'onnxruntime-directml==1.23.0'}.get(profile, 'onnxruntime-gpu==1.20.2')
-    sdk = ('faster-whisper==1.2.1', 'rapidocr-onnxruntime==1.4.4', 'vieneu==3.2.0')
+    selected = set(features) if features is not None else {'whisper', 'ocr', 'vieneu', 'diarization'}
+    sdk = tuple(spec for feature, spec in (
+        ('whisper', 'faster-whisper==1.2.1'), ('ocr', 'rapidocr-onnxruntime==1.4.4'), ('vieneu', 'vieneu==3.2.0'),
+    ) if feature in selected)
+    sherpa = (('sherpa-onnx==1.13.5+cuda12.cudnn9' if cuda else 'sherpa-onnx==1.13.8'),) if 'diarization' in selected else ()
     specs = (*core, f'torch=={torch_version}', f'torchaudio=={torch_version}', provider,
-             'sherpa-onnx==1.13.5+cuda12.cudnn9' if cuda else 'sherpa-onnx==1.13.8', *sdk)
+             *sherpa, *sdk)
     # These SDK distributions declare CPU ORT / duplicate OpenCV / upstream UI
     # extras. The app supplies their used dependencies explicitly in CORE.
     config = '[project]\nname = "zm-runtime"\nversion = "1.0.0"\nrequires-python = "==3.12.*"\n'
     config += 'dependencies = ' + json.dumps(specs) + '\n'
-    for spec in (*sdk, *(('sherpa-onnx==1.13.5+cuda12.cudnn9',) if cuda else ())):
+    for spec in (*sdk, *(sherpa if cuda else ())):
         name, version = spec.split('==')
         config += f'\n[[tool.uv.dependency-metadata]]\nname = "{name}"\nversion = "{version}"\nrequires-dist = []\n'
     identity = hashlib.sha256((config + profile + UV_VERSION).encode()).hexdigest()[:24]

@@ -199,10 +199,10 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                                  {'width': 1440, 'height': 900} if headless else None)
                 self.assertEqual(launch.call_args.kwargs['no_viewport'], not headless)
                 self.assertNotIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
+                self.assertIn('--disable-extensions', launch.call_args.kwargs['args'])
                 self.assertNotIn('--no-sandbox', launch.call_args.kwargs['args'])
-                context.add_init_script.assert_any_await(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-                )
+                self.assertEqual(context.add_init_script.await_count, 0)
+                self.assertNotIn('ignore_default_args', launch.call_args.kwargs)
                 await manager.stop()
 
             manager = BrowserManager(

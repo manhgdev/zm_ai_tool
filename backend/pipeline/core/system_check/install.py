@@ -879,6 +879,107 @@ def _install_linux_cpu_packages() -> dict[str, Any]:
             'computeMode': 'cpu', 'needsRestart': True, 'diagnostics': probe.stdout}
 
 
+def install_vieneu_runtime() -> dict[str, Any]:
+    """Install local TTS dependencies only, using the existing runtime owner."""
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        from ..runtime_install import install_runtime
+
+        return install_runtime(
+            lambda value, message, fields: _report_install(value, message, **fields),
+            features=("vieneu",),
+        )
+    from ..runtime_install import CORE
+    from ..runtime_site import bootstrap_ai_runtime, install_runtime_meta_path
+
+    if _runtime_torch_needs_install():
+        _install_runtime_torch()
+    excluded = {"ctranslate2", "av", "setuptools", "opencv-python-headless", "pillow", "pyclipper", "shapely", "six"}
+    core = [spec for spec in CORE if spec.split("==")[0] not in excluded]
+    accel = _runtime_ort_accel()
+    provider = _ORT_GPU_PKG if accel == "cuda" else _ORT_DIRECTML_PKG if accel == "directml" else "onnxruntime==1.20.1"
+    _runtime_pip_install(*core, provider, timeout=1800, progress=(30, 80, "VieNeu dependencies"))
+    _runtime_pip_install("--no-deps", "vieneu==3.2.0", timeout=600, progress=(80, 95, "VieNeu"))
+    install_runtime_meta_path()
+    bootstrap_ai_runtime()
+    _invalidate_checks_cache()
+    ok, detail = _runtime_mod_ok("vieneu") if getattr(sys, "frozen", False) else _mod_ok("vieneu")
+    if not ok:
+        raise RuntimeError(f"VIENEU_INSTALL_FAILED: {detail}")
+    return {"ok": True, "message": "VieNeu installed", "needsRestart": bool(getattr(sys, "frozen", False))}
+
+
+def _install_native_optional_feature(feature: str) -> dict[str, Any]:
+    """Install one optional feature without bootstrapping the other AI stacks."""
+    from ..runtime_install import CORE
+    from ..runtime_site import bootstrap_ai_runtime, install_runtime_meta_path
+
+    specs = {spec.split("==")[0]: spec for spec in CORE}
+    common = {
+        "numpy", "httpx", "cffi", "soundfile", "soxr", "tqdm", "six",
+    }
+    if feature == "whisper":
+        names = common | {"setuptools", "ctranslate2", "av", "huggingface-hub", "pyyaml", "tokenizers"}
+        sdk, module, label = "faster-whisper==1.2.1", "faster_whisper", "Whisper"
+    elif feature == "ocr":
+        names = common | {"pillow", "opencv-python-headless", "pyclipper", "shapely"}
+        sdk, module, label = "rapidocr-onnxruntime==1.4.4", "rapidocr_onnxruntime", "OCR"
+    elif feature == "diarization":
+        # speaker.py decodes the input through soundfile before handing it to
+        # Sherpa. Keep this dependency in the feature-only install path.
+        names = {"numpy", "soundfile"}
+        sdk, module, label = "sherpa-onnx==1.13.8", "sherpa_onnx", "Sherpa-ONNX"
+    else:
+        raise ValueError(f"Unsupported optional feature: {feature}")
+    provider = _ORT_GPU_PKG if _runtime_ort_accel() == "cuda" else _ORT_DIRECTML_PKG if _runtime_ort_accel() == "directml" else "onnxruntime==1.20.1"
+    _runtime_pip_install(*(specs[name] for name in sorted(names) if name in specs), provider,
+                         timeout=1800, progress=(20, 78, f"{label} dependencies"))
+    _runtime_pip_install("--no-deps", sdk, timeout=900, progress=(80, 94, label))
+    if feature == "diarization":
+        from pipeline.asr.speaker import ensure_diarization_models
+        from pipeline.core.config import DATA
+
+        ensure_diarization_models(DATA / "models" / "pyannote", log=_install_log_fn)
+    install_runtime_meta_path()
+    bootstrap_ai_runtime()
+    _invalidate_checks_cache()
+    ok, detail = _runtime_mod_ok(module) if getattr(sys, "frozen", False) else _mod_ok(module)
+    if not ok:
+        raise RuntimeError(f"{feature.upper()}_INSTALL_FAILED: {detail}")
+    return {"ok": True, "message": f"{label} installed", "needsRestart": bool(getattr(sys, "frozen", False))}
+
+
+def install_whisper_runtime() -> dict[str, Any]:
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        from ..runtime_install import install_runtime
+        return install_runtime(lambda value, message, fields: _report_install(value, message, **fields), features=("whisper",))
+    return _install_native_optional_feature("whisper")
+
+
+def install_ocr_runtime() -> dict[str, Any]:
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        from ..runtime_install import install_runtime
+        return install_runtime(lambda value, message, fields: _report_install(value, message, **fields), features=("ocr",))
+    return _install_native_optional_feature("ocr")
+
+
+def install_diarization_runtime() -> dict[str, Any]:
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        from ..runtime_install import install_runtime
+        result = install_runtime(lambda value, message, fields: _report_install(value, message, **fields), features=("diarization",))
+        from pipeline.asr.speaker import ensure_diarization_models
+        from pipeline.core.config import DATA
+        ensure_diarization_models(DATA / "models" / "pyannote", log=_install_log_fn)
+        return result
+    return _install_native_optional_feature("diarization")
+
+
+def install_demucs_runtime() -> dict[str, Any]:
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        from ..runtime_install import install_runtime
+        return install_runtime(lambda value, message, fields: _report_install(value, message, **fields), demucs=True, features=())
+    return install_demucs_cuda()
+
+
 def install_ai_runtime() -> dict[str, Any]:
     """Cài nhóm ASR/OCR nặng vào venv riêng của bản desktop."""
     if sys.platform == "win32" and getattr(sys, "frozen", False):

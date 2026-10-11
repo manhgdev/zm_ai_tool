@@ -229,7 +229,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             id="device",
             name=f"Thiết bị · {device.get('osLabel')}",
             ok=True,
-            required=True,
+            required=False,
             detail=(
                 f"{device.get('osLabel')} · {device.get('arch')} · "
                 f"GPU: {gpu_line} · accel={device.get('accel')}"
@@ -329,10 +329,10 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             id="ai_runtime",   # cùng install id → bấm Cài chạy cả 3 nhóm
             name="Whisper (ASR)",
             ok=not _whisper_missing,
-            required=True,
+            required=False,
             detail="đã cài" if not _whisper_missing else f"thiếu: {', '.join(_whisper_missing)}",
             hint="Bộ nhận dạng giọng nói Faster-Whisper · soundfile · soxr.",
-            install="ai_runtime",
+            install="whisper",
             installLabel="Cài gói AI",
         )
     )
@@ -376,7 +376,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
                  else f"thiếu: {', '.join(diarization_missing)} · {diarization_package_detail[:160]}")
             ),
             hint="Dùng kết quả nhận diện phần cứng chung của ZM AI TOOL; nếu backend tăng tốc không tương thích sẽ fallback CPU.",
-            install="ai_runtime",
+            install="diarization",
             installLabel="Cài tách người nói",
         )
     )
@@ -389,10 +389,10 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             id="ai_runtime_ocr",
             name="OCR (nhận dạng chữ)",
             ok=not _ocr_missing,
-            required=True,
+            required=False,
             detail="đã cài" if not _ocr_missing else f"thiếu: {', '.join(_ocr_missing)}",
             hint="RapidOCR · Pillow · OpenCV — đọc phụ đề từ video.",
-            install="ai_runtime",
+            install="ocr",
             installLabel="Cài gói AI",
         )
     )
@@ -406,7 +406,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             id="ai_runtime_vieneu",
             name="zmAI + VieNeu Local",
             ok=not _vieneu_missing and not _vieneu_torch_bad,
-            required=True,
+            required=False,
             detail=(
                 f"đã cài · VieNeu ONNX/CPU (cần PyTorch CUDA)" if (_vieneu_torch_bad and not _vieneu_missing)
                 else "đã cài" if not _vieneu_missing
@@ -416,7 +416,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
                 "Transformers · VieNeu TTS · huggingface-hub. "
                 "Có NVIDIA: dùng GPU khi PyTorch CUDA đã cài."
             ),
-            install="ai_runtime",
+            install="vieneu",
             installLabel="Cài gói AI",
         )
     )
@@ -429,7 +429,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
         hint="Giọng tiếng Trung và ngôn ngữ khác.", install="moss_tts_nano_runtime", installLabel="Cài MOSS-TTS-Nano",
     ))
 
-    for mid, title, req in (("httpx", "httpx", True),):
+    for mid, title, req in (("httpx", "httpx", False),):
         ok, detail = _mod_ok_fast(mid) if fast else _mod_ok(mid, dist_map=dist)
         inst, lab, hint = _install_from_plan(plan, mid)
         items.append(
@@ -471,7 +471,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             required=False,
             detail=demucs_detail,
             hint=dem_hint,
-            install=dem_inst,
+            install="demucs" if not dem_inst or dem_inst == "ai_runtime" else dem_inst,
             installLabel=dem_lab,
         )
     )

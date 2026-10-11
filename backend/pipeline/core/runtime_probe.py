@@ -6,29 +6,33 @@ import json
 import sys
 
 
-def probe(profile: str, demucs: bool = False) -> dict[str, str]:
+def probe(profile: str, demucs: bool = False, features: set[str] | None = None) -> dict[str, str]:
+    features = features if features is not None else {'whisper', 'ocr', 'vieneu', 'diarization'}
     import numpy as np
     import torch
     import torchaudio
-    import cv2
-    import ctranslate2
-    import faster_whisper
     import soundfile
     import cffi
-    from transformers import PreTrainedModel, Qwen3Model
-    from vieneu.v3turbo import V3TurboVieNeuTTS
-    from vieneu._v3_turbo_engine.onnx_runtime_lite import OnnxV3LiteEngine
-    from vieneu._v3_turbo_engine.speaker.fbank import extract_speaker_fbank
-    import sherpa_onnx
     import onnxruntime as ort
-    from rapidocr_onnxruntime import RapidOCR
 
     assert (sys.version_info[:2] == (3, 12) if sys.platform == 'win32'
             else (3, 10) <= sys.version_info[:2] <= (3, 12)), sys.version
-    assert 'float32' in ctranslate2.get_supported_compute_types('cpu')
-    assert cv2.resize(np.zeros((8, 8, 3), np.uint8), (4, 4)).shape == (4, 4, 3)
-    features = extract_speaker_fbank(torch.zeros(16000), sample_rate=16000)
-    assert features.shape[-1] == 80
+    if 'whisper' in features:
+        import ctranslate2
+        import faster_whisper
+        assert 'float32' in ctranslate2.get_supported_compute_types('cpu')
+    if 'ocr' in features:
+        import cv2
+        from rapidocr_onnxruntime import RapidOCR
+        assert cv2.resize(np.zeros((8, 8, 3), np.uint8), (4, 4)).shape == (4, 4, 3)
+    if 'vieneu' in features:
+        from transformers import PreTrainedModel, Qwen3Model
+        from vieneu.v3turbo import V3TurboVieNeuTTS
+        from vieneu._v3_turbo_engine.onnx_runtime_lite import OnnxV3LiteEngine
+        from vieneu._v3_turbo_engine.speaker.fbank import extract_speaker_fbank
+        assert extract_speaker_fbank(torch.zeros(16000), sample_rate=16000).shape[-1] == 80
+    if 'diarization' in features:
+        import sherpa_onnx
     cuda = profile.startswith('nvidia-')
     import importlib.metadata
     installed = []
@@ -43,7 +47,8 @@ def probe(profile: str, demucs: bool = False) -> dict[str, str]:
         assert torch.cuda.is_available(), 'CUDA driver/device unavailable'
         assert (torch.ones(1, device='cuda') + 1).cpu().item() == 2
         torch.cuda.synchronize()
-        assert ctranslate2.get_supported_compute_types('cuda'), 'Whisper CUDA unavailable'
+        if 'whisper' in features:
+            assert ctranslate2.get_supported_compute_types('cuda'), 'Whisper CUDA unavailable'
     else:
         assert torch.version.cuda is None, 'CPU/DirectML profile must not contain CUDA Torch'
     provider = 'CUDAExecutionProvider' if cuda else (
@@ -59,10 +64,11 @@ def probe(profile: str, demucs: bool = False) -> dict[str, str]:
     session.disable_fallback()
     assert session.get_providers()[0] == provider, f'Provider fell back: {session.get_providers()}'
     np.testing.assert_array_equal(session.run(None, {'x': np.array([2], np.float32)})[0], [2])
-    ocr = RapidOCR(det_use_cuda=cuda, cls_use_cuda=cuda, rec_use_cuda=cuda,
-                   det_use_dml=profile == 'directml', cls_use_dml=profile == 'directml',
-                   rec_use_dml=profile == 'directml')
-    ocr(np.zeros((64, 64, 3), np.uint8))
+    if 'ocr' in features:
+        ocr = RapidOCR(det_use_cuda=cuda, cls_use_cuda=cuda, rec_use_cuda=cuda,
+                       det_use_dml=profile == 'directml', cls_use_dml=profile == 'directml',
+                       rec_use_dml=profile == 'directml')
+        ocr(np.zeros((64, 64, 3), np.uint8))
     if demucs:
         import demucs.separate
         from demucs.demucs import Demucs
@@ -74,7 +80,8 @@ def probe(profile: str, demucs: bool = False) -> dict[str, str]:
 
 
 if __name__ == '__main__':
-    print(json.dumps(probe(sys.argv[1], '--demucs' in sys.argv[2:])))
+    selected = next((arg.split('=', 1)[1] for arg in sys.argv[2:] if arg.startswith('--features=')), None)
+    print(json.dumps(probe(sys.argv[1], '--demucs' in sys.argv[2:], set(selected.split(',')) if selected is not None else None)))
 '''
 
 if __name__ == '__main__':

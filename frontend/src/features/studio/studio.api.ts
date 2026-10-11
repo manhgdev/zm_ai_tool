@@ -1,4 +1,5 @@
 import { fetchJson } from '@/shared/api/fetchJson'
+import { prepareAiResources, prepareVoiceResources, recognitionResources, audioResources, type AiResourceId } from '@/features/project/project.api'
 
 export type QueueJob = {
   id: string
@@ -45,20 +46,38 @@ export type ReviewDiagnostics = {
 
 const json = { 'Content-Type': 'application/json' }
 
+async function prepareJob(type: string, settings: Record<string, unknown>) {
+  const resources: AiResourceId[] = type === 'review'
+    ? [
+        ...(settings.recognitionEngine === 'capcut' ? [] : ['whisper' as const]),
+        ...(settings.subtitle !== false && ['cover', 'above', 'below'].includes(String(settings.captionMode)) ? ['ocr' as const] : []),
+      ]
+    : [...recognitionResources(settings), ...audioResources(settings)]
+  await prepareAiResources(resources)
+  await prepareVoiceResources(String(settings.voice || settings.defaultVoice || ''), String(settings.language || settings.targetLang || 'auto'))
+}
+
 export const studioApi = {
   queue: () => fetchJson<QueueSnapshot>('/api/queue', undefined, 15_000),
-  enqueue: (type: 'clone' | 'review', sources: string[], settings: Record<string, unknown>, recursive = true, startNow = true) =>
-    fetchJson<{ ok: boolean; jobs: QueueJob[] }>('/api/queue', {
+  enqueue: async (type: 'clone' | 'review', sources: string[], settings: Record<string, unknown>, recursive = true, startNow = true) => {
+    if (startNow) await prepareJob(type, settings)
+    return fetchJson<{ ok: boolean; jobs: QueueJob[] }>('/api/queue', {
       method: 'POST',
       headers: json,
       body: JSON.stringify({ type, sources, settings, recursive, start_now: startNow }),
-    }, 30_000),
-  jobAction: (jobId: string, op: string) =>
-    fetchJson<QueueSnapshot>(`/api/queue/${jobId}/action`, {
+    }, 30_000)
+  },
+  jobAction: async (jobId: string, op: string) => {
+    if (['resume', 'retry'].includes(op)) {
+      const job = (await studioApi.queue()).jobs.find(item => item.id === jobId)
+      if (job) await prepareJob(job.type, job.settings_snapshot || {})
+    }
+    return fetchJson<QueueSnapshot>(`/api/queue/${jobId}/action`, {
       method: 'POST',
       headers: json,
       body: JSON.stringify({ op }),
-    }),
+    })
+  },
   revealJob: (jobId: string) => fetchJson<{ ok: boolean; path: string }>(`/api/queue/${jobId}/reveal`, { method: 'POST' }),
   updateJobSettings: (jobId: string, settings: Record<string, unknown>) =>
     fetchJson<QueueSnapshot>(`/api/queue/${jobId}/settings`, {
@@ -66,18 +85,27 @@ export const studioApi = {
       headers: json,
       body: JSON.stringify({ settings }),
     }),
-  globalAction: (op: string) =>
-    fetchJson<QueueSnapshot>('/api/queue/action', {
+  globalAction: async (op: string) => {
+    if (op === 'resume_all' || op === 'retry_failed') {
+      const statuses = op === 'resume_all' ? ['paused', 'interrupted', 'queued'] : ['failed', 'interrupted']
+      for (const job of (await studioApi.queue()).jobs.filter(item => statuses.includes(item.status))) {
+        await prepareJob(job.type, job.settings_snapshot || {})
+      }
+    }
+    return fetchJson<QueueSnapshot>('/api/queue/action', {
       method: 'POST',
       headers: json,
       body: JSON.stringify({ op }),
-    }),
-  generateReview: (body: Record<string, unknown>) =>
-    fetchJson<{ ok: boolean; job: QueueJob | null }>('/api/review/generate', {
+    })
+  },
+  generateReview: async (body: Record<string, unknown>) => {
+    await prepareJob('review', body)
+    return fetchJson<{ ok: boolean; job: QueueJob | null }>('/api/review/generate', {
       method: 'POST',
       headers: json,
       body: JSON.stringify(body),
-    }, 30_000),
+    }, 30_000)
+  },
   reviewStatus: (jobId: string) => fetchJson<QueueJob>(`/api/review/status?jobId=${encodeURIComponent(jobId)}`, undefined, 10_000),
   diagnostics: () => fetchJson<ReviewDiagnostics>('/api/review/diagnostics', undefined, 15_000),
   clearReviewCache: (source: string) =>

@@ -959,6 +959,8 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
     started_at = time.time()
     with _install_lock:
         if _install_state["running"]:
+            if _install_state.get('kind') != kind:
+                raise HTTPException(status_code=409, detail='RUNTIME_BUSY')
             if kind in ('rollback', 'nvidia_driver', 'cpu_runtime') or _install_state.get('kind') in ('rollback', 'nvidia_driver', 'cpu_runtime'):
                 raise HTTPException(status_code=409, detail='RUNTIME_BUSY')
             return {
@@ -979,7 +981,7 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
             log="",
             startedAt=started_at,
             updatedAt=started_at,
-            stage="detect_hardware" if kind in ("ai_runtime", "ocr_cuda") else "",
+            stage="detect_hardware" if kind in ("ai_runtime", "vieneu_runtime", "whisper_runtime", "diarization_runtime", "ocr_runtime", "demucs_runtime", "ocr_cuda") else "",
             runtimePack="",
             runtimeProfile="",
             currentPackage="",
@@ -1026,7 +1028,7 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                     _install_state["diagnostics"] = e.diagnostics
                     if e.driver_check:
                         _install_state["driverCheck"] = e.driver_check
-                elif kind in ("ai_runtime", "ocr_cuda", "demucs_cuda", "nvidia_driver", "cpu_runtime"):
+                elif kind in ("ai_runtime", "vieneu_runtime", "whisper_runtime", "diarization_runtime", "ocr_runtime", "demucs_runtime", "ocr_cuda", "demucs_cuda", "nvidia_driver", "cpu_runtime"):
                     _install_state["errorCode"] = "DRIVER_UPDATE_FAILED" if kind == 'nvidia_driver' else "RUNTIME_PROBE_FAILED"
                     _install_state["retryable"] = True
                     _install_state["diagnostics"] = repr(e)
@@ -1394,6 +1396,13 @@ def api_save_config(body: AppConfigIn):
     return public_app_config()
 
 
+@router.get("/api/ui-locale")
+def api_get_initial_locale():
+    from pipeline.core.ui_preferences import load_ui_preferences
+
+    return {"locale": load_ui_preferences()["locale"]}
+
+
 @router.get("/api/ui-preferences")
 def api_get_ui_preferences():
     from pipeline.core.ui_preferences import load_ui_preferences
@@ -1479,11 +1488,13 @@ def api_resources():
         whisper_ok = find_spec("faster_whisper") is not None
         ocr_ok = find_spec("rapidocr_onnxruntime") is not None
 
-    diarization_installed = sherpa_ok and (diarization / "model.int8.onnx").is_file()
+    from pipeline.asr.speaker import EMBEDDING_NAME
+    diarization_installed = sherpa_ok and all((diarization / name).is_file()
+                                             for name in ("model.int8.onnx", EMBEDDING_NAME))
     resources = [
-        {"id": "whisper", "name": "Whisper", "kind": "asr", "installed": whisper_ok, "provider": runtime["label"], "action": "ai_runtime"},
-        {"id": "diarization", "name": "Sherpa-ONNX (Tách người nói)", "kind": "diarization", "installed": diarization_installed, "provider": runtime["label"], "action": "ai_runtime"},
-        {"id": "ocr", "name": "RapidOCR", "kind": "ocr", "installed": ocr_ok, "provider": runtime["label"], "action": "ai_runtime"},
+        {"id": "whisper", "name": "Whisper", "kind": "asr", "installed": whisper_ok, "provider": runtime["label"], "action": "whisper"},
+        {"id": "diarization", "name": "Sherpa-ONNX (Tách người nói)", "kind": "diarization", "installed": diarization_installed, "provider": runtime["label"], "action": "diarization"},
+        {"id": "ocr", "name": "RapidOCR", "kind": "ocr", "installed": ocr_ok, "provider": runtime["label"], "action": "ocr"},
     ]
     from pipeline.tts.engines import moss_tts_nano
     moss_tts_nano_runtime, moss_tts_nano_model, moss_tts_nano_voices = moss_tts_nano._paths()
@@ -1496,11 +1507,28 @@ def api_resources():
         "action": "moss_tts_nano_runtime",
         "detail": str(moss_tts_nano_model),
     })
+    # Listing resources must not import Torch in a subprocess for an unrelated
+    # first-use request. The installer performs the full Demucs probe.
+    from pipeline.core.system_check.probe import _demucs_venv_fast
+    demucs_ok, demucs_detail = _demucs_venv_fast()
+    resources.append({
+        "id": "demucs",
+        "name": "Demucs (Tách giọng hát)",
+        "kind": "separation",
+        "installed": demucs_ok,
+        "provider": runtime["label"],
+        "action": "demucs",
+        "detail": demucs_detail,
+    })
     return {"items": resources}
 
 
 @router.post("/api/resources/{resource_id}/install")
 def api_install_resource(resource_id: str):
+    if resource_id == "vieneu":
+        from pipeline.core.system_check import install_vieneu_runtime
+
+        return _start_install_job("vieneu_runtime", install_vieneu_runtime)
     if resource_id == "moss_tts_nano":
         from pipeline.tts.engines import moss_tts_nano
 
@@ -1512,18 +1540,17 @@ def api_install_resource(resource_id: str):
 
             return moss_tts_nano.install(progress=progress)
 
-        return _start_install_job("moss_tts_nano_runtime", install_moss_tts_nano)
-    if resource_id in {"whisper", "diarization", "ocr"}:
-        if resource_id == "diarization":
-            # Kiểm tra nếu models chưa có thì phải force cài thực sự
-            # (không bị frozen fast-path bỏ qua bước download model)
-            from pipeline.core.config import DATA
-            diarization_dir = Path(DATA) / "models" / "pyannote"
-            models_ok = (diarization_dir / "model.int8.onnx").is_file()
-            if not models_ok:
-                from pipeline.core.system_check import install_ai_runtime
-                return _start_install_job("ai_runtime", install_ai_runtime)
-        return api_install_ai_runtime()
+        return _start_install_job("moss_tts_nano_runtime", install_moss_tts_nano, needs_restart=False)
+    feature_installers = {
+        "whisper": ("whisper_runtime", "install_whisper_runtime"),
+        "diarization": ("diarization_runtime", "install_diarization_runtime"),
+        "ocr": ("ocr_runtime", "install_ocr_runtime"),
+        "demucs": ("demucs_runtime", "install_demucs_runtime"),
+    }
+    if resource_id in feature_installers:
+        from pipeline.core import system_check
+        kind, function_name = feature_installers[resource_id]
+        return _start_install_job(kind, getattr(system_check, function_name), needs_restart=resource_id != 'demucs')
     raise HTTPException(404, "Resource không tồn tại")
 
 
@@ -1607,10 +1634,11 @@ def api_install_cpu_runtime(request: Request, payload: CpuRuntimeIn):
             # This request is excluded from ordinary activity counting; all other
             # mutating requests and queued/running jobs still prevent the switch.
             _set_install_progress(2, '', {'resumeKind': kind})
-        # Compute mode is a user setting and can be changed immediately. Jobs
-        # already running keep their current worker; new jobs use the choice.
-        with driver.cpu_maintenance(force=True):
-                return install_runtime(_set_install_progress, demucs=kind == 'demucs_cuda', compute_mode='cpu')
+            # Compute mode is a user setting and can be changed immediately.
+            # Running jobs keep their worker; new jobs use the choice.
+            with driver.cpu_maintenance(force=True):
+                return install_runtime(_set_install_progress, demucs=kind == 'demucs_cuda', compute_mode='cpu',
+                                       **({'features': ('vieneu',)} if kind == 'vieneu_runtime' else {}))
         return _start_install_job('cpu_runtime', work)
     except driver.RuntimeInstallError as exc:
         raise HTTPException(409, exc.code) from exc
@@ -1666,6 +1694,7 @@ def _start_driver_job(kind: str, action: str):
         def resume(resume_kind):
             from pipeline.core import system_check
             return {'ai_runtime': system_check.install_ai_runtime,
+                    'vieneu_runtime': system_check.install_vieneu_runtime,
                     'ocr_cuda': system_check.install_ocr_cuda,
                     'demucs_cuda': system_check.install_demucs_cuda}[resume_kind]()
         emit(state)

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { localize, localizePipelineMessage, useLocale } from '@/app/i18n'
-import { api } from '@/features/project/project.api'
+import { api, type InstallStatus } from '@/features/project/project.api'
+import { runtimeErrorText, runtimeStatusText } from '@/features/configuration/runtimeStatus'
 import ProgressPopup from '@/shared/components/ProgressPopup'
 import { IconHeadphones, IconHeart, IconMic, IconSpeaker } from '@/shared/components/Icons'
 import { BackTitle } from '@/shared/components/BackTitle'
@@ -178,6 +179,10 @@ export default function TtsStudio({
   const [busyProgress, setBusyProgress] = useState(0)
   const [busyCustomMessage, setBusyCustomMessage] = useState('')
   const [progressMinimized, setProgressMinimized] = useState(false)
+  const [vieneuInstall, setVieneuInstall] = useState<InstallStatus | null>(null)
+  const [installMinimized, setInstallMinimized] = useState(false)
+  const [featureInstall, setFeatureInstall] = useState<(InstallStatus & { resourceId?: string }) | null>(null)
+  const [featureInstallMinimized, setFeatureInstallMinimized] = useState(false)
   const [error, setError] = useState('')
   const [logOpen, setLogOpen] = useState(false)
   const [deleteHistoryOpen, setDeleteHistoryOpen] = useState(false)
@@ -255,17 +260,18 @@ export default function TtsStudio({
       : event.entityId ? event.payload : null
     if (!raw || typeof raw !== 'object') return
     const progress = raw as TtsRealtimeProgress
-    const progressId = event.entityId || activeId
+    const progressId = event.type === 'snapshot' ? activeId : event.entityId || activeId
     // A cancelled job may still publish its final backend event. Do not reopen
     // the popup or overwrite the user's cancelled state with that late error.
     if (progressId && cancelledJobIdsRef.current.has(progressId)) return
+    const previousError = progressId ? ttsProgressRef.current.get(progressId)?.error : undefined
     if (progressId) ttsProgressRef.current.set(progressId, progress)
     if (Number(progress.pct) > 0 && (!activeId || progressId === activeId)) setBusyProgress(Number(progress.pct))
     if (progressId === activeId) {
       if (progress.message) setBusyCustomMessage(progress.message)
       if (progress.error) setError(progress.error)
     }
-    if (progress.error) {
+    if (progress.error && progress.error !== previousError) {
       const line = `[${new Date().toLocaleTimeString()}] ${progress.error}`
       setTtsLogs((current) => [...current, line].slice(-50))
     }
@@ -277,20 +283,13 @@ export default function TtsStudio({
   useEffect(() => {
     if (error) setTtsLogs((current) => [...current, `[${new Date().toLocaleTimeString()}] ${error}`].slice(-50))
   }, [error])
-  const waitForTtsJob = useCallback((jobId: string, timeoutMs = 10 * 60 * 1000) => new Promise<TtsRealtimeProgress>((resolve, reject) => {
+  const waitForTtsJob = useCallback((jobId: string) => new Promise<TtsRealtimeProgress>((resolve) => {
     const existing = ttsProgressRef.current.get(jobId)
     if (existing?.done || existing?.error) { resolve(existing); return }
     let settled = false
     let reading = false
-    const timer = window.setTimeout(() => {
-      settled = true
-      window.clearInterval(poll)
-      ttsWaitersRef.current.delete(jobId)
-      reject(new Error(t('TTS không gửi được sự kiện hoàn tất qua SSE trong thời gian cho phép.', 'TTS did not receive a completion event through SSE within the allowed time.')))
-    }, timeoutMs)
     ttsWaitersRef.current.set(jobId, (progress) => {
       settled = true
-      window.clearTimeout(timer)
       window.clearInterval(poll)
       ttsWaitersRef.current.delete(jobId)
       resolve(progress)
@@ -597,6 +596,30 @@ export default function TtsStudio({
   const selectedVoice = useMemo(() => voices.find((v) => v.id === voice), [voices, voice])
   const isVieneuVoice = selectedVoice ? voiceEngineBucket(selectedVoice) === 'vieneu' : false
   const selectedVoiceEngine = selectedVoice ? voiceEngineBucket(selectedVoice) : null
+  const usesVieneu = engine === 'vieneu' || selectedVoiceEngine === 'vieneu' || selectedVoiceEngine === 'clone'
+    || (selectedVoiceEngine === 'zmai' && selectedVoice?.engine !== 'moss_tts_nano')
+  const usesMoss = selectedVoice?.engine === 'moss_tts_nano'
+
+  async function prepareOptionalResource(resourceId: 'whisper' | 'ocr' | 'diarization' | 'moss_tts_nano'): Promise<boolean> {
+    const current = await api.resources()
+    if (current.items.find(item => item.id === resourceId)?.installed) return true
+    setFeatureInstallMinimized(false)
+    setFeatureInstall({ resourceId, running: true, progress: 1 })
+    try {
+      const result = await api.installResource(resourceId, status => setFeatureInstall(previous => ({ ...previous, ...status, resourceId })))
+      if (!result.ok) throw new Error(result.message)
+      if (result.needsRestart) {
+        setFeatureInstall(previous => ({ ...previous, running: false, progress: 100, needsRestart: true }))
+        return false
+      }
+      setFeatureInstall(null)
+      onRefreshVoices?.(undefined, true)
+      return true
+    } catch (reason) {
+      setFeatureInstall(previous => ({ ...previous, running: false, error: reason instanceof Error ? reason.message : String(reason) }))
+      throw reason
+    }
+  }
 
   useEffect(() => {
     setSelectedVoiceIds(new Set())
@@ -997,9 +1020,43 @@ export default function TtsStudio({
     }
   }
 
+  async function prepareVieneuVoice(): Promise<string | null> {
+    if (!usesVieneu) return voice
+    const current = await api.ttsStatus()
+    if (!current.vieneu?.installed) {
+      setInstallMinimized(false)
+      setVieneuInstall({ running: true, progress: 1 })
+      try {
+        const result = await api.installResource('vieneu', setVieneuInstall)
+        if (!result.ok) throw new Error(result.message)
+        if (result.needsRestart) {
+          setVieneuInstall({ running: false, progress: 100, needsRestart: true })
+          return null
+        }
+        const installed = await api.ttsStatus()
+        if (!installed.vieneu?.installed) throw new Error(t('Cài VieNeu chưa hoàn tất. Hãy thử lại.', 'VieNeu installation is incomplete. Please retry.'))
+        setStatus(installed as Record<string, EngineStatus>)
+        setVieneuInstall(null)
+        onRefreshVoices?.(undefined, true)
+      } catch (reason) {
+        setVieneuInstall(previous => ({ ...previous, running: false, error: reason instanceof Error ? reason.message : String(reason) }))
+        throw reason
+      }
+    }
+    if (voice) return voice
+    // Preset metadata comes from the SDK; a fresh install has no presets yet.
+    const catalog = await api.voices(lang)
+    const preset = catalog.find(item => item.engine === 'vieneu')
+    if (!preset) throw new Error(t('Không tìm thấy giọng VieNeu cho ngôn ngữ này.', 'No VieNeu voice was found for this language.'))
+    preferredVoiceRef.current = preset.id
+    setVoice(preset.id)
+    onRefreshVoices?.(undefined, true)
+    return preset.id
+  }
+
   async function onSynth() {
     const useSrt = inputMode === 'srt' && !!srtRaw.trim()
-    if ((!useSrt && !text.trim()) || (useSrt && !srtRaw.trim()) || !voice) return
+    if (busy || previewBusy || (!useSrt && !text.trim()) || (useSrt && !srtRaw.trim()) || (!voice && !usesVieneu)) return
     const requestJobId = createTtsJobId()
     setBusyKind('synth')
     setBusy(true)
@@ -1018,12 +1075,16 @@ export default function TtsStudio({
     activeJobIdRef.current = requestJobId
 
     try {
+      const preparedVoice = await prepareVieneuVoice()
+      if (!preparedVoice || cancelledJobIdsRef.current.has(requestJobId)) return
+      const synthVoice = usesMoss ? (await prepareOptionalResource('moss_tts_nano') ? preparedVoice : null) : preparedVoice
+      if (!synthVoice) return
       // Kick off — backend trả {id, running:true} ngay (không block)
       const res = await api.ttsStudioSynth({
         jobId: requestJobId,
         text: useSrt ? undefined : text.trim(),
         srtText: useSrt ? srtRaw : undefined,
-        voice,
+        voice: synthVoice,
         lang,
         speed,
         volume,
@@ -1084,7 +1145,7 @@ export default function TtsStudio({
   }
 
   async function onPreview() {
-    if (!voice) return
+    if (busy || previewBusy || (!voice && !usesVieneu && !usesMoss)) return
     const requestJobId = createTtsJobId()
     const previewLang = selectedVoice?.language || lang
     let sample = previewSample.trim().slice(0, 200)
@@ -1097,10 +1158,14 @@ export default function TtsStudio({
     setPreviewBusy(true)
     setError('')
     try {
+      const preparedVoice = usesMoss
+        ? (await prepareOptionalResource('moss_tts_nano') ? voice : null)
+        : await prepareVieneuVoice()
+      if (!preparedVoice) return
       const res = await api.ttsStudioSynth({
         jobId: requestJobId,
         text: sample,
-        voice,
+        voice: preparedVoice,
         lang: previewLang,
         speed,
         volume,
@@ -1180,6 +1245,13 @@ export default function TtsStudio({
     setError('')
     setProgressMinimized(false)
     try {
+      const resources: Array<'whisper' | 'ocr' | 'diarization'> = []
+      if (transcribeEngine === 'whisper') resources.push('whisper')
+      if (transcribeEngine === 'paddleocr') resources.push('ocr')
+      if (speakerDiarization && (transcribeEngine === 'whisper' || transcribeEngine === 'capcut')) resources.push('diarization')
+      for (const resourceId of resources) {
+        if (!await prepareOptionalResource(resourceId)) return
+      }
       const started = await api.ttsStudioTranscribe(transcribeFile, transcribeLang, transcribeEngine, transcribeTranslation, speakerDiarization, speakerCount)
       const jid = started.id || started.job_id
       activeJobIdRef.current = jid
@@ -1439,6 +1511,7 @@ export default function TtsStudio({
     setPreviewGeneratingVoiceId(v.id)
     setError('')
     try {
+      if (v.engine === 'moss_tts_nano' && !await prepareOptionalResource('moss_tts_nano')) return
       const sampleLang = v.language || lang
       const previewJobId = createTtsJobId()
       const res = await api.ttsStudioSynth({
@@ -2380,7 +2453,7 @@ export default function TtsStudio({
                 <button
                   type="button"
                   className="tts-btn tts-btn-ghost"
-                  disabled={busy || previewBusy || !voice}
+                  disabled={busy || previewBusy || Boolean(vieneuInstall?.running || vieneuInstall?.needsRestart || featureInstall?.running || featureInstall?.needsRestart) || (!voice && !usesVieneu && !usesMoss)}
                   onClick={() => void onPreview()}
                   title="Tổng hợp TTS từ câu trong ô (không phải audio mẫu gốc)"
                 >
@@ -2679,7 +2752,9 @@ export default function TtsStudio({
                   className="tts-btn tts-btn-blue"
                   disabled={
                     busy ||
-                    !voice ||
+                    previewBusy ||
+                    Boolean(vieneuInstall?.running || vieneuInstall?.needsRestart || featureInstall?.running || featureInstall?.needsRestart) ||
+                    (!voice && !usesVieneu && !usesMoss) ||
                     (inputMode === 'srt' ? !srtRaw.trim() : !text.trim())
                   }
                   onClick={() => void onSynth()}
@@ -2812,7 +2887,7 @@ export default function TtsStudio({
       </div>
 
       <ProgressPopup
-        active={busy || Boolean(error && error !== 'Đã hủy' && error !== 'cancelled')}
+        active={!vieneuInstall && !featureInstall && (busy || Boolean(error && error !== 'Đã hủy' && error !== 'cancelled'))}
         minimized={progressMinimized}
         hideMinimized={busy && Boolean(activeJobIdRef.current)}
         running={busy}
@@ -2826,6 +2901,45 @@ export default function TtsStudio({
         }}
         onRestore={() => setProgressMinimized(false)}
         onCancel={busy ? () => { void onCancelJob() } : undefined}
+      />
+
+      <ProgressPopup
+        active={Boolean(vieneuInstall)}
+        minimized={installMinimized}
+        running={vieneuInstall?.running}
+        title={t('Cài VieNeu Local', 'Install VieNeu Local')}
+        message={vieneuInstall?.needsRestart
+          ? t('Đã cài VieNeu. Khởi động lại rồi bấm Tạo giọng; nội dung đã được giữ lại.', 'VieNeu is installed. Restart, then click Create voice; your input has been kept.')
+          : vieneuInstall?.error ? runtimeErrorText(vieneuInstall, locale) : runtimeStatusText(vieneuInstall || { running: false }, locale)}
+        progress={vieneuInstall?.progress || 0}
+        error={vieneuInstall?.error}
+        log={vieneuInstall?.log}
+        onMinimize={() => { setInstallMinimized(true); if (!vieneuInstall?.running && !vieneuInstall?.needsRestart) { setVieneuInstall(null); setError('') } }}
+        onRestore={() => setInstallMinimized(false)}
+        actions={vieneuInstall?.needsRestart ? <button type="button" className="tts-btn tts-btn-blue" onClick={() => {
+          void api.restartApp().catch(reason => setVieneuInstall(previous => ({ ...previous, running: false, error: String(reason) })))
+        }}>{t('Khởi động lại ứng dụng', 'Restart application')}</button> : undefined}
+      />
+
+      <ProgressPopup
+        active={Boolean(featureInstall)}
+        minimized={featureInstallMinimized}
+        running={featureInstall?.running}
+        title={featureInstall?.resourceId === 'whisper' ? t('Cài Whisper', 'Install Whisper')
+          : featureInstall?.resourceId === 'ocr' ? t('Cài OCR', 'Install OCR')
+          : featureInstall?.resourceId === 'diarization' ? t('Cài Sherpa-ONNX', 'Install Sherpa-ONNX')
+          : t('Cài MOSS-TTS-Nano', 'Install MOSS-TTS-Nano')}
+        message={featureInstall?.needsRestart
+          ? t('Đã cài xong. Khởi động lại ứng dụng để tiếp tục.', 'Installation complete. Restart the application to continue.')
+          : featureInstall?.error ? runtimeErrorText(featureInstall, locale) : runtimeStatusText(featureInstall || { running: false }, locale)}
+        progress={featureInstall?.progress || 0}
+        error={featureInstall?.error}
+        log={featureInstall?.log}
+        onMinimize={() => { setFeatureInstallMinimized(true); if (!featureInstall?.running && !featureInstall?.needsRestart) setFeatureInstall(null) }}
+        onRestore={() => setFeatureInstallMinimized(false)}
+        actions={featureInstall?.needsRestart ? <button type="button" className="tts-btn tts-btn-blue" onClick={() => {
+          void api.restartApp().catch(reason => setFeatureInstall(previous => ({ ...previous, running: false, error: String(reason) })))
+        }}>{t('Khởi động lại ứng dụng', 'Restart application')}</button> : undefined}
       />
 
       {editingVoice && (

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { fetchJson } from '@/shared/api/fetchJson'
+import { prepareAiResources } from '@/features/project/project.api'
 import { SRT_STYLE_OPTIONS } from '@/features/tts/lib/srt'
 import { IconDownload } from '@/shared/components/Icons'
 import { translatorOptions, normalizeTranslatorForEngine, loadSettings } from '@/app/appSettings'
@@ -89,6 +90,7 @@ export default function SrtExportPage({ onBack }: { onBack: () => void }) {
     if ((!file && kind !== 'manual' && kind !== 'url') || (kind === 'manual' && !manualText.trim()) || (kind === 'url' && !sourceUrl.trim()) || busy) return
     setBusy(true); setError('')
     try {
+      if (kind === 'media' && recognitionEngine === 'whisper') await prepareAiResources(['whisper'])
       const form = new FormData()
       if (file) form.append('file', file)
       form.append('source_kind', kind)

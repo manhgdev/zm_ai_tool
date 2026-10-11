@@ -169,12 +169,14 @@ def _python(root: Path) -> Path:
     return root / 'Scripts/python.exe'
 
 
-def _probe(root: Path, profile: str, demucs: bool = False) -> str:
+def _probe(root: Path, profile: str, demucs: bool = False, *, features: tuple[str, ...] | None = None) -> str:
     from . import runtime_probe
     from .system_check.install import _runtime_subprocess_env
     command = [str(_python(root)), '-I', '-c', runtime_probe.PROBE_SOURCE, profile]
     if demucs:
         command.append('--demucs')
+    if features is not None:
+        command.append('--features=' + ','.join(features))
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=180,
                                 env=_runtime_subprocess_env())
@@ -378,14 +380,29 @@ def _prefetch_packages(wheels: list[Wheel], groups: list[dict[str, Any]], emit, 
          speedBytesPerSecond=0, etaSeconds=0, currentPackage='')
 
 
-def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit) -> None:
+def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *, features: tuple[str, ...] | None = None) -> None:
     root = runtime_home() / 'runtime'
     # uv compile is the only resolver. The installer consumes exact verified
     # wheel paths with --no-deps; CPU ORT can never overwrite CUDA/DirectML.
     wheels = None
     for attempt in range(1, 4):
         try:
-            wheels = resolve_wheels(uv, profile, CORE, root, _run, emit)
+            core = CORE
+            if features is not None:
+                feature_core = {
+                    'whisper': {'setuptools', 'ctranslate2', 'av', 'numpy', 'huggingface-hub', 'pyyaml', 'soundfile', 'cffi', 'soxr', 'httpx', 'tokenizers', 'tqdm'},
+                    'ocr': {'numpy', 'pillow', 'opencv-python-headless', 'pyclipper', 'shapely', 'six'},
+                    'vieneu': {'numpy', 'huggingface-hub', 'pyyaml', 'soundfile', 'cffi', 'soxr', 'httpx', 'tokenizers', 'transformers', 'safetensors', 'librosa', 'sea-g2p', 'tqdm'},
+                    # The speaker pipeline imports both sherpa-onnx and
+                    # soundfile when it opens the source audio.
+                    'diarization': {'numpy', 'soundfile'},
+                }
+                # All runtime profiles probe audio I/O in addition to the SDK.
+                wanted = {'numpy', 'soundfile'} | set().union(*(feature_core.get(feature, set()) for feature in features))
+                if demucs:
+                    wanted.update({'pyyaml', 'tqdm', 'six'})
+                core = tuple(spec for spec in CORE if spec.split('==')[0] in wanted)
+            wheels = resolve_wheels(uv, profile, core, root, _run, emit, **({'features': features} if features is not None else {}))
             break
         except RuntimeInstallError as exc:
             if not exc.retryable or attempt == 3:
@@ -394,14 +411,17 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit) -
             time.sleep(2 ** attempt)
     assert wheels is not None
     by_name = {wheel.name: wheel for wheel in wheels}
-    sdk = {'faster-whisper', 'rapidocr-onnxruntime', 'vieneu'}
+    sdk = by_name.keys() & {'faster-whisper', 'rapidocr-onnxruntime', 'vieneu'}
     torch = {'torch', 'torchaudio'}
-    sherpa = {'sherpa-onnx'} if profile.startswith('nvidia-') else set()
-    groups = [
-        {'name': 'Core / ONNX', 'packages': sorted(by_name.keys() - sdk - torch - sherpa)},
-        {'name': 'Torch', 'packages': sorted(torch), 'requires': ['Core / ONNX']},
-        {'name': 'Whisper / OCR / VieNeu', 'packages': sorted(sdk), 'requires': ['Core / ONNX', 'Torch']},
-    ]
+    sherpa = by_name.keys() & {'sherpa-onnx'} if profile.startswith('nvidia-') else set()
+    groups = []
+    core_packages = sorted(by_name.keys() - sdk - torch - sherpa)
+    if core_packages:
+        groups.append({'name': 'Core / ONNX', 'packages': core_packages})
+    if torch:
+        groups.append({'name': 'Torch', 'packages': sorted(torch), 'requires': ['Core / ONNX'] if core_packages else []})
+    if sdk:
+        groups.append({'name': 'Whisper / OCR / VieNeu', 'packages': sorted(sdk), 'requires': ['Core / ONNX', 'Torch'] if core_packages and torch else []})
     if sherpa:
         groups.append({'name': 'Sherpa CUDA', 'packages': sorted(sherpa), 'requires': ['Core / ONNX', 'Torch']})
     pip_base = [str(python), '-I', '-m', 'pip', '--isolated', 'install',
@@ -450,11 +470,13 @@ def _write_pointer(root: Path, name: str, data: dict[str, Any]) -> None:
             pass
 
 
-def install_runtime(progress: Progress | None = None, *, demucs: bool = False, compute_mode: str | None = None) -> dict[str, Any]:
+def install_runtime(progress: Progress | None = None, *, demucs: bool = False, compute_mode: str | None = None, features: tuple[str, ...] | None = None) -> dict[str, Any]:
     from .system_check.install import _find_uv
     from .runtime_active import cpu_mode_enabled, clear_compute_caches
     if compute_mode not in (None, 'cpu'):
         raise ValueError('Unsupported compute mode')
+    if features is not None and not set(features) <= {'whisper', 'ocr', 'vieneu', 'diarization'}:
+        raise ValueError('Unsupported runtime features')
     if sys.platform != 'win32':
         raise RuntimeInstallError('HARDWARE_UNSUPPORTED', 'Windows installer only', retryable=False)
     with transaction():
@@ -469,12 +491,21 @@ def install_runtime(progress: Progress | None = None, *, demucs: bool = False, c
         root = runtime_home() / 'runtime'
         current = active_runtime_dir()
         metadata = _metadata(root / 'current.json')
+        if features is not None:
+            retained = set(metadata.get('features') or ()) & {'whisper', 'ocr', 'vieneu', 'diarization'}
+            # Older pointers did not record AI features; retain installed SDKs.
+            site = current / 'Lib/site-packages'
+            for feature, module in (('whisper', 'faster_whisper'), ('ocr', 'rapidocr_onnxruntime'), ('vieneu', 'vieneu'), ('diarization', 'sherpa_onnx')):
+                if (site / module).exists():
+                    retained.add(feature)
+            features = tuple(sorted(set(features) | retained))
+        feature_options = {'features': features} if features is not None else {}
         # Keep existing optional features on AI/OCR reinstall.
         demucs = demucs or 'demucs' in metadata.get('features', []) or bool(list((current / 'Lib/site-packages').glob('demucs-*.dist-info')))
         emit(5, 'probe')
         if _python(current).is_file() and (not explicit_cpu or metadata.get('computeMode') == 'cpu'):
             try:
-                diagnostics = _probe(current, profile, demucs)
+                diagnostics = _probe(current, profile, demucs, **feature_options)
                 return {'ok': True, 'message': 'Runtime ready', 'runtimeProfile': profile,
                         'runtimePack': profile, 'diagnostics': diagnostics, 'needsRestart': False,
                         'computeMode': 'cpu' if explicit_cpu else 'auto'}
@@ -490,9 +521,9 @@ def install_runtime(progress: Progress | None = None, *, demucs: bool = False, c
         try:
             emit(15, 'prepare_python', currentPackage=f'Python {PYTHON_VERSION}')
             python = _prepare(uv, candidate)
-            _install_packages(uv, python, profile, demucs, emit)
+            _install_packages(uv, python, profile, demucs, emit, **feature_options)
             emit(85, 'probe')
-            diagnostics = _probe(candidate, profile, demucs)
+            diagnostics = _probe(candidate, profile, demucs, **feature_options)
             (candidate / '.app-runtime.json').write_text(json.dumps({'recipe': RECIPE_VERSION}), encoding='utf-8')
             # Legacy venv remains usable as a rollback target too.
             previous = metadata or {'path': '../.venv-runtime', 'runtimePack': profile}
@@ -503,7 +534,7 @@ def install_runtime(progress: Progress | None = None, *, demucs: bool = False, c
                 'schemaVersion': 1, 'recipeVersion': RECIPE_VERSION, 'path': candidate.name,
                 'runtimeProfile': profile, 'runtimePack': profile,
                 'computeMode': 'cpu' if explicit_cpu else 'auto',
-                'features': ['demucs'] if demucs else [], 'activatedAt': time.time(),
+                'features': [*(features if features is not None else ('whisper', 'ocr', 'vieneu', 'diarization')), *(['demucs'] if demucs else [])], 'activatedAt': time.time(),
             })
         except Exception:
             # No active runtime is modified, including on antivirus/file lock.
@@ -543,7 +574,14 @@ def rollback_runtime(progress: Progress | None = None) -> dict[str, Any]:
         profile = str(previous.get('runtimeProfile') or previous.get('runtimePack') or 'cpu').removeprefix('gpu-')
         if progress:
             progress(10, '', {'stage': 'rollback', 'runtimeProfile': profile})
-        _probe(target, profile, 'demucs' in previous.get('features', []))
+        saved_features = previous.get('features')
+        previous_features = (
+            tuple(feature for feature in saved_features
+                  if feature in {'whisper', 'ocr', 'vieneu', 'diarization'})
+            if isinstance(saved_features, list) else None
+        )
+        probe_options = {'features': previous_features} if previous_features is not None else {}
+        _probe(target, profile, 'demucs' in (saved_features or []), **probe_options)
         current = _metadata(root / 'current.json')
         _write_pointer(root, 'current.json', previous)
         if current:

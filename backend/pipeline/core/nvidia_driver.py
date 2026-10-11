@@ -26,7 +26,7 @@ from .runtime_active import runtime_home
 from .runtime_download import RuntimeInstallError, redact
 
 REPAIRABLE = {'DRIVER_TOO_OLD', 'NVIDIA_SMI_NOT_FOUND', 'NVIDIA_DRIVER_UNAVAILABLE', 'GPU_PROBE_FAILED'}
-KINDS = {'ai_runtime', 'ocr_cuda', 'demucs_cuda'}
+KINDS = {'ai_runtime', 'vieneu_runtime', 'ocr_cuda', 'demucs_cuda'}
 WAITING = {'driver_eula', 'driver_reboot'}
 TERMINAL = {'driver_done', 'driver_failed'}
 _lock = threading.RLock()

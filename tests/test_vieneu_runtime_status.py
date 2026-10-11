@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import wave
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +18,46 @@ from pipeline.core import accel
 
 
 class FrozenTtsPathTest(unittest.TestCase):
+    def test_long_script_uses_bounded_inferences_and_produces_over_thirty_minutes(self):
+        from pipeline.tts import studio
+        text = 'Xin chào, đây là nội dung kiểm tra giọng nói dài. ' * 800
+        calls, progress = [], []
+
+        def infer(chunk, voice, path, **kwargs):
+            calls.append(chunk)
+            with wave.open(str(path), 'wb') as output:
+                output.setparams((1, 2, 8000, 0, 'NONE', 'not compressed'))
+                output.writeframes(b'\x10\x01' * 8000 * 12)
+            kwargs['on_progress'](1.0)
+
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(
+            vieneu, '_synthesize_once', side_effect=infer,
+        ), mock.patch.object(studio, 'TTS_TEMP', Path(raw)), mock.patch.object(studio, 'ensure_vieneu_dirs'):
+            out = Path(raw) / "Giọng O'Neil" / 'long.wav'
+            vieneu.synthesize(text, 'vn:test', out, on_progress=progress.append)
+            with wave.open(str(out), 'rb') as output:
+                self.assertGreater(output.getnframes() / output.getframerate(), 1800)
+                self.assertEqual(output.getnframes(), len(calls) * 8000 * 12)
+            self.assertFalse(list(Path(raw).glob('vieneu-*')))
+        self.assertTrue(all(len(chunk) <= 240 for chunk in calls))
+        self.assertEqual(' '.join(calls).split(), text.split())
+        self.assertEqual(progress, sorted(progress))
+        self.assertEqual(progress[-1], 1.0)
+
+    def test_cancelled_long_script_preserves_existing_output_and_cleans_parts(self):
+        calls = []
+        def infer(chunk, voice, path, **kwargs):
+            calls.append(chunk)
+            path.write_bytes(b'partial')
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(vieneu, '_synthesize_once', side_effect=infer):
+            out = Path(raw) / 'existing.wav'
+            out.write_bytes(b'existing audio')
+            with self.assertRaisesRegex(RuntimeError, 'Job đã hủy'):
+                vieneu.synthesize('Xin chào. ' * 100, 'vn:test', out, cancel_check=lambda: len(calls) == 1)
+            self.assertEqual(out.read_bytes(), b'existing audio')
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(list(Path(raw).glob('vieneu-*')))
+
     def test_status_preserves_model_error_details_for_processing_log(self):
         detail = 'ONNXRuntimeError: ' + 'external data path validation failed; ' * 20
         with (

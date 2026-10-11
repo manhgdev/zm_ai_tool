@@ -668,8 +668,9 @@ import webview  # noqa: E402
 web_dir = bundle / "dist"
 
 
+@app.get("/text-to-speech", include_in_schema=False)
 @app.get("/video-clone", include_in_schema=False)
-def clone_page():
+def workspace_page():
     return FileResponse(web_dir / "index.html")
 
 
@@ -886,7 +887,7 @@ def run_desktop() -> int:
         try:
             window = webview.create_window(
                 f"{APP_DISPLAY_NAME} v{APP_VERSION}",
-                f"{base}/video-clone?v={APP_VERSION}",
+                f"{base}/text-to-speech?v={APP_VERSION}",
                 **win_kw,
             )
         except TypeError:
@@ -895,7 +896,7 @@ def run_desktop() -> int:
             win_kw.pop("text_select", None)
             window = webview.create_window(
                 f"{APP_DISPLAY_NAME} v{APP_VERSION}",
-                f"{base}/video-clone?v={APP_VERSION}",
+                f"{base}/text-to-speech?v={APP_VERSION}",
                 **win_kw,
             )
         try:

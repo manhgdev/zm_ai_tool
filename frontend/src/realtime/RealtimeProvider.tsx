@@ -30,37 +30,7 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
       window.setTimeout(() => connectRef.current(), 0)
       return
     }
-    if (event.type === 'snapshot' && event.payload && typeof event.payload === 'object') {
-      // Let pages that understand authoritative snapshots replace their full
-      // state (including deletions) before the row-level compatibility fanout.
-      handlersRef.current.get(event.topic)?.forEach((handler) => handler(event))
-      const payload = event.payload as Record<string, unknown>
-      const rows: Array<{ item: unknown; type: string }> = []
-      const topic = event.topic
-      const add = (key: string, type: string) => {
-        const items = payload[key]
-        if (Array.isArray(items)) items.forEach((item) => rows.push({ item, type }))
-      }
-      if (topic === 'flow') {
-        add('jobs', 'flow.job.updated')
-        add('accounts', 'flow.account.updated')
-        add('logs', 'flow.log.appended')
-      } else if (topic === 'series') {
-        add('items', 'series.updated')
-      } else {
-        add('jobs', `${topic}.job.updated`)
-      }
-      rows.forEach(({ item, type }) => {
-        const row = item as Record<string, unknown>
-        handlersRef.current.get(topic)?.forEach((handler) => handler({
-          ...event,
-          type,
-          entityId: String(row?.id || row?.runId || ''),
-          payload: item,
-        }))
-      })
-      return
-    }
+    // Every subscriber consumes snapshots directly; replaying rows duplicates logs.
     handlersRef.current.get(event.topic)?.forEach((handler) => handler(event))
   }, [])
 
@@ -85,12 +55,14 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
         }, 3000)
       }
     }
-    const snapshotIds = new Map<string, number>()
+    const latestIds = new Map<string, number>()
     const receive = (event: RealtimeEvent) => {
       if (sourceRef.current !== source) return
       const id = Number(event.id)
-      if (event.type === 'snapshot') snapshotIds.set(event.topic, id)
-      else if (event.type !== 'snapshot.required' && id <= (snapshotIds.get(event.topic) ?? -1)) return
+      if (event.type !== 'snapshot.required' && Number.isFinite(id)) {
+        if (id <= (latestIds.get(event.topic) ?? -1)) return
+        latestIds.set(event.topic, id)
+      }
       dispatch(event)
     }
     source.onmessage = (message) => {

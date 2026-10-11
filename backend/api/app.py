@@ -188,7 +188,7 @@ def create_app() -> FastAPI:
         if not path.startswith("/api/"):
             return await call_next(request)
         setup_paths = ("/api/license", "/api/system", "/api/config", "/api/hardware")
-        if path == "/api/health" or path.startswith(setup_paths):
+        if path == "/api/health" or (path == "/api/ui-locale" and request.method == "GET") or path.startswith(setup_paths):
             return await call_next(request)
         from pipeline.core.license import license_cached_valid
 

@@ -11,6 +11,18 @@ from pipeline.core import ui_preferences as preferences
 
 
 class LocaleTests(unittest.TestCase):
+    def test_first_screen_reads_locale_without_license_and_exposes_no_preferences(self):
+        from fastapi.testclient import TestClient
+        from api.app import create_app
+
+        with patch('pipeline.core.license.license_cached_valid', return_value=False), patch.object(
+            preferences, 'load_ui_preferences', return_value={'locale': 'vi', 'storage': {'private': 'value'}, 'outputRoot': '/private'},
+        ):
+            client = TestClient(create_app())
+            self.assertEqual(client.get('/api/ui-locale').json(), {'locale': 'vi'})
+            self.assertEqual(client.get('/api/ui-preferences').status_code, 403)
+            self.assertEqual(client.put('/api/ui-locale', json={'locale': 'en'}).status_code, 403)
+
     def test_setup_choice_uses_actual_exe_folder_and_overrides_english(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

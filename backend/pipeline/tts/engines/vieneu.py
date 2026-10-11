@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import warnings
 from pathlib import Path
@@ -1191,6 +1192,31 @@ def synthesize(
     on_progress: Callable[[float], None] | None = None,
 ) -> None:
     """Synthesize without concurrently mutating one in-process VieNeu client."""
+    # Bound each inference even when Studio autoSplit is off or a single SRT
+    # cue contains a long script. This also bounds worker RPC time and RAM.
+    if len(text or "") > 240:
+        from ..text_split import split_sentences
+        from ..studio import _concat_wavs
+
+        chunks = split_sentences(text, max_chars=240, by_sentence=False)
+        out_wav.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="vieneu-", dir=out_wav.parent) as directory:
+            parts = []
+            for index, chunk in enumerate(chunks):
+                if cancel_check and cancel_check():
+                    raise RuntimeError("Job đã hủy")
+                part = Path(directory) / f"part_{index:05d}.wav"
+                progress = (lambda value, index=index: on_progress((index + value) / len(chunks))) if on_progress else None
+                synthesize(chunk, voice, part, style=style, cancel_check=cancel_check, on_progress=progress)
+                parts.append(part)
+            if cancel_check and cancel_check():
+                raise RuntimeError("Job đã hủy")
+            merged = Path(directory) / "audio.wav"
+            _concat_wavs(parts, merged)
+            if cancel_check and cancel_check():
+                raise RuntimeError("Job đã hủy")
+            merged.replace(out_wav)
+        return
     kwargs = {
         "style": style,
         "cancel_check": cancel_check,

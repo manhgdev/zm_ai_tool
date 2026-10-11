@@ -461,7 +461,8 @@ def _concat_wavs(parts: list[Path], out: Path, gap_ms: int = 0) -> float:
                 stderr=subprocess.DEVNULL,
             )
     for i, p in enumerate(parts):
-        lines.append(f"file '{p.resolve().as_posix()}'")
+        escaped_path = p.resolve().as_posix().replace("'", "'\\''")
+        lines.append(f"file '{escaped_path}'")
         if silence and i < len(parts) - 1:
             lines.append(f"file '{silence.resolve().as_posix()}'")
     list_f.write_text("\n".join(lines), encoding="utf-8")

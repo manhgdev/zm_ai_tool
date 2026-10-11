@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pipeline.core.realtime import realtime
 
 router = APIRouter()
+_SNAPSHOT_INTERVAL = 20.0
 
 
 def _register_snapshots() -> None:
@@ -57,11 +58,17 @@ async def events(request: Request, topics: str = "", after: int = 0) -> Streamin
             yield "event: connected\ndata: {}\n\n"
             for event in realtime.snapshot(selected):
                 yield realtime.sse(event)
+            next_snapshot = loop.time() + _SNAPSHOT_INTERVAL
             while True:
                 if await request.is_disconnected():
                     return
+                # Reconcile missed deletions even while other jobs keep emitting progress.
+                if loop.time() >= next_snapshot:
+                    for event in realtime.snapshot(selected):
+                        yield realtime.sse(event)
+                    next_snapshot = loop.time() + _SNAPSHOT_INTERVAL
                 try:
-                    event = await asyncio.wait_for(subscriber.queue.get(), timeout=20)
+                    event = await asyncio.wait_for(subscriber.queue.get(), timeout=max(0, next_snapshot - loop.time()))
                     yield realtime.sse(event)
                 except asyncio.TimeoutError:
                     yield ": heartbeat\n\n"

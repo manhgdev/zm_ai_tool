@@ -1,13 +1,31 @@
 import sys
 import unittest
+import tempfile
+import tomllib
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-from pipeline.core.runtime_resolution import select_wheels
+from pipeline.core.runtime_resolution import select_wheels, resolve
 from pipeline.core.runtime_download import RuntimeInstallError
 
 
 class ResolutionTests(unittest.TestCase):
+    def test_vieneu_resolution_has_no_other_ai_sdks(self):
+        for profile in ('cpu', 'directml', 'nvidia-cu124'):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as raw, patch(
+                'pipeline.core.runtime_resolution.select_wheels', return_value=['resolved'],
+            ):
+                def run(command, *args):
+                    Path(command[command.index('--output-file') + 1]).write_text('packages = []')
+                result = resolve('uv', profile, ('soundfile==0.13.1',), Path(raw), run, lambda *a, **k: None, features=('vieneu',))
+                self.assertEqual(result, ['resolved'])
+                project = next(Path(raw).rglob('pyproject.toml'))
+                dependencies = tomllib.loads(project.read_text())['project']['dependencies']
+                self.assertIn('vieneu==3.2.0', dependencies)
+                self.assertFalse(any(spec.startswith(('faster-whisper', 'rapidocr', 'sherpa')) for spec in dependencies))
+                self.assertEqual(sum(spec.startswith('onnxruntime') for spec in dependencies), 1)
+
     def test_ctranslate_runtime_pins_setuptools_with_pkg_resources(self):
         from pipeline.core.runtime_install import CORE
         self.assertIn('ctranslate2==4.6.0', CORE)

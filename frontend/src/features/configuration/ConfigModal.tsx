@@ -58,7 +58,7 @@ export default function ConfigModal({
   const { locale, setLocale } = useLocale()
   const localeRef = useRef(locale)
   localeRef.current = locale
-  const installLabel = (kind: string) => kind.startsWith('ai_runtime')
+  const installLabel = (kind: string) => ['ai_runtime_vieneu', 'vieneu_runtime', 'vieneu'].includes(kind) ? 'VieNeu Local' : kind === 'whisper' ? 'Whisper' : kind === 'ocr' ? 'OCR' : kind === 'diarization' ? 'Sherpa-ONNX' : kind === 'demucs' ? 'Demucs' : kind.startsWith('ai_runtime')
     ? localize(locale, 'gói AI', 'AI packages')
     : kind === 'ocr_cuda' ? 'OCR GPU' : kind === 'demucs_cuda' ? 'Demucs' : 'NVM + Node.js LTS'
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
@@ -651,6 +651,10 @@ export default function ConfigModal({
     try {
       const result = kind === 'moss_tts_nano_runtime'
         ? await api.installResource('moss_tts_nano', onStatus)
+        : kind === 'whisper' || kind === 'ocr' || kind === 'diarization' || kind === 'demucs'
+        ? await api.installResource(kind, onStatus)
+        : kind === 'ai_runtime_vieneu'
+        ? await api.installResource('vieneu', onStatus)
         : kind === 'ai_runtime'
         ? await api.installAiRuntime(onStatus)
         : kind === 'ocr_cuda'
@@ -976,6 +980,7 @@ export default function ConfigModal({
                   ? t('Cài đủ thành phần bắt buộc để bắt đầu', 'Install the required components to get started')
                   : t('Thiết lập hệ thống · Cloud AI · ElevenLabs', 'System settings · Cloud AI · ElevenLabs')}
             </p>
+            {section === 'setup' && <p>{t('Chỉ FFmpeg và FFprobe là package bắt buộc. Các gói AI cài khi cần dùng tính năng tương ứng.', 'Only FFmpeg and FFprobe are required packages. Install AI packages when you need the corresponding feature.')}</p>}
           </div>
           <div className="cfg-head-actions">
             <label>
@@ -1176,7 +1181,7 @@ export default function ConfigModal({
                     <div className="cfg-check-action">
                       {it.ok ? (
                         <span className="cfg-check-installed">{t('Sẵn sàng', 'Ready')}</span>
-                      ) : ['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'moss_tts_nano_runtime', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
+                      ) : ['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'whisper', 'ocr', 'diarization', 'vieneu', 'demucs', 'moss_tts_nano_runtime', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
                         <button
                           type="button"
                           className="cfg-check-install"
@@ -1184,8 +1189,7 @@ export default function ConfigModal({
                           onClick={() => {
                             autoSetupLock.current = false
                             autoAttempted.current.clear()
-                            // ai_runtime_ocr / ai_runtime_vieneu → cùng endpoint ai_runtime
-                            const kind = it.install.startsWith('ai_runtime')
+                            const kind = it.id === 'ai_runtime_vieneu' ? 'ai_runtime_vieneu' : it.install.startsWith('ai_runtime')
                               ? 'ai_runtime'
                               : it.install as 'moss_tts_nano_runtime' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
                             void installAction(kind)
@@ -1213,7 +1217,7 @@ export default function ConfigModal({
                     {!it.ok && <div className="cfg-check-detail">{t('Cần kiểm tra hoặc cài đặt', 'Needs checking or installation')}</div>}
                     {it.detail && <details><summary>{t('Chi tiết kỹ thuật', 'Technical details')}</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{setupDetail(locale, it)}</pre></details>}
                     {!it.ok && <div className="cfg-check-hint">{setupLabel(locale, it.id, 'hint')}</div>}
-                    {!it.ok && it.install && !it.install.startsWith('http') && !['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'moss_tts_nano_runtime', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
+                    {!it.ok && it.install && !it.install.startsWith('http') && !['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'whisper', 'ocr', 'diarization', 'vieneu', 'demucs', 'moss_tts_nano_runtime', 'ocr_cuda', 'demucs_cuda', 'nvm'].includes(it.install) ? (
                       <code className="cfg-check-cmd" title={t('Lệnh kỹ thuật', 'Technical command')}>
                         {it.install}
                       </code>
@@ -1717,6 +1721,16 @@ export default function ConfigModal({
                 ? t('Khôi phục runtime trước', 'Restoring previous runtime')
               : installing === 'ai_runtime'
                 ? t('Đang cài gói AI', 'Installing AI packages')
+              : installing === 'whisper'
+                ? t('Đang cài Whisper', 'Installing Whisper')
+              : installing === 'ocr'
+                ? t('Đang cài OCR', 'Installing OCR')
+              : installing === 'diarization'
+                ? t('Đang cài Sherpa-ONNX', 'Installing Sherpa-ONNX')
+              : installing === 'vieneu'
+                ? t('Đang cài VieNeu Local', 'Installing VieNeu Local')
+              : installing === 'demucs'
+                ? t('Đang cài Demucs', 'Installing Demucs')
                 : installing === 'cpu_runtime'
                   ? t('Đang cài runtime CPU', 'Installing the CPU runtime')
                 : installing === 'nvidia_driver'

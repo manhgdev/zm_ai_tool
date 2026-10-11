@@ -38,7 +38,8 @@ import AutomationPage from '@/pages/AutomationPage'
 import LicensePage from '@/features/license/LicensePage'
 import { licenseApi, type LicenseStatus } from '@/features/license/license.api'
 import { ExportSuccessModal } from '@/features/editor/ExportSuccessModal'
-import { api } from '@/features/project/project.api'
+import { api, prepareAiResources, recognitionResources, type ResourceInstallStatus } from '@/features/project/project.api'
+import { runtimeErrorText, runtimeStatusText } from '@/features/configuration/runtimeStatus'
 import { expandSegmentsForList } from '@/features/project/expandCompound'
 import type { HardwareInfo, JobStatus, ProjectSettings, Step, TextOverlay } from '@/features/project/project.types'
 import { appModeFromPath, appModePath, loadAppMode, persistAppMode } from '@/app/appMode'
@@ -88,6 +89,8 @@ const EMPTY_LICENSE: LicenseStatus = {
   message: 'Đang kiểm tra bản quyền…',
 }
 
+const RESOURCE_NAMES = { whisper: 'Whisper', ocr: 'OCR', diarization: 'Sherpa-ONNX', demucs: 'Demucs', vieneu: 'VieNeu Local', moss_tts_nano: 'MOSS-TTS-Nano' }
+
 export default function App() {
   const [locale, setLocale] = useState<AppLocale>(loadLocale)
   const [localeReady, setLocaleReady] = useState(false)
@@ -127,6 +130,20 @@ export default function App() {
   /** App desktop: file đã trên máy — chỉ Xem / Mở thư mục */
   const [isDesktopApp, setIsDesktopApp] = useState(false)
   const [progressMinimized, setProgressMinimized] = useState(false)
+  const [resourceInstall, setResourceInstall] = useState<ResourceInstallStatus | null>(null)
+  const resourceName = resourceInstall ? RESOURCE_NAMES[resourceInstall.resourceId] : ''
+  const [resourceInstallMinimized, setResourceInstallMinimized] = useState(false)
+  const resourceInstallRef = useRef<ResourceInstallStatus | null>(null)
+  useEffect(() => {
+    const onInstall = (event: Event) => {
+      const next = (event as CustomEvent<ResourceInstallStatus | null>).detail
+      if (next && (!resourceInstallRef.current || next.resourceId !== resourceInstallRef.current.resourceId)) setResourceInstallMinimized(false)
+      resourceInstallRef.current = next
+      setResourceInstall(next)
+    }
+    window.addEventListener('zm-resource-install', onInstall)
+    return () => window.removeEventListener('zm-resource-install', onInstall)
+  }, [])
   const [ttsSideOpen, setTtsSideOpen] = useState(false)
   const [clearingCache, setClearingCache] = useState(false)
   const [scriptSaving, setScriptSaving] = useState(false)
@@ -140,11 +157,7 @@ export default function App() {
   }, [locale])
 
   useEffect(() => {
-    if (!licenseStatus?.valid) {
-      setLocaleReady(true)
-      return
-    }
-    api.getLocalePreference()
+    api.getInitialLocale()
       .then(({ locale: savedLocale }) => {
         if (savedLocale && !localeChangedRef.current) setLocale(savedLocale)
       })
@@ -152,7 +165,7 @@ export default function App() {
         /* Browser/dev mode continues with localStorage or browser language. */
       })
       .finally(() => setLocaleReady(true))
-  }, [licenseStatus?.valid])
+  }, [])
 
   const changeLocale = (nextLocale: AppLocale) => {
     if (nextLocale === locale) return
@@ -641,6 +654,12 @@ export default function App() {
 
   async function onTranslateAll(runWindowSec = 0, settingsOverride?: ProjectSettings) {
     if (!projectId || status.running) return
+    try {
+      await prepareAiResources(recognitionResources(settingsOverride ?? settings))
+    } catch (error) {
+      if (!resourceInstallRef.current) toast.error(localize(locale, 'Không kiểm tra được package: ', 'Could not check packages: ') + String(error))
+      return
+    }
     setExportUrl(null)
     // 0 = Dịch cả video (full); >0 = ▶ Preview Ns — tách khỏi ô settings.previewSec
     const wc = Math.max(0, runWindowSec)
@@ -944,7 +963,7 @@ export default function App() {
           refreshVoices(undefined, true)
         }}
       />
-      {licenseBlocked && (
+      {licenseBlocked && localeReady && (
         <LicensePage
           status={licenseStatus || EMPTY_LICENSE}
           gate
@@ -1266,13 +1285,28 @@ export default function App() {
         renderName={exportPath?.split('/').pop()?.replace(/\.[^.]+$/i, '') || undefined}
       />
       <ProgressPopup
+        active={Boolean(resourceInstall)}
+        minimized={resourceInstallMinimized}
+        running={resourceInstall?.running}
+        title={localize(locale, `Cài ${resourceName}`, `Install ${resourceName}`)}
+        message={resourceInstall?.needsRestart
+          ? localize(locale, 'Đã cài xong. Khởi động lại ứng dụng để tiếp tục.', 'Installation complete. Restart the application to continue.')
+          : resourceInstall?.error ? runtimeErrorText(resourceInstall, locale) : runtimeStatusText(resourceInstall || { running: false }, locale)}
+        progress={resourceInstall?.progress || 0}
+        error={resourceInstall?.error ? runtimeErrorText(resourceInstall, locale) : null}
+        log={resourceInstall?.log}
+        onMinimize={() => { setResourceInstallMinimized(true); if (!resourceInstall?.running && !resourceInstall?.needsRestart) setResourceInstall(null) }}
+        onRestore={() => setResourceInstallMinimized(false)}
+        actions={resourceInstall?.needsRestart ? <button type="button" className="tts-btn tts-btn-blue" onClick={() => void api.restartApp().catch(error => setResourceInstall(previous => previous ? { ...previous, error: String(error) } : null))}>{localize(locale, 'Khởi động lại ứng dụng', 'Restart application')}</button> : undefined}
+      />
+      <ProgressPopup
         active={
-          status.running
+          !resourceInstall && (status.running
           || Boolean(
             status.error
             && status.error !== 'cancelled'
             && status.error !== 'stale_job',
-          )
+          ))
         }
         minimized={progressMinimized}
         hideMinimized={status.running}

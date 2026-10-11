@@ -53,6 +53,73 @@ export type InstallStatus = {
   diagnostics?: string
 }
 
+export type AiResourceId = 'whisper' | 'ocr' | 'diarization' | 'demucs' | 'vieneu' | 'moss_tts_nano'
+export type ResourceInstallStatus = InstallStatus & { resourceId: AiResourceId }
+// One backend install owner: parallel queue starts wait for the same preparation.
+let resourcePreparation: Promise<void> = Promise.resolve()
+let resourceRestartRequired = false
+
+export function prepareAiResources(ids: AiResourceId[]): Promise<void> {
+  if (!ids.length) return Promise.resolve()
+  const work = resourcePreparation.catch(() => undefined).then(async () => {
+    if (resourceRestartRequired) throw new Error('RUNTIME_RESTART_REQUIRED')
+    const current = await api.resources()
+    for (const resourceId of new Set(ids)) {
+      const installed = resourceId === 'vieneu'
+        ? (await api.ttsStatus()).vieneu?.installed
+        : current.items.find(item => item.id === resourceId)?.installed
+      if (installed) continue
+      let status: ResourceInstallStatus = { resourceId, running: true, progress: 1 }
+      const report = (next: InstallStatus) => {
+        status = { ...status, ...next, resourceId }
+        window.dispatchEvent(new CustomEvent('zm-resource-install', { detail: status }))
+      }
+      report(status)
+      try {
+        const result = await api.installResource(resourceId, report)
+        if (!result.ok) throw new Error(result.message)
+        if (result.needsRestart) {
+          resourceRestartRequired = true
+          report({ running: false, progress: 100, needsRestart: true })
+          throw new Error('RUNTIME_RESTART_REQUIRED')
+        }
+        const ready = resourceId === 'vieneu'
+          ? (await api.ttsStatus()).vieneu?.installed
+          : (await api.resources()).items.find(item => item.id === resourceId)?.installed
+        if (!ready) throw new Error('RUNTIME_PROBE_FAILED')
+        window.dispatchEvent(new CustomEvent('zm-resource-install', { detail: null }))
+      } catch (error) {
+        if (!status.needsRestart) {
+          const message = error instanceof Error ? error.message : String(error)
+          report({ running: false, error: message, log: [status.log, message].filter(Boolean).join('\n') })
+        }
+        throw error
+      }
+    }
+  })
+  resourcePreparation = work
+  return work
+}
+
+export function recognitionResources(settings: { engine?: unknown; burnSubs?: unknown; coverHardsubs?: unknown; speakerDiarization?: unknown }): AiResourceId[] {
+  const ids: AiResourceId[] = []
+  if (!settings.engine || settings.engine === 'whisper') ids.push('whisper')
+  if (settings.engine === 'paddleocr' || settings.engine === 'screen' || settings.burnSubs !== false || settings.coverHardsubs !== false) ids.push('ocr')
+  if (settings.speakerDiarization) ids.push('diarization')
+  return ids
+}
+
+export function audioResources(settings: { processOriginalAudio?: unknown; originalAudioMode?: unknown }): AiResourceId[] {
+  return settings.processOriginalAudio && ['no_vocals', 'vocals'].includes(String(settings.originalAudioMode)) ? ['demucs'] : []
+}
+
+export async function prepareVoiceResources(voice: string, lang = 'auto'): Promise<void> {
+  if (!voice || /^(cc:|el:|win:|espeak:)/.test(voice) || voice === 'system') return
+  const selected = (await api.voices(lang)).find(item => item.id === voice)
+  if (selected?.engine === 'moss_tts_nano' || /^(moss:|zmt:)/.test(voice)) await prepareAiResources(['moss_tts_nano'])
+  else if (voice.startsWith('vn:') || ['vieneu', 'zmai', 'clone'].includes(selected?.engine || '')) await prepareAiResources(['vieneu'])
+}
+
 async function pollInstall(
   url: string,
   onStatus?: (status: InstallStatus) => void,
@@ -64,6 +131,7 @@ async function pollInstall(
 }> {
   const kick = await fetchJson<InstallStatus & { ok: boolean }>(url, { method: 'POST' }, 60_000)
   onStatus?.({ ...kick, running: kick.running !== false })
+  if (kick.error || kick.ok === false) throw new Error(kick.error || kick.message || 'INSTALL_FAILED')
   if (kick.running === false) {
     return {
       ok: kick.ok ?? true,
@@ -149,7 +217,10 @@ export const api = {
   installResource: (resourceId: string, onStatus?: (status: InstallStatus) => void) =>
     pollInstall(`${base}/resources/${encodeURIComponent(resourceId)}/install`, onStatus),
 
-  runOcrTranslate: (projectId: string, settings: ProjectSettings) => fetchJson<{ ok: boolean }>(`${base}/projects/${projectId}/ocr-translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) }, 30_000),
+  runOcrTranslate: async (projectId: string, settings: ProjectSettings) => {
+    await prepareAiResources(['ocr'])
+    return fetchJson<{ ok: boolean }>(`${base}/projects/${projectId}/ocr-translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) }, 30_000)
+  },
 
   mediaTimeline: (projectId: string) => fetchJson<{ items: Array<{ id: string; assetId: string; name: string; kind: 'video' | 'audio' | 'image'; start: number; end: number }> }>(`${base}/projects/${projectId}/media-timeline`, undefined, 10_000),
   replaceMediaTimeline: (projectId: string, items: Array<{ id: string; assetId: string; name: string; kind: 'video' | 'audio' | 'image'; start: number; end: number }>) => fetchJson<{ items: typeof items }>(`${base}/projects/${projectId}/media-timeline`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(items) }, 15_000),
@@ -274,6 +345,9 @@ export const api = {
   getLocalePreference: () =>
     fetchJson<{ locale: 'vi' | 'en' | null }>(`${base}/ui-preferences`, undefined, 5_000),
 
+  getInitialLocale: () =>
+    fetchJson<{ locale: 'vi' | 'en' | null }>(`${base}/ui-locale`, undefined, 5_000),
+
   saveLocalePreference: (locale: 'vi' | 'en') =>
     fetchJson<{ locale: 'vi' | 'en' }>(`${base}/ui-preferences`, {
       method: 'PUT',
@@ -371,6 +445,10 @@ export const api = {
     ),
 
   ttsStudioTranscribe: async (file: File, lang = 'auto', engine = 'whisper', translation?: { enabled: boolean; targetLang: string; translator: string; model: string }, speakerDiarization = false, speakerCount = 0) => {
+    await prepareAiResources([
+      ...(engine === 'whisper' ? ['whisper' as const] : engine === 'paddleocr' ? ['ocr' as const] : []),
+      ...(speakerDiarization && ['whisper', 'capcut'].includes(engine) ? ['diarization' as const] : []),
+    ])
     const fd = new FormData()
     fd.append('file', file)
     const q = new URLSearchParams({ lang, engine, speaker_diarization: String(speakerDiarization), speaker_count: String(speakerCount) })
@@ -382,7 +460,7 @@ export const api = {
     )
   },
 
-  ttsStudioSynth: (body: {
+  ttsStudioSynth: async (body: {
     jobId?: string
     text?: string
     srtText?: string
@@ -402,8 +480,9 @@ export const api = {
     outputDir?: string
     outputFormat?: 'wav48' | 'wav16' | 'mp3'
     publishOutput?: boolean
-  }) =>
-    fetchJson<{
+  }) => {
+    await prepareVoiceResources(body.voice, body.lang)
+    return fetchJson<{
       id: string
       duration: number
       audioUrl: string
@@ -421,7 +500,8 @@ export const api = {
         body: JSON.stringify(body),
       },
       10 * 60_000,
-    ),
+    )
+  },
 
   ttsStudioHistory: () =>
     fetchJson<Array<Record<string, unknown>>>(
@@ -620,8 +700,9 @@ export const api = {
       body: JSON.stringify(segments),
     }),
 
-  retranscribeRange: (projectId: string, start: number, end: number, sourceLang = 'auto') =>
-    fetch(`${base}/projects/${projectId}/segments/retranscribe-range`, {
+  retranscribeRange: async (projectId: string, start: number, end: number, sourceLang = 'auto') => {
+    await prepareAiResources(['whisper'])
+    return fetch(`${base}/projects/${projectId}/segments/retranscribe-range`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ start, end, sourceLang, engine: 'whisper' }),
@@ -629,7 +710,8 @@ export const api = {
     }).then((r) => {
       if (!r.ok && r.status !== 202) throw new Error(`HTTP ${r.status}`)
       return null  // 202 — caller polls /status
-    }),
+    })
+  },
 
   /** CapCut Alt+G — compound clip (giữ children + mix TTS). */
   createCompound: (projectId: string, segmentIds: string[]) =>
@@ -698,19 +780,24 @@ export const api = {
     )
   },
 
-  run: (projectId: string, settings: ProjectSettings) =>
-    fetchJson<{ ok: boolean; jobId?: string }>(`${base}/projects/${projectId}/run`, {
+  run: async (projectId: string, settings: ProjectSettings) => {
+    await prepareAiResources(recognitionResources(settings))
+    return fetchJson<{ ok: boolean; jobId?: string }>(`${base}/projects/${projectId}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
-    }),
+    })
+  },
 
-  dub: (projectId: string, settings: ProjectSettings & { forceTts?: boolean }) =>
-    fetchJson<{ ok: boolean }>(`${base}/projects/${projectId}/dub`, {
+  dub: async (projectId: string, settings: ProjectSettings & { forceTts?: boolean }) => {
+    await prepareVoiceResources(settings.defaultVoice, settings.targetLang)
+    for (const profile of Object.values(settings.speakerProfiles || {})) await prepareVoiceResources(profile.voice || '', settings.targetLang)
+    return fetchJson<{ ok: boolean }>(`${base}/projects/${projectId}/dub`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
-    }),
+    })
+  },
 
   cancel: (projectId: string) =>
     fetchJson<{ ok: boolean; ignored?: boolean }>(
@@ -750,15 +837,17 @@ export const api = {
       5000,
     ),
 
-  export: (projectId: string, settings: ProjectSettings, segments: Segment[] | undefined, exportEndSec: number | undefined, exportStartSec: number | undefined, renderName: string, coverDataUrl?: string) =>
-    fetchJson<{ ok: boolean; url: string; path?: string; exports?: string }>(
+  export: async (projectId: string, settings: ProjectSettings, segments: Segment[] | undefined, exportEndSec: number | undefined, exportStartSec: number | undefined, renderName: string, coverDataUrl?: string) => {
+    await prepareAiResources(audioResources(settings))
+    return fetchJson<{ ok: boolean; url: string; path?: string; exports?: string }>(
       `${base}/projects/${projectId}/export`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...settings, renderName, ...(segments ? { segments } : {}), ...(exportEndSec && exportEndSec > 0 ? { exportEndSec } : {}), ...(exportStartSec && exportStartSec > 0 ? { exportStartSec } : {}), ...(coverDataUrl ? { coverDataUrl } : {}) }),
       },
-    ),
+    )
+  },
 
   revealOutput: (projectId: string) =>
     fetchJson<{ ok: boolean; path: string }>(
@@ -779,12 +868,14 @@ export const api = {
     }>(`${base}/projects/${projectId}/audio/no-vocals/status`, undefined, 4000),
 
   /** Demucs xóa lời — lần đầu (cài torch) có thể rất lâu; tái dùng cache. */
-  prepareNoVocals: (projectId: string) =>
-    fetchJson<{ audioUrl: string; file: string; cached?: boolean }>(
+  prepareNoVocals: async (projectId: string) => {
+    await prepareAiResources(['demucs'])
+    return fetchJson<{ audioUrl: string; file: string; cached?: boolean }>(
       `${base}/projects/${projectId}/audio/no-vocals`,
       { method: 'POST' },
       900_000,
-    ),
+    )
+  },
 
   /** Tiến độ tách stem (poll khi đang prepareNoVocals). */
   noVocalsProgress: (projectId: string) =>

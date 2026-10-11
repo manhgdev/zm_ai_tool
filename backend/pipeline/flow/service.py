@@ -1568,6 +1568,11 @@ class FlowService:
         account = store.get_row("accounts", account_id) or {}
         if not account:
             return
+        # A successful login followed by another worker auth failure needs
+        # explicit user retry; reopening login cannot repair that same session.
+        job = (store.get_row("jobs", job_id) or {}) if job_id else {}
+        if job.get("authRetryCount", 0):
+            return
         with self._guard:
             if account_id in self._connecting_accounts:
                 return
@@ -1652,9 +1657,10 @@ class FlowService:
             if not job_id:
                 continue
             with self._account_condition:
-                if job_id in self._running_jobs or job_id in self._cancelled:
+                if job_id in self._running_jobs or job_id in self._cancelled or job.get("authRetryCount", 0):
                     continue
                 store.patch_row("jobs", job_id, {
+                    "authRetryCount": 1,
                     "status": "queued",
                     "stage": "queued",
                     "progress": 0,
@@ -2093,12 +2099,7 @@ class FlowService:
         job = store.get_row("jobs", job_id)
         if not job or job.get("status") in {"done", "cancelled"} or job_id in self._cancelled:
             return False
-        if not job.get("allowAccountFallback", bool(job.get("randomAccount"))) and not re.search(
-            r"AUTOMATION_BLOCKED|FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)|"
-            r"FLOW_RESULT_NOT_FOUND|FLOW_GENERATION_TIMEOUT",
-            reason,
-            re.I,
-        ):
+        if not job.get("allowAccountFallback", bool(job.get("randomAccount"))):
             return False
 
         kind = str(job.get("kind") or "image")
@@ -3344,6 +3345,8 @@ class FlowService:
                 self.retry(job_id, {"accountId": account_id})
             elif current_job.get("status") in {"failed", "action_required"}:
                 err_msg = str(current_job.get("error") or "Unknown error")
+                if _session_needs_login(Exception(err_msg)):
+                    self._requeue_auth_failed_jobs(account_id)
                 if current_job.get("quotaModelFallbackApplied") and "FLOW_QUOTA_EXHAUSTED" in err_msg:
                     self.suspend_account(account_id, err_msg)
                 elif re.search(
@@ -4538,7 +4541,6 @@ class FlowService:
         """Wait for media tiles after a current Flow Angular submit."""
         deadline = time.monotonic() + timeout_s if timeout_s > 0 else None
         next_project_check = 0.0
-        next_suspicious_check = 0.0
         store.patch_row("jobs", job_id, {
             "stage": "generating",
             "progress": max(20, int((store.get_row("jobs", job_id) or {}).get("progress") or 0)),
@@ -4572,29 +4574,10 @@ class FlowService:
                 fresh.append(item)
             if len(fresh) >= max(1, expected_count):
                 return fresh[:max(1, expected_count)]
-            # ── Page-level suspicious-activity / block check (every 10 s) ─────
-            if page is not None and time.monotonic() >= next_suspicious_check:
-                next_suspicious_check = time.monotonic() + 10
-                try:
-                    body_text = str(await page.evaluate("() => (document.body && document.body.innerText) || ''") or "")
-                    if re.search(
-                        r"ho\u1ea1t ?\u0111\u1ed9ng ?\u0111\u00e1ng ng\u1edd|suspicious activity|unusual activity|ho\u1ea1t ?\u0111\u1ed9ng ?b\u1ea5t ?th\u01b0\u1eddng|automation.?block",
-                        body_text, re.I,
-                    ):
-                        raise RuntimeError(f"FLOW_AUTOMATION_BLOCKED: {body_text[:200]}")
-                    if re.search(
-                        r"something went wrong|couldn.t generate|could not generate|failed to generate|"
-                        r"không thể tạo|không tạo được|đã xảy ra lỗi khi tạo|lỗi khi tạo",
-                        body_text, re.I,
-                    ):
-                        raise RuntimeError(f"FLOW_OUTPUT_UNAVAILABLE: {body_text[:200]}")
-                    visible_error = _classify_visible_flow_error(body_text)
-                    if visible_error.startswith("FLOW_OUTPUT_UNAVAILABLE:"):
-                        raise RuntimeError(visible_error)
-                except RuntimeError:
-                    raise
-                except Exception:
-                    pass
+            # Do not scan document.body.innerText here. Flow keeps hidden
+            # accessibility copy and banners in the page shell; a body-wide
+            # match can turn unrelated text into FLOW_AUTOMATION_BLOCKED.
+            # _claim_visible_flow_error() below inspects only visible tile errors.
             flow_error = await self._claim_visible_flow_error(
                 page,
                 job or (store.get_row("jobs", job_id) or {"id": job_id}),
@@ -5657,6 +5640,7 @@ class FlowService:
                 "mode": mode,
                 "generationRejectRetryCount": 0,
                 "autoRetryCount": 0,
+                "authRetryCount": 0,
                 "forceNew": force_new,
             })
             self._account_condition.notify_all()

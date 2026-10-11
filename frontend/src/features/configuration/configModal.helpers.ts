@@ -2,14 +2,15 @@ import type { CloudProviderId, SystemChecks } from '@/features/project/project.t
 
 export const PROVIDERS: CloudProviderId[] = ['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral']
 
-export type InstallKind = 'ai_runtime' | 'ai_runtime_ocr' | 'ai_runtime_vieneu' | 'moss_tts_nano_runtime' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
+export type InstallKind = 'ai_runtime' | 'ai_runtime_ocr' | 'ai_runtime_vieneu' | 'whisper' | 'ocr' | 'diarization' | 'vieneu' | 'demucs' | 'moss_tts_nano_runtime' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
 
 export const INSTALL_LABELS: Record<InstallKind, string> = {
   ai_runtime: 'gói AI', ai_runtime_ocr: 'gói AI', ai_runtime_vieneu: 'gói AI',
+  whisper: 'Whisper', ocr: 'OCR', diarization: 'Sherpa-ONNX', vieneu: 'VieNeu Local', demucs: 'Demucs',
   moss_tts_nano_runtime: 'MOSS-TTS-Nano', ocr_cuda: 'OCR CUDA', demucs_cuda: 'Demucs', nvm: 'NVM + Node.js LTS',
 }
 
-export const INSTALL_ORDER: InstallKind[] = ['ai_runtime', 'ai_runtime_ocr', 'ai_runtime_vieneu', 'ocr_cuda', 'demucs_cuda']
+export const INSTALL_ORDER: InstallKind[] = ['whisper', 'ocr', 'diarization', 'vieneu', 'moss_tts_nano_runtime', 'demucs', 'ocr_cuda', 'demucs_cuda']
 
 export function installLabel(kind: string): string {
   return INSTALL_LABELS[kind as InstallKind] || kind

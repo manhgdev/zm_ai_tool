@@ -112,9 +112,42 @@ test('realtime subscriptions stay stable on status changes and discard pre-snaps
     type, id: String(id), topic: 'flow', entityId: 'a', payload,
   }) })
   emit('snapshot', 10, { jobs: [{ id: 'a', status: 'done' }] })
+  assert.deepEqual(received.map(event => event.type), ['snapshot'], 'snapshots are delivered once without row replay')
   emit('flow.job.updated', 8, { id: 'a', status: 'processing' })
   assert.ok(received.every(event => event.payload?.status !== 'processing'))
   emit('flow.job.updated', 11, { id: 'a', status: 'processing' })
   emit('flow.job.updated', 12, { id: 'a', status: 'done' })
   assert.deepEqual(received.reduce(update, []), [])
+  emit('flow.job.updated', 11, { id: 'a', status: 'processing' })
+  emit('snapshot', 9, { jobs: [{ id: 'a', status: 'processing' }] })
+  assert.deepEqual(received.reduce(update, []), [], 'late progress and stale snapshots cannot resurrect completed jobs')
+  emit('flow.job.updated', 13, { id: 'a', status: 'processing' })
+  assert.equal(received.reduce(update, []).length, 1)
+  emit('snapshot', 14, { jobs: [] })
+  assert.deepEqual(received.reduce(update, []), [], 'periodic snapshots remove jobs without a delete event')
+  emit('flow.job.updated', 13, { id: 'a', status: 'processing' })
+  assert.deepEqual(received.reduce(update, []), [], 'pre-snapshot replay cannot restore a missing job')
+})
+
+test('periodic TTS snapshots resolve the active job and do not repeat error logs', () => {
+  const source = readFileSync(new URL('../frontend/src/features/tts/TtsStudio.tsx', import.meta.url), 'utf8')
+  const snippet = source.slice(source.indexOf('  const onTtsRealtime = useCallback('), source.indexOf('  const realtimeStatus = useRealtimeEvents'))
+  const compiled = ts.transpileModule(snippet, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const progress = new Map(), waiters = new Map(), logs = []
+  let finished
+  waiters.set('active', value => { finished = value })
+  const receive = new Function('useCallback', 'activeJobIdRef', 'cancelledJobIdsRef', 'ttsProgressRef',
+    'ttsWaitersRef', 'setStatus', 'setBusyProgress', 'setBusyCustomMessage', 'setError', 'setTtsLogs',
+    `${compiled}\nreturn onTtsRealtime`)(fn => fn, { current: 'active' }, { current: new Set() },
+    { current: progress }, { current: waiters }, () => {}, () => {}, () => {}, () => {},
+    update => { logs.splice(0, logs.length, ...update(logs)) })
+  const snapshot = { type: 'snapshot', entityId: 'snapshot:tts', payload: { jobs: { active: { error: 'failed', pct: 50 } } } }
+  receive(snapshot)
+  receive(snapshot)
+  assert.equal(finished.error, 'failed')
+  assert.equal(progress.get('active').pct, 50)
+  assert.equal(logs.length, 1)
+  receive({ ...snapshot, payload: { jobs: { active: { done: true, pct: 100 } } } })
+  assert.equal(finished.done, true)
+  assert.equal(progress.has('snapshot:tts'), false)
 })

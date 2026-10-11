@@ -42,6 +42,12 @@ export default function BackgroundTasks({ onOpen, project }: {
     setCancelling(new Set(cancellingRef.current))
     try {
       const result = await cancelBackgroundJob(job)
+      if (result.alreadyRemoved) {
+        setJobs(current => current.filter(row => row.topic !== job.topic || row.id !== job.id))
+        setSelectedJob(current => current?.topic === job.topic && current.id === job.id ? null : current)
+        toast.info(t('Tác vụ không còn tồn tại. Đã cập nhật danh sách.', 'This task no longer exists. The task list has been updated.'))
+        return
+      }
       if (result.ok === false) throw new Error(t('Backend chưa chấp nhận huỷ tác vụ.', 'The backend did not accept cancellation.'))
     } catch (error) {
       toast.error(t('Không huỷ được tác vụ', 'Could not cancel task'), { description: error instanceof Error ? error.message : String(error) })

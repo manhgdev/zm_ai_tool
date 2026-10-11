@@ -16,6 +16,7 @@ function literal(node) {
 
 // Validate translation data, independent of quotes, whitespace, JSX layout or CSS.
 for (const paths of [
+  ['app/App.tsx'],
   ['shared/components/BackgroundTasks.tsx'],
   ['features/tts/TtsStudio.tsx', 'features/tts/TtsTranscribePanel.tsx'],
   ['features/configuration/ConfigModal.tsx', 'features/configuration/setupLabels.ts'],
