@@ -5,6 +5,7 @@ import asyncio
 from copy import deepcopy
 import errno
 import logging
+import json
 import os
 import random
 import re
@@ -60,6 +61,28 @@ _PROFILE_COPY_IGNORES = {
     # it is not part of the Google session state needed by Flow.
     "RunningChromeVersion",
 }
+
+
+def _account_cookie_records(value: Any) -> list[dict[str, Any]]:
+    """Normalize saved cookie metadata without exposing cookie values."""
+    raw = value
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if isinstance(raw, dict):
+        raw = raw.get("cookies", raw.get("items", []))
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict) or not item.get("name") or "value" not in item:
+            continue
+        cookie = {key: item[key] for key in ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite") if key in item}
+        if cookie.get("domain") or cookie.get("url"):
+            result.append(cookie)
+    return result
 
 
 def _profile_copy_ignore(_directory: str, names: list[str]) -> list[str]:
@@ -1619,10 +1642,14 @@ class FlowService:
                 raise RuntimeError("FLOW_PROFILE_BUSY")
         if any(job.get("accountId") == account_id and job.get("status") == "processing" for job in self.jobs()):
             raise RuntimeError("Account still has active Flow jobs")
-        # Mark the account as connecting while its identity is reset. Queued
-        # jobs stay queued at admission until the user connects it again.
-        # Keep the Chrome profile intact: it contains the user's Google cookies.
-        # Reset only Flow identity/session metadata so reconnect can reuse login.
+        # Reset means a clean browser profile. Preserve only the account's
+        # cookie payload, exactly like adding an account by cookie; local
+        # Chrome storage, Flow project data, tokens and cached session state
+        # must not survive this operation.
+        cookie_payload = account.get("cookie")
+        profile = Path(store.profile_dir(account_id))
+        shutil.rmtree(profile, ignore_errors=True)
+        profile.mkdir(parents=True, exist_ok=True)
         patch = {
             "status": "connecting", "error": None, "suspendedUntil": None, "suspendReason": None,
             "automationReconnectCount": (1 if auto_recovery else 0),
@@ -1631,14 +1658,14 @@ class FlowService:
             "automationRecoveryActiveJobIds": account.get("automationRecoveryActiveJobIds") if auto_recovery else [],
             "automationRecoveryOwnerDone": account.get("automationRecoveryOwnerDone", False) if auto_recovery else False,
             "automationRecoveryBlocked": False,
-            "accessToken": None, "refreshToken": None, "cookie": None,
+            "accessToken": None, "refreshToken": None, "cookie": cookie_payload,
             "projectId": None, "imageProjectId": None, "videoProjectId": None,
             "projectChangedAt": None, "imageProjectIdChangedAt": None, "videoProjectIdChangedAt": None,
             "updatedAt": time.time(),
         }
         store.patch_row("accounts", account_id, patch)
         self._log("info", "account_session_reset", account_id=account_id,
-                  message="Đã reset project Flow và giữ cookie Google / Reset Flow project while preserving Google cookies")
+                  message="Đã xoá trắng profile Flow và giữ cookie Google / Reset Flow profile wiped while preserving cookie payload")
         # Kick-start login immediately so the account does not stay stuck in
         # 'connecting' forever waiting for the user to press Connect manually.
         try:
@@ -2543,15 +2570,10 @@ class FlowService:
                 pass
             if password_fallback:
                 store.patch_row("accounts", account_id, {
-                    "authMethod": "chrome",
-                    "error": "FLOW_LOGIN_PASSWORD_REQUIRED",
+                    "authMethod": "cookie",
+                    "error": "FLOW_COOKIE_EXPIRED",
                     "updatedAt": time.time(),
                 })
-                try:
-                    self.connect(account_id, force_interactive=True)
-                except RuntimeError as reconnect_exc:
-                    if "FLOW_PROFILE_BUSY" not in str(reconnect_exc):
-                        _log.warning("Password fallback could not start for %s: %s", account_id, reconnect_exc)
         return self._public_account(store.get_row("accounts", account_id) or account)
 
     async def _read_capability_catalog(self, browser, project_id: str, plan: str | None = None) -> dict[str, Any]:
@@ -3090,6 +3112,8 @@ class FlowService:
         account = store.get_row("accounts", account_id) or {}
         existing_project_id = str(account.get("projectId") or "")
         cookie_auth = bool(cookies) or str(account.get("authMethod") or "chrome") == "cookie"
+        if cookie_auth and not cookies:
+            cookies = _account_cookie_records(account.get("cookie"))
 
         # Fast-path: try headless first when there's a saved session
         if existing_project_id and not force_interactive and not cookies:
@@ -3404,19 +3428,13 @@ class FlowService:
                 self._connecting_accounts.discard(account_id)
             self._wake_account_waiters(account_id)
             if password_fallback:
-                # Cookie auth is no longer viable. Switch this account to the
-                # existing visible Chrome login flow; the user enters the
-                # password there and no password is persisted by this path.
+                # Keep cookie authentication selected; the caller must provide
+                # a refreshed cookie instead of entering an account password.
                 store.patch_row("accounts", account_id, {
-                    "authMethod": "chrome",
-                    "error": "FLOW_LOGIN_PASSWORD_REQUIRED",
+                    "authMethod": "cookie",
+                    "error": "FLOW_COOKIE_EXPIRED",
                     "updatedAt": time.time(),
                 })
-                try:
-                    self.connect(account_id, force_interactive=True)
-                except RuntimeError as reconnect_exc:
-                    if "FLOW_PROFILE_BUSY" not in str(reconnect_exc):
-                        _log.warning("Password fallback could not start for %s: %s", account_id, reconnect_exc)
             # Clone only after Chrome released the profile — otherwise cookies are incomplete
             # and every job raises "Could not obtain Bearer token" in a loop.
             if login_ok:
@@ -3636,6 +3654,11 @@ class FlowService:
                 restore_last_session=str((store.get_row("accounts", account_id) or {}).get("authMethod") or "chrome") == "cookie",
             )
             await browser.start()
+            account = store.get_row("accounts", account_id) or {}
+            if str(account.get("authMethod") or "chrome") == "cookie":
+                cookie_records = _account_cookie_records(account.get("cookie"))
+                if cookie_records:
+                    await browser.context.add_cookies(cookie_records)
             # Another worker may already have replaced a deleted project while
             # this worker was waiting for the shared browser profile.
             persisted_account = store.get_row("accounts", account_id) or {}
@@ -3713,7 +3736,15 @@ class FlowService:
 
             if not confirmed_id or confirmed_id not in str(page.url or ""):
                 return False
-            authenticated = await page.evaluate("() => Boolean(window.WIZ_global_data?.SNlM0e || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email)")
+            current_url = str(page.url or "").lower()
+            if re.search(r"accounts\.google\.com|/about|/login|/signin", current_url):
+                return False
+            authenticated = await page.evaluate("""() => Boolean(
+                document.querySelector('flow-root, flow-app, [aria-label*="Flow" i], [data-testid*="flow" i],
+                    a[href*="/project/"], button, textarea, input)
+                || window.WIZ_global_data?.SNlM0e
+                || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email
+            )""")
             if not authenticated:
                 return False
             email = await page.evaluate("() => window.WIZ_global_data?.oPEP7c || window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || ''")

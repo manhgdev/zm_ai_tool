@@ -38,13 +38,13 @@ class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
                      patch.object(service, 'connect') as reconnect:
                     await service._login('acc1', cookies=cookies)
                 # Cookie reconnects stay headless first; a failed cookie session
-                # switches to the visible password login flow.
+                # remains cookie-authenticated and asks for a refreshed cookie.
                 self.assertTrue(manager.call_args.kwargs['headless'])
                 self.assertTrue(any(
-                    call.args[2].get('error') == 'FLOW_LOGIN_PASSWORD_REQUIRED'
+                    call.args[2].get('error') == 'FLOW_COOKIE_EXPIRED'
                     for call in update.call_args_list
                 ))
-                reconnect.assert_called_once_with('acc1', force_interactive=True)
+                reconnect.assert_not_called()
                 browser.context.add_cookies.assert_awaited_once_with(cookies)
                 browser.stop.assert_awaited_once()
                 self.assertNotIn('acc1', service._connecting_accounts)
