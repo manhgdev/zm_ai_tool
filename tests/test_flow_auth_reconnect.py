@@ -34,11 +34,17 @@ class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
                      patch('pipeline.flow.service.asyncio.sleep', new_callable=AsyncMock), \
                      patch('pipeline.core.desktop_window.request_desktop_foreground'), \
                      patch.object(service, '_log'), patch.object(service, '_wake_account_waiters'), \
-                     patch.object(service, '_requeue_auth_failed_jobs') as requeue:
+                     patch.object(service, '_requeue_auth_failed_jobs') as requeue, \
+                     patch.object(service, 'connect') as reconnect:
                     await service._login('acc1', cookies=cookies)
-                self.assertFalse(manager.call_args.kwargs['headless'])
-                self.assertEqual(update.call_args.args[2]['error'], 'FLOW_LOGIN_VERIFICATION_REQUIRED')
-                self.assertEqual(update.call_args.args[2]['status'], 'reconnect')
+                # Cookie reconnects stay headless first; a failed cookie session
+                # switches to the visible password login flow.
+                self.assertTrue(manager.call_args.kwargs['headless'])
+                self.assertTrue(any(
+                    call.args[2].get('error') == 'FLOW_LOGIN_PASSWORD_REQUIRED'
+                    for call in update.call_args_list
+                ))
+                reconnect.assert_called_once_with('acc1', force_interactive=True)
                 browser.context.add_cookies.assert_awaited_once_with(cookies)
                 browser.stop.assert_awaited_once()
                 self.assertNotIn('acc1', service._connecting_accounts)
@@ -110,12 +116,17 @@ class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
         api._get_auth_headers = AsyncMock(return_value={"content-type": "text/plain"})
         page = MagicMock()
         page.url = "https://flow.google.com/project/proj"
+        page.evaluate = AsyncMock(return_value={
+            "status": 401, "data": {}, "text": "unauthenticated",
+        })
         api._bm.page = AsyncMock(return_value=page)
+        api._force_refresh_session = AsyncMock(return_value="")
 
         with self.assertRaises(GenerationError) as ctx_err:
             await api._fetch("POST", "video:batchCheckAsyncVideoGenerationStatus", {"media": []})
-        self.assertIn("avoid reconnect storm", str(ctx_err.exception))
-        ctx.post.assert_awaited_once()
+        self.assertIn("API auth rejected after session refresh", str(ctx_err.exception))
+        self.assertEqual(page.evaluate.await_count, 2)
+        ctx.post.assert_not_awaited()
 
     async def test_fetch_401_on_login_wall_raises_auth_error(self):
         api = FlowAPI(MagicMock(), project_id="proj")
@@ -128,6 +139,9 @@ class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
         api._get_auth_headers = AsyncMock(return_value={"authorization": "Bearer ya29.old"})
         page = MagicMock()
         page.url = "https://accounts.google.com/ServiceLogin"
+        page.evaluate = AsyncMock(return_value={
+            "status": 401, "data": {}, "text": "unauthenticated",
+        })
         api._bm.page = AsyncMock(return_value=page)
 
         with self.assertRaises(AuthError) as ctx_err:

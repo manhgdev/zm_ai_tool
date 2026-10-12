@@ -261,10 +261,16 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(launch.call_args.kwargs['no_viewport'], not headless)
                 self.assertIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
                 self.assertIn('--disable-extensions', launch.call_args.kwargs['args'])
+                self.assertNotIn('--new-window', launch.call_args.kwargs['args'])
                 self.assertNotIn('--no-sandbox', launch.call_args.kwargs['args'])
                 self.assertEqual(context.add_init_script.await_count, 1)
                 self.assertNotIn('ignore_default_args', launch.call_args.kwargs)
                 await manager.stop()
+
+            manager = BrowserManager(headless=True, profile_dir=Path(raw) / 'cookie-profile', restore_last_session=True)
+            await manager.start()
+            self.assertIn('--restore-last-session', launch.call_args.kwargs['args'])
+            await manager.stop()
 
             manager = BrowserManager(
                 headless=False,
@@ -292,6 +298,39 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SessionTests(unittest.TestCase):
+    def test_session_profile_copy_skips_files_locked_by_live_chrome(self):
+        import importlib
+        flow_service = importlib.import_module("pipeline.flow.service")
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "account"
+            (source / "Default").mkdir(parents=True)
+            (source / "Default" / "Preferences").write_text("{}", encoding="utf-8")
+            (source / "Default" / "locked.db").write_text("locked", encoding="utf-8")
+            (source / "Cache" / "Cache_Data").mkdir(parents=True)
+            (source / "Cache" / "Cache_Data" / "data_2").write_text("cache", encoding="utf-8")
+
+            locked = OSError(13, "The process cannot access the file")
+            locked.winerror = 32
+            real_copy2 = flow_service.shutil.copy2
+
+            def copy2(src, dst):
+                if Path(src).name == "locked.db":
+                    raise locked
+                return real_copy2(src, dst)
+
+            service = FlowService()
+            with patch("pipeline.flow.service.store.profile_dir", return_value=source), \
+                 patch("pipeline.flow.service.store.root", return_value=root / "data"), \
+                 patch("pipeline.flow.service.shutil.copy2", side_effect=copy2):
+                target = service._ensure_session_profile("account", "image")
+
+            self.assertEqual(target, root / "data" / "profiles" / "account-image")
+            self.assertEqual((target / "Default" / "Preferences").read_text(encoding="utf-8"), "{}")
+            self.assertFalse((target / "Default" / "locked.db").exists())
+            self.assertFalse((target / "Cache").exists())
+
     def test_login_redirect_never_becomes_a_flow_project(self):
         project = '6e98f844-554a-4e93-898c-4b3096681a04'
         for url in [f'https://flow.google.com/project/{project}', f'/project/{project}?x=1', f'https://labs.google/fx/tools/flow/project/{project}']:

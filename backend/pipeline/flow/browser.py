@@ -147,7 +147,6 @@ def _visible_window_args(*, fullscreen: bool = False) -> list[str]:
     return [
         "--window-position=0,0",
         *( ["--start-maximized"] if fullscreen else ["--window-size=500,300"] ),
-        "--new-window",
     ]
 
 
@@ -187,7 +186,7 @@ def free_local_port() -> int:
 class BrowserManager:
     """Subset of flow-py's browser contract backed by installed Google Chrome."""
 
-    def __init__(self, *, headless: bool = True, profile_dir: Path | None = None, slow_mo: int = 0, google_login_compat: bool = False, fullscreen: bool = False, page_zoom: float = 1.0, cdp_url: str | None = None, remote_debugging_port: int | None = None) -> None:
+    def __init__(self, *, headless: bool = True, profile_dir: Path | None = None, slow_mo: int = 0, google_login_compat: bool = False, fullscreen: bool = False, page_zoom: float = 1.0, cdp_url: str | None = None, remote_debugging_port: int | None = None, restore_last_session: bool = False) -> None:
         self.cdp_url = cdp_url  # flow-py checks this optional upstream attribute.
         # Old clients can still request visible Chrome. A headless Linux VPS
         # has no window server; normalize here for every Flow caller.
@@ -199,6 +198,7 @@ class BrowserManager:
         self.fullscreen = fullscreen
         self.page_zoom = page_zoom
         self.remote_debugging_port = remote_debugging_port
+        self.restore_last_session = restore_last_session
         self._pw: Playwright | None = None
         self._ctx: BrowserContext | None = None
         self._cdp_browser: Any = None
@@ -256,6 +256,10 @@ class BrowserManager:
             self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
             visible_args = [] if self.headless else _visible_window_args(fullscreen=self.fullscreen)
             launch_args = ["--lang=en-US", "--disable-extensions"]
+            # Imported Cookie headers have no expiry metadata. Restore the
+            # native session so Chrome keeps these session cookies on reopen.
+            if self.restore_last_session:
+                launch_args.append("--restore-last-session")
             if self.remote_debugging_port:
                 self.cdp_url = f"http://127.0.0.1:{int(self.remote_debugging_port)}"
                 launch_args.extend([

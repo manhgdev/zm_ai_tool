@@ -811,7 +811,18 @@ try {
     }
     Remove-Item -LiteralPath $commitFile -Force -ErrorAction SilentlyContinue
     if ($AppPid -gt 0) {
-        Wait-Process -Id $AppPid -Timeout 20 -ErrorAction SilentlyContinue
+        $app = Get-Process -Id $AppPid -ErrorAction SilentlyContinue
+        if ($app) {
+            Log "Closing app PID=$AppPid before launching Setup"
+            try { $app.CloseMainWindow() | Out-Null } catch { Log "CloseMainWindow failed: $_" }
+            try { Wait-Process -Id $AppPid -Timeout 5 -ErrorAction SilentlyContinue } catch {}
+            $app = Get-Process -Id $AppPid -ErrorAction SilentlyContinue
+            if ($app) {
+                Log "App still running; stopping PID=$AppPid"
+                Stop-Process -Id $AppPid -Force -ErrorAction SilentlyContinue
+                try { Wait-Process -Id $AppPid -Timeout 10 -ErrorAction SilentlyContinue } catch {}
+            }
+        }
     }
 
     # Setup is built with PrivilegesRequired=lowest and installs below

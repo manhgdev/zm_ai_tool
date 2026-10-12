@@ -145,6 +145,30 @@ class FlowManualSessionTests(unittest.TestCase):
             self.assertEqual(query["continue"], ["https://flow.google.com/project/project-id"])
             self.assertTrue(browser.stopped)
 
+    def test_cookie_profile_opens_flow_without_password_login(self):
+        account = {
+            "id": "a", "email": "example@gmail.com", "authMethod": "cookie",
+            "status": "online", "projectId": "project-id",
+        }
+        service = FlowService()
+        browsers = []
+
+        def make_browser(**kwargs):
+            browser = _ManualBrowser(**kwargs)
+            browsers.append(browser)
+            return browser
+
+        with patch("pipeline.flow.store.get_row", return_value=account), \
+             patch("pipeline.flow.store.profile_dir", return_value="/tmp/flow-profile-a"), \
+             patch("pipeline.flow.browser.BrowserManager", side_effect=make_browser), \
+             patch("pipeline.flow.service.threading.Thread") as thread:
+            self.assertEqual(service.open_account_session("a"), {"opened": True})
+            thread.call_args.kwargs["target"]()
+
+        self.assertEqual(len(browsers), 1)
+        self.assertEqual(browsers[0].page_instance.url, "https://flow.google.com/project/project-id")
+        self.assertNotIn("accounts.google.com", browsers[0].page_instance.url)
+
     def test_open_session_blocks_connect_sync_and_delete_until_closed(self):
         account = {"id": "a", "email": "example@gmail.com", "status": "online", "projectId": "project-id"}
         service = FlowService()

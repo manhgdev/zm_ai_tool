@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+import errno
 import logging
 import os
 import random
@@ -54,10 +55,52 @@ _PROFILE_COPY_IGNORES = {
     "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
     "GraphiteDawnCache", "GPUPersistentCache", "ShaderCache", "GrShaderCache",
     "Crashpad", "SingletonCookie", "SingletonLock", "SingletonSocket", "LOCK",
+    "BrowserMetrics", "VariationsSeedV2",
     # Chrome writes this file while starting and can remove it during shutdown;
     # it is not part of the Google session state needed by Flow.
     "RunningChromeVersion",
 }
+
+
+def _profile_copy_ignore(_directory: str, names: list[str]) -> list[str]:
+    """Exclude Chromium caches that are always live while Chrome is open."""
+    return sorted(_PROFILE_COPY_IGNORES.intersection(names))
+
+
+def _profile_copy_file(source: str, target: str) -> None:
+    """Copy one profile file, tolerating a live Chrome handle on Windows."""
+    try:
+        shutil.copy2(source, target)
+    except FileNotFoundError:
+        # Chromium can delete a short-lived cache entry after enumeration.
+        _log.debug("Flow skipped vanished profile file: %s", source)
+        return
+    except OSError as exc:
+        winerror = getattr(exc, "winerror", None)
+        locked = winerror == 32 or exc.errno in (errno.EBUSY, errno.ETXTBSY) or (
+            sys.platform == "win32" and exc.errno == errno.EACCES
+        )
+        if not locked:
+            raise
+        # Chrome may release a handle between directory enumeration and copy.
+        # A short retry preserves fresh files without making profile cloning
+        # depend on a clean shutdown of another Chrome session.
+        for delay in (0.05, 0.15):
+            time.sleep(delay)
+            try:
+                shutil.copy2(source, target)
+                return
+            except FileNotFoundError:
+                _log.debug("Flow skipped vanished profile file: %s", source)
+                return
+            except OSError as retry_exc:
+                retry_winerror = getattr(retry_exc, "winerror", None)
+                retry_locked = retry_winerror == 32 or retry_exc.errno in (errno.EBUSY, errno.ETXTBSY) or (
+                    sys.platform == "win32" and retry_exc.errno == errno.EACCES
+                )
+                if not retry_locked:
+                    raise
+        _log.debug("Flow skipped locked profile file: %s", source)
 _IMAGE_UI_MODELS = {"Nano Banana Pro", "Nano Banana 2.1", "Nano Banana 2", "Nano Banana 2 Lite"}
 _VIDEO_UI_MODELS = {
     "Omni 1.1 Flash", "Veo 3.1 - Lite", "Veo 3.1 - Fast",
@@ -1114,6 +1157,7 @@ class FlowService:
         self._active_browsers: dict[str, Any] = {}
         self._manual_sessions: dict[str, Any] = {}
         self._auto_close_sessions: set[str] = set()
+        self._automation_recovery_inflight: set[str] = set()
         self._running_jobs: set[str] = set()
         self._claimed_media_ids: set[str] = set()
         self._claimed_error_tiles: set[str] = set()
@@ -1242,7 +1286,13 @@ class FlowService:
             # Login/reconnect writes fresh Google cookies to the canonical
             # account profile. Refresh each media profile before opening its
             # Chrome session so image/video jobs do not reuse stale cookies.
-            shutil.copytree(base, target, dirs_exist_ok=True)
+            shutil.copytree(
+                base,
+                target,
+                ignore=_profile_copy_ignore,
+                copy_function=_profile_copy_file,
+                dirs_exist_ok=True,
+            )
         return target
 
     def _session_for(self, account_id: str, kind: str) -> Any:
@@ -1577,6 +1627,10 @@ class FlowService:
             "status": "connecting", "error": None, "suspendedUntil": None, "suspendReason": None,
             "automationReconnectCount": (1 if auto_recovery else 0),
             "automationRecoveryPending": False,
+            "automationRecoveryJobId": account.get("automationRecoveryJobId") if auto_recovery else None,
+            "automationRecoveryActiveJobIds": account.get("automationRecoveryActiveJobIds") if auto_recovery else [],
+            "automationRecoveryOwnerDone": account.get("automationRecoveryOwnerDone", False) if auto_recovery else False,
+            "automationRecoveryBlocked": False,
             "accessToken": None, "refreshToken": None, "cookie": None,
             "projectId": None, "imageProjectId": None, "videoProjectId": None,
             "projectChangedAt": None, "imageProjectIdChangedAt": None, "videoProjectIdChangedAt": None,
@@ -1806,6 +1860,7 @@ class FlowService:
         if not account:
             raise KeyError(account_id)
         kind = kind if kind in {"image", "video"} else "image"
+        cookie_auth = str(account.get("authMethod") or "chrome") == "cookie"
         session_key = self._session_key(account_id, kind)
         with self._guard:
             if session_key in self._manual_sessions:
@@ -1829,6 +1884,7 @@ class FlowService:
                     fullscreen=fullscreen,
                     page_zoom=page_zoom,
                     remote_debugging_port=cdp_port,
+                    restore_last_session=cookie_auth,
                 )
                 async def open_and_wait() -> None:
                     await browser.start()
@@ -1842,9 +1898,16 @@ class FlowService:
                     destination = FLOW_BASE_URL
                     if project_id:
                         destination += f"/project/{quote(project_id, safe='')}"
-                    url = ("https://accounts.google.com/ServiceLogin?service=wise"
-                           f"&continue={quote(destination, safe='')}"
-                           f"&login_hint={quote(str(account.get('email') or ''), safe='')}")
+                    if cookie_auth:
+                        # Cookie accounts already carry the Google session in
+                        # the copied profile. Going through ServiceLogin here
+                        # needlessly prompts for a password and defeats the
+                        # cookie import path.
+                        url = destination
+                    else:
+                        url = ("https://accounts.google.com/ServiceLogin?service=wise"
+                               f"&continue={quote(destination, safe='')}"
+                               f"&login_hint={quote(str(account.get('email') or ''), safe='')}")
                     await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                     while not page.is_closed() and browser.context.pages:
                         await asyncio.sleep(1)
@@ -1864,6 +1927,7 @@ class FlowService:
                 with self._guard:
                     self._manual_sessions.pop(session_key, None)
                     self._auto_close_sessions.discard(session_key)
+                self._maybe_start_automation_recovery(account_id)
 
         threading.Thread(target=run_session, daemon=True, name=f"flow-manual-{account_id}-{kind}").start()
         return {"opened": True}
@@ -2001,12 +2065,42 @@ class FlowService:
                 reconnect_count = int(account.get("automationReconnectCount") or 0)
             except (TypeError, ValueError):
                 reconnect_count = 0
+            recovery_job_id = str(account.get("automationRecoveryJobId") or "")
+            active_job_ids = [str(value) for value in account.get("automationRecoveryActiveJobIds") or []]
+            # Workers that were already processing when the first block was
+            # observed belong to that same incident. They may report the same
+            # old-session block after the owner, so join the existing cycle
+            # instead of spending a second reset budget.
             if reconnect_count >= 1:
+                if recovery_job_id and str(job_id) in active_job_ids:
+                    store.patch_row("jobs", job_id, {
+                        "status": "action_required",
+                        "stage": "reconnecting",
+                        "error": "FLOW_LOGIN_REQUIRED: joining the shared Flow recovery cycle",
+                        "automationRecoveryPending": True,
+                        "automationRecoveryCount": reconnect_count,
+                        "automationRecoveryJobId": recovery_job_id,
+                        "authRetryCount": 0,
+                        "updatedAt": time.time(),
+                    })
+                    return True
                 return False
+            active_job_ids = [
+                str(row.get("id") or "")
+                for row in store.list_rows("jobs")
+                if str(row.get("accountId") or "") == account_id
+                and row.get("status") == "processing"
+                and str(row.get("id") or "") != str(job_id)
+            ]
             store.patch_row("accounts", account_id, {
                 "automationReconnectCount": reconnect_count + 1,
                 "status": "reconnect",
                 "error": str(reason or "FLOW_AUTOMATION_BLOCKED"),
+                "automationRecoveryPending": True,
+                "automationRecoveryJobId": str(job_id),
+                "automationRecoveryActiveJobIds": active_job_ids,
+                "automationRecoveryOwnerDone": False,
+                "automationRecoveryBlocked": False,
                 "updatedAt": time.time(),
             })
             store.patch_row("jobs", job_id, {
@@ -2015,16 +2109,11 @@ class FlowService:
                 "error": "FLOW_LOGIN_REQUIRED: reconnecting Flow session after unusual activity; retrying once",
                 "automationRecoveryPending": True,
                 "automationRecoveryCount": reconnect_count + 1,
+                "automationRecoveryJobId": str(job_id),
                 "authRetryCount": 0,
                 "updatedAt": time.time(),
             })
-        try:
-            self.reset_account_session(account_id, auto_recovery=True)
-        except RuntimeError as exc:
-            if "FLOW_PROFILE_BUSY" not in str(exc):
-                raise
-            self._log("info", "session_reset_deferred", job_id=job_id,
-                      account_id=account_id, message=str(exc))
+        self._maybe_start_automation_recovery(account_id)
         self._log(
             "warning",
             "automation_reconnect_started",
@@ -2037,11 +2126,164 @@ class FlowService:
         )
         return True
 
+    def _automation_recovery_busy(self, account_id: str) -> bool:
+        """Return True while the account still owns work that must finish first."""
+        rows = store.list_rows("jobs")
+        processing_ids = {
+            str(row.get("id") or "")
+            for row in rows
+            if str(row.get("accountId") or "") == account_id
+            and row.get("status") == "processing"
+        }
+        if processing_ids:
+            return True
+        with self._guard:
+            if account_id in self._connecting_accounts:
+                return True
+            if any(
+                self._session_key(account_id, kind) in self._manual_sessions
+                for kind in ("image", "video")
+            ):
+                return True
+            active_ids = set(self._active_browsers)
+            if any(
+                str(row.get("id") or "") in active_ids
+                and str(row.get("accountId") or "") == account_id
+                for row in rows
+            ):
+                return True
+        return False
+
+    def _maybe_start_automation_recovery(self, account_id: str) -> bool:
+        """Start a deferred unusual-activity reset once the account is idle."""
+        account = store.get_row("accounts", account_id) or {}
+        if account.get("automationRecoveryBlocked"):
+            return False
+        if not account.get("automationRecoveryPending"):
+            return False
+        if self._automation_recovery_busy(account_id):
+            self._log(
+                "info", "session_reset_deferred", account_id=account_id,
+                message="Flow recovery waits for the account queue to become idle",
+            )
+            return False
+        with self._guard:
+            # Re-read under the same lock as the single-flight marker. A
+            # caller that observed the old pending value must not start a
+            # second reset after the first cycle already cleared it.
+            latest = store.get_row("accounts", account_id) or {}
+            if latest.get("automationRecoveryBlocked") or not latest.get("automationRecoveryPending"):
+                return False
+            if account_id in self._automation_recovery_inflight:
+                return False
+            self._automation_recovery_inflight.add(account_id)
+        try:
+            try:
+                self.reset_account_session(account_id, auto_recovery=True)
+            except RuntimeError as exc:
+                detail = str(exc)
+                if "FLOW_PROFILE_BUSY" in detail or "Account still has active Flow jobs" in detail:
+                    self._log(
+                        "info", "session_reset_deferred", account_id=account_id,
+                        message=detail,
+                    )
+                    return False
+                # Do not leave queued work permanently blocked if the reset
+                # itself fails for an unexpected reason; normal reconnect can
+                # still recover the saved Google session.
+                store.patch_row("accounts", account_id, {
+                    "automationRecoveryPending": False,
+                    "updatedAt": time.time(),
+                })
+                self._log(
+                    "error", "session_reset_failed", account_id=account_id,
+                    message=detail,
+                )
+                return False
+            with self._account_condition:
+                self._account_condition.notify_all()
+            return True
+        finally:
+            with self._guard:
+                self._automation_recovery_inflight.discard(account_id)
+
+    def _finish_automation_recovery_if_owned(self, account_id: str, job: dict[str, Any]) -> None:
+        """Mark the recovery owner done and release its budget after the cohort drains."""
+        job_id = str(job.get("id") or "")
+        recovery_job_id = str(job.get("automationRecoveryJobId") or "")
+        if not job_id or recovery_job_id != job_id:
+            return
+        with self._guard:
+            account = store.get_row("accounts", account_id) or {}
+            if str(account.get("automationRecoveryJobId") or "") != job_id:
+                return
+            store.patch_row("accounts", account_id, {
+                "automationRecoveryOwnerDone": True,
+                "updatedAt": time.time(),
+            })
+            self._maybe_finish_automation_recovery(account_id)
+
+    def _mark_automation_recovery_job_finished(self, account_id: str, job_id: str) -> None:
+        """Remove an in-flight pre-recovery worker from the shared cohort."""
+        with self._guard:
+            account = store.get_row("accounts", account_id) or {}
+            active_ids = [str(value) for value in account.get("automationRecoveryActiveJobIds") or []]
+            if str(job_id) not in active_ids:
+                return
+            active_ids = [value for value in active_ids if value != str(job_id)]
+            store.patch_row("accounts", account_id, {
+                "automationRecoveryActiveJobIds": active_ids,
+                "updatedAt": time.time(),
+            })
+            self._maybe_finish_automation_recovery(account_id)
+
+    def _maybe_finish_automation_recovery(self, account_id: str) -> bool:
+        """Clear the shared retry budget only after owner and cohort are done."""
+        with self._guard:
+            account = store.get_row("accounts", account_id) or {}
+            if account.get("automationRecoveryBlocked"):
+                return False
+            if not account.get("automationRecoveryOwnerDone"):
+                return False
+            if account.get("automationRecoveryActiveJobIds"):
+                return False
+            if not account.get("automationRecoveryJobId"):
+                return False
+            store.patch_row("accounts", account_id, {
+                "automationReconnectCount": 0,
+                "automationRecoveryPending": False,
+                "automationRecoveryJobId": None,
+                "automationRecoveryActiveJobIds": [],
+                "automationRecoveryOwnerDone": False,
+                "automationRecoveryBlocked": False,
+                "updatedAt": time.time(),
+            })
+            with self._account_condition:
+                self._account_condition.notify_all()
+            return True
+
+    def _mark_automation_recovery_blocked(self, account_id: str, reason: str) -> None:
+        """Hold new work after a second block until the user reconnects."""
+        with self._guard:
+            account = store.get_row("accounts", account_id) or {}
+            if account.get("automationRecoveryPending"):
+                return
+            store.patch_row("accounts", account_id, {
+                "status": "reconnect",
+                "error": str(reason or "FLOW_AUTOMATION_BLOCKED"),
+                "automationRecoveryBlocked": True,
+                "updatedAt": time.time(),
+            })
+            with self._account_condition:
+                self._account_condition.notify_all()
+
     def _account_session_blocked(self, account_id: str) -> bool:
         """True while a shared reconnect/login is in progress for this account."""
         if account_id in self._connecting_accounts:
             return True
         account = store.get_row("accounts", account_id) or {}
+        if account.get("automationRecoveryPending") or account.get("automationRecoveryBlocked"):
+            return True
         # A failed login leaves the persisted status as ``reconnect`` after
         # _connecting_accounts is cleared. Do not leave queued jobs waiting
         # forever; their admission check will start one fresh reconnect.
@@ -2116,10 +2358,13 @@ class FlowService:
             or _flow_project_id(account, "video")
         ):
             return 0
+        recovery_job_id = str(account.get("automationRecoveryJobId") or "")
         self._wake_account_waiters(account_id)
         restarted = 0
         for job in store.list_rows("jobs"):
             if str(job.get("accountId") or "") != account_id:
+                continue
+            if recovery_job_id and str(job.get("automationRecoveryJobId") or "") != recovery_job_id:
                 continue
             if job.get("status") != "action_required":
                 continue
@@ -2191,7 +2436,12 @@ class FlowService:
         from ._flow._api import FlowAPI
         from ._flow._exceptions import AuthError as FlowAuthError
         from .browser import BrowserManager
-        browser = BrowserManager(headless=True, profile_dir=store.profile_dir(account_id))
+        browser = BrowserManager(
+            headless=True,
+            profile_dir=store.profile_dir(account_id),
+            restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
+        )
+        password_fallback = False
         try:
             try:
                 await browser.start()
@@ -2206,7 +2456,11 @@ class FlowService:
                             singleton_lock.unlink()
                         except OSError:
                             pass
-                    browser = BrowserManager(headless=True, profile_dir=store.profile_dir(account_id))
+                    browser = BrowserManager(
+                        headless=True,
+                        profile_dir=store.profile_dir(account_id),
+                        restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
+                    )
                     await browser.start()  # raises if still fails
                 else:
                     raise
@@ -2273,9 +2527,10 @@ class FlowService:
             if isinstance(exc, FlowAuthError) or _session_needs_login(exc):
                 # Token expired or cookies invalid — mark as needing reconnect.
                 _log.warning("sync_credits_for_account: auth error for %s: %s", account_id, exc)
+                password_fallback = str(account.get("authMethod") or "chrome") == "cookie"
                 store.patch_row("accounts", account_id, {
                     "status": "reconnect",
-                    "error": f"FLOW_SESSION_EXPIRED: {exc}",
+                    "error": "FLOW_LOGIN_PASSWORD_REQUIRED" if password_fallback else f"FLOW_SESSION_EXPIRED: {exc}",
                     "updatedAt": time.time(),
                 })
             raise
@@ -2286,6 +2541,17 @@ class FlowService:
                 await browser.stop()
             except Exception:
                 pass
+            if password_fallback:
+                store.patch_row("accounts", account_id, {
+                    "authMethod": "chrome",
+                    "error": "FLOW_LOGIN_PASSWORD_REQUIRED",
+                    "updatedAt": time.time(),
+                })
+                try:
+                    self.connect(account_id, force_interactive=True)
+                except RuntimeError as reconnect_exc:
+                    if "FLOW_PROFILE_BUSY" not in str(reconnect_exc):
+                        _log.warning("Password fallback could not start for %s: %s", account_id, reconnect_exc)
         return self._public_account(store.get_row("accounts", account_id) or account)
 
     async def _read_capability_catalog(self, browser, project_id: str, plan: str | None = None) -> dict[str, Any]:
@@ -2823,6 +3089,7 @@ class FlowService:
         """
         account = store.get_row("accounts", account_id) or {}
         existing_project_id = str(account.get("projectId") or "")
+        cookie_auth = bool(cookies) or str(account.get("authMethod") or "chrome") == "cookie"
 
         # Fast-path: try headless first when there's a saved session
         if existing_project_id and not force_interactive and not cookies:
@@ -2832,6 +3099,10 @@ class FlowService:
                     with self._guard:
                         self._login_passwords.pop(account_id, None)
                         self._connecting_accounts.discard(account_id)
+                    store.patch_row("accounts", account_id, {
+                        "automationRecoveryBlocked": False,
+                        "updatedAt": time.time(),
+                    })
                     self._wake_account_waiters(account_id)
                     self._requeue_auth_failed_jobs(account_id)
                     return
@@ -2847,10 +3118,11 @@ class FlowService:
 
         browser = None
         login_ok = False
+        password_fallback = False
         with self._guard:
             self._login_passwords.pop(account_id, None)
         password = ""
-        headless_login = False
+        headless_login = cookie_auth
         try:
             from .browser import BrowserManager, FLOW_BASE_URL
             browser = BrowserManager(
@@ -2887,7 +3159,7 @@ class FlowService:
             existing_email = str(account.get("email") or "").strip()
             from urllib.parse import quote
 
-            if cookies:
+            if cookie_auth:
                 start_url = "https://labs.google/fx/tools/flow"
                 if existing_project_id:
                     start_url += f"/project/{quote(existing_project_id, safe='')}"
@@ -2930,7 +3202,7 @@ class FlowService:
 
             # Điền email vào ô input và click Next tự động
             try:
-                if urlsplit(str(page.url or "")).hostname == "accounts.google.com":
+                if not cookie_auth and urlsplit(str(page.url or "")).hostname == "accounts.google.com":
                     email_input = page.locator('input[type="email"], input[name="identifier"]').first
                     await email_input.wait_for(state="visible", timeout=5_000)
                     current_val = await email_input.input_value()
@@ -2948,6 +3220,11 @@ class FlowService:
 
             # Nếu chưa đăng nhập và bị redirect vào accounts.google.com → chờ user login rồi tự navigate về Flow
             if not is_auth or not project_id:
+                if headless_login and not is_auth and (
+                    urlsplit(str(page.url or "")).hostname == "accounts.google.com"
+                    or "/about" in str(page.url or "")
+                ):
+                    raise RuntimeError("FLOW_LOGIN_VERIFICATION_REQUIRED")
                 if "/about" in str(page.url or ""):
                     # Trang giới thiệu Flow → click Sign In để vào Google login
                     try:
@@ -3096,7 +3373,19 @@ class FlowService:
         except Exception as exc:
             login_ok = False
             detail = str(exc).replace(password, "[redacted]") if password else str(exc)
-            store.patch_row("accounts", account_id, {"status": "reconnect", "error": detail, "updatedAt": time.time()})
+            password_fallback = cookie_auth and any(
+                marker in detail
+                for marker in (
+                    "FLOW_LOGIN_VERIFICATION_REQUIRED",
+                    "FLOW_COOKIE_IMPORT_FAILED",
+                    "FLOW_SESSION_EXPIRED",
+                )
+            )
+            store.patch_row("accounts", account_id, {
+                "status": "reconnect",
+                "error": "FLOW_LOGIN_PASSWORD_REQUIRED" if password_fallback else detail,
+                "updatedAt": time.time(),
+            })
             self._log("error", "account_connect_failed", account_id=account_id, message=detail)
         finally:
             password = ""
@@ -3114,9 +3403,27 @@ class FlowService:
             with self._guard:
                 self._connecting_accounts.discard(account_id)
             self._wake_account_waiters(account_id)
+            if password_fallback:
+                # Cookie auth is no longer viable. Switch this account to the
+                # existing visible Chrome login flow; the user enters the
+                # password there and no password is persisted by this path.
+                store.patch_row("accounts", account_id, {
+                    "authMethod": "chrome",
+                    "error": "FLOW_LOGIN_PASSWORD_REQUIRED",
+                    "updatedAt": time.time(),
+                })
+                try:
+                    self.connect(account_id, force_interactive=True)
+                except RuntimeError as reconnect_exc:
+                    if "FLOW_PROFILE_BUSY" not in str(reconnect_exc):
+                        _log.warning("Password fallback could not start for %s: %s", account_id, reconnect_exc)
             # Clone only after Chrome released the profile — otherwise cookies are incomplete
             # and every job raises "Could not obtain Bearer token" in a loop.
             if login_ok:
+                store.patch_row("accounts", account_id, {
+                    "automationRecoveryBlocked": False,
+                    "updatedAt": time.time(),
+                })
                 self._requeue_auth_failed_jobs(account_id)
 
 
@@ -3323,7 +3630,11 @@ class FlowService:
         from .browser import BrowserManager, FLOW_BASE_URL
         browser = None
         try:
-            browser = BrowserManager(headless=True, profile_dir=store.profile_dir(account_id))
+            browser = BrowserManager(
+                headless=True,
+                profile_dir=store.profile_dir(account_id),
+                restore_last_session=str((store.get_row("accounts", account_id) or {}).get("authMethod") or "chrome") == "cookie",
+            )
             await browser.start()
             # Another worker may already have replaced a deleted project while
             # this worker was waiting for the shared browser profile.
@@ -3986,12 +4297,7 @@ class FlowService:
             elif current_job.get("stage") == "model_fallback" and job_id not in self._cancelled:
                 self.retry(job_id, {"accountId": account_id})
             elif current_job.get("status") == "done":
-                account_snapshot = store.get_row("accounts", account_id) or {}
-                if account_snapshot.get("automationReconnectCount"):
-                    store.patch_row("accounts", account_id, {
-                        "automationReconnectCount": 0,
-                        "updatedAt": time.time(),
-                    })
+                self._finish_automation_recovery_if_owned(account_id, current_job)
             elif current_job.get("status") in {"failed", "action_required"}:
                 err_msg = str(current_job.get("error") or "Unknown error")
                 if _session_needs_login(Exception(err_msg)):
@@ -3999,16 +4305,24 @@ class FlowService:
                 if current_job.get("quotaModelFallbackApplied") and "FLOW_QUOTA_EXHAUSTED" in err_msg:
                     self.suspend_account(account_id, err_msg)
                 elif re.search(r"AUTOMATION_BLOCKED|abnormal activity|hoạt động bất thường|suspicious activity|unusual activity", err_msg, re.I):
-                    # Reconnect the existing profile once. If the retried job is
-                    # blocked again, _schedule_automation_reconnect returns False
-                    # and this falls through to explicit user action.
-                    if not self._schedule_automation_reconnect(account_id, job_id, err_msg):
-                        self._stop_account_after_automation_block(account_id, job_id)
-                        store.patch_row("jobs", job_id, {
-                            "status": "action_required", "stage": "action_required",
-                            "error": err_msg, "automationRecoveryPending": False,
-                            "updatedAt": time.time(),
-                        })
+                    if current_job.get("automationRecoveryPending"):
+                        self._mark_automation_recovery_job_finished(account_id, job_id)
+                        self._maybe_start_automation_recovery(account_id)
+                    else:
+                        # Reconnect the existing profile once. If the retried job is
+                        # blocked again, _schedule_automation_reconnect returns False
+                        # and this falls through to explicit user action.
+                        if not self._schedule_automation_reconnect(account_id, job_id, err_msg):
+                            # A block from a worker admitted after the shared
+                            # reconnect is a genuine second incident. Hold the
+                            # account and leave queued work visible as queued so
+                            # it can run after an explicit reconnect.
+                            self._mark_automation_recovery_blocked(account_id, err_msg)
+                            store.patch_row("jobs", job_id, {
+                                "status": "action_required", "stage": "action_required",
+                                "error": err_msg, "automationRecoveryPending": False,
+                                "updatedAt": time.time(),
+                            })
                 elif current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
                     self._try_fallback_account(job_id, account_id, err_msg)
                 elif re.search(
@@ -4021,6 +4335,8 @@ class FlowService:
                 account_id,
                 str(current_job.get("kind") or job.get("kind") or "video"),
             )
+            self._mark_automation_recovery_job_finished(account_id, job_id)
+            self._maybe_start_automation_recovery(account_id)
 
     def _clone_runtime_profile(self, account_id: str, job_id: str, kind: str = "image") -> Path | None:
         from .browser import profile_lock
@@ -4056,7 +4372,7 @@ class FlowService:
                                    f"ON CONFLICT DO UPDATE SET " + ", ".join(
                                        f'"{name}" = excluded."{name}"' for name in columns
                                    ) + " WHERE excluded.last_update_utc > cookies.last_update_utc")
-                except (sqlite3.Error, ValueError):
+                except (sqlite3.Error, ValueError, OSError):
                     # Never include database rows or exception text (secrets).
                     self._log("warning", "cookie_sync_failed", account_id=account_id,
                               message="Could not synchronize refreshed browser cookies")
@@ -4078,7 +4394,8 @@ class FlowService:
             shutil.copytree(
                 source,
                 target,
-                ignore=lambda _directory, names: sorted(_PROFILE_COPY_IGNORES.intersection(names)),
+                ignore=_profile_copy_ignore,
+                copy_function=_profile_copy_file,
                 dirs_exist_ok=True,
             )
         except FileNotFoundError:
@@ -5020,7 +5337,9 @@ class FlowService:
                 continue
             if str(media['name']) in used_ids:
                 continue
-            if kind == "image" and not media.get("image"):
+            # Flow has returned completed images both under `image` and
+            # under `generatedImage`; accept either shape during recovery.
+            if kind == "image" and not (media.get("image") or media.get("generatedImage") or _image_fife_url(media)):
                 continue
             if kind == "video" and not _video_media_ready(media):
                 continue
@@ -5830,6 +6149,7 @@ class FlowService:
                         if job_kind in {"image", "video"}
                         else store.profile_dir(account["id"])
                     ),
+                    restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
                 )
             self._check_cancel(job_id)
             with self._guard:
@@ -6336,6 +6656,16 @@ class FlowService:
             action = "action_required" if needs_login else "failed"
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")
             store.patch_row("jobs", job_id, {"status": action, "stage": action, "error": error, "updatedAt": time.time()})
+            if re.search(
+                r"AUTOMATION_BLOCKED|abnormal activity|hoạt động bất thường|"
+                r"suspicious activity|unusual activity",
+                error,
+                re.I,
+            ):
+                # Latch the shared account gate while this worker is still in
+                # its cleanup path. Queued siblings must not slip into the
+                # old session between the exception and _run_sync.finally.
+                self._schedule_automation_reconnect(account["id"], job_id, error)
             if needs_login:
                 # Kick the single shared account login immediately — do not
                 # wait for the outer worker loop (Bearer missing = re-login).
@@ -6683,6 +7013,11 @@ class FlowService:
         if manual_retry and requested_account_id not in {"random", "auto", ""}:
             store.patch_row("accounts", account_id, {
                 "automationReconnectCount": 0,
+                "automationRecoveryPending": False,
+                "automationRecoveryJobId": None,
+                "automationRecoveryActiveJobIds": [],
+                "automationRecoveryOwnerDone": False,
+                "automationRecoveryBlocked": False,
                 "updatedAt": time.time(),
             })
         settings, _ = _normalize_catalog_settings(account, kind, settings)

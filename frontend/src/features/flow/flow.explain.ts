@@ -100,10 +100,10 @@ export function explainFlowError(message: string): FlowExplain {
       summaryVi: "", summaryEn: "",
       actionVi: code === "FLOW_LOGIN_PASSWORD_REQUIRED"
         ? "Sửa tài khoản, nhập lại Password rồi bấm Lưu và kết nối. Mật khẩu không được lưu sau khi khởi động lại."
-        : "Phiên Google chưa đăng nhập hoặc cookie đã hết hạn. Kết nối bằng Cookie Google Labs mới, hoặc hoàn tất đăng nhập/xác minh trong Chrome có màn hình trên máy chạy backend (VPS cần desktop/VNC).",
+        : "Cookie không còn khả dụng. Hệ thống đã chuyển sang đăng nhập Google bằng Chrome; hoàn tất email và mật khẩu trong cửa sổ Chrome trên máy chạy backend (VPS cần desktop/VNC).",
       actionEn: code === "FLOW_LOGIN_PASSWORD_REQUIRED"
         ? "Edit the account, enter the password, then select Save and connect. Passwords do not survive a restart."
-        : "The Google session is signed out or its cookies have expired. Connect with fresh Google Labs cookies, or complete sign-in/verification in visible Chrome on the backend host (a VPS needs a desktop/VNC).",
+        : "The Cookie session is no longer available. The account was switched to Chrome sign-in; finish Google email and password in the Chrome window on the backend host (a VPS needs a desktop/VNC).",
     };
   }
 

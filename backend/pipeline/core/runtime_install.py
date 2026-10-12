@@ -435,7 +435,8 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *
         requirement_file = requirements_dir / (re.sub(r'[^A-Za-z0-9_.-]+', '_', label) + '.txt')
         # uv parses backslashes in Windows requirement files as escapes/project roots;
         # use forward-slash absolute paths so `E:/.../*.whl` remains a wheel path.
-        requirement_file.write_text('\n'.join(path.as_posix() for path in paths) + '\n', encoding='utf-8')
+        wheel_uris = [path.as_uri() for path in paths]
+        requirement_file.write_text('\n'.join(wheel_uris) + '\n', encoding='utf-8')
         command = ['--no-index', '--no-deps', '--requirement', requirement_file.as_posix()]
         try:
             _run([*(pip_base if use_pip else uv_base), *command], 'DEPENDENCY_INSTALL_FAILED', label)
