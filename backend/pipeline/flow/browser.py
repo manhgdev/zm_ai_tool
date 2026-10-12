@@ -262,11 +262,9 @@ class BrowserManager:
                     f"--remote-debugging-port={int(self.remote_debugging_port)}",
                     "--remote-debugging-address=127.0.0.1",
                 ])
-            # Use the compatibility flag only while logging in, connecting,
-            # or opening a manual account session. Direct image/video workers
-            # keep the normal Chrome launch surface.
-            if self.google_login_compat:
-                launch_args.append("--disable-blink-features=AutomationControlled")
+            # Keep the same browser compatibility surface for every Flow
+            # session, including direct image/video workers.
+            launch_args.append("--disable-blink-features=AutomationControlled")
             launch_args.extend(["--disable-infobars", *visible_args])
             # Linux root cannot use Chromium's sandbox. Keep it enabled for all
             # non-root sessions; do not retry arbitrary failures unsandboxed.

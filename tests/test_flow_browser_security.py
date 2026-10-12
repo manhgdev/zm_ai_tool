@@ -259,7 +259,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(launch.call_args.kwargs['viewport'],
                                  {'width': 1440, 'height': 900} if headless else None)
                 self.assertEqual(launch.call_args.kwargs['no_viewport'], not headless)
-                self.assertNotIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
+                self.assertIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
                 self.assertIn('--disable-extensions', launch.call_args.kwargs['args'])
                 self.assertNotIn('--no-sandbox', launch.call_args.kwargs['args'])
                 self.assertEqual(context.add_init_script.await_count, 1)

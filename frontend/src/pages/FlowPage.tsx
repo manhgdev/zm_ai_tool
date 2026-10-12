@@ -155,6 +155,9 @@ function applyAccountCapabilities(
       resolution: kind === "image"
         ? clampFlowImageResolution(base.resolution, account?.plan)
         : (isFlowVideoUiResolution(base.resolution) ? base.resolution : ""),
+      videoResolution: kind === "video"
+        ? (isFlowVideoUiResolution(base.resolution) ? base.resolution : "")
+        : current.videoResolution,
     };
     return next.quality === current.quality
       && next.resolution === current.resolution
@@ -196,6 +199,7 @@ function applyAccountCapabilities(
     [ratioKey]: ratio,
     duration,
     resolution,
+    videoResolution: kind === "video" ? resolution : current.videoResolution,
     quality: kind === "video" ? quality : current.quality,
   };
   return next.model === current.model
@@ -651,7 +655,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   }, [jobs, showLimitNotice]);
   useEffect(() => {
-    if (!backendReady || !hasActiveFlowJobs || realtimeStatus === "connected") return;
+    // Realtime is an optimization, not the source of truth. Keep polling so
+    // a missed job_completed event cannot leave the card stuck on generating.
+    if (!backendReady || !hasActiveFlowJobs) return;
     let active = true;
     const refreshJobs = () =>
       void flowRequest<{ jobs: Array<Record<string, unknown>>; accounts?: FlowAccount[] }>("/api/flow/jobs")
@@ -884,9 +890,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       ? capabilityModel.resolutions.filter((value) => isFlowVideoUiResolution(value))
       : capabilityModel.resolutions.filter((value) => isFlowImageUiResolution(value)))
     : createKind === "image" ? imageResolutionOptions : ["360p", "720p"];
-  const resolutionOptions = catalogResolutionOptions.length
-    ? catalogResolutionOptions
-    : createKind === "video" ? ["360p", "720p"] : imageResolutionOptions;
+  const resolutionOptions = createKind === "video"
+    ? (isOmniFlash
+      ? (catalogResolutionOptions.length ? catalogResolutionOptions : ["360p", "720p"])
+      : [])
+    : (catalogResolutionOptions.length ? catalogResolutionOptions : imageResolutionOptions);
   // Catalog may omit image tiers — still expose plan options so leftover Omni 360p cannot stick.
   const effectiveImageResolutionOptions = createKind === "image"
     ? (resolutionOptions.length ? resolutionOptions : imageResolutionOptions)
@@ -1152,9 +1160,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             accountPlan,
           )
           : (resolutionOptions.length
-            ? (resolutionOptions.includes(effectiveSettings.resolution)
-              ? effectiveSettings.resolution
-              : resolutionOptions[0])
+            ? (() => {
+                const requested = effectiveSettings.videoResolution || effectiveSettings.resolution;
+                return resolutionOptions.includes(requested) ? requested : resolutionOptions[0];
+              })()
             : ""),
         quality: createKind === "video"
           ? (videoDownloadQualityOptions.includes(effectiveSettings.quality)
@@ -1162,6 +1171,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             : videoDownloadQualityOptions[0])
           : effectiveSettings.quality,
       };
+      if (createKind === "video") {
+        // The visible control is backed by videoResolution; keep the legacy
+        // resolution field synchronized in the request sent to the backend.
+        const generationResolution = effectiveSettings.resolution || effectiveSettings.videoResolution || "";
+        effectiveSettings = {
+          ...effectiveSettings,
+          resolution: generationResolution,
+          videoResolution: generationResolution,
+        };
+      }
 
       if (settings.account !== "random" && createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
         const proOnline = accounts.find((a) => a.status === "online" && (a.plan === "Ultra" || a.plan === "Pro" || a.plan === "Plus"));
@@ -2825,6 +2844,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         />
                       ) : null}
                       <FlowSelect
+                        className={`flow-download-quality-select${isOmniFlash ? "" : " is-wide"}`}
                         label={t("Chất lượng tải", "Download quality")}
                         value={
                           videoDownloadQualityOptions.includes(settings.quality)

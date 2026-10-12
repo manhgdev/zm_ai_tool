@@ -771,6 +771,11 @@ def _normalize_catalog_settings(
             normalized["duration"] = duration
     resolutions = [str(value) for value in selected.get("resolutions", []) if str(value)]
     if kind == "video":
+        # Flow exposes generation resolution only for Omni Flash. Veo uses its
+        # model-defined resolution and must not inherit a stale 360p/720p value.
+        if not re.search(r"\bomni\b.*\bflash\b", str(normalized.get("model") or ""), re.I):
+            normalized["resolution"] = ""
+            resolutions = []
         resolutions = [value for value in resolutions if _video_ui_resolution(value)]
         requested_resolution = str(normalized.get("resolution") or "").lower()
         if not resolutions:
@@ -778,7 +783,7 @@ def _normalize_catalog_settings(
             # worker does not try to click a control that does not exist.
             if requested_resolution:
                 normalized["resolution"] = ""
-        elif requested_resolution not in [value.lower() for value in resolutions]:
+        elif requested_resolution not in [value.lower() for value in resolutions] and not _video_ui_resolution(requested_resolution):
             fallback = str(selected.get("defaultResolution") or resolutions[0])
             normalized["resolution"] = _video_ui_resolution(fallback) or resolutions[0]
         elif requested_resolution and not _video_ui_resolution(requested_resolution):
@@ -1860,6 +1865,18 @@ class FlowService:
             self.connect(account_id, **connect_kwargs)
         except KeyError:
             return
+        except RuntimeError as exc:
+            if "FLOW_PROFILE_BUSY" not in str(exc):
+                raise
+            # Another Flow session is still closing/connecting. Leave the
+            # account in reconnect state; the queue admission path will retry
+            # once the profile lock is released instead of leaking a traceback.
+            self._log(
+                "info", "session_reconnect_deferred", job_id=job_id,
+                account_id=account_id,
+                message="Flow profile is busy; reconnect deferred until the session is free",
+            )
+            return
         with self._account_condition:
             self._account_condition.notify_all()
         self._log(
@@ -1909,7 +1926,10 @@ class FlowService:
             account_id,
             job_id=job_id,
             reason="FLOW_LOGIN_REQUIRED: reconnecting after FLOW_AUTOMATION_BLOCKED",
-            interactive=True,
+            # The account is already authenticated; refresh the saved profile
+            # headlessly so auto-retry does not open a visible Chrome window.
+            # _login still falls back to visible login only for a real login wall.
+            interactive=False,
         )
         self._log(
             "warning",
@@ -4692,12 +4712,48 @@ class FlowService:
                 _log.info("_prepare_ui_format: ignoring non-video resolution %r", resolution)
             else:
                 # Tab text may be "360pinfo" (trailing info icon) — only forbid digits.
-                resolution_tab = await visible_tab(re.compile(rf"(?<!\d){re.escape(resolution_value)}(?!\d)", re.I))
+                resolution_pattern = re.compile(rf"(?<!\d){re.escape(resolution_value)}(?!\d)", re.I)
+                # Prefer the smallest visible control. A broad has_text match
+                # can otherwise return the settings container containing both
+                # 360p and 720p, leaving Flow on its 720p default.
+                resolution_tab = None
+                resolution_candidates = []
+                for selector in ('mat-button-toggle', _FLOW_CONTROL_SELECTOR, 'button, [role="radio"], [role="tab"], [data-value]'):
+                    matches = page.locator(selector).filter(has_text=resolution_pattern)
+                    for index in range(await matches.count()):
+                        candidate = matches.nth(index)
+                        try:
+                            if not await candidate.is_visible():
+                                continue
+                            text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip())
+                            if selector == 'mat-button-toggle' and not re.fullmatch(rf"{re.escape(resolution_value)}(?:\s*info)?", text, re.I):
+                                continue
+                            values = " ".join(filter(None, [
+                                text,
+                                await candidate.get_attribute("aria-label"),
+                                await candidate.get_attribute("data-value"),
+                                await candidate.get_attribute("title"),
+                            ]))
+                            if resolution_pattern.search(values):
+                                resolution_candidates.append((0 if selector == 'mat-button-toggle' else 1, len(text), candidate))
+                        except Exception:
+                            continue
+                if resolution_candidates:
+                    chosen = min(resolution_candidates, key=lambda item: item[:2])
+                    resolution_tab = chosen[2]
+                    if chosen[0] == 0:
+                        # Material handles input on the button, not the host's
+                        # ripple overlay. Use a real actionable button click.
+                        resolution_tab = resolution_tab.locator('button[role="radio"]').first
                 if resolution_tab is None:
+                    if re.search(r"\bomni\b.*\bflash\b", str(duration_model or ""), re.I):
+                        raise RuntimeError(
+                            f"FLOW_SETTING_MISMATCH: Omni Flash resolution {resolution_value} was not found"
+                        )
                     _log.info("_prepare_ui_format: resolution %s control is hidden; using Flow model default", resolution_value)
                     return
                 await resolution_tab.scroll_into_view_if_needed()
-                await resolution_tab.click(force=True)
+                await resolution_tab.click()
                 await asyncio.sleep(0.5)
                 if not await _flow_control_is_selected(resolution_tab):
                     await resolution_tab.click(force=True)
@@ -4720,12 +4776,8 @@ class FlowService:
                             resolution_value,
                         )
                     else:
-                        # Flow builds can close the resolution control immediately after
-                        # applying the default. Keep generation moving without treating
-                        # this non-fatal UI state as a submit failure.
-                        _log.info(
-                            "_prepare_ui_format: resolution %s not exposed as a selectable control; using model default",
-                            resolution_value,
+                        raise RuntimeError(
+                            f"FLOW_SETTING_MISMATCH: resolution {resolution_value} was not confirmed selected"
                         )
 
     async def _click_flow_submit(self, page) -> None:
@@ -4801,8 +4853,10 @@ class FlowService:
             await asyncio.sleep(0.25)
             if await _flow_control_is_selected(candidate):
                 return
-        if desired == 1:
-            _log.info("_set_flow_count: x1 is default, proceeding")
+        if desired == 1 and await target.count() == 0:
+            # Some Flow layouts omit the count control because x1 is the only
+            # supported choice. Only then is proceeding without a click safe.
+            _log.info("_set_flow_count: x1 is the only available generation count")
             return
         raise RuntimeError(f"FLOW_UI_CHANGED: generation count x{desired} was not found")
 
@@ -5690,6 +5744,7 @@ class FlowService:
                 with self._guard:
                     has_active_kind_job = any(
                         key != job_id and value is not None
+                        and getattr(value, "cdp_url", None) == manual_session["cdp_url"]
                         for key, value in self._active_browsers.items()
                     )
                 browser = BrowserManager.from_cdp(
@@ -5745,6 +5800,15 @@ class FlowService:
             if bool(job.get("parallelSession")) != parallel_session:
                 store.patch_row("jobs", job_id, {"parallelSession": parallel_session, "updatedAt": time.time()})
                 job = {**job, "parallelSession": parallel_session}
+            # Validate the persisted project before a fresh submission too.
+            # A deleted Flow project must be replaced instead of surfacing a
+            # raw 404 and stopping the new image/video job.
+            if not (job.get("submissionStartedAt") or job.get("mediaIds") or job.get("resumeOnly")):
+                page = await browser.page()
+                account = await self._ensure_account_project_page(
+                    page, api=api, client=client, account=account, job_id=job_id, kind=job_kind,
+                )
+                project_id = _flow_project_id(account, job_kind, legacy_for_video=True)
             submission_project_id = str(job.get("submissionProjectId") or "")
             project_changed_at = _flow_project_changed_at(account, job_kind)
             submitted_at = float(job.get("submissionStartedAt") or 0)
@@ -5916,6 +5980,10 @@ class FlowService:
                 if not await client._ui.fill_prompt(page, job["prompt"]):
                     raise RuntimeError("FLOW_UI_CHANGED: prompt editor was not found")
                 await self._prepare_ui_model(page, "video", model, ui=client._ui)
+                # Select count while the model quick-settings panel is still
+                # open; changing resolution can close/rebuild that panel.
+                count = max(1, min(4, int(settings.get("count", 1))))
+                await self._set_flow_count(page, count)
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 12, "updatedAt": time.time()})
                 await self._prepare_ui_format(
                     page,
@@ -5942,7 +6010,6 @@ class FlowService:
                     if not await client._ui.switch_mode(page, GenerationMode.FRAME_TO_VIDEO):
                         raise RuntimeError(f"FLOW_UI_CHANGED: Frames mode is not available for {model}")
                 extend_from = store.get_row("jobs", str(settings.get("extendFromJobId") or ""))
-                count = max(1, min(4, int(settings.get("count", 1))))
                 remote = []
                 media_items: list[dict[str, Any]] = []
                 if extend_from and (extend_from.get("mediaIds") or []):
@@ -5959,7 +6026,7 @@ class FlowService:
                     await _wait_before_flow_submit()
                     remote = [await client.extend_video(media_id, workflow_id, job["prompt"])]
                     media_ids = [item.media_name for item in remote]
-                    self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model, "mediaIds": media_ids})
+                    self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model, "generationResolution": settings.get("resolution") or settings.get("videoResolution") or "", "mediaIds": media_ids})
                     store.patch_row("jobs", job_id, {"mediaIds": media_ids, "stage": "generating", "progress": 20})
                     await self._sync_credits(api, account["id"])
                     outputs = []
@@ -6014,7 +6081,7 @@ class FlowService:
                     await _wait_before_flow_submit()
                     await self._click_flow_submit(page)
                     store.patch_row("jobs", job_id, {"stage": "generating", "progress": 20, "updatedAt": time.time()})
-                    self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model})
+                    self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model, "generationResolution": settings.get("resolution") or settings.get("videoResolution") or ""})
                     # Flow's current UI submits via batchexecute (no aisandbox RPC to
                     # intercept) and finished video tiles only carry a thumbnail — no
                     # <video>/data-media-id — so tiles are the source of truth.
