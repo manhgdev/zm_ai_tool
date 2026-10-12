@@ -92,6 +92,30 @@ export function explainFlowError(message: string): FlowExplain {
     actionEn,
   });
 
+  if (code === "FLOW_COOKIE_EXPIRED") {
+    return {
+      code,
+      titleVi: "Cần kiểm tra phiên Flow",
+      titleEn: "Flow session needs checking",
+      summaryVi: "Thông báo cũ này chưa xác nhận Cookie hết hạn.",
+      summaryEn: "This legacy error does not confirm cookie expiry.",
+      actionVi: "Mở phiên để kiểm tra rồi thử kết nối lại. Nếu Flow vẫn hoạt động, giữ nguyên Cookie và xem lỗi chi tiết.",
+      actionEn: "Open the session to check it, then retry connecting. If Flow still works, keep the cookies and inspect the error details.",
+    };
+  }
+
+  if (code === "FLOW_COOKIE_SESSION_UNVERIFIED") {
+    return {
+      code,
+      titleVi: "Chưa xác minh được phiên Cookie",
+      titleEn: "Cookie session could not be verified",
+      summaryVi: "Không kết luận Cookie hết hạn khi phiên Chrome vẫn có thể đang hoạt động.",
+      summaryEn: "Cookie expiry is not confirmed while the Chrome session may still be active.",
+      actionVi: "Giữ nguyên Cookie, đóng phiên trùng nếu có rồi mở lại phiên account để kiểm tra.",
+      actionEn: "Keep the Cookie, close any duplicate session, then reopen the account session to check it.",
+    };
+  }
+
   if (code === "FLOW_LOGIN_PASSWORD_REQUIRED" || code === "FLOW_LOGIN_VERIFICATION_REQUIRED") {
     return {
       code,
@@ -100,10 +124,10 @@ export function explainFlowError(message: string): FlowExplain {
       summaryVi: "", summaryEn: "",
       actionVi: code === "FLOW_LOGIN_PASSWORD_REQUIRED"
         ? "Sửa tài khoản, nhập lại Password rồi bấm Lưu và kết nối. Mật khẩu không được lưu sau khi khởi động lại."
-        : "Cookie không còn khả dụng. Hệ thống đã chuyển sang đăng nhập Google bằng Chrome; hoàn tất email và mật khẩu trong cửa sổ Chrome trên máy chạy backend (VPS cần desktop/VNC).",
+        : "Mở phiên và hoàn tất đăng nhập Google bằng Chrome trên máy backend (VPS cần desktop/VNC); chỉ nhập mật khẩu nếu Google yêu cầu.",
       actionEn: code === "FLOW_LOGIN_PASSWORD_REQUIRED"
         ? "Edit the account, enter the password, then select Save and connect. Passwords do not survive a restart."
-        : "The Cookie session is no longer available. The account was switched to Chrome sign-in; finish Google email and password in the Chrome window on the backend host (a VPS needs a desktop/VNC).",
+        : "Open the session and complete Google sign-in in Chrome on the backend host (a VPS needs desktop/VNC); enter a password only if Google requests it.",
     };
   }
 

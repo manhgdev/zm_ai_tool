@@ -141,7 +141,7 @@ test('headless Flow login explains cookie and desktop recovery in both languages
   assert.equal(error.code, 'FLOW_LOGIN_VERIFICATION_REQUIRED')
   assert.notEqual(error.titleVi, error.titleEn)
   assert.match(error.actionVi, /đăng nhập Google bằng Chrome/)
-  assert.match(error.actionEn, /switched to Chrome sign-in/)
+  assert.match(error.actionEn, /complete Google sign-in/)
   for (const action of [error.actionVi, error.actionEn]) {
     assert.match(action, /desktop\/VNC/)
     assert.match(action, /[Pp]assword|mật khẩu/)

@@ -7,10 +7,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from pipeline.flow._flow._api import FlowAPI
 from pipeline.flow._flow._exceptions import AuthError, GenerationError
-from pipeline.flow.service import FlowService, _session_needs_login
+from pipeline.flow.service import FlowService, _session_needs_login, _browser_at_login_wall
 
 
 class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_api_auth_error_on_working_flow_page_preserves_account(self):
+        service = FlowService()
+        browser = MagicMock()
+        browser.start = AsyncMock()
+        browser.stop = AsyncMock()
+        browser.page = AsyncMock(return_value=MagicMock(url='https://flow.google.com/project/p'))
+        account = {'id': 'a', 'status': 'online', 'projectId': 'p', 'authMethod': 'cookie'}
+        with patch('pipeline.flow.service.store.get_row', return_value=account), \
+             patch('pipeline.flow.service.store.patch_row') as update, \
+             patch('pipeline.flow.browser.BrowserManager', return_value=browser), \
+             patch.object(FlowAPI, 'get_credits', AsyncMock(side_effect=AuthError('HTTP 401 unauthenticated'))):
+            with self.assertRaises(AuthError):
+                await service.sync_credits_for_account('a')
+        update.assert_not_called()
+        browser.stop.assert_awaited_once()
+
+    async def test_login_wall_requires_known_host_and_path(self):
+        for url, expected in [
+            ('https://accounts.google.com/ServiceLogin', True),
+            ('https://flow.google.com/about', True),
+            ('https://flow.google.com/project/about-example', False),
+            ('https://example.com/login', False),
+        ]:
+            browser = MagicMock(page=AsyncMock(return_value=MagicMock(url=url)))
+            self.assertEqual(await _browser_at_login_wall(browser), expected)
+
     async def test_effective_headless_login_stops_at_login_wall_and_releases_account(self):
         for url in ('https://accounts.google.com/ServiceLogin', 'https://labs.google/fx/tools/flow/about'):
             with self.subTest(url=url):
@@ -41,7 +67,7 @@ class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
                 # remains cookie-authenticated and asks for a refreshed cookie.
                 self.assertTrue(manager.call_args.kwargs['headless'])
                 self.assertTrue(any(
-                    call.args[2].get('error') == 'FLOW_COOKIE_EXPIRED'
+                    call.args[2].get('error') == 'FLOW_COOKIE_SESSION_UNVERIFIED'
                     for call in update.call_args_list
                 ))
                 reconnect.assert_not_called()

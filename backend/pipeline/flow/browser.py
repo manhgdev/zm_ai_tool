@@ -104,6 +104,7 @@ _profile_locks: dict[str, Any] = {}
 _visible_window_guard = threading.Lock()
 _visible_launch_guard = threading.Lock()
 _visible_window_index = 0
+_profile_slots: dict[str, int] = {}
 
 
 def _visible_window_geometry(
@@ -209,6 +210,7 @@ class BrowserManager:
         # adjustments run on the real account tab.
         manager = cls(headless=False, cdp_url=cdp_url, page_zoom=1.0)
         manager._owns_page = new_page
+        manager._window_placed = True  # owner already placed it; re-placing makes it jump
         return manager
 
     async def start(self) -> "BrowserManager":
@@ -379,19 +381,63 @@ class BrowserManager:
                 await self._apply_visible_zoom(self._page)
             return self._page
         pages = self.context.pages
+        # Reuse one initial blank page and close only extra blank tabs created
+        # by the profile. Never leave about:blank tabs visible to the user.
+        blank_pages = [candidate for candidate in pages if candidate.url in {"", "about:blank"}]
+        if len(blank_pages) > 1:
+            for extra in blank_pages[1:]:
+                try:
+                    await extra.close()
+                except Exception:
+                    pass
+            pages = self.context.pages
         if self.cdp_url:
             if self._owns_page:
-                self._page = await self.context.new_page()
+                self._page = next((candidate for candidate in pages if candidate.url in {"", "about:blank"}), None) or await self.context.new_page()
+                if self._page.url in {"", "about:blank"}:
+                    await self._page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
                 if not self.headless:
+                    if not self._window_placed:
+                        await self._place_visible_window(self._page)
                     await self._apply_visible_zoom(self._page)
                 return self._page
             for candidate in pages:
                 if "flow.google.com" in candidate.url or "labs.google" in candidate.url:
                     self._page = candidate
+                    for extra in list(self.context.pages):
+                        if extra is candidate or extra.url not in {"", "about:blank"}:
+                            continue
+                        try:
+                            await extra.close()
+                        except Exception:
+                            pass
                     if not self.headless:
+                        if not self._window_placed:
+                            await self._place_visible_window(candidate)
+                        await candidate.bring_to_front()
                         await self._apply_visible_zoom(candidate)
                     return candidate
-        self._page = pages[0] if pages else await self.context.new_page()
+        # Prefer an existing Flow tab. Chrome profiles often start with a
+        # blank tab beside it; close those blanks instead of exposing them.
+        self._page = next((candidate for candidate in pages
+                           if "flow.google.com" in candidate.url or "labs.google" in candidate.url), None)
+        if self._page is None:
+            self._page = pages[0] if pages else await self.context.new_page()
+        for extra in list(self.context.pages):
+            if extra is self._page or extra.url not in {"", "about:blank"}:
+                continue
+            try:
+                await extra.close()
+            except Exception:
+                pass
+        if self._page.url in {"", "about:blank"}:
+            await self._page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
+        for extra in list(self.context.pages):
+            if extra is not self._page and extra.url in {"", "about:blank"}:
+                try:
+                    await extra.close()
+                except Exception:
+                    pass
         if not self.headless:
             if not self._window_placed:
                 await self._place_visible_window(self._page)
@@ -404,7 +450,13 @@ class BrowserManager:
             session = await self.context.new_cdp_session(page)
             try:
                 window_id = (await session.send('Browser.getWindowForTarget'))['windowId']
-                await session.send('Browser.setWindowBounds', {'windowId': window_id, 'bounds': {'windowState': 'maximized'}})
+                await session.send('Browser.setWindowBounds', {'windowId': window_id, 'bounds': {'windowState': 'normal'}})
+                try:
+                    area = await page.evaluate("() => ({l: screen.availLeft || 0, t: screen.availTop || 0, w: screen.availWidth, h: screen.availHeight})")
+                    await session.send('Browser.setWindowBounds', {'windowId': window_id, 'bounds': {
+                        'left': int(area['l']), 'top': int(area['t']), 'width': int(area['w']), 'height': int(area['h'])}})
+                except Exception:
+                    await session.send('Browser.setWindowBounds', {'windowId': window_id, 'bounds': {'windowState': 'maximized'}})
                 self._window_placed = True
             finally:
                 await session.detach()
@@ -418,8 +470,11 @@ class BrowserManager:
             width: screen.width, height: screen.height * (window.devicePixelRatio || 1)
         })""")
         with _visible_window_guard:
-            index = _visible_window_index
-            _visible_window_index += 1
+            key = str(self.profile_dir)
+            if key not in _profile_slots:
+                _profile_slots[key] = _visible_window_index
+                _visible_window_index += 1
+            index = _profile_slots[key]
         x, y, width, height = _visible_window_geometry(index, area['width'], area['height'])
         new_cdp_session = getattr(self.context, "new_cdp_session", None)
         if new_cdp_session is None:

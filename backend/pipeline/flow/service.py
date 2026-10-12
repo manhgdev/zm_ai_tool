@@ -1067,6 +1067,19 @@ def _is_settings_trigger(text: str, aria_label: str = "") -> bool:
     ))
 
 
+async def _browser_at_login_wall(browser: Any) -> bool:
+    """Require a browser redirect, not an API error, as login evidence."""
+    try:
+        page = await browser.page()
+        url = urlsplit(str(page.url or ""))
+        return url.hostname == "accounts.google.com" or (
+            url.hostname in {"flow.google.com", "labs.google"}
+            and any(part in {"about", "login", "signin"} for part in url.path.split("/"))
+        )
+    except Exception:
+        return False
+
+
 def _session_needs_login(error: Exception) -> bool:
     """Identify failures that require the visible Google re-login flow."""
     text = str(error)
@@ -1947,6 +1960,23 @@ class FlowService:
                                 await asyncio.wait_for(browser.stop(), timeout=8.0)
                             except Exception:
                                 pass
+                            # Manual image/video sessions use an account-kind
+                            # profile. Persist refreshed Google cookies back to
+                            # the canonical account profile before the next
+                            # connect or generation reuses it.
+                            try:
+                                await asyncio.to_thread(
+                                    self._sync_runtime_cookies,
+                                    account_id,
+                                    session_profile,
+                                )
+                            except Exception:
+                                self._log(
+                                    "warning",
+                                    "manual_session_cookie_sync_failed",
+                                    account_id=account_id,
+                                    message="Could not synchronize refreshed browser cookies",
+                                )
                 asyncio.run(run_browser())
             except Exception as exc:
                 _log.warning("manual Flow session failed for %s: %s", account_id, exc)
@@ -2468,7 +2498,6 @@ class FlowService:
             profile_dir=store.profile_dir(account_id),
             restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
         )
-        password_fallback = False
         try:
             try:
                 await browser.start()
@@ -2551,15 +2580,15 @@ class FlowService:
                 },
             )
         except Exception as exc:
-            if isinstance(exc, FlowAuthError) or _session_needs_login(exc):
+            if (isinstance(exc, FlowAuthError) or _session_needs_login(exc)) and await _browser_at_login_wall(browser):
                 # Token expired or cookies invalid — mark as needing reconnect.
                 _log.warning("sync_credits_for_account: auth error for %s: %s", account_id, exc)
-                password_fallback = str(account.get("authMethod") or "chrome") == "cookie"
-                store.patch_row("accounts", account_id, {
-                    "status": "reconnect",
-                    "error": "FLOW_LOGIN_PASSWORD_REQUIRED" if password_fallback else f"FLOW_SESSION_EXPIRED: {exc}",
-                    "updatedAt": time.time(),
-                })
+                if str(account.get("authMethod") or "chrome") != "cookie":
+                    store.patch_row("accounts", account_id, {
+                        "status": "reconnect",
+                        "error": "FLOW_LOGIN_VERIFICATION_REQUIRED",
+                        "updatedAt": time.time(),
+                    })
             raise
         finally:
             with self._guard:
@@ -2568,12 +2597,6 @@ class FlowService:
                 await browser.stop()
             except Exception:
                 pass
-            if password_fallback:
-                store.patch_row("accounts", account_id, {
-                    "authMethod": "cookie",
-                    "error": "FLOW_COOKIE_EXPIRED",
-                    "updatedAt": time.time(),
-                })
         return self._public_account(store.get_row("accounts", account_id) or account)
 
     async def _read_capability_catalog(self, browser, project_id: str, plan: str | None = None) -> dict[str, Any]:
@@ -3112,13 +3135,16 @@ class FlowService:
         account = store.get_row("accounts", account_id) or {}
         existing_project_id = str(account.get("projectId") or "")
         cookie_auth = bool(cookies) or str(account.get("authMethod") or "chrome") == "cookie"
+        fresh_cookies = bool(cookies)
         if cookie_auth and not cookies:
             cookies = _account_cookie_records(account.get("cookie"))
 
         # Fast-path: try headless first when there's a saved session
         if existing_project_id and not force_interactive and not cookies:
             try:
-                ok = await self._try_headless_reconnect(account_id, existing_project_id)
+                ok = await asyncio.wait_for(
+                    self._try_headless_reconnect(account_id, existing_project_id), timeout=60.0,
+                )
                 if ok:
                     with self._guard:
                         self._login_passwords.pop(account_id, None)
@@ -3142,7 +3168,6 @@ class FlowService:
 
         browser = None
         login_ok = False
-        password_fallback = False
         with self._guard:
             self._login_passwords.pop(account_id, None)
         password = ""
@@ -3153,6 +3178,7 @@ class FlowService:
                 headless=headless_login,
                 profile_dir=store.profile_dir(account_id),
                 google_login_compat=True,
+                restore_last_session=cookie_auth,
                 fullscreen=True,
                 page_zoom=1.0,
             )
@@ -3397,17 +3423,10 @@ class FlowService:
         except Exception as exc:
             login_ok = False
             detail = str(exc).replace(password, "[redacted]") if password else str(exc)
-            password_fallback = cookie_auth and any(
-                marker in detail
-                for marker in (
-                    "FLOW_LOGIN_VERIFICATION_REQUIRED",
-                    "FLOW_COOKIE_IMPORT_FAILED",
-                    "FLOW_SESSION_EXPIRED",
-                )
-            )
+            login_wall = await _browser_at_login_wall(browser)
             store.patch_row("accounts", account_id, {
                 "status": "reconnect",
-                "error": "FLOW_LOGIN_PASSWORD_REQUIRED" if password_fallback else detail,
+                "error": "FLOW_COOKIE_EXPIRED" if cookie_auth and login_wall else detail,
                 "updatedAt": time.time(),
             })
             self._log("error", "account_connect_failed", account_id=account_id, message=detail)
@@ -3427,14 +3446,6 @@ class FlowService:
             with self._guard:
                 self._connecting_accounts.discard(account_id)
             self._wake_account_waiters(account_id)
-            if password_fallback:
-                # Keep cookie authentication selected; the caller must provide
-                # a refreshed cookie instead of entering an account password.
-                store.patch_row("accounts", account_id, {
-                    "authMethod": "cookie",
-                    "error": "FLOW_COOKIE_EXPIRED",
-                    "updatedAt": time.time(),
-                })
             # Clone only after Chrome released the profile — otherwise cookies are incomplete
             # and every job raises "Could not obtain Bearer token" in a loop.
             if login_ok:
