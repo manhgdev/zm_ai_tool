@@ -111,33 +111,24 @@ def _visible_window_geometry(
     screen_width: int,
     screen_height: int,
 ) -> tuple[int, int, int, int]:
-    """Return compact columns anchored on the right, fitting the work area.
+    """Split screen into 2 columns, allow horizontal overlap, full height."""
 
-    Each group fills one vertical column from top to bottom. Later groups move
-    one column left, keeping every account window visible and clickable.
-    """
-    # Leave room for Chrome's native title bar/frame; launch dimensions are
-    # outer-window hints and can grow slightly on macOS.
-    gap = max(16, min(28, screen_height // 36))
-    columns = max(2, screen_width // 1080)
-    horizontal_gap = min(gap, max(0, screen_width - columns * 500) // max(1, columns - 1))
-    width = max(1080, (screen_width - horizontal_gap * (columns - 1)) // columns)
-    # Keep readable cells on larger work areas instead of limiting every screen to two rows.
-    # Keep Flow windows in one horizontal row; page zoom is intentionally
-    # untouched so each visible session remains a normal browser page.
-    rows = 1
+    columns = 2
+    width = min(screen_width, max(1080, screen_width // columns))
     height = screen_height
-    width = min(width, screen_width)
-    height = min(height, screen_height)
-    row = index % rows
-    # ponytail: wrap full grids; overlap is preferable to off-screen windows.
-    group = (index // rows) % columns
-    raw_x = 0 if group == columns - 1 else screen_width - width - group * (width + horizontal_gap)
-    # Keep every oversized window inside the work area; newer windows are
-    # brought to front by page() and therefore appear above earlier ones.
-    x = max(0, min(raw_x, max(0, screen_width - width)))
-    y = row * (height + gap)
+
+    # Even index: right; odd index: left
+    column = index % columns
+
+    if column == 0:
+        x = screen_width - width
+    else:
+        x = 0
+
+    y = 0
+
     return x, y, width, height
+
 
 
 def _visible_window_args(*, fullscreen: bool = False) -> list[str]:
@@ -146,7 +137,7 @@ def _visible_window_args(*, fullscreen: bool = False) -> list[str]:
     # process when Tk initializes Cocoa off the main thread (SIGABRT/-6).
     return [
         "--window-position=0,0",
-        *( ["--start-maximized"] if fullscreen else ["--window-size=500,300"] ),
+        *( ["--start-maximized"] if fullscreen else ["--window-size=1080,800"] ),
     ]
 
 
@@ -421,7 +412,10 @@ class BrowserManager:
         global _visible_window_index
         area = await page.evaluate("""() => ({
             left: screen.availLeft || 0, top: screen.availTop || 0,
-            width: screen.availWidth, height: screen.availHeight
+            // Use the physical screen height. macOS can report a reduced
+            // availHeight when another app owns the menu/dock area, which
+            // made Flow windows appear as short floating rectangles.
+            width: screen.width, height: screen.height * (window.devicePixelRatio || 1)
         })""")
         with _visible_window_guard:
             index = _visible_window_index
