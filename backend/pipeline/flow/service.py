@@ -1894,6 +1894,7 @@ class FlowService:
         fullscreen: bool = True,
         page_zoom: float = 1.0,
         auto_close: bool = False,
+        headless: bool = False,
     ) -> dict[str, Any]:
         """Open the saved Playwright profile for manual or owned job use."""
         account = store.get_row("accounts", account_id)
@@ -1918,7 +1919,7 @@ class FlowService:
                 cdp_port = free_local_port()
                 session_profile = self._ensure_session_profile(account_id, kind)
                 browser = BrowserManager(
-                    headless=False,
+                    headless=headless,
                     profile_dir=session_profile,
                     google_login_compat=True,
                     fullscreen=fullscreen,
@@ -3003,7 +3004,7 @@ class FlowService:
                 "FLOW_LOGIN_REQUIRED: Tài khoản Flow đang kết nối lại — job sẽ chạy lại sau khi đăng nhập / "
                 "Flow account is reconnecting — job will retry after login"
             )
-        use_manual_session = kind in {"image", "video"} and not _flow_headless(settings or {})
+        use_manual_session = kind in {"image", "video"}
         session_key = self._session_key(account_id, kind)
         if use_manual_session:
             # Both generators must use the same authenticated profile as the
@@ -3015,6 +3016,7 @@ class FlowService:
                 fullscreen=False,
                 page_zoom=1.0,
                 auto_close=True,
+                headless=_flow_headless(settings or {}),
             )
             for _ in range(120):
                 with self._guard:
@@ -6156,7 +6158,7 @@ class FlowService:
             # Only visible jobs explicitly opt into the manually opened
             # Playwright session. Headless jobs must stay headless even when a
             # user has another Flow window open for the same account.
-            use_manual_session = not headless and str(job.get("kind") or "video") in {"image", "video"}
+            use_manual_session = str(job.get("kind") or "video") in {"image", "video"}
             session_key = self._session_key(str(account["id"]), job_kind)
             if use_manual_session:
                 for _ in range(120):
@@ -6188,17 +6190,13 @@ class FlowService:
                     details={"kind": job_kind, "headless": False, "profileSlot": profile_slot, "manualSession": True},
                 )
             else:
-                job_profile = profile_dir
-                if job_profile is None and job_kind in {"image", "video"}:
-                    # Headless: one cloned profile per job so jobs of the same
-                    # account run in parallel instead of queueing on one lock.
-                    job_profile = (
-                        await asyncio.to_thread(self._clone_runtime_profile, str(account["id"]), job_id, job_kind)
-                        if headless else self._ensure_session_profile(str(account["id"]), job_kind)
-                    )
                 browser = BrowserManager(
                     headless=headless,
-                    profile_dir=job_profile or store.profile_dir(account["id"]),
+                    profile_dir=profile_dir or (
+                        self._ensure_session_profile(str(account["id"]), job_kind)
+                        if job_kind in {"image", "video"}
+                        else store.profile_dir(account["id"])
+                    ),
                     restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
                 )
             self._check_cancel(job_id)
