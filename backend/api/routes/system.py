@@ -153,7 +153,8 @@ def _clear_install_log() -> dict[str, Any]:
         return {"ok": True, "path": str(path)}
     except OSError as exc:
         return {"ok": False, "path": str(_install_log_path()), "error": str(exc)}
-_UPDATE_REPOSITORY = "manhgdev/zm_ai_tool_vip"
+_UPDATE_REPOSITORY = "manhgdev/zm_ai_tool"
+_UPDATE_FALLBACK_REPOSITORY = "manhgdev/zm_ai_tool_vip"
 _DOWNLOAD_RELEASE_LOCK = threading.Lock()
 _DOWNLOAD_RELEASE_CACHE: dict[str, Any] = {"release": None, "expires": 0.0}
 _UPDATE_LOCK = threading.Lock()
@@ -198,12 +199,21 @@ def _desktop_version() -> str:
 
 
 def _latest_release(*, allow_prerelease_fallback: bool = False) -> dict[str, Any]:
-    request = urllib.request.Request(
-        f"https://api.github.com/repos/{_UPDATE_REPOSITORY}/releases?per_page=20",
-        headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AI-TOOL"},
-    )
-    with urllib.request.urlopen(request, timeout=15) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    payload = None
+    repository = _UPDATE_REPOSITORY
+    for candidate in (_UPDATE_REPOSITORY, _UPDATE_FALLBACK_REPOSITORY):
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{candidate}/releases?per_page=20",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AI-TOOL"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            repository = candidate
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404 or candidate == _UPDATE_FALLBACK_REPOSITORY:
+                raise
     if not isinstance(payload, list):
         return {}
     published = [item for item in payload if isinstance(item, dict)
@@ -221,7 +231,15 @@ def _public_download_release() -> dict[str, Any]:
     This metadata is only for browser downloads; updater execution still requires
     GitHub API checksums from _latest_release().
     """
-    base = f"https://github.com/{_UPDATE_REPOSITORY}"
+    for repository in (_UPDATE_REPOSITORY, _UPDATE_FALLBACK_REPOSITORY):
+        try:
+            return _public_download_release_from(repository)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404 or repository == _UPDATE_FALLBACK_REPOSITORY:
+                raise
+
+def _public_download_release_from(repository: str) -> dict[str, Any]:
+    base = f"https://github.com/{repository}"
 
     def read(url: str) -> str:
         request = urllib.request.Request(url, headers={"User-Agent": "ZM-AI-TOOL"})
@@ -239,7 +257,7 @@ def _public_download_release() -> dict[str, Any]:
         return {}
     # Semantic version validation above also prevents injecting a URL path.
     markup = read(f"{base}/releases/expanded_assets/{tag}")
-    asset_prefix = f"/{_UPDATE_REPOSITORY}/releases/download/{tag}/"
+    asset_prefix = f"/{repository}/releases/download/{tag}/"
     assets = []
     for href in re.findall(r'href=[\"\']([^\"\']+)[\"\']', markup):
         href = html.unescape(href)
@@ -247,7 +265,7 @@ def _public_download_release() -> dict[str, Any]:
             name = href.removeprefix(asset_prefix)
             if name and "/" not in name:
                 assets.append({"name": name, "browser_download_url": f"https://github.com{href}"})
-    return {"tag_name": tag, "assets": assets}
+    return {"tag_name": tag, "assets": assets, "_repository": repository}
 
 
 def _download_release() -> dict[str, Any]:
@@ -1876,7 +1894,8 @@ def api_desktop_downloads():
             continue
         url = str(asset.get("browser_download_url") or "")
         # Only expose actual GitHub release assets, never an arbitrary redirect.
-        if not url.startswith(f"https://github.com/{_UPDATE_REPOSITORY}/releases/download/"):
+        repository = str(release.get("_repository") or _UPDATE_REPOSITORY)
+        if not url.startswith(f"https://github.com/{repository}/releases/download/"):
             continue
         downloads[key] = {"url": url, "name": str(asset.get("name") or "")}
     return {

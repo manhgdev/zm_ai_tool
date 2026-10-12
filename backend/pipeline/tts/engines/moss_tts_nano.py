@@ -110,8 +110,20 @@ def install(progress: Callable | None = None) -> dict:
             if os.environ.get("MOSS_TTS_NANO_PYTHON"):
                 raise RuntimeError("MOSS_TTS_NANO_PYTHON không tồn tại / interpreter does not exist")
             if getattr(sys, "frozen", False):
-                from pipeline.core.runtime_active import runtime_python
-                base_python = str(runtime_python())
+                from pipeline.core.runtime_active import runtime_home, runtime_python
+                candidate = runtime_python()
+                if not candidate.is_file():
+                    # A failed/first runtime install has no current.json yet;
+                    # use the bundled patch interpreter directly instead of the
+                    # stale .venv-runtime path (which causes WinError 2).
+                    candidate = (runtime_home() / "runtime" / "python" /
+                                 "cpython-3.12.10-windows-x86_64-none" / "python.exe")
+                if not candidate.is_file():
+                    raise RuntimeError(
+                        "Không tìm thấy Python runtime để tạo MOSS-TTS-Nano / "
+                        "Python runtime is missing; install the AI runtime first"
+                    )
+                base_python = str(candidate)
             else:
                 base_python = sys.executable
             _run([base_python, "-m", "venv", str(python.parent.parent)])

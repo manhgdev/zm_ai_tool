@@ -37,6 +37,7 @@ _TERMINAL = {"done", "failed", "cancelled", "action_required"}
 FLOW_LOG_LIMIT = 30
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 3
 _MAX_CONCURRENT_JOBS_PER_ACCOUNT = 18
+_SESSION_REFRESH_INTERVAL_S = 60.0
 # Transient / session / project / generation-rejected: auto-retry up to this
 # many times so the queue keeps finishing. Only mandatory stops (credits,
 # quota, cancel, content policy) require a manual hand.
@@ -352,7 +353,6 @@ _COOLDOWN_BOT_S       = 3 * 3600    # 3h  — AUTOMATION_BLOCKED
 _COOLDOWN_QUOTA_S     = 14 * 3600   # 14h — FLOW_QUOTA_EXHAUSTED (daily quota)
 _COOLDOWN_RATELIMIT_S = 60          # 1min — HTTP 429 / rate limit
 _COOLDOWN_CREDITS_S   = 24 * 3600   # 24h — FLOW_CREDITS_EMPTY (needs manual top-up)
-_COOLDOWN_OUTPUT_S    = 30 * 60    # 30m — Flow rendered an error/no media output
 # GENERATION_REJECTED — no suspension (content/prompt issue, not account issue)
 # FLOW_LOGIN_REQUIRED — no suspension (_ensure_shared_reconnect handles it)
 
@@ -1123,6 +1123,11 @@ class FlowService:
         # Set to True during delete_all_jobs to stop enqueue from creating new jobs mid-loop
         self._stop_enqueue: bool = False
         self._random_rr_counter: int = 0
+        self._session_refresh_tasks: dict[str, asyncio.Task] = {}
+        self._session_refresh_locks: dict[str, threading.Lock] = {}
+        self._session_refresh_refs: dict[str, int] = {}
+        self._session_refresh_reconnects: set[str] = set()
+        self._session_refresh_at: dict[str, float] = {}
 
     @staticmethod
     def _public_account(account: dict[str, Any] | None) -> dict[str, Any]:
@@ -1135,6 +1140,94 @@ class FlowService:
     def _session_key(account_id: str, kind: str) -> str:
         return f"{account_id}:{kind if kind in {'image', 'video'} else 'image'}"
 
+    async def _refresh_running_session(self, account_id: str, browser: Any, project_id: str) -> bool:
+        """Refresh auth through the current Flow page without navigation."""
+        with self._guard:
+            lock = self._session_refresh_locks.setdefault(account_id, threading.Lock())
+        if not lock.acquire(blocking=False):
+            return True
+        try:
+            now = time.monotonic()
+            if now - self._session_refresh_at.get(account_id, -_SESSION_REFRESH_INTERVAL_S) < _SESSION_REFRESH_INTERVAL_S:
+                return True
+            self._session_refresh_at[account_id] = now
+            try:
+                page = await browser.page()
+                result = await page.evaluate("""async () => {
+                    try {
+                        const response = await fetch(location.href, {
+                            credentials: 'include', cache: 'no-store',
+                            signal: AbortSignal.timeout(15000),
+                        });
+                        return {status: response.status, url: response.url};
+                    } catch (error) {
+                        return {status: 0, url: location.href, error: String(error)};
+                    }
+                }""")
+                status = int((result or {}).get("status") or 0)
+                url = str((result or {}).get("url") or "")
+                if status == 401 or "accounts.google.com" in url or "/about" in url:
+                    raise RuntimeError("FLOW_LOGIN_REQUIRED: periodic session refresh reached login")
+                return True
+            except Exception as exc:
+                if _session_needs_login(exc):
+                    self._log("warning", "session_refresh_expired", account_id=account_id,
+                              message="Flow session refresh detected expired authentication")
+                    with self._guard:
+                        should_reconnect = account_id not in self._session_refresh_reconnects
+                        if should_reconnect:
+                            self._session_refresh_reconnects.add(account_id)
+                    if should_reconnect:
+                        await asyncio.to_thread(
+                            self._ensure_shared_reconnect,
+                            account_id,
+                            reason="FLOW_SESSION_EXPIRED: periodic session refresh",
+                            interactive=False,
+                        )
+                    return False
+                return True
+        finally:
+            lock.release()
+
+    def _start_session_refresh(self, account_id: str, browser: Any, project_id: str) -> asyncio.Task | None:
+        account_id = f"{account_id}:{id(browser)}"
+        existing = self._session_refresh_tasks.get(account_id)
+        if existing and not existing.done():
+            self._session_refresh_refs[account_id] = self._session_refresh_refs.get(account_id, 0) + 1
+            return None
+        async def loop() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(_SESSION_REFRESH_INTERVAL_S)
+                    if not await self._refresh_running_session(account_id.rsplit(':', 1)[0], browser, project_id):
+                        return
+            except asyncio.CancelledError:
+                return
+        task = asyncio.create_task(loop())
+        self._session_refresh_tasks[account_id] = task
+        self._session_refresh_refs[account_id] = 1
+        return task
+
+    async def _stop_session_refresh(self, account_id: str, task: asyncio.Task | None) -> None:
+        refs = max(0, self._session_refresh_refs.get(account_id, 1) - 1)
+        self._session_refresh_refs[account_id] = refs
+        if refs:
+            return
+        task = task or self._session_refresh_tasks.get(account_id)
+        if task is None:
+            self._session_refresh_tasks.pop(account_id, None)
+            self._session_refresh_refs.pop(account_id, None)
+            self._session_refresh_reconnects.discard(account_id)
+            return
+        task.cancel()
+        self._session_refresh_tasks.pop(account_id, None)
+        self._session_refresh_refs.pop(account_id, None)
+        self._session_refresh_reconnects.discard(account_id)
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     @staticmethod
     def _session_profile_dir(account_id: str, kind: str) -> Path:
         """Use one persistent Chrome profile per account and media kind."""
@@ -1144,6 +1237,8 @@ class FlowService:
         target = self._session_profile_dir(account_id, kind)
         base = Path(store.profile_dir(account_id))
         if base.exists():
+            if target.exists():
+                self._sync_runtime_cookies(account_id, target)
             # Login/reconnect writes fresh Google cookies to the canonical
             # account profile. Refresh each media profile before opening its
             # Chrome session so image/video jobs do not reuse stale cookies.
@@ -1408,12 +1503,6 @@ class FlowService:
                 duration_seconds = _COOLDOWN_RATELIMIT_S
             elif re.search(r"FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit", r, re.I):
                 duration_seconds = _COOLDOWN_CREDITS_S
-            elif re.search(
-                r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)",
-                r,
-                re.I,
-            ):
-                duration_seconds = _COOLDOWN_OUTPUT_S
             elif re.search(r"GENERATION_REJECTED|FLOW_GENERATION_REJECTED", r, re.I):
                 return self._public_account(account)  # content/prompt issue — not an account fault, no suspension
             elif re.search(r"LOGIN_REQUIRED|FLOW_LOGIN_REQUIRED", r, re.I):
@@ -1470,7 +1559,7 @@ class FlowService:
         )
         return self._public_account(store.get_row("accounts", account_id))
 
-    def reset_account_session(self, account_id: str) -> dict[str, Any]:
+    def reset_account_session(self, account_id: str, *, auto_recovery: bool = False) -> dict[str, Any]:
         """Reset Flow project/session identity while preserving Google cookies."""
         account = store.get_row("accounts", account_id)
         if not account:
@@ -1486,7 +1575,8 @@ class FlowService:
         # Reset only Flow identity/session metadata so reconnect can reuse login.
         patch = {
             "status": "connecting", "error": None, "suspendedUntil": None, "suspendReason": None,
-            "automationReconnectCount": 0, "automationRecoveryPending": False,
+            "automationReconnectCount": (1 if auto_recovery else 0),
+            "automationRecoveryPending": False,
             "accessToken": None, "refreshToken": None, "cookie": None,
             "projectId": None, "imageProjectId": None, "videoProjectId": None,
             "projectChangedAt": None, "imageProjectIdChangedAt": None, "videoProjectIdChangedAt": None,
@@ -1495,6 +1585,12 @@ class FlowService:
         store.patch_row("accounts", account_id, patch)
         self._log("info", "account_session_reset", account_id=account_id,
                   message="Đã reset project Flow và giữ cookie Google / Reset Flow project while preserving Google cookies")
+        # Kick-start login immediately so the account does not stay stuck in
+        # 'connecting' forever waiting for the user to press Connect manually.
+        try:
+            self.connect(account_id)
+        except RuntimeError:
+            pass  # ponytail: FLOW_PROFILE_BUSY race is safe to ignore here
         return self._public_account(store.get_row("accounts", account_id) or account)
 
     def delete_account(self, account_id: str) -> bool:
@@ -1893,7 +1989,7 @@ class FlowService:
         )
 
     def _schedule_automation_reconnect(self, account_id: str, job_id: str, reason: str) -> bool:
-        """Reconnect once after an automation block, then let the job retry.
+        """Reset the Flow session once after an automation block, then retry.
 
         The account marker is shared across concurrent jobs. A second block
         after this reconnect is treated as persistent and is allowed to reach
@@ -1922,23 +2018,21 @@ class FlowService:
                 "authRetryCount": 0,
                 "updatedAt": time.time(),
             })
-        self._ensure_shared_reconnect(
-            account_id,
-            job_id=job_id,
-            reason="FLOW_LOGIN_REQUIRED: reconnecting after FLOW_AUTOMATION_BLOCKED",
-            # The account is already authenticated; refresh the saved profile
-            # headlessly so auto-retry does not open a visible Chrome window.
-            # _login still falls back to visible login only for a real login wall.
-            interactive=False,
-        )
+        try:
+            self.reset_account_session(account_id, auto_recovery=True)
+        except RuntimeError as exc:
+            if "FLOW_PROFILE_BUSY" not in str(exc):
+                raise
+            self._log("info", "session_reset_deferred", job_id=job_id,
+                      account_id=account_id, message=str(exc))
         self._log(
             "warning",
             "automation_reconnect_started",
             job_id=job_id,
             account_id=account_id,
             message=(
-                "Flow phát hiện hoạt động bất thường — đang đăng nhập lại một lần rồi chạy tiếp / "
-                "Flow reported unusual activity — reconnecting once before retry"
+                "Flow phát hiện hoạt động bất thường — đang reset và kết nối lại một lần / "
+                "Flow reported unusual activity — resetting and reconnecting once"
             ),
         )
         return True
@@ -3915,17 +4009,10 @@ class FlowService:
                             "error": err_msg, "automationRecoveryPending": False,
                             "updatedAt": time.time(),
                         })
-                elif re.search(
-                    r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)",
-                    err_msg, re.I,
-                ):
-                    self.suspend_account(account_id, err_msg)
-                    self._stop_account_after_automation_block(account_id, job_id)
                 elif current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
                     self._try_fallback_account(job_id, account_id, err_msg)
                 elif re.search(
-                    r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED|"
-                    r"FLOW_OUTPUT_UNAVAILABLE|FLOW_EMPTY_OUTPUT|FLOW_OUTPUT_(?:MISSING|EMPTY|UNREADABLE)",
+                    r"AUTOMATION_BLOCKED|GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
                     err_msg,
                     re.I,
                 ):
@@ -4587,6 +4674,97 @@ class FlowService:
             raise RuntimeError(f"FLOW_SETTING_MISMATCH: aspect ratio {ratio_label} was not selected")
 
 
+        if resolution:
+            resolution_value = _video_ui_resolution(resolution).lower()
+            if not resolution_value:
+                # Shared settings often keep image plan labels (1K/2K/4K). Veo has
+                # no resolution tabs — ignore instead of FLOW_SETTING_MISMATCH.
+                _log.info("_prepare_ui_format: ignoring non-video resolution %r", resolution)
+            else:
+                # Tab text may be "360pinfo" (trailing info icon) — only forbid digits.
+                resolution_pattern = re.compile(rf"(?<!\d){re.escape(resolution_value)}(?!\d)", re.I)
+                # Prefer the smallest visible control. A broad has_text match
+                # can otherwise return the settings container containing both
+                # 360p and 720p, leaving Flow on its 720p default.
+                resolution_tab = None
+                resolution_candidates = []
+                # gflow-cli drives the committed Flow control: exact radios inside
+                # the settings radiogroup, then verifies aria-checked. Prefer this
+                # anchor over broad text matches that can hit the 720p summary.
+                exact_radios = page.locator("[role='radiogroup'] [role='radio']").filter(has_text=resolution_pattern)
+                for index in range(await exact_radios.count()):
+                    candidate = exact_radios.nth(index)
+                    try:
+                        if not await candidate.is_visible():
+                            continue
+                        text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip())
+                        if re.fullmatch(rf"{re.escape(resolution_value)}(?:\s*info)?", text, re.I):
+                            resolution_candidates.append((-1, len(text), candidate))
+                    except Exception:
+                        continue
+                if not resolution_candidates:
+                    for selector in ('mat-button-toggle', _FLOW_CONTROL_SELECTOR, 'button, [role="radio"], [role="tab"], [data-value]'):
+                        matches = page.locator(selector).filter(has_text=resolution_pattern)
+                        for index in range(await matches.count()):
+                            candidate = matches.nth(index)
+                            try:
+                                if not await candidate.is_visible():
+                                    continue
+                                text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip())
+                                if selector == 'mat-button-toggle' and not re.fullmatch(rf"{re.escape(resolution_value)}(?:\s*info)?", text, re.I):
+                                    continue
+                                values = " ".join(filter(None, [
+                                    text,
+                                    await candidate.get_attribute("aria-label"),
+                                    await candidate.get_attribute("data-value"),
+                                    await candidate.get_attribute("title"),
+                                ]))
+                                if resolution_pattern.search(values):
+                                    resolution_candidates.append((0 if selector == 'mat-button-toggle' else 1, len(text), candidate))
+                            except Exception:
+                                continue
+                if resolution_candidates:
+                    chosen = min(resolution_candidates, key=lambda item: item[:2])
+                    resolution_tab = chosen[2]
+                    if chosen[0] == 0:
+                        # Material handles input on the button, not the host's
+                        # ripple overlay. Use a real actionable button click.
+                        resolution_tab = resolution_tab.locator('button[role="radio"]').first
+                if resolution_tab is None:
+                    if re.search(r"\bomni\b.*\bflash\b", str(duration_model or ""), re.I):
+                        raise RuntimeError(
+                            f"FLOW_SETTING_MISMATCH: Omni Flash resolution {resolution_value} was not found"
+                        )
+                    _log.info("_prepare_ui_format: resolution %s control is hidden; using Flow model default", resolution_value)
+                    return
+                await resolution_tab.scroll_into_view_if_needed()
+                await resolution_tab.click()
+                await asyncio.sleep(0.5)
+                if not await _flow_control_is_selected(resolution_tab):
+                    await resolution_tab.click(force=True)
+                    await asyncio.sleep(0.8)
+                if not await _flow_control_is_selected(resolution_tab):
+                    # mat-button-toggle: visible_tab resolves to inner <button>,
+                    # but the clickable host is the parent. Try closest ancestor.
+                    try:
+                        host = await resolution_tab.evaluate_handle(
+                            "node => node.closest('mat-button-toggle, [role=\"radio\"], [role=\"tab\"]') || node.parentElement"
+                        )
+                        await host.as_element().click(force=True)  # type: ignore[union-attr]
+                        await asyncio.sleep(0.8)
+                    except Exception as _exc:
+                        _log.debug("resolution ancestor click failed: %s", _exc)
+                if not await _flow_control_is_selected(resolution_tab):
+                    if await summary_confirms_resolution(resolution_value):
+                        _log.info(
+                            "_prepare_ui_format: resolution %s confirmed by settings summary",
+                            resolution_value,
+                        )
+                    else:
+                        raise RuntimeError(
+                            f"FLOW_SETTING_MISMATCH: resolution {resolution_value} was not confirmed selected"
+                        )
+
         if duration is not None:
             duration_value = str(duration).strip()
             if not re.fullmatch(r"\d{1,3}", duration_value):
@@ -4699,86 +4877,6 @@ class FlowService:
                         f" (model={duration_model or 'unknown'}; host={_host_tag}; hostAttrs={_host_attrs};"
                         f" controls={await duration_debug(_duration_pattern(duration_value))})"
                     )
-
-
-
-
-
-        if resolution:
-            resolution_value = _video_ui_resolution(resolution).lower()
-            if not resolution_value:
-                # Shared settings often keep image plan labels (1K/2K/4K). Veo has
-                # no resolution tabs — ignore instead of FLOW_SETTING_MISMATCH.
-                _log.info("_prepare_ui_format: ignoring non-video resolution %r", resolution)
-            else:
-                # Tab text may be "360pinfo" (trailing info icon) — only forbid digits.
-                resolution_pattern = re.compile(rf"(?<!\d){re.escape(resolution_value)}(?!\d)", re.I)
-                # Prefer the smallest visible control. A broad has_text match
-                # can otherwise return the settings container containing both
-                # 360p and 720p, leaving Flow on its 720p default.
-                resolution_tab = None
-                resolution_candidates = []
-                for selector in ('mat-button-toggle', _FLOW_CONTROL_SELECTOR, 'button, [role="radio"], [role="tab"], [data-value]'):
-                    matches = page.locator(selector).filter(has_text=resolution_pattern)
-                    for index in range(await matches.count()):
-                        candidate = matches.nth(index)
-                        try:
-                            if not await candidate.is_visible():
-                                continue
-                            text = re.sub(r"\s+", " ", (await candidate.inner_text()).strip())
-                            if selector == 'mat-button-toggle' and not re.fullmatch(rf"{re.escape(resolution_value)}(?:\s*info)?", text, re.I):
-                                continue
-                            values = " ".join(filter(None, [
-                                text,
-                                await candidate.get_attribute("aria-label"),
-                                await candidate.get_attribute("data-value"),
-                                await candidate.get_attribute("title"),
-                            ]))
-                            if resolution_pattern.search(values):
-                                resolution_candidates.append((0 if selector == 'mat-button-toggle' else 1, len(text), candidate))
-                        except Exception:
-                            continue
-                if resolution_candidates:
-                    chosen = min(resolution_candidates, key=lambda item: item[:2])
-                    resolution_tab = chosen[2]
-                    if chosen[0] == 0:
-                        # Material handles input on the button, not the host's
-                        # ripple overlay. Use a real actionable button click.
-                        resolution_tab = resolution_tab.locator('button[role="radio"]').first
-                if resolution_tab is None:
-                    if re.search(r"\bomni\b.*\bflash\b", str(duration_model or ""), re.I):
-                        raise RuntimeError(
-                            f"FLOW_SETTING_MISMATCH: Omni Flash resolution {resolution_value} was not found"
-                        )
-                    _log.info("_prepare_ui_format: resolution %s control is hidden; using Flow model default", resolution_value)
-                    return
-                await resolution_tab.scroll_into_view_if_needed()
-                await resolution_tab.click()
-                await asyncio.sleep(0.5)
-                if not await _flow_control_is_selected(resolution_tab):
-                    await resolution_tab.click(force=True)
-                    await asyncio.sleep(0.8)
-                if not await _flow_control_is_selected(resolution_tab):
-                    # mat-button-toggle: visible_tab resolves to inner <button>,
-                    # but the clickable host is the parent. Try closest ancestor.
-                    try:
-                        host = await resolution_tab.evaluate_handle(
-                            "node => node.closest('mat-button-toggle, [role=\"radio\"], [role=\"tab\"]') || node.parentElement"
-                        )
-                        await host.as_element().click(force=True)  # type: ignore[union-attr]
-                        await asyncio.sleep(0.8)
-                    except Exception as _exc:
-                        _log.debug("resolution ancestor click failed: %s", _exc)
-                if not await _flow_control_is_selected(resolution_tab):
-                    if await summary_confirms_resolution(resolution_value):
-                        _log.info(
-                            "_prepare_ui_format: resolution %s confirmed by settings summary",
-                            resolution_value,
-                        )
-                    else:
-                        raise RuntimeError(
-                            f"FLOW_SETTING_MISMATCH: resolution {resolution_value} was not confirmed selected"
-                        )
 
     async def _click_flow_submit(self, page) -> None:
         """Click the submit control used by the current Flow project page.
@@ -5322,48 +5420,20 @@ class FlowService:
             except Exception:
                 pass
             await tile.locator(".thumbnail").first.click(force=True, timeout=10_000)
-        # Current Flow edit view exposes download under the three-dot menu:
-        # open More actions, then open the nested "Download media" item.
-        more_btn = page.locator(
-            'button[aria-label*="Thêm"], button[aria-label*="More"], '
-            'button[aria-label*="more"], button[aria-label*="Tùy chọn"], button[aria-label*="Tuỳ chọn"], button[title*="More"], '
-            'button:has(mat-icon:text("more_vert")), '
-            '[role="button"]:has-text("more_vert")'
-        ).last
-        download_parent = page.locator(
-            'button[aria-label*="Tải nội dung"], [role="menuitem"]:has-text("Tải nội dung"), text=/Tải nội dung nghe nhìn xuống|Download media/i'
-        ).last
-        menu_opened = False
-        if await more_btn.count() > 0:
-            try:
-                await more_btn.click(timeout=5_000)
-                await download_parent.wait_for(state="visible", timeout=5_000)
-                await download_parent.hover()
-                await download_parent.click()
-                await asyncio.sleep(0.3)
-                menu_opened = True
-            except Exception:
-                # Older Flow builds expose a direct download action instead.
-                pass
         dl_btn = page.locator(
-            'button[aria-label*="Tải"], button[aria-label*="Download"], '
+            'button[aria-label*="Tải xuống"], button[aria-label*="Download"], '
             'button[aria-label*="download"], button[title*="Download"], '
             'button[data-testid*="download" i], [role="button"][aria-label*="Download"], '
-            'button:has-text("download"), button:has-text("Download"), button:has-text("Tải")'
+            'button:has(mat-icon:text-is("download")), '
+            'button:has(mat-icon:text-is("file_download"))'
         ).first
         try:
-            # The current three-dot flow opens the quality submenu directly;
-            # there is no second direct-download button to wait for.
-            if not menu_opened:
-                await dl_btn.wait_for(state="visible", timeout=10_000)
-                await dl_btn.click()
-            # Flow has shipped both ARIA menuitems and Angular Material
-            # menu buttons/options. Use the visible menu surface rather than
-            # one role so the current edit-page menu remains downloadable.
-            menu_items = page.locator(
-                '[role="menuitem"]:visible, mat-menu-item:visible, '
-                '[role="menu"] button:visible, [role="menu"] [role="option"]:visible'
-            )
+            # Legacy Flow exposes the download button directly in the editor.
+            # Do not open the three-dot menu: its "Upload content" action is
+            # adjacent and can be selected by automation on this page.
+            await dl_btn.wait_for(state="visible", timeout=10_000)
+            await dl_btn.click()
+            menu_items = page.get_by_role("menuitem")
             await menu_items.first.wait_for(state="visible", timeout=5_000)
             texts = [await menu_items.nth(i).inner_text() for i in range(await menu_items.count())]
             index = _pick_video_menu_item(texts, preferred)
@@ -5596,17 +5666,9 @@ class FlowService:
                 if api is None:
                     raise
                 try:
-                    media_id = await self._download_video_from_project_media(
-                        api, job, output, output_index,
-                    )
-                    self._log(
-                        "warning", "video_download_menu_fallback",
-                        job_id=job_id, account_id=str(job.get("accountId") or ""),
-                        message="Flow download menu failed; downloaded the completed project media URL",
-                        details={"mediaId": media_id, "outputIndex": output_index},
-                    )
-                except Exception:
-                    raise menu_exc
+                    await self._download_video_from_project_media(api, job, output, output_index)
+                except Exception as api_exc:
+                    raise menu_exc from api_exc
             outputs.append(str(output))
             self._log(
                 "success", "output_downloaded",
@@ -5699,6 +5761,9 @@ class FlowService:
             store.patch_row("jobs", job_id, reset)
             job = {**job, **reset}
         browser = None
+        session_refresh_task = None
+        session_refresh_registered = False
+        runtime_profile = None
         try:
             self._check_cancel(job_id)
             self._log("info", "job_started", job_id=job_id, account_id=account["id"], details={"kind": job["kind"]})
@@ -5770,6 +5835,13 @@ class FlowService:
             with self._guard:
                 self._active_browsers[job_id] = browser
             await browser.start()
+            if job_kind in {"image", "video"}:
+                if not getattr(browser, "cdp_url", None):
+                    runtime_profile = Path(browser.profile_dir)
+                session_refresh_task = self._start_session_refresh(
+                    str(account["id"]), browser, project_id,
+                )
+                session_refresh_registered = True
             self._log("info", "browser_ready", job_id=job_id, account_id=account["id"])
             api = FlowAPI(browser, project_id=project_id, default_timeout_s=_VIDEO_GENERATION_TIMEOUT_S)
             # Seed Bearer captured at login — cloned headless profiles often cannot
@@ -5893,6 +5965,25 @@ class FlowService:
                             }""", thumb)
                             output = self._output_path(job, index, "mp4")
                             account_plan = str(account.get("plan") or "")
+                            if int(tile_index) < 0:
+                                # The SPA may have evicted the tile after a
+                                # failed download. Reload the project once so
+                                # the retry can use Flow's authenticated menu
+                                # even when the project payload has no fifeUrl.
+                                try:
+                                    await page.reload(wait_until="domcontentloaded", timeout=20_000)
+                                    await page.locator("flow-grid-tile-container").first.wait_for(timeout=10_000)
+                                    tile_index = await page.evaluate("""(target) => {
+                                        const clean = (u) => (u || '').split('?')[0].trim();
+                                        const wanted = clean(target);
+                                        return [...document.querySelectorAll('flow-grid-tile-container')].findIndex(tile => {
+                                            const image = tile.querySelector('.thumbnail');
+                                            const src = image?.currentSrc || image?.src || '';
+                                            return src === target || (wanted && clean(src) === wanted);
+                                        });
+                                    }""", thumb)
+                                except Exception:
+                                    tile_index = -1
                             if int(tile_index) < 0:
                                 # The completed media can disappear from the
                                 # virtualized SPA grid while remaining in the
@@ -6280,7 +6371,14 @@ class FlowService:
             })
         finally:
             if browser:
-                await self._close_job_browser(browser, job_id)
+                if session_refresh_registered:
+                    await self._stop_session_refresh(f"{account['id']}:{id(browser)}", session_refresh_task)
+                await self._close_job_browser(
+                    browser,
+                    job_id,
+                    account_id=str(account["id"]),
+                    runtime_profile=runtime_profile,
+                )
 
     def _apply_image_quota_fallback(self, job_id: str, error: str) -> None:
         with self._account_condition:
@@ -6426,7 +6524,14 @@ class FlowService:
                 message=str(exc),
             )
 
-    async def _close_job_browser(self, browser: Any, job_id: str) -> None:
+    async def _close_job_browser(
+        self,
+        browser: Any,
+        job_id: str,
+        *,
+        account_id: str | None = None,
+        runtime_profile: Path | None = None,
+    ) -> None:
         """Close an automatic job browser without leaving Chrome orphaned.
 
         A CDP manager is attached to the user's manually opened Chrome and may
@@ -6439,6 +6544,8 @@ class FlowService:
                 # Persistent Chromium can outlive Playwright's context close
                 # for a short time. Reap the job-owned profile process too.
                 await asyncio.to_thread(browser.kill_now)
+                if account_id and runtime_profile and runtime_profile.is_dir():
+                    await asyncio.to_thread(self._sync_runtime_cookies, account_id, runtime_profile)
             return
         except Exception as exc:
             self._log(
@@ -6454,6 +6561,8 @@ class FlowService:
         if not getattr(browser, "cdp_url", None):
             try:
                 await asyncio.to_thread(browser.kill_now)
+                if account_id and runtime_profile and runtime_profile.is_dir():
+                    await asyncio.to_thread(self._sync_runtime_cookies, account_id, runtime_profile)
             except Exception as exc:
                 self._log(
                     "warning",

@@ -35,7 +35,12 @@ AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
 DefaultDirName={localappdata}\Programs\{#MyAppName}
-UsePreviousAppDir=no
+; Reuse the existing AppId installation directory so downloaded Setup.exe upgrades it.
+UsePreviousAppDir=yes
+; First install shows the language chooser; upgrades reuse the prior selection.
+ShowLanguageDialog=auto
+; First install asks for a directory; upgrades hide the directory step.
+DisableDirPage=auto
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir={#MyAppOutputDir}
@@ -50,7 +55,6 @@ ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 CloseApplications=yes
 RestartApplications=no
-DisableDirPage=no
 DisableProgramGroupPage=yes
 
 [Languages]

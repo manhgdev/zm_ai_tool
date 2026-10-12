@@ -124,17 +124,13 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
 
         with patch("pipeline.flow.service.store.get_row", side_effect=get_row), \
              patch("pipeline.flow.service.store.patch_row", side_effect=patch_row), \
-             patch.object(service, "_ensure_shared_reconnect") as reconnect, \
+             patch.object(service, "reset_account_session") as reset_session, \
              patch.object(service, "_log"):
             self.assertTrue(service._schedule_automation_reconnect("a", "j", "FLOW_AUTOMATION_BLOCKED: unusual activity"))
-            reconnect.assert_called_once_with(
-                "a", job_id="j",
-                reason="FLOW_LOGIN_REQUIRED: reconnecting after FLOW_AUTOMATION_BLOCKED",
-                interactive=True,
-            )
-            reconnect.reset_mock()
+            reset_session.assert_called_once_with("a", auto_recovery=True)
+            reset_session.reset_mock()
             self.assertFalse(service._schedule_automation_reconnect("a", "j", "FLOW_AUTOMATION_BLOCKED: unusual activity"))
-            reconnect.assert_not_called()
+            reset_session.assert_not_called()
         self.assertEqual(account["automationReconnectCount"], 1)
         self.assertEqual(job["status"], "action_required")
         self.assertTrue(job["error"].startswith("FLOW_LOGIN_REQUIRED:"))

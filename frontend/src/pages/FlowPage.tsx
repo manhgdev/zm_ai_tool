@@ -1161,7 +1161,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           )
           : (resolutionOptions.length
             ? (() => {
-                const requested = effectiveSettings.videoResolution || effectiveSettings.resolution;
+                const requested = effectiveSettings.resolution || effectiveSettings.videoResolution || "";
                 return resolutionOptions.includes(requested) ? requested : resolutionOptions[0];
               })()
             : ""),
@@ -3312,6 +3312,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                                     <a
                                       href={`/api/flow/jobs/${job.id}/outputs/${outputIndex}?download=1`}
                                       download
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        downloadFlowOutput(job, outputIndex);
+                                      }}
                                     >
                                       {t("Tải về", "Download")}
                                     </a>
@@ -3485,23 +3490,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                                   ? outputIndex + 1
                                   : ""}
                               </button>
-                              {isDesktopApp ? (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    revealOutput(job.id, outputIndex)
-                                  }
-                                >
-                                  {t("Mở", "Open")}
-                                </button>
-                              ) : (
-                                <a
-                                  href={`/api/flow/jobs/${job.id}/outputs/${outputIndex}?download=1`}
-                                  download
-                                >
-                                  {t("Tải", "Save")}
-                                </a>
-                              )}
+                              <button
+                                type="button"
+                                onClick={() => downloadFlowOutput(job, outputIndex)}
+                              >
+                                {t("Tải", "Download")}
+                              </button>
                             </span>
                           ))
                           : "—"}
@@ -4073,15 +4067,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 >
                   {t("Mở thư mục", "Open folder")}
                 </button>
-                {!isDesktopApp && (
-                  <a
-                    href={`/api/flow/jobs/${preview.job.id}/outputs/${preview.outputIndex}?download=1`}
-                    download
-                  >
-                    <IconDownload size={15} />
-                    {t("Tải về", "Download")}
-                  </a>
-                )}
+                <button
+                  type="button"
+                  onClick={() => downloadFlowOutput(preview.job, preview.outputIndex)}
+                >
+                  <IconDownload size={15} />
+                  {t("Tải về", "Download")}
+                </button>
                 <button type="button" onClick={() => setPreview(null)}>
                   {t("Đóng", "Close")}
                 </button>

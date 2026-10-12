@@ -433,8 +433,10 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *
     def install(paths, label):
         nonlocal use_pip
         requirement_file = requirements_dir / (re.sub(r'[^A-Za-z0-9_.-]+', '_', label) + '.txt')
-        requirement_file.write_text('\n'.join(str(path) for path in paths) + '\n', encoding='utf-8')
-        command = ['--no-index', '--no-deps', '--requirement', str(requirement_file)]
+        # uv parses backslashes in Windows requirement files as escapes/project roots;
+        # use forward-slash absolute paths so `E:/.../*.whl` remains a wheel path.
+        requirement_file.write_text('\n'.join(path.as_posix() for path in paths) + '\n', encoding='utf-8')
+        command = ['--no-index', '--no-deps', '--requirement', requirement_file.as_posix()]
         try:
             _run([*(pip_base if use_pip else uv_base), *command], 'DEPENDENCY_INSTALL_FAILED', label)
         except RuntimeInstallError as exc:
