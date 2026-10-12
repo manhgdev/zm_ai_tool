@@ -5302,7 +5302,8 @@ class FlowService:
                             height: media.naturalHeight || media.videoHeight || 0,
                             readyState: media.readyState || 0,
                         };
-                    }).filter(item => item.src && (item.id || item.tag === 'video'));
+                    }).filter(item => item.src && (item.id || item.tag === 'video' || item.tag === 'img'))
+                    .map(item => ({...item, id: item.id || `flow-src:${item.src}`}));
                 }"""
             )
             return [item for item in (items or []) if isinstance(item, dict)]
@@ -5503,19 +5504,14 @@ class FlowService:
                 except Exception:
                     has_pending = True
                 if not has_pending:
+                    # Flow can finish a generation after the tile disappears
+                    # from this tab. Keep the submission identity intact and
+                    # let the API recovery window continue; clearing it here
+                    # caused successful concurrent jobs to be regenerated.
                     store.patch_row("jobs", job["id"], {
-                        "submissionStartedAt": None,
-                        "submissionProjectId": None,
-                        "baselineMediaIds": [],
-                        "baselineThumbs": [],
-                        "mediaIds": [],
-                        "resumeOnly": False,
-                        "progress": 0,
+                        "stage": "recovering",
                         "updatedAt": time.time(),
                     })
-                    raise RuntimeError(
-                        "FLOW_RESULT_NOT_FOUND: Flow has no pending or completed result for this submission"
-                    )
             store.patch_row("jobs", job["id"], {"stage": "recovering", "progress": 84, "updatedAt": time.time()})
             await asyncio.sleep(5)
         raise RuntimeError("FLOW_GENERATION_TIMEOUT: original result is not ready; retry continues recovery")
@@ -5616,8 +5612,16 @@ class FlowService:
                 recovered = [item for item in recovered if str(item['id']) not in baseline_ids]
                 if len(recovered) >= max(1, expected_count):
                     return recovered[:max(1, expected_count)]
+            # Parallel tabs normally require API prompt metadata to avoid
+            # stealing a sibling result. If Flow omits that metadata, however,
+            # a completed new tile is the only recovery signal. After a short
+            # grace period, accept DOM media newer than this job's baseline;
+            # this prevents a finished job from staying "generating" forever.
             if job and job.get("parallelSession"):
-                items = []
+                submitted_at = float(job.get("submissionStartedAt") or 0)
+                grace_elapsed = submitted_at and (time.time() - submitted_at) >= 30
+                if not grace_elapsed:
+                    items = []
             fresh: list[dict[str, Any]] = []
             seen: set[str] = set()
             for item in items:
@@ -6563,7 +6567,26 @@ class FlowService:
                     "updatedAt": time.time(),
                 })
                 await _wait_before_flow_submit()
-                await self._click_flow_submit(page)
+                media_items = []
+                try:
+                    await self._click_flow_submit(page)
+                except RuntimeError as exc:
+                    if not str(exc).startswith(("FLOW_UI_CHANGED:", "FLOW_SUBMIT_CLICK_FAILED:")):
+                        raise
+                    # A disabled composer does not prove the request failed.
+                    # Require matching prompt metadata even for a single tab;
+                    # another tab can have completed media in the same project.
+                    current_job = store.get_row("jobs", job_id) or {}
+                    media_items = await self._find_existing_project_media(
+                        api, page, {**job, **current_job, "parallelSession": True,
+                                    "recoveryOnly": False}, "image", count,
+                    )
+                    if len(media_items) < count:
+                        raise
+                    self._log(
+                        "warning", "submit_error_completed_images_recovered",
+                        job_id=job_id, account_id=account["id"], message=str(exc),
+                    )
                 store.patch_row("jobs", job_id, {
                     "stage": "generating", "progress": 20, "updatedAt": time.time(),
                 })
@@ -6578,10 +6601,11 @@ class FlowService:
                     "submissionProjectId": project_id,
                     "baselineMediaIds": sorted(baseline_ids),
                 }
-                media_items = await self._wait_for_project_media(
-                    page, baseline_ids, "image", count, job_id,
-                    api=api, job=submitted_job,
-                )
+                if not media_items:
+                    media_items = await self._wait_for_project_media(
+                        page, baseline_ids, "image", count, job_id,
+                        api=api, job=submitted_job,
+                    )
                 if not media_items:
                     raise RuntimeError("FLOW_EMPTY_OUTPUT: Flow returned no completed images")
                 media_ids = self._claim_media_ids(
