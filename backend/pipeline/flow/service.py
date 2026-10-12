@@ -6188,13 +6188,17 @@ class FlowService:
                     details={"kind": job_kind, "headless": False, "profileSlot": profile_slot, "manualSession": True},
                 )
             else:
+                job_profile = profile_dir
+                if job_profile is None and job_kind in {"image", "video"}:
+                    # Headless: one cloned profile per job so jobs of the same
+                    # account run in parallel instead of queueing on one lock.
+                    job_profile = (
+                        await asyncio.to_thread(self._clone_runtime_profile, str(account["id"]), job_id, job_kind)
+                        if headless else self._ensure_session_profile(str(account["id"]), job_kind)
+                    )
                 browser = BrowserManager(
                     headless=headless,
-                    profile_dir=profile_dir or (
-                        self._ensure_session_profile(str(account["id"]), job_kind)
-                        if job_kind in {"image", "video"}
-                        else store.profile_dir(account["id"])
-                    ),
+                    profile_dir=job_profile or store.profile_dir(account["id"]),
                     restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
                 )
             self._check_cancel(job_id)
