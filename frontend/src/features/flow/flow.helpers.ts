@@ -291,7 +291,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       prompt: String(raw.prompt || ""),
       inputType: ["txt", "csv", "json"].includes(raw.inputType as string) ? raw.inputType as "txt" | "csv" | "json" : "prompt",
       createdAt: Number(raw.createdAt || Date.now() / 1000),
-      status: ["processing", "queued", "done", "cancelled", "action_required"].includes(raw.status as string) ? raw.status as FlowJob["status"] : "failed",
+      status: ["processing", "queued", "done", "cancelled"].includes(raw.status as string) ? raw.status as FlowJob["status"] : "failed",
       stage: String(raw.stage || ""),
       progress: Number(raw.progress || 0),
       accountId: String(raw.accountId || ""),

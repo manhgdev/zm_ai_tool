@@ -132,7 +132,11 @@ function formatRemainingCooldown(untilSec: number, t: (vi: string, en: string) =
 
 function accountCapabilityModels(account: FlowAccount | undefined, kind: CreateKind): FlowModelCapability[] {
   if (account?.capabilityStatus !== "verified") return [];
-  return account.capabilityCatalog?.[kind]?.models || [];
+  const models = account.capabilityCatalog?.[kind]?.models || [];
+  const family = kind === "image" ? /nano\s+banana|imagen/i : /\bveo\b|\bomni\b/i;
+  // A stale sync can copy the other mode's selector into this section. Never
+  // expose cross-mode models in the picker; the backend will re-sync/fallback.
+  return models.filter((item) => family.test(String(item.name || "")));
 }
 
 function applyAccountCapabilities(
@@ -142,13 +146,17 @@ function applyAccountCapabilities(
   requestedModel: string,
 ): FlowSettings {
   const section = account?.capabilityStatus === "verified" ? account.capabilityCatalog?.[kind] : undefined;
-  const models = section?.models || [];
+  const family = kind === "image" ? /nano\s+banana|imagen/i : /\bveo\b|\bomni\b/i;
+  const models = (section?.models || []).filter((item) => family.test(String(item.name || "")));
   const downloadQualities = flowVideoDownloadQualities(account?.plan);
   const quality = downloadQualities.includes(current.quality)
     ? current.quality
     : downloadQualities[0] || "720p";
   if (!models.length) {
-    const base = settingsWithSelectedModel(current, kind, requestedModel);
+    const safeRequestedModel = kind === "image" && !/nano\s+banana|imagen/i.test(requestedModel)
+      ? FLOW_IMAGE_MODELS[0]
+      : requestedModel;
+    const base = settingsWithSelectedModel(current, kind, safeRequestedModel);
     const next = {
       ...base,
       quality: kind === "video" ? quality : current.quality,

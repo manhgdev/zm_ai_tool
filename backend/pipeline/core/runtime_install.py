@@ -437,7 +437,7 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *
         # use forward-slash absolute paths so `E:/.../*.whl` remains a wheel path.
         wheel_uris = [path.as_uri() for path in paths]
         requirement_file.write_text('\n'.join(wheel_uris) + '\n', encoding='utf-8')
-        command = ['--no-index', '--no-deps', '--requirement', requirement_file.as_posix()]
+        command = ['--no-index', '--no-deps', '--requirement', requirement_file.as_uri()]
         try:
             _run([*(pip_base if use_pip else uv_base), *command], 'DEPENDENCY_INSTALL_FAILED', label)
         except RuntimeInstallError as exc:
