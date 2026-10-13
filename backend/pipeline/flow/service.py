@@ -5643,7 +5643,10 @@ class FlowService:
             # User rule: a result must never be assigned to the wrong job, so
             # prompt metadata is required even in recovery. No match = not found
             # = the job times out and is recreated by auto-retry.
-            if not media_ids and not _media_prompt_matches(media, str(job.get("prompt") or "")):
+            # A persisted media id is not sufficient ownership proof: an older
+            # recovery may have claimed a sibling tile. Keep the prompt check
+            # active for both fresh and resumed jobs.
+            if not _media_prompt_matches(media, str(job.get("prompt") or "")):
                 continue
             created_at = _media_created_timestamp(media)
             if not media_ids and created_at and created_at < minimum_time:
@@ -5968,16 +5971,11 @@ class FlowService:
                 recovered = [item for item in recovered if str(item['id']) not in baseline_ids]
                 if len(recovered) >= max(1, expected_count):
                     return recovered[:max(1, expected_count)]
-            # Parallel tabs normally require API prompt metadata to avoid
-            # stealing a sibling result. If Flow omits that metadata, however,
-            # a completed new tile is the only recovery signal. After a short
-            # grace period, accept DOM media newer than this job's baseline;
-            # this prevents a finished job from staying "generating" forever.
+            # Parallel tabs must never claim a DOM tile without API ownership
+            # metadata: the tile can belong to a sibling job in the same Flow
+            # project. Waiting/retrying is safer than downloading the wrong image.
             if job and job.get("parallelSession"):
-                submitted_at = float(job.get("submissionStartedAt") or 0)
-                grace_elapsed = submitted_at and (time.time() - submitted_at) >= 30
-                if not grace_elapsed:
-                    items = []
+                items = []
             fresh: list[dict[str, Any]] = []
             seen: set[str] = set()
             for item in items:
