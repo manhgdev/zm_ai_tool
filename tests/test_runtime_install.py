@@ -157,6 +157,26 @@ class HardwareTests(unittest.TestCase):
             with self.assertRaises(runtime.RuntimeInstallError):
                 runtime._prepare('uv', Path(raw) / 'candidate')
 
+    def test_stale_minor_version_link_is_removed_and_uv_retried(self):
+        with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {'ZM_AI_TOOL_HOME': raw}):
+            base = Path(raw) / 'runtime' / 'python'
+            patch_dir = base / 'cpython-3.12.10-windows-x86_64-none'
+            patch_dir.mkdir(parents=True)
+            (patch_dir / 'marker').write_text('x')
+            link = base / 'cpython-3.12-windows-x86_64-none'
+            link.symlink_to(patch_dir, target_is_directory=True)
+            calls = []
+            def run(command, *args, **kwargs):
+                calls.append((link.is_symlink(), (patch_dir / 'marker').is_file()))
+                raise runtime.RuntimeInstallError('PYTHON_PREPARE_FAILED', 'install failed',
+                    diagnostics='Failed to create Python minor version link directory (os error 448)')
+            with patch.object(runtime, '_run', side_effect=run):
+                with self.assertRaises(runtime.RuntimeInstallError):
+                    runtime._prepare('uv', Path(raw) / 'candidate')
+            # 1st uv attempt: junction already removed, real Python dir untouched.
+            # 2nd attempt (after 448 + unusable Python): whole folder was reset to a clean state.
+            self.assertEqual(calls, [(False, True), (False, False)])
+
     def detect(self, device, output='', code=0):
         def query(command, **_kwargs):
             rows = [row.split(',') for row in output.splitlines() if row]

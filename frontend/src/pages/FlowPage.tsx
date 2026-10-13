@@ -1385,11 +1385,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   };
   const saveAccount = async () => {
     if (accountSaving) return;
-    const normalizedEmail = accountDraft.email.trim().includes("@")
-      ? accountDraft.email.trim()
-      : `${accountDraft.email.trim()}@gmail.com`;
+    const rawEmail = accountDraft.email.trim();
+    const normalizedEmail = rawEmail ? (rawEmail.includes("@") ? rawEmail : `${rawEmail}@gmail.com`) : "";
     const importingCookie = accountLoginMode === "cookie";
-    if (!accountDraft.email.trim() || (importingCookie && !accountCookie.trim())) return;
+    // Cookie mode: email is optional (detected from Flow after connecting). Chrome sign-in needs it as login hint.
+    if ((!importingCookie && !rawEmail) || (importingCookie && !accountCookie.trim())) return;
     setAccountSaving(true);
     try {
       const editing = accounts.find((item) => item.id === editingAccount);
@@ -1403,7 +1403,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         body: JSON.stringify({
           ...accountDraft,
           email: normalizedEmail,
-          label: normalizedEmail.split("@", 1)[0],
+          label: normalizedEmail ? normalizedEmail.split("@", 1)[0] : "",
           authMethod: accountLoginMode,
           plan: accountDraft.plan,
           ...(importingCookie ? { cookie: accountCookie.trim() } : {}),
@@ -2233,12 +2233,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     : t("Sau khi lưu, bấm Kết nối để đăng nhập Google trong Chrome.", "After saving, select Connect to sign in to Google in Chrome.")}</p>
                 </div>
                 <label>
-                  <span>{t("Email Google", "Google email")}</span>
+                  <span>{accountLoginMode === "cookie" ? t("Email Google (không bắt buộc)", "Google email (optional)") : t("Email Google", "Google email")}</span>
                   <input
                     autoFocus
                     type="text"
                     inputMode="email"
-                    required
+                    required={accountLoginMode !== "cookie"}
                     value={accountDraft.email}
                     onChange={(event) =>
                       setAccountDraft((current) => ({
@@ -2277,7 +2277,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <button
                     type="submit"
                     disabled={
-                      accountSaving || !accountDraft.email.trim() || (accountLoginMode === "cookie" && !accountCookie.trim())
+                      accountSaving || (accountLoginMode !== "cookie" && !accountDraft.email.trim()) || (accountLoginMode === "cookie" && !accountCookie.trim())
                     }
                   >
                     {accountSaving ? t("Đang lưu...", "Saving...") : accountLoginMode === "cookie" ? t("Lưu và kết nối", "Save and connect") : t("Lưu", "Save")}

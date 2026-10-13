@@ -230,7 +230,11 @@ def _prepare(uv: str, root: Path) -> Path:
     python = runtime_home() / 'runtime' / 'python' / f'cpython-{PYTHON_VERSION}-windows-x86_64-none' / 'python.exe'
 
     def usable() -> bool:
+        def note(message: str) -> None:
+            if _install_log_fn:
+                _install_log_fn(f'Python probe: {message}\n')
         if not python.is_file():
+            note(f'interpreter not found at {python}')
             return False
         try:
             result = subprocess.run(
@@ -238,22 +242,61 @@ def _prepare(uv: str, root: Path) -> Path:
                  "import sys,ssl,venv,struct; assert sys.version_info[:3] == (3,12,10); assert struct.calcsize('P') == 8"],
                 capture_output=True, text=True, timeout=30, env=_runtime_subprocess_env(),
             )
+            if result.returncode:
+                note(f'exit {result.returncode}: {(result.stderr or result.stdout or "").strip()[-600:]}')
             return result.returncode == 0
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as exc:
+            note(f'{type(exc).__name__}: {exc}')
             return False
 
-    if not usable():
+    def drop_minor_links() -> None:
+        # ponytail: only reparse points named cpython-<major>.<minor>-*; the concrete cpython-3.12.10-* directory is never touched.
+        base = python.parent.parent
+        for entry in (base.glob('cpython-*') if base.is_dir() else ()):
+            if not re.fullmatch(r'cpython-\d+\.\d+-.+', entry.name):
+                continue
+            try:
+                if entry.is_symlink() or (getattr(entry.lstat(), 'st_file_attributes', 0) & 0x400):
+                    os.rmdir(entry)  # removes the link only, not its target
+            except OSError:
+                with contextlib.suppress(OSError):
+                    entry.unlink()
+
+    def quarantine_python_dir() -> None:
+        # Last resort: the folder itself is unusable (stale/untrusted junction inside). Renaming needs no traversal.
+        base = python.parent.parent
+        if not base.is_dir():
+            return
+        aside = base.with_name(f'python.stale-{int(time.time())}')
         try:
-            _run([uv, 'python', 'install', PYTHON_VERSION, '--no-bin', '--no-registry'],
-                 'PYTHON_PREPARE_FAILED', 'Python download')
-        except RuntimeInstallError as exc:
-            # uv creates a minor-version link even with --no-bin. Windows can
-            # reject that junction after the concrete interpreter is installed.
-            detail = exc.diagnostics.lower()
-            if not ('minor version link' in detail and 'os error 448' in detail and usable()):
-                raise
-            if _install_log_fn:
-                _install_log_fn('Windows blocked the optional Python minor-version link; verified patch interpreter will be used directly.\n')
+            os.replace(base, aside)
+        except OSError:
+            return
+        shutil.rmtree(aside, ignore_errors=True)
+
+    if not usable():
+        drop_minor_links()
+        for attempt in range(2):
+            try:
+                _run([uv, 'python', 'install', PYTHON_VERSION, '--no-bin', '--no-registry'],
+                     'PYTHON_PREPARE_FAILED', 'Python download')
+                break
+            except RuntimeInstallError as exc:
+                # uv creates a minor-version link even with --no-bin. Windows can
+                # reject that junction after the concrete interpreter is installed.
+                detail = exc.diagnostics.lower()
+                if not ('minor version link' in detail and 'os error 448' in detail):
+                    raise
+                if usable():
+                    if _install_log_fn:
+                        _install_log_fn('Windows blocked the optional Python minor-version link; verified patch interpreter will be used directly.\n')
+                    break
+                if attempt:
+                    raise
+                if _install_log_fn:
+                    _install_log_fn('Windows blocked a stale Python link; resetting the Python folder and retrying.\n')
+                drop_minor_links()
+                quarantine_python_dir()
         if not usable():
             raise RuntimeInstallError('PYTHON_PREPARE_FAILED', 'Downloaded Python failed its version/stdlib probe')
     # CPython copies its Windows launchers and records the real patch home;

@@ -76,10 +76,18 @@ def _account_cookie_records(value: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     result: list[dict[str, Any]] = []
+    # Chrome caps cookie lifetime at 400 days; stay just under it.
+    persistent = time.time() + 390 * 86400
     for item in raw:
         if not isinstance(item, dict) or not item.get("name") or "value" not in item:
             continue
         cookie = {key: item[key] for key in ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite") if key in item}
+        try:
+            has_expiry = float(cookie.get("expires", -1)) > 0
+        except (TypeError, ValueError):
+            has_expiry = False
+        if not has_expiry:
+            cookie["expires"] = persistent
         if cookie.get("domain") or cookie.get("url"):
             result.append(cookie)
     return result
@@ -1538,10 +1546,11 @@ class FlowService:
         if email and "@" not in email:
             email = f"{email}@gmail.com"
         email_name = email.split("@", 1)[0].strip()
+        account_key = account_id or uuid.uuid4().hex[:12]
         row = {
             **existing,
-            "id": account_id or uuid.uuid4().hex[:12],
-            "label": email_name or str(payload.get("label") or existing.get("label") or "Flow account").strip(),
+            "id": account_key,
+            "label": email_name or str(payload.get("label") or existing.get("label") or f"Flow account {account_key[:4]}").strip(),
             "email": email,
             "authMethod": str(payload.get("authMethod") or existing.get("authMethod") or "chrome"),
             "plan": str(payload.get("plan") or existing.get("plan") or "Free"),
@@ -3233,6 +3242,8 @@ class FlowService:
         existing_project_id = str(account.get("projectId") or "")
         cookie_auth = bool(cookies) or str(account.get("authMethod") or "chrome") == "cookie"
         fresh_cookies = bool(cookies)
+        if cookies:
+            cookies = _account_cookie_records(cookies)  # persistent expiry, see _account_cookie_records
         if cookie_auth and not cookies:
             cookies = _account_cookie_records(account.get("cookie"))
 
@@ -3499,6 +3510,10 @@ class FlowService:
                 "updatedAt": now,
                 "error": None,
             }
+            stored_row = store.get_row("accounts", account_id) or {}
+            if email and not str(stored_row.get("email") or "").strip():
+                # Cookie accounts may be added without an email; adopt the one Flow reports.
+                patch["label"] = str(email).split("@", 1)[0].strip() or stored_row.get("label")
             if access_token and str(access_token).startswith("ya29."):
                 patch["accessToken"] = access_token
                 patch["accessTokenAt"] = now
