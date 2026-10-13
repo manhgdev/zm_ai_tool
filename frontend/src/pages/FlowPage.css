@@ -544,6 +544,16 @@
   padding: 0;
   accent-color: var(--primary);
 }
+.flow-switch-stack {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 22px;
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+}
 .flow-headless-switch {
   display: inline-flex;
   align-items: center;

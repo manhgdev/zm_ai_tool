@@ -21,7 +21,7 @@ _OUTPUT_SUBFOLDERS: dict[str, tuple[str, ...]] = {
     "download-video": ("download-video",),
     "tts": ("text-to-speech",),
     "subtitle-export": ("subtitles", "export"),
-    "media-compose": ("subtitles", "image-video"),
+    "media-compose": ("media-compose",),
     "drawing": ("drawing",),
     "cleaner": ("cleaner",),
     "batch": ("batch",),

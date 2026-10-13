@@ -129,7 +129,7 @@ def cancel_job(job_id: str) -> bool:
         
     proc = _PROCS.get(job_id)
     if proc:
-        kill_process_tree(proc.pid)
+        kill_process_tree(proc)
     
     _cleanup_temp_files(job_id)
     _publish("cleaner.job.updated", job_id, get_job(job_id))
@@ -143,7 +143,7 @@ def delete_job(job_id: str) -> bool:
         
     proc = _PROCS.pop(job_id, None)
     if proc:
-        kill_process_tree(proc.pid)
+        kill_process_tree(proc)
         
     if job.get("input_path") and os.path.isfile(job["input_path"]):
         try: os.remove(job["input_path"])

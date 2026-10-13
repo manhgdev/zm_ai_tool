@@ -18,6 +18,7 @@ import threading
 from functools import lru_cache
 
 from ..core.jobs import Cancelled, check_cancel
+from ..core.resources import adaptive_workers
 from .extract import _ocr_join_lines, _rapidocr_labels
 from .labels import pick_label_box
 from .overlay_cover import mid_bottom_cutoff
@@ -482,7 +483,8 @@ def _decode_frames_batch(
     # CPU decode song song, GPU được dành riêng cho RapidOCR.
     _ = use_cuda  # giữ tương thích caller cũ; cố ý không dùng NVDEC tại đây.
     with concurrent.futures.ThreadPoolExecutor(
-        max_workers=min(5, len(wanted)), thread_name_prefix="ocr-frame"
+        max_workers=max(1, min(len(wanted), adaptive_workers(None, kind="cpu", cap=os.cpu_count() or 4, tasks=len(wanted)))),
+        thread_name_prefix="ocr-frame",
     ) as pool:
         futures = [pool.submit(_one, idx) for idx in wanted]
         for future in concurrent.futures.as_completed(futures):

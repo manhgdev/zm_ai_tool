@@ -1,9 +1,11 @@
 """Windows: ẩn cửa sổ console + giới hạn CPU cho subprocess nặng."""
 from __future__ import annotations
 
+import atexit
 import os
 import subprocess
 import sys
+import weakref
 
 _patched = False
 
@@ -110,3 +112,45 @@ def apply_subprocess_no_window() -> None:
             super().__init__(*args, **kwargs)
 
     subprocess.Popen = Popen  # type: ignore[misc, assignment]
+
+
+_children: "weakref.WeakSet[subprocess.Popen]" = weakref.WeakSet()
+_tracking = False
+
+
+def track_children() -> None:
+    """Ghi nhớ MỌI subprocess app sinh ra (ffmpeg, yt-dlp, Chrome, worker…).
+
+    Cần để thoát app / dừng `bun start` là dọn sạch, không còn chạy nền.
+    """
+    global _tracking
+    if _tracking:
+        return
+    _tracking = True
+    _orig = subprocess.Popen
+
+    class Popen(_orig):  # type: ignore[misc, valid-type]
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            try:
+                _children.add(self)
+            except Exception:
+                pass
+
+    subprocess.Popen = Popen  # type: ignore[misc, assignment]
+    atexit.register(kill_all_children)
+
+
+def kill_all_children() -> int:
+    """Kill cả cây tiến trình của mọi child còn sống. Trả số child đã kill."""
+    from .jobs import kill_process_tree
+
+    n = 0
+    for proc in list(_children):
+        try:
+            if proc.poll() is None:
+                kill_process_tree(proc)
+                n += 1
+        except Exception:
+            pass
+    return n

@@ -252,8 +252,11 @@ def _solid_region(
     return frame_bgr
 
 
-def _inpaint_region(frame_bgr: Any, box: tuple[int, int, int, int]) -> Any:
-    """Remove a small fixed logo by reconstructing it from surrounding pixels."""
+def _inpaint_region(frame_bgr: Any, box: tuple[int, int, int, int], lama: bool = False) -> Any:
+    """Remove a small fixed logo by reconstructing it from surrounding pixels.
+
+    lama=True dành cho ảnh tin (~3s/ảnh); video từng frame giữ OpenCV cho nhanh.
+    """
     import cv2
     import numpy as np
 
@@ -267,6 +270,19 @@ def _inpaint_region(frame_bgr: Any, box: tuple[int, int, int, int]) -> Any:
     bw, bh = x1 - x0, y1 - y0
     if bw < 3 or bh < 3:
         return frame_bgr
+    if lama:
+        from pipeline.logo_remover import DEFAULT_LAMA_MODEL, LogoRemovalSettings, _lama_fill_with_mask
+        if DEFAULT_LAMA_MODEL:
+            try:
+                full_mask = np.zeros((h, w), np.uint8)
+                m = max(2, round(min(bw, bh) * 0.08))
+                cv2.rectangle(full_mask, (max(0, x0 - m), max(0, y0 - m)),
+                              (min(w - 1, x1 + m), min(h - 1, y1 + m)), 255, -1)
+                settings = LogoRemovalSettings(lama_model_path=DEFAULT_LAMA_MODEL).normalized()
+                frame_bgr[:] = _lama_fill_with_mask(frame_bgr, full_mask, settings)
+                return frame_bgr
+            except Exception:  # noqa: BLE001 - rơi về OpenCV bên dưới
+                pass
     pad = max(8, round(min(bw, bh) * 0.45))
     ex0, ey0 = max(0, x0 - pad), max(0, y0 - pad)
     ex1, ey1 = min(w, x1 + pad), min(h, y1 + pad)

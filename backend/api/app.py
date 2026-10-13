@@ -80,6 +80,12 @@ def create_app() -> FastAPI:
         apply_subprocess_no_window()
     except Exception:
         pass
+    # Mọi subprocess app sinh ra được theo dõi → thoát/dừng server là kill sạch (kill_all_children).
+    try:
+        from pipeline.core.winproc import track_children
+        track_children()
+    except Exception:
+        pass
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -149,6 +155,13 @@ def create_app() -> FastAPI:
         threading.Thread(target=_warm_checks, name="warm-checks", daemon=True).start()
         threading.Thread(target=_run, name="prepare-accel", daemon=True).start()
         yield
+        # Shutdown: không để ffmpeg/yt-dlp/Chrome/worker mồ côi chạy nền.
+        try:
+            from pipeline.core.winproc import kill_all_children
+
+            kill_all_children()
+        except Exception:
+            pass
 
     app = FastAPI(title="ZM AI TOOL Local", lifespan=lifespan)
     # API local không có auth → chỉ nhận origin của chính app (Vite dev / webview).

@@ -55,8 +55,22 @@ def _inpaint_image(input_path: str, output: str, job_id: str) -> None:
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     overlay = find_sparkle(image[:, :, :3])
     if overlay:
-        remove_sparkle(image, overlay)
-        append_job_log(job_id, f"Local alpha recovery: box={overlay.box}, opacity={overlay.opacity:.3f}, match={overlay.score:.3f}")
+        from pipeline.logo_remover import DEFAULT_LAMA_MODEL, LogoRemovalSettings, _flow_auto_cleanup
+        done = False
+        if DEFAULT_LAMA_MODEL:
+            try:
+                cleaned, mode, _bbox = _flow_auto_cleanup(
+                    image[:, :, :3].copy(),
+                    LogoRemovalSettings(lama_model_path=DEFAULT_LAMA_MODEL, auto_fallback=False).normalized(),
+                )
+                image[:, :, :3] = cleaned
+                append_job_log(job_id, f"LaMa: {mode}")
+                done = True
+            except Exception as exc:  # noqa: BLE001 - rơi về alpha recovery
+                append_job_log(job_id, f"LaMa lỗi, dùng alpha recovery / LaMa failed, using alpha recovery: {exc}")
+        if not done:
+            remove_sparkle(image, overlay)
+            append_job_log(job_id, f"Local alpha recovery: box={overlay.box}, opacity={overlay.opacity:.3f}, match={overlay.score:.3f}")
     else:
         detection = _detect_logo_with_retry(input_path, job_id) or {}
         boxes = _pixel_masks(detection, image.shape[1], image.shape[0])
@@ -66,7 +80,7 @@ def _inpaint_image(input_path: str, output: str, job_id: str) -> None:
             raise RuntimeError('CLEANER_LOGO_NOT_DETECTED')
         for box in boxes:
             rgb = image[:, :, :3].copy()
-            image[:, :, :3] = _inpaint_region(rgb, box)
+            image[:, :, :3] = _inpaint_region(rgb, box, lama=True)
     ext = Path(output).suffix.lower()
     params = [int(cv2.IMWRITE_JPEG_QUALITY), 98] if ext in {".jpg", ".jpeg"} else []
     if ext == '.webp':
@@ -212,7 +226,7 @@ def run_cleaner_job_sync(job_id: str) -> None:
         duration_s = ffprobe_duration(input_path) or (1.0 if is_image else 100.0)
         if method == 'logo':
             if is_image:
-                append_job_log(job_id, 'Xử lý ảnh bằng OpenCV local / Processing image with local OpenCV')
+                append_job_log(job_id, 'Xử lý ảnh local: LaMa nếu có model, không thì OpenCV / Local image: LaMa if model present, else OpenCV')
                 _inpaint_image(input_path, output_path, job_id)
             else:
                 append_job_log(job_id, 'Tái tạo nền logo từng khung hình / Inpainting logo per frame')

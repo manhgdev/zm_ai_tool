@@ -482,6 +482,12 @@ def _output_resolution(options: dict, first_media: Path) -> tuple[int, int]:
     if resolution != "auto":
         return tuple(int(value) for value in resolution.split("x", 1))
     source_width, source_height = image_resolution(first_media)
+    # Nền tảng (FB/YouTube) chỉ xếp tầng 1080p cho khung chuẩn. Ảnh 1376×768 từng ra 1936×1080
+    # (rộng lẻ) → bị hạ về 720p. Tỉ lệ gần chuẩn (±3%) thì snap về đúng khung chuẩn.
+    ratio = source_width / source_height
+    for std_w, std_h in ((1920, 1080), (1080, 1920), (1080, 1080)):
+        if abs(ratio / (std_w / std_h) - 1) <= 0.03:
+            return std_w, std_h
     scale = 1080 / min(source_width, source_height)
     return (
         max(2, round(source_width * scale / 2) * 2),
@@ -497,6 +503,18 @@ def _inpaint_still_logo(source: Path, dl: dict[str, Any], work: Path, index: int
     """Reconstruct a logo patch on stills before the final video encode."""
     import cv2
     import numpy as np
+    from pipeline.logo_remover import DEFAULT_LAMA_MODEL as _model
+    # Cache bền vững: cùng ảnh nguồn (path+mtime+size) + cùng vùng logo + cùng model → dùng lại, render lại không chạy LaMa nữa.
+    st = source.stat()
+    ckey = hashlib.sha1(json.dumps([
+        str(source.resolve()), st.st_mtime_ns, st.st_size,
+        [float(dl.get(k, d)) for k, d in (('x', 82), ('y', 94), ('w', 16), ('h', 4))],
+        bool(_model), "v1",
+    ]).encode()).hexdigest()[:24]
+    cached = CACHE_ROOT / "delogo" / f"{ckey}.png"
+    if cached.is_file() and cached.stat().st_size > 0:
+        _inpaint_still_logo.last_engine = "cache"
+        return cached
     image = cv2.imdecode(np.fromfile(source, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise RuntimeError(f"Cannot decode logo input: {source.name}")
@@ -505,18 +523,53 @@ def _inpaint_still_logo(source: Path, dl: dict[str, Any], work: Path, index: int
     y = max(0, min(height - 1, round(float(dl.get("y", 94)) / 100 * height)))
     w = max(2, min(width - x, round(float(dl.get("w", 16)) / 100 * width)))
     h = max(2, min(height - y, round(float(dl.get("h", 4)) / 100 * height)))
-    # Keep the mask tight; a large feathered delogo rectangle is what causes
-    # visible blur around the watermark.
-    mask = np.zeros((height, width), dtype=np.uint8)
-    pad = max(1, round(min(width, height) * 0.003))
-    cv2.rectangle(mask, (max(0, x - pad), max(0, y - pad)),
-                  (min(width - 1, x + w + pad), min(height - 1, y + h + pad)), 255, -1)
-    restored = cv2.inpaint(image, mask, max(2, min(7, round(min(width, height) * 0.004))), cv2.INPAINT_TELEA)
+    # Bộ xóa logo gốc (logo_remover): lấp bằng texture lân cận + seamlessClone,
+    # lỗi thì rơi về inpaint OpenCV. Vùng = rect người dùng chọn.
+    from pipeline.logo_remover import (
+        DEFAULT_LAMA_MODEL, LogoRemovalError, LogoRemovalSettings,
+        _lama_fill_with_mask, _legacy_inpaint, _smart_texture_fill,
+    )
+    # seamlessClone cần biên nằm ngoài logo, nếu không logo bị lan lại → pad ≥ 12px.
+    pad = max(12, round(min(width, height) * 0.012))
+    region = (max(0, x - pad), max(0, y - pad), min(width, x + w + pad), min(height, y + h + pad))
+    settings = LogoRemovalSettings(
+        inpaint_radius=max(2, min(7, round(min(width, height) * 0.004))),
+        lama_model_path=DEFAULT_LAMA_MODEL,
+    ).normalized()
+    restored = None
+    engine = "lama"
+    if not DEFAULT_LAMA_MODEL:
+        engine = "opencv (thiếu model LaMa)"
+    else:
+        try:
+            # Mask = đúng rect người dùng (+4px viền mờ); mask tự dò của _lama_local_fill bỏ sót logo đặc.
+            lama_mask = np.zeros((height, width), dtype=np.uint8)
+            m = max(3, pad // 3)
+            cv2.rectangle(lama_mask, (max(0, x - m), max(0, y - m)),
+                          (min(width - 1, x + w + m), min(height - 1, y + h + m)), 255, -1)
+            restored = _lama_fill_with_mask(image, lama_mask, settings)
+        except Exception as exc:  # noqa: BLE001 - mọi lỗi ONNX đều phải rơi về cách cũ
+            engine = f"opencv (LaMa lỗi: {exc})"
+            restored = None
+    if restored is None:
+        try:
+            restored = _smart_texture_fill(image, region, settings)
+        except LogoRemovalError:
+            restored = _legacy_inpaint(image, region, settings)
+    _inpaint_still_logo.last_engine = engine
     target = work / f"delogo-still-{index:05d}.png"
     ok, encoded = cv2.imencode('.png', restored)
     if not ok:
         raise RuntimeError(f"Cannot encode repaired image: {source.name}")
     encoded.tofile(target)
+    if engine == "lama":  # chỉ cache kết quả LaMa tốt, không cache bản fallback
+        try:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cached.with_suffix(f".{uuid.uuid4().hex[:6]}.tmp")
+            shutil.copy2(target, tmp)
+            tmp.replace(cached)
+        except OSError:
+            pass
     return target
 
 
@@ -535,23 +588,17 @@ def _prepare_media_inputs(
     normalized: list[Path] = []
     kept_durations: list[float] = []
     webp_dir = work / "media-normalized"
-    for index, (source, duration) in enumerate(zip(media, durations)):
-        reason = ""
+
+    def _check(index: int) -> tuple[Path, str]:
+        source = media[index]
         target = source
         try:
             if not source.is_file() or source.stat().st_size <= 0:
                 raise ValueError("file không tồn tại hoặc rỗng")
-            if is_video(source):
-                # Video validation remains delegated to FFmpeg, but an empty
-                # file is rejected here so the job fails with a useful cause.
-                pass
-            else:
+            if not is_video(source):  # video: để FFmpeg kiểm tra, ở đây chỉ chặn file rỗng
                 from PIL import Image
 
-                # verify() checks container integrity without decoding the
-                # pixels; reopen/load catches truncated payloads as well.
-                with Image.open(source) as image:
-                    image.verify()
+                # Mở 1 lần + load() giải mã hết pixel: bắt cả ảnh bị cắt cụt (verify() riêng thì không)
                 with Image.open(source) as image:
                     for frame in range(getattr(image, "n_frames", 1)):
                         image.seek(frame)
@@ -561,10 +608,19 @@ def _prepare_media_inputs(
                         target = webp_dir / f"media_{index:05d}.png"
                         image.seek(0)
                         mode = "RGBA" if "A" in image.getbands() else "RGB"
-                        image.convert(mode).save(target, format="PNG")
+                        image.convert(mode).save(target, format="PNG", compress_level=1)
         except Exception as exc:
-            reason = str(exc) or exc.__class__.__name__
+            return source, str(exc) or exc.__class__.__name__
+        return target, ""
 
+    # Pillow nhả GIL khi giải mã → pool tự co giãn theo CPU, nhanh gấp nhiều lần vòng tuần tự.
+    from .core.resources import run_with_adaptive_workers
+
+    checked = run_with_adaptive_workers(
+        list(range(len(media))), _check, kind="cpu", cap=max(2, os.cpu_count() or 4),
+        thread_name_prefix="media-check",
+    )
+    for (source, duration), (target, reason) in zip(zip(media, durations), checked):
         if reason:
             message = f"MEDIA_INVALID: media không hợp lệ / invalid media {source.name}: {reason}"
             if allow_missing:
@@ -658,9 +714,8 @@ def _prepare_video_segments(
             variant = (variant + random.randrange(1, 16)) % 16
         last_variant = variant
         motion = _motion_filter(zoom, width, height, fps, variant, duration)
-        # Delogo was explicitly requested: apply it to every valid image/video
-        # instead of silently skipping images whose logo region looks flat.
-        use_dl = bool(delogo_prefix)
+        # Ảnh đã được LaMa xử lý từ trước (_inpaint_still_logo); chỉ clip video dùng delogo.
+        use_dl = bool(delogo_prefix) and is_video(source)
         chosen_vf = base_vf_dl if use_dl else base_vf_no_dl
         vf = f"{chosen_vf}{',' + motion if motion else ''},format=yuv420p"
         segment_plans.append((index, source, duration, vf, use_dl))
@@ -671,13 +726,9 @@ def _prepare_video_segments(
     # - VideoToolbox (Apple) / AMF (AMD) / QSV (Intel): no hard limit → parallel OK
     # - CPU libx264: each instance uses own cores → parallel with cap
     enc = (gpu_encoder or "").lower()
-    if not use_gpu:
-        workers = min(4, max(1, os.cpu_count() or 2))
-    elif "nvenc" in enc:
-        workers = 2  # NVENC consumer limit
-    else:
-        # VideoToolbox / AMF / QSV — safe to parallelize up to cpu_count/2
-        workers = min(max(1, (os.cpu_count() or 4) // 2), 6)
+    # NVENC consumer: cố định 2 session; còn lại tự co giãn theo tải, trần = số core.
+    fixed_workers = 2 if (use_gpu and "nvenc" in enc) else 0
+    from .core.resources import run_with_adaptive_workers
     segments: list[Path | None] = [None] * total
     completed = 0
 
@@ -703,19 +754,21 @@ def _prepare_video_segments(
         _run_stage(job_id, cmd)
         return idx, output
 
-    if workers > 1:
-        _log(job_id, f"Song song {workers} luồng encode segment")
+    def _cancel_check() -> None:
+        if (get_job(job_id) or {}).get("status") == "cancelled":
+            raise InterruptedError
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_encode_one, plan): plan[0] for plan in segment_plans}
-        for future in as_completed(futures):
-            if (get_job(job_id) or {}).get("status") == "cancelled":
-                pool.shutdown(wait=False, cancel_futures=True)
-                raise InterruptedError
-            idx, output = future.result()
-            segments[idx] = output
-            completed += 1
-            _update(job_id, status="processing", progress=round(completed / total * 35, 1))
+    def _prog(done: int, n: int, w: int) -> None:
+        _update(job_id, status="processing", progress=round(done / n * 35, 1))
+        if done % 10 == 0 or done == n:
+            _log(job_id, f"Encode segment: {done}/{n} · {w} luồng")
+
+    for idx, output in run_with_adaptive_workers(
+        segment_plans, _encode_one, kind="gpu" if use_gpu else "cpu", requested=fixed_workers,
+        cap=max(2, os.cpu_count() or 4), thread_name_prefix="segment",
+        on_progress=_prog, cancel_check=_cancel_check,
+    ):
+        segments[idx] = output
 
     return [s for s in segments if s is not None]
 
@@ -815,7 +868,7 @@ def cancel(job_id: str) -> bool:
         _JOBS[job_id]["status"] = "cancelled"
         proc = _PROCS.get(job_id)
     if proc:
-        kill_process_tree(proc.pid)
+        kill_process_tree(proc)
     _publish("srt-image.job.updated", job_id, get_job(job_id))
     return True
 
@@ -959,7 +1012,17 @@ def _ffmpeg_subtitle(path: Path, font_name: str = "system", font_size: int = 8, 
                 end   = _srt_ts_to_ass(m.group(2))
                 text  = r"\N".join(l.strip() for l in lines[i + 1:] if l.strip())
                 text  = re.sub(r"<[^>]+>", "", text)  # strip HTML tags
-                events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{inline_tag}{text}")
+                # Font chính không có glyph CJK → đổi font theo chữ viết của dòng
+                if re.search(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]", text):
+                    cjk = "Noto Sans KR Thin"
+                elif re.search(r"[\u3040-\u30ff]", text):
+                    cjk = "Noto Sans JP Thin"
+                elif re.search(r"[\u4e00-\u9fff\u3400-\u4dbf]", text):
+                    cjk = "Noto Sans SC Thin"
+                else:
+                    cjk = ""
+                tag = f"{{\\fn{cjk}\\b0}}" if cjk else inline_tag
+                events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{tag}{text}")
                 break
 
     ass_path = path.with_suffix(".sub.ass")
@@ -1077,7 +1140,27 @@ def _build_subtitle_overlay_concat(
     bg_rgba = (br, bgr, bb, bg_alpha)
 
     # Render each cue
+    base_font = font
+    cjk_cache: dict[str, Any] = {}
     for i, (start, end, cue_text) in enumerate(cues):
+        # Font chính thiếu glyph CJK (ra ô vuông) → chọn font theo chữ viết của cue
+        if re.search(r"[\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]", cue_text):
+            cjk_ttf = "NotoSansKR-Bold.ttf"
+        elif re.search(r"[\u3040-\u30ff]", cue_text):
+            cjk_ttf = "NotoSansJP-Bold.ttf"
+        elif re.search(r"[\u4e00-\u9fff\u3400-\u4dbf]", cue_text):
+            cjk_ttf = "NotoSansSC-Bold.ttf"
+        else:
+            cjk_ttf = ""
+        font = base_font
+        if cjk_ttf:
+            if cjk_ttf not in cjk_cache:
+                path_ = _resolve_font_name(cjk_ttf)
+                try:
+                    cjk_cache[cjk_ttf] = ImageFont.truetype(path_, px_font_size) if path_ else base_font
+                except Exception:
+                    cjk_cache[cjk_ttf] = base_font
+            font = cjk_cache[cjk_ttf]
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
@@ -1301,14 +1384,14 @@ def _motion_filter(
     size = f"{width}x{height}"
     if mode == "zoomIn":
         return (
-            "scale=iw*4:ih*4,"
+            "scale=iw*2:ih*2,"
             "zoompan=z='min(1.06,1+on*0.00020)':"
             "x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':"
             f"d=1:s={size}:fps={fps}"
         )
     if mode == "zoomOut":
         return (
-            "scale=iw*4:ih*4,"
+            "scale=iw*2:ih*2,"
             "zoompan=z='max(1,1.06-on*0.00020)':"
             "x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':"
             f"d=1:s={size}:fps={fps}"
@@ -1321,7 +1404,7 @@ def _motion_filter(
     }.get(mode)
     if axis:
         return (
-            "scale=iw*4:ih*4,"
+            "scale=iw*2:ih*2,"
             f"zoompan=z='min(1.06,1+on*0.00020)':x='{axis[0]}':y='{axis[1]}':"
             f"d=1:s={size}:fps={fps}"
         )
@@ -1346,7 +1429,7 @@ def _motion_filter(
         else f"1+0.09*{travel}"
     )
     return (
-        "scale=iw*4:ih*4,"
+        "scale=iw*2:ih*2,"
         f"zoompan=z='{zoom_curve}':"
         f"x='{x}':y='{y}':"
         f"d=1:s={size}:fps={fps}"
@@ -1493,9 +1576,43 @@ def run(job_id: str) -> None:
             _log(job_id, f"Preview {preview:g}s: chỉ chuẩn bị {len(media)} media đầu tiên")
         dl = opts.get("delogo") if isinstance(opts.get("delogo"), dict) else {}
         repaired_stills = bool(dl.get('enabled')) and all(not is_video(p) for p in media)
-        if repaired_stills:
-            media = [_inpaint_still_logo(p, dl, work, i) for i, p in enumerate(media)]
-            _log(job_id, "Logo: inpaint ảnh nguồn trước Drawing / Inpaint source images before Drawing")
+        if dl.get('enabled') and any(not is_video(p) for p in media):
+            # Ảnh luôn qua LaMa (kể cả job lẫn video); chỉ clip video mới dùng ffmpeg delogo.
+            _log(job_id, f"Logo: đang xóa logo {sum(not is_video(p) for p in media)} ảnh bằng LaMa (~4s/ảnh)…")
+            out = list(media)
+            idxs = [i for i, p in enumerate(media) if not is_video(p)]
+            from .core.resources import run_with_adaptive_workers
+            from .logo_remover import DEFAULT_LAMA_MODEL, _get_lama_session
+            kind = "cpu"
+            try:
+                if DEFAULT_LAMA_MODEL:
+                    # Nạp model 1 lần trước khi chia luồng (session được cache, dùng chung).
+                    sess = _get_lama_session(DEFAULT_LAMA_MODEL)
+                    if sess.get_providers()[0] != "CPUExecutionProvider":
+                        kind = "gpu"
+            except Exception:
+                pass
+
+            def _one(i: int) -> tuple[int, Path]:
+                return i, _inpaint_still_logo(media[i], dl, work, i)
+
+            def _prog(done: int, total: int, workers: int) -> None:
+                _update(job_id, status="processing", progress=round(done / total * 10, 1))
+                if done % 10 == 0 or done == total:
+                    _log(job_id, f"Logo: {done}/{total} ảnh · {workers} luồng ({kind})")
+
+            # ponytail: pool tự duỗi/co theo tải CPU/GPU, trần = số core (adaptive_workers giữ ≤~92% CPU, tự hạ khi thiếu RAM).
+            for i, path in run_with_adaptive_workers(
+                idxs, _one, kind=kind, cap=max(2, os.cpu_count() or 4), thread_name_prefix="delogo", on_progress=_prog,
+                cancel_check=lambda: (_ for _ in ()).throw(InterruptedError) if (get_job(job_id) or {}).get("status") == "cancelled" else None,
+            ):
+                out[i] = path
+            media = out
+            _log(job_id, f"Logo: inpaint ảnh nguồn trước Drawing bằng {_inpaint_still_logo.last_engine} / Inpaint source images before Drawing")
+            if not repaired_stills:
+                _log(job_id, "Logo: clip video dùng ffmpeg delogo / video clips use ffmpeg delogo")
+        elif dl.get("enabled"):
+            _log(job_id, "Logo: có video clip → dùng ffmpeg delogo (không phải LaMa) / video clips present: ffmpeg delogo, not LaMa")
         media = _drawing_video_sources(job_id, media, durations, opts, work)
         width, height = _output_resolution(opts, media[0])
         fps = max(1, min(60, int(opts.get("fps", 30))))

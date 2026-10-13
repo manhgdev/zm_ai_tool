@@ -2986,22 +2986,46 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       className="flow-select-account"
                     />
                   </div>
+                  <div className="flow-switch-stack">
                   <button
                     type="button"
                     className={`flow-headless-switch${settings.headless ? "" : " is-on"}`}
                     role="switch"
                     aria-checked={!settings.headless}
-                    onClick={() =>
+                    onClick={(event) => {
+                      // Chuột: chỉ bấm vào viên thuốc mới đổi; phím Enter/Space (detail=0) vẫn hoạt động.
+                      if (event.detail > 0 && !(event.target as HTMLElement).closest(".flow-headless-switch-track")) return;
                       setSettings((current) => {
                         const next = { ...current, headless: !current.headless };
                         try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(next)); } catch { }
                         return next;
-                      })
-                    }
+                      });
+                    }}
                   >
                     <span className="flow-headless-switch-track" aria-hidden="true" />
                     <span>{t("Mở Chrome khi chạy Flow", "Show Chrome while Flow runs")}</span>
                   </button>
+                  {createKind === "image" && (
+                    <button
+                      type="button"
+                      className={`flow-headless-switch${settings.removeLogo ? " is-on" : ""}`}
+                      role="switch"
+                      aria-checked={Boolean(settings.removeLogo)}
+                      title={t("Tài khoản Ultra không có logo nên sẽ tự bỏ qua", "Ultra accounts have no logo, so they are skipped automatically")}
+                      onClick={(event) => {
+                        if (event.detail > 0 && !(event.target as HTMLElement).closest(".flow-headless-switch-track")) return;
+                        setSettings((current) => {
+                          const next = { ...current, removeLogo: !current.removeLogo };
+                          try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(next)); } catch { }
+                          return next;
+                        });
+                      }}
+                    >
+                      <span className="flow-headless-switch-track" aria-hidden="true" />
+                      <span>{t("Xóa logo Flow (trừ Ultra)", "Remove Flow logo (except Ultra)")}</span>
+                    </button>
+                  )}
+                  </div>
                 </div>
                 {settings.account === "random" && (
                   <div className="flow-random-info-box">

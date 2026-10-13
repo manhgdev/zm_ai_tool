@@ -31,3 +31,4 @@ capcut_device.json
 # log backend (app.log tung bi track — da go cached 2026-07-27)
 *.log
 references/
+backend/pipeline/assets/lama_fp32.onnx

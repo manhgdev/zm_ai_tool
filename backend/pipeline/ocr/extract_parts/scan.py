@@ -232,7 +232,7 @@ def _ocr_scan_stamps(
     for i, t in enumerate(stamps):
         targets.setdefault(max(0, int(round(t * fps))), []).append((i, t))
 
-    w = min(_ocr_pool_workers(workers, cap=min(4, _cpu_budget(0.9))), len(stamps))
+    w = min(_ocr_pool_workers(workers, cap=_cpu_budget(0.9)), len(stamps))
     out: list[tuple[float, str] | None] = [None] * len(stamps)
     _scan_engine_lock = threading.Lock()
     _tls = threading.local()

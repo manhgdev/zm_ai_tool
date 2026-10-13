@@ -2063,6 +2063,7 @@ class FlowService:
         force_interactive: bool = False,
         cookies: list[dict[str, Any]] | None = None,
         allow_session_close: bool = False,
+        headless: bool = False,
     ) -> dict[str, Any]:
         account = store.get_row("accounts", account_id)
         if not account:
@@ -2093,11 +2094,19 @@ class FlowService:
                 pass
         self._log("info", "account_connecting", account_id=account_id)
         threading.Thread(
-            target=lambda: asyncio.run(self._login(account_id, force_interactive=force_interactive, cookies=cookies)),
+            target=lambda: asyncio.run(self._login(account_id, force_interactive=force_interactive, cookies=cookies, headless=headless)),
             daemon=True,
             name=f"flow-login-{account_id}",
         ).start()
         return self._public_account(store.get_row("accounts", account_id) or account)
+
+    def _auto_headless(self, account_id: str) -> bool:
+        """True when this account's active/queued jobs run with 'Mở Chrome khi chạy' off."""
+        rows = [
+            row for row in store.list_rows("jobs")
+            if row.get("accountId") == account_id and row.get("status") in {"queued", "processing", "action_required"}
+        ]
+        return any(_flow_headless(row.get("settings") or {}) for row in rows)
 
     def _ensure_shared_reconnect(
         self,
@@ -2148,6 +2157,8 @@ class FlowService:
             force_interactive = bool(interactive)
         try:
             connect_kwargs = {"force_interactive": force_interactive}
+            if interactive is not True:
+                connect_kwargs["headless"] = self._auto_headless(account_id)
             if interactive is True:
                 connect_kwargs["allow_session_close"] = True
             self.connect(account_id, **connect_kwargs)
@@ -2311,7 +2322,7 @@ class FlowService:
                 # Same as pressing Connect (profile and cookies kept). The
                 # reconnect budget (automationReconnectCount) is already spent,
                 # so a failure here is final: the user presses Connect.
-                self.connect(account_id)
+                self.connect(account_id, headless=self._auto_headless(account_id))
                 store.patch_row("accounts", account_id, {
                     "automationRecoveryPending": False,
                     "automationRecoveryBlocked": False,
@@ -3209,13 +3220,15 @@ class FlowService:
 
 
 
-    async def _login(self, account_id: str, *, force_interactive: bool = False, cookies: list[dict[str, Any]] | None = None) -> None:
+    async def _login(self, account_id: str, *, force_interactive: bool = False, cookies: list[dict[str, Any]] | None = None, headless: bool = False) -> None:
         """Open a visible Chrome window to authenticate and sync the Flow account.
 
         If the account already has a saved projectId (was previously connected),
         first tries a fast headless probe — unless ``force_interactive`` (real
         login-wall / expired cookies). Missing ya29 alone does not force Chrome.
         """
+        if headless:
+            force_interactive = False  # automatic reconnect with 'open Chrome' off: never show a window
         account = store.get_row("accounts", account_id) or {}
         existing_project_id = str(account.get("projectId") or "")
         cookie_auth = bool(cookies) or str(account.get("authMethod") or "chrome") == "cookie"
@@ -3256,7 +3269,7 @@ class FlowService:
         with self._guard:
             self._login_passwords.pop(account_id, None)
         password = ""
-        headless_login = cookie_auth
+        headless_login = cookie_auth or headless
         try:
             from .browser import BrowserManager, FLOW_BASE_URL
             browser = BrowserManager(
@@ -4364,7 +4377,7 @@ class FlowService:
                 }
                 if rejected:
                     patch["generationRejectRetryCount"] = next_count
-                if re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT", finished_error):
+                if re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT", finished_error):
                     patch.update({
                         "submissionStartedAt": None, "submissionProjectId": None,
                         "baselineMediaIds": [], "mediaIds": [], "resumeOnly": False,
@@ -4830,6 +4843,18 @@ class FlowService:
                 await asyncio.sleep(0.6)
 
 
+
+        # Verify the requested mode is really active (switch_mode may report
+        # success while the page is still on the other mode).
+        for _mode_check in range(3):
+            try:
+                verify_tab = await _visible_mode_tab()
+                if verify_tab is None or await _flow_control_is_selected(verify_tab):
+                    break
+                await verify_tab.click(force=True)
+                await asyncio.sleep(0.8)
+            except Exception:
+                break
 
         # ------------------------------------------------------------------
         # Step 3: find and click model family selector, pick the right option
@@ -5367,6 +5392,7 @@ class FlowService:
         candidates: list[tuple[int, int, Any]] = []
         # Submit stays disabled while an attached frame is still processing.
         deadline = time.monotonic() + 60
+        escaped = False
         while not candidates and time.monotonic() < deadline:
             try:
                 body_text = await page.locator("body").inner_text()
@@ -5393,11 +5419,25 @@ class FlowService:
                 except Exception:
                     continue
             if not candidates:
+                if not escaped and time.monotonic() > deadline - 40:
+                    escaped = True
+                    try:
+                        await page.keyboard.press("Escape")  # close a settings popover left over the composer
+                    except Exception:
+                        pass
                 await asyncio.sleep(1)
         if not candidates:
+            labels: list[str] = []
+            try:
+                for index in range(min(40, await buttons.count())):
+                    node = buttons.nth(index)
+                    if await node.is_visible():
+                        labels.append(((await node.get_attribute("aria-label")) or (await node.inner_text()) or "").strip()[:30])
+            except Exception:
+                pass
             raise RuntimeError(
                 "FLOW_UI_CHANGED: submit button was not found or is disabled; "
-                "refresh the Flow project and retry"
+                f"refresh the Flow project and retry (visible buttons: {[l for l in labels if l][:15]})"
             )
         _, _, button = max(candidates, key=lambda item: (item[0], item[1]))
         try:
@@ -5692,6 +5732,17 @@ class FlowService:
                     })
             store.patch_row("jobs", job["id"], {"stage": "recovering", "updatedAt": time.time()})
             await asyncio.sleep(5)
+        if job.get("kind") == "image":
+            baseline = {str(x) for x in job.get("baselineMediaIds") or []}
+            reliable = False
+            try:
+                data = await api.get_project_data()
+                names = {str(m.get("name")) for m in data.get("projectContents", {}).get("media", []) if isinstance(m, dict)}
+                reliable = bool(names) and (not baseline or bool(names & baseline))
+            except Exception:
+                reliable = False
+            if reliable:
+                raise RuntimeError("FLOW_RESULT_NOT_FOUND: submitted image result not found and nothing is generating; recreating")
         raise RuntimeError("FLOW_GENERATION_TIMEOUT: original result is not ready; retry continues recovery")
 
     @staticmethod
@@ -6789,6 +6840,9 @@ class FlowService:
                     "progress": 15,
                     "updatedAt": time.time(),
                 })
+                # Settings/mode steps above can blur or clear the composer; make
+                # sure the prompt is present or Submit stays disabled.
+                await client._ui.fill_prompt(page, prompt_text)
                 await _wait_before_flow_submit()
                 media_items = []
                 try:
@@ -6805,6 +6859,11 @@ class FlowService:
                                     "recoveryOnly": False}, "image", count,
                     )
                     if len(media_items) < count:
+                        # Nothing was submitted: do not leave a fake submission behind.
+                        store.patch_row("jobs", job_id, {
+                            "submissionStartedAt": None, "submissionProjectId": None,
+                            "baselineMediaIds": [], "updatedAt": time.time(),
+                        })
                         raise
                     self._log(
                         "warning", "submit_error_completed_images_recovered",
@@ -6849,6 +6908,18 @@ class FlowService:
                 outputs = list(await asyncio.gather(*[_dl(img, i) for i, img in enumerate(media_items, 1)]))
                 # Sync credits after download (non-blocking)
                 asyncio.create_task(self._sync_credits(api, account["id"]))
+                # Xóa logo Flow ngay sau khi tải; Ultra không có logo nên bỏ qua.
+                if settings.get("removeLogo") and str(account.get("plan") or "") != "Ultra":
+                    from pipeline.logo_remover import DEFAULT_LAMA_MODEL, LogoRemovalSettings, remove_logo_from_file
+                    logo_settings = LogoRemovalSettings(
+                        enabled=True, keep_original=False, mode="auto", lama_model_path=DEFAULT_LAMA_MODEL,
+                    )
+                    for out_path in outputs:
+                        try:
+                            logo_result = await asyncio.to_thread(remove_logo_from_file, out_path, logo_settings)
+                            self._log("info", "logo_removed", job_id=job_id, message=logo_result.mode_used)
+                        except Exception as logo_exc:  # ảnh vẫn dùng được, chỉ còn logo
+                            self._log("warning", "logo_remove_failed", job_id=job_id, message=str(logo_exc))
             output_error = self._output_validation_error(outputs)
             if output_error:
                 raise RuntimeError(output_error)

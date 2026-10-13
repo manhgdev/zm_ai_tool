@@ -24,7 +24,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
     if (key === 'resolution') return [
       t('Chất lượng xuất', 'Output quality'),
       t('Chọn kích thước khung hình video xuất. Auto mặc định giữ tỷ lệ ảnh và xuất với cạnh ngắn 1080px.', 'Choose the output video frame size. Auto is the default: it keeps the media aspect ratio and exports with a 1080px short edge.'),
-      t('Auto cho ảnh ngang là 1920×1080, ảnh dọc là 1080×1920; chọn preset khi cần khung hình cố định.', 'Auto creates 1920×1080 for landscape and 1080×1920 for portrait media; choose a preset when you need a fixed frame.'),
+      t('Auto tự khớp khung chuẩn: ảnh ngang → 1920×1080, ảnh dọc → 1080×1920, ảnh vuông → 1080×1080 để YouTube/Facebook nhận đúng 1080p. Chọn 2K/4K khi cần độ phân giải cao hơn (render lâu, file lớn).', 'Auto snaps to a standard frame: landscape → 1920×1080, portrait → 1080×1920, square → 1080×1080 so YouTube/Facebook recognise true 1080p. Pick 2K/4K for higher resolution (slower render, larger file).'),
     ]
     if (key === 'quality') return [
       t('Chất lượng nén', 'Compression quality'),
@@ -112,7 +112,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   const [logoSafeMargin, setLogoSafeMargin] = useState(Number(cached.logoSafeMargin ?? 4))
   const [outputName, setOutputName] = useState(String(cached.outputName ?? 'output.mp4'))
   const [outputPath, setOutputPath] = useState(String(cached.outputPath ?? ''))
-  const [defaultOutputDirectory, setDefaultOutputDirectory] = useState('ZM_AI_TOOL/subtitles/image-video/')
+  const [defaultOutputDirectory, setDefaultOutputDirectory] = useState('ZM_AI_TOOL/media-compose/')
   const [job, setJob] = useRemountState<Job | null>('srt-image.job', null)
   const [sending, setSending] = useState(false)
   const [missingMedia, setMissingMedia] = useState<MissingMediaInfo | null>(null)
@@ -278,7 +278,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
       else if (srtPath) form.append('srt_path', srtPath)
       if (droppedAudio) form.append('audio', droppedAudio, droppedAudio.name)
       else if (audioPath) form.append('audio_path', audioPath)
-      if (watermarkPath) form.append('watermark_path', watermarkPath)
+      if (watermarkPath && logoEnabled && logoSource === 'image') form.append('watermark_path', watermarkPath)
       form.append('output_name', preview ? `${outputName.replace(/\.mp4$/i, '')}-preview.mp4` : outputName)
       if (outputPath && !preview) form.append('output_path', outputPath)
       form.append('options', JSON.stringify({
@@ -838,6 +838,10 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
                     <option value="1080x1920">{t('1080p dọc (1080 × 1920)', '1080p portrait (1080 × 1920)')}</option>
                     <option value="1080x1080">{t('1080p vuông (1080 × 1080)', '1080p square (1080 × 1080)')}</option>
                     <option value="1280x720">{t('720p ngang (1280 × 720)', '720p landscape (1280 × 720)')}</option>
+                    <option value="2560x1440">{t('2K ngang (2560 × 1440)', '2K landscape (2560 × 1440)')}</option>
+                    <option value="1440x2560">{t('2K dọc (1440 × 2560)', '2K portrait (1440 × 2560)')}</option>
+                    <option value="3840x2160">{t('4K ngang (3840 × 2160)', '4K landscape (3840 × 2160)')}</option>
+                    <option value="2160x3840">{t('4K dọc (2160 × 3840)', '4K portrait (2160 × 3840)')}</option>
                   </select>
                 </label>
                 <label><span className="siv-setting-title">FPS <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('fps') }}>i</span></span>
@@ -1282,6 +1286,10 @@ const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, text
     '1280x720':  { w: 16, h: 9 },
     '1080x1920': { w: 9,  h: 16 },
     '1080x1080': { w: 1,  h: 1 },
+    '2560x1440': { w: 16, h: 9 },
+    '3840x2160': { w: 16, h: 9 },
+    '1440x2560': { w: 9,  h: 16 },
+    '2160x3840': { w: 9,  h: 16 },
   }
   // Ưu tiên kích thước thực tế từ media khi đang ở chế độ auto
   const ap = (resolution === 'auto' && mediaAp) ? mediaAp : (resMap[resolution] ?? { w: 16, h: 9 })

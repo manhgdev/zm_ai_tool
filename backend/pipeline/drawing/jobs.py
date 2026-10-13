@@ -485,7 +485,7 @@ def start(job_id: str) -> None:
 def _drawing_batch_workers(job_count: int) -> int:
     """Current elastic target based on live CPU/RAM, bounded per machine."""
     cores = max(1, os.cpu_count() or 1)
-    cap = min(12, max(1, cores - 1), max(1, job_count))
+    cap = min(cores, max(1, job_count))
     return adaptive_workers(None, kind="cpu", cap=cap, tasks=job_count)
 
 
@@ -506,7 +506,7 @@ def _drawing_render_profile(width: int, height: int, fps: int, resolution: str) 
 def start_batch(job_ids: list[str]) -> int:
     """Render with an elastic pool that expands when CPU/RAM becomes available."""
     cores = max(1, os.cpu_count() or 1)
-    cap = min(12, max(1, cores - 1), max(1, len(job_ids)))
+    cap = min(cores, max(1, len(job_ids)))
     initial_workers = _drawing_batch_workers(len(job_ids))
 
     def worker() -> None:

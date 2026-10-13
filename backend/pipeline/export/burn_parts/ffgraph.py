@@ -495,7 +495,8 @@ _SEG_MAX_ACTIVE = 500
 def _segment_parallelism() -> int:
     """Apple VideoToolbox benefits from more independent, short encode spans."""
     if sys.platform == "darwin":
-        return min(6, max(3, (os.cpu_count() or 6) // 2))
+        from pipeline.core.resources import adaptive_workers
+        return adaptive_workers(None, kind="cpu", cap=max(3, os.cpu_count() or 6))
     return 3  # GTX consumer ≥3 phiên NVENC; lỗi phiên → fallback full graph
 
 

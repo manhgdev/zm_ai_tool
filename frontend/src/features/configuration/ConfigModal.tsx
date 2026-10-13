@@ -1551,7 +1551,7 @@ export default function ConfigModal({
                 ['TTS',           p('text-to-speech')],
                 [t('Tải video','Download video'), p('download-video')],
                 [t('Xuất SRT','SRT export'), p('subtitles' + sep + 'export')],
-                [t('SRT Image / ghép media','SRT Image / media compose'), p('subtitles' + sep + 'image-video')],
+                [t('SRT Image / ghép media','SRT Image / media compose'), p('media-compose')],
                 [t('Vẽ tay','Drawing'),       p('drawing')],
                 [t('Làm sạch video','Video cleaner'),       p('cleaner')],
                 ['Batch',         p('batch')],

@@ -104,6 +104,9 @@ def patch_row(name: str, row_id: str, patch: dict[str, Any]) -> dict[str, Any] |
         rows = _read(name)
         for row in rows:
             if row.get("id") == row_id:
+                if name == "jobs" and row.get("status") == "cancelled" and patch.get("status") == "processing":
+                    # ponytail: late worker write after cancel; a retry re-queues via status=queued first.
+                    patch = {k: v for k, v in patch.items() if k not in {"status", "stage", "progress"}}
                 row.update(patch)
                 _write(name, rows)
                 result = dict(row)

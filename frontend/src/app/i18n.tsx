@@ -48,7 +48,7 @@ const MESSAGES = {
   'nav.tools': { vi: 'Tools', en: 'Tools' },
   'nav.settings': { vi: 'Cấu hình', en: 'Settings' },
   'tools.downloadVideo': { vi: 'Download Video', en: 'Download Video' },
-  'tools.cleanVideo': { vi: 'Làm sạch video', en: 'Clean video' },
+  'tools.cleanVideo': { vi: 'Làm sạch video / ảnh', en: 'Clean video / images' },
   'tools.srtImage': { vi: 'Ghép ảnh/video SRT', en: 'Create SRT image/video' },
   'tools.exportSubtitles': { vi: 'Xuất phụ đề', en: 'Export subtitles' },
   'tools.drawing': { vi: 'Vẽ tay', en: 'Drawing' },

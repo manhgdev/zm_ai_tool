@@ -134,6 +134,8 @@ export type FlowSettings = {
   filePrefix: string;
   referenceStrength: number;
   autoDownload: boolean;
+  /** Remove Flow's sparkle logo from downloaded images (skipped for Ultra). */
+  removeLogo?: boolean;
   /** Keep Flow's Chrome window hidden unless explicitly requested. */
   headless: boolean;
 };

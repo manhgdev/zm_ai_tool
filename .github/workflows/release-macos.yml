@@ -27,6 +27,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements-app.txt
+
+      - uses: actions/cache@v6
+        with:
+          path: backend/pipeline/assets/lama_fp32.onnx
+          key: lama-fp32-onnx-v1
 
       - name: Install build tools
         run: |
@@ -39,6 +46,7 @@ jobs:
           brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
           which ffmpeg
           ffmpeg -version | head -n 1
+          [ -f backend/pipeline/assets/lama_fp32.onnx ] || curl -fL --retry 3 -o backend/pipeline/assets/lama_fp32.onnx https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
 
       - name: Build macOS app
         env:
