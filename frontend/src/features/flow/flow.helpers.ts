@@ -191,9 +191,10 @@ export function flowOutputMediaKind(output: string, fallback: CreateKind) {
 export function flowGroupProgress(jobs: FlowJob[]) {
   const total = jobs.length;
   const completed = jobs.filter((j) => j.status === "done").length;
-  const progress = total
+  const rawProgress = total
     ? Math.round(jobs.reduce((sum, j) => sum + Math.max(0, Math.min(100, Number(j.progress) || 0)), 0) / total)
     : 0;
+  const progress = completed === total ? 100 : Math.min(99, rawProgress);
   return { completed, progress, total };
 }
 

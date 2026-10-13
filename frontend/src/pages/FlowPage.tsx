@@ -1050,6 +1050,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const deletingAllRef = useRef(false);
   // deletingIdsRef is declared earlier (before onFlowRealtime) so the SSE callback can read it
   const [actionBusy, setActionBusy] = useState(false);
+  const [hideActionNotice, setHideActionNotice] = useState(false);
   const [promptHeight, setPromptHeight] = useState<number | undefined>(() => {
     try {
       const saved = Number(localStorage.getItem("zm-ai-tool:flow:prompt-height"));
@@ -1062,9 +1063,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     if (actionLock.current) return;
     actionLock.current = true;
     setActionBusy(true);
+    setHideActionNotice(false);
     try { await action(); }
     catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
-    finally { actionLock.current = false; setActionBusy(false); }
+    finally { actionLock.current = false; setActionBusy(false); setHideActionNotice(false); }
   };
   const cancelCreateAction = async () => {
     try {
@@ -3759,7 +3761,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             )}
           </section>
         )}
-        {actionBusy && <p role="status" aria-live="polite">{t("Đang xử lý yêu cầu, vui lòng chờ…", "Processing your request, please wait…")}</p>}
+        {actionBusy && !hideActionNotice && (
+          <div className="flow-action-notice" role="status" aria-live="polite">
+            <span>{t("Đang xử lý yêu cầu, vui lòng chờ…", "Processing your request, please wait…")}</span>
+            <button type="button" onClick={() => setHideActionNotice(true)} aria-label={t("Ẩn thông báo", "Hide notice")}>×</button>
+          </div>
+        )}
         {retryTarget && (
           <div className="flow-preview-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRetryTarget(null); }}>
             <section className="flow-confirm-dialog flow-retry-dialog" data-multi-kind={retryTarget.groups.length > 1 ? "true" : undefined} role="dialog" aria-modal="true" aria-labelledby="flow-retry-title">
