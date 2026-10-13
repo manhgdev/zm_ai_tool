@@ -86,6 +86,9 @@ _RUNTIME_ROOTS = frozenset(
 # Stub/hollow modules to drop from sys.modules (may include packages not in meta-path).
 _PURGE_ROOTS = _RUNTIME_ROOTS | frozenset({"cv2"})
 
+# Shipped inside the exe (build.mjs does not exclude them); versions == runtime_install.CORE.
+_BUNDLED_ROOTS = frozenset({"numpy", "cv2", "PIL", "onnxruntime"})
+
 _AI_PRELOAD = (
     "safetensors",
     "huggingface_hub",
@@ -309,6 +312,10 @@ def _purge_external_modules(site: Path) -> None:
             continue
         mod_file = (getattr(mod, "__file__", "") or "").replace("\\", "/")
         if mod_file and site_s in mod_file:
+            continue
+        # ponytail: these are bundled for real (same pins as the runtime); re-importing a loaded C-extension
+        # package from the runtime venv crashes, so only hollow stubs (no __file__) are dropped.
+        if mod_file and root in _BUNDLED_ROOTS:
             continue
         sys.modules.pop(key, None)
     # OpenCV leftover after failed/partial import

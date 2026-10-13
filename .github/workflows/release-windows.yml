@@ -63,6 +63,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           if ((Get-Item $lama).Length -lt 200000000) { throw 'lama_fp32.onnx is truncated' }
+          backend/.venv/Scripts/python.exe scripts/lama_smoke.py $lama
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build EXE
         shell: pwsh
@@ -78,6 +80,18 @@ jobs:
         run: |
           node build_app/package_windows.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check bundled imaging stack and LaMa model
+        shell: pwsh
+        env:
+          BUNDLE: ${{ steps.package.outputs.directory }}
+        run: |
+          $missing = @()
+          foreach ($leaf in @('_multiarray_umath*.pyd', 'cv2*.pyd', '_imaging*.pyd', 'onnxruntime_pybind11_state*.pyd', 'lama_fp32.onnx')) {
+            $hit = Get-ChildItem -LiteralPath $env:BUNDLE -Recurse -File -Filter $leaf -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $hit) { $missing += $leaf }
+          }
+          if ($missing) { throw "Bundle is missing: $($missing -join ', ')" }
+
       - name: Check release files exist
         shell: pwsh
         env:

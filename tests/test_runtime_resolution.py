@@ -31,6 +31,16 @@ class ResolutionTests(unittest.TestCase):
         self.assertIn('ctranslate2==4.6.0', CORE)
         self.assertEqual([spec for spec in CORE if spec.startswith('setuptools')], ['setuptools==80.9.0'])
 
+    def test_bundled_exe_stack_matches_runtime_pins(self):
+        from pipeline.core.runtime_install import CORE
+        text = (Path(__file__).resolve().parents[1] / 'backend' / 'requirements-app.txt').read_text()
+        lines = [line.strip() for line in text.splitlines() if line.strip() and not line.startswith('#')]
+        for name in ('numpy', 'pillow', 'opencv-python-headless'):
+            spec = next(s for s in CORE if s.startswith(name + '=='))
+            self.assertIn(spec, lines)
+        self.assertIn('onnxruntime==1.20.1', lines)  # == CPU provider in runtime_resolution.resolve
+        self.assertNotIn('rapidocr-onnxruntime', ' '.join(lines))
+
     def test_selects_only_windows_cp312_and_keeps_hash(self):
         packages = [{'name': 'test', 'version': '1.0', 'wheels': [
             {'url': f'https://example.invalid/test-1.0-{tag}.whl', 'hashes': {'sha256': 'a' * 64}, 'size': 100}

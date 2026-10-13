@@ -16,8 +16,8 @@ from pathlib import Path
 
 from pipeline.core.runtime_site import ensure_cv2
 
-# ensure_cv2 thêm site-packages của .venv-runtime vào sys.path trước (bản APP loại cv2/numpy khỏi bundle);
-# thiếu thì hook trong runtime_site tự cài gói OCR.
+# cv2/numpy/onnxruntime(CPU) đã đóng gói sẵn trong APP (cùng phiên bản với runtime) nên import luôn chạy được;
+# khi .venv-runtime đã cài, ensure_cv2 ưu tiên site-packages của nó.
 cv2 = ensure_cv2()
 import numpy as np  # noqa: E402
 

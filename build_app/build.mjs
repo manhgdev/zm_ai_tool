@@ -426,9 +426,11 @@ const args = [
 
 // Các gói AI được cài vào .venv-runtime trong thư mục Portable ở lần mở đầu tiên.
 // Exclude thêm dev-only packages để giảm kích thước bundle.
+// numpy / cv2 / PIL / onnxruntime (CPU) ĐƯỢC đóng gói sẵn (đúng phiên bản như runtime) để xoá logo LaMa chạy ngay từ lần mở đầu.
+// Khi runtime đã cài, _RuntimeSiteFinder vẫn ưu tiên bản trong runtime (xem runtime_site.py).
 for (const mod of [
   'faster_whisper', 'ctranslate2', 'tokenizers', 'huggingface_hub',
-  'rapidocr_onnxruntime', 'onnxruntime', 'cv2', 'PIL', 'numpy',
+  'rapidocr_onnxruntime',
   'torch', 'torchaudio', 'transformers', 'datasets', 'accelerate',
   'pandas', 'scipy', 'sklearn', 'tensorflow', 'soundfile', 'librosa',
   'pytest',
