@@ -1063,11 +1063,16 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                     _install_state["diagnostics"] = repr(e)
                 _install_state["message"] = "Cài đặt thất bại / Installation failed"
                 _install_state["updatedAt"] = time.time()
+            detail = ""
+            if isinstance(e, RuntimeInstallError) and e.diagnostics:
+                from pipeline.core.runtime_download import redact
+                detail = "\n--- diagnostics ---\n" + redact(str(e.diagnostics))[-6000:] + "\n"
             _append_install_log(
                 "\n=== Cài đặt thất bại / Installation failed ===\n"
                 + str(e)
                 + "\n"
                 + traceback.format_exc()
+                + detail
             )
         finally:
             _sc._install_log_fn = None
