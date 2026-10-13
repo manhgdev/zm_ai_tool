@@ -19,7 +19,16 @@ type Props = {
   onClearText: () => void
   onClearSrt: () => void
   onPasteClipboard: () => void
+  /** VieNeu Turbo: hiện gợi ý cue phi ngôn ngữ [cười] [thở dài] [hắng giọng]. */
+  emotionCues?: boolean
 }
+
+// Tags understood by the VieNeu SDK phonemizer (vieneu_utils.phonemize_text).
+const EMOTION_CUES: [string, string][] = [
+  ['[cười]', '[chuckle]'],
+  ['[thở dài]', '[sigh]'],
+  ['[hắng giọng]', '[clear throat]'],
+]
 
 export default function TtsInputPanel({
   inputMode,
@@ -36,9 +45,24 @@ export default function TtsInputPanel({
   onClearText,
   onClearSrt,
   onPasteClipboard,
+  emotionCues,
 }: Props) {
   const { locale } = useLocale()
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
+  const textRef = useRef<HTMLTextAreaElement>(null)
+  const insertCue = (cue: string) => {
+    const el = textRef.current
+    const start = el?.selectionStart ?? text.length
+    const end = el?.selectionEnd ?? text.length
+    const pad = start > 0 && !/\s$/.test(text.slice(0, start)) ? ' ' : ''
+    const inserted = `${pad}${cue} `
+    onTextChange(text.slice(0, start) + inserted + text.slice(end))
+    const caret = start + inserted.length
+    requestAnimationFrame(() => {
+      el?.focus()
+      el?.setSelectionRange(caret, caret)
+    })
+  }
   const fileRef = useRef<HTMLInputElement>(null)
   const srtRef = useRef<HTMLInputElement>(null)
   return (
@@ -121,6 +145,7 @@ export default function TtsInputPanel({
       ) : (
         <>
           <textarea
+            ref={textRef}
             className="tts-textarea"
             value={text}
             onChange={(e) => onTextChange(e.target.value)}
@@ -160,6 +185,23 @@ export default function TtsInputPanel({
               'Blank lines always split paragraphs. “Auto-split sentences” also cuts on . ! ?',
             )}
           </p>
+          {emotionCues && (
+            <div id="tts-emotion-cues" style={{ margin: '6px 0 0', fontSize: '0.72rem', color: 'var(--tts-muted)' }}>
+              <p style={{ margin: 0 }}>
+                {t(
+                  'Cảm xúc / cue phi ngôn ngữ (thử nghiệm): chèn thẳng vào văn bản, VieNeu sẽ đọc thành tiếng cười, thở dài, hắng giọng.',
+                  'Emotion / non-verbal cues (experimental): drop [chuckle], [sigh], [clear throat] straight into the text. Vietnamese tags also work.',
+                )}
+              </p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                {EMOTION_CUES.map(([vi, en]) => (
+                  <button key={vi} type="button" onClick={() => insertCue(locale === 'en' ? en : vi)}>
+                    {locale === 'en' ? en : vi}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
     </section>

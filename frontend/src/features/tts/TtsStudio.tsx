@@ -2313,6 +2313,7 @@ export default function TtsStudio({
               setText('')
             }}
             onPasteClipboard={() => void onPasteClipboard()}
+            emotionCues={usesVieneu && vieneu?.mode !== 'v3nano'}
           />
           </DashPanel>
 
