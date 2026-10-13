@@ -35,7 +35,7 @@ ROOT = DATA / "srt_image"
 ROOT.mkdir(parents=True, exist_ok=True)
 CACHE_ROOT = ROOT / "render-cache"
 CACHE_INDEX = CACHE_ROOT / "index.json"
-CACHE_VERSION = 3
+CACHE_VERSION = 4  # đổi khi logic render đổi (khung chuẩn 1920×1080, zoom, LaMa delogo) để không tái dùng video cũ
 DEFAULT_OUTPUT_RESOLUTION = "auto"
 _LOCK = threading.Lock()
 _CACHE_LOCK = threading.Lock()
@@ -689,7 +689,7 @@ def _prepare_video_segments(
     job_id: str, media: list[Path], durations: list[float], work: Path,
     width: int, height: int, fps: int, crf: int, use_gpu: bool, zoom: str = "off",
     delogo_prefix: str = "", gpu_encoder: str | None = None,
-    preserve_audio: bool = False,
+    preserve_audio: bool = False, effect: str = "none", transition: float = 0.28,
 ) -> list[Path]:
     # Parse delogo params 1 lần để check per-file
     dl_params: tuple[int, int, int, int] | None = None
@@ -717,7 +717,19 @@ def _prepare_video_segments(
         # Ảnh đã được LaMa xử lý từ trước (_inpaint_still_logo); chỉ clip video dùng delogo.
         use_dl = bool(delogo_prefix) and is_video(source)
         chosen_vf = base_vf_dl if use_dl else base_vf_no_dl
-        vf = f"{chosen_vf}{',' + motion if motion else ''},format=yuv420p"
+        # Chuyển cảnh: fade qua đen tại mỗi điểm cắt, giữ nguyên thời lượng clip → khớp audio/phụ đề.
+        # ponytail: dissolve dùng chung kiểu fade; random = độ dài ngẫu nhiên 50–100% mỗi cảnh.
+        fade_vf = ""
+        if effect in {"fade", "dissolve", "random"} and transition > 0:
+            half = transition * (random.uniform(0.5, 1.0) if effect == "random" else 1.0) / 2
+            half = min(half, duration / 3)
+            parts = []
+            if index > 0:
+                parts.append(f"fade=t=in:st=0:d={half:.3f}")
+            if index < len(media) - 1:
+                parts.append(f"fade=t=out:st={max(0.0, duration - half):.3f}:d={half:.3f}")
+            fade_vf = "".join("," + p for p in parts)
+        vf = f"{chosen_vf}{',' + motion if motion else ''}{fade_vf},format=yuv420p"
         segment_plans.append((index, source, duration, vf, use_dl))
 
     total = len(segment_plans)
@@ -1646,16 +1658,19 @@ def run(job_id: str) -> None:
         # áp dụng delogo trực tiếp trong final pass.
         all_raw_still = all(not is_video(p) for p in media)
         is_drawing = bool(opts.get("drawing", {}).get("enabled")) if isinstance(opts.get("drawing"), dict) else False
+        effect_mode = str(opts.get("effect", "none"))
+        transition_sec = max(0.0, min(3.0, float(opts.get("transitionDuration", 0.28) or 0)))
         need_segments = (
             preserve_source_audio
             or
             zoom_mode != "off"
+            or effect_mode in {"fade", "dissolve", "random"}
             or (not all_raw_still and not is_drawing)
         )
         sources = (
             _prepare_video_segments(
                 job_id, media, durations, work, width, height, fps, crf, use_gpu, zoom_mode,
-                delogo_prefix, gpu_encoder, preserve_source_audio,
+                delogo_prefix, gpu_encoder, preserve_source_audio, effect_mode, transition_sec,
             )
             if need_segments else media
         )
