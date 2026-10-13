@@ -379,6 +379,17 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(calls, [None, 'cpu'])
         self.assertIn('cuda boom', result['diagnostics'])
 
+    def test_openmp_dll_is_copied_beside_torch_extensions(self):
+        with tempfile.TemporaryDirectory() as raw:
+            env = Path(raw)
+            (env / 'Scripts').mkdir()
+            (env / 'Scripts' / 'vcomp140.dll').write_bytes(b'dll')
+            for sub in ('torchaudio/lib', 'torch/lib'):
+                (env / 'Lib/site-packages' / sub).mkdir(parents=True)
+            runtime._ensure_openmp(env)
+            self.assertEqual((env / 'Lib/site-packages/torchaudio/lib/vcomp140.dll').read_bytes(), b'dll')
+            self.assertTrue((env / 'Lib/site-packages/torch/lib/vcomp140.dll').is_file())
+
 
 if __name__ == '__main__':
     unittest.main()

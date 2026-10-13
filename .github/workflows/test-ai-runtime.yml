@@ -48,6 +48,10 @@ jobs:
           except RuntimeInstallError as exc:
               print('\n=== INSTALL FAILED:', exc.code, exc, '===\n' + str(exc.diagnostics), flush=True)
               sys.exit(1)
+          from pipeline.core.runtime_active import active_runtime_dir
+          beside = active_runtime_dir() / 'Lib/site-packages/torchaudio/lib/vcomp140.dll'
+          assert beside.is_file(), f'vcomp140.dll missing beside libtorchaudio.pyd: {beside}'
+          print('vcomp140.dll beside torchaudio OK')
           '@
           $script | python -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

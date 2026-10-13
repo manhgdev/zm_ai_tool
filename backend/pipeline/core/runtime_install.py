@@ -35,6 +35,8 @@ CORE = (
     'tokenizers==0.22.1', 'transformers==4.57.6', 'librosa==0.11.0',
     'safetensors==0.6.2', 'pyclipper==1.3.0.post6', 'shapely==2.1.2', 'six==1.17.0',
     'tqdm==4.67.1',
+    # torchaudio's libtorchaudio.pyd imports VCOMP140.DLL; PCs without the VC++ redistributable lack it.
+    'msvc-runtime==14.44.35112',
 )
 DEMUCS = (
     'demucs==4.0.1', 'dora-search==0.1.12', 'einops==0.8.1', 'julius==0.2.7',
@@ -184,8 +186,37 @@ def _probe(root: Path, profile: str, demucs: bool = False, *, features: tuple[st
         raise RuntimeInstallError('RUNTIME_PROBE_FAILED', 'Cannot execute runtime Python', diagnostics=str(exc)) from exc
     output = (result.stdout + '\n' + result.stderr)[-12000:]
     if result.returncode:
-        raise RuntimeInstallError('RUNTIME_PROBE_FAILED', 'Runtime probe failed', diagnostics=output)
+        raise RuntimeInstallError('RUNTIME_PROBE_FAILED', 'Runtime probe failed', diagnostics=output + _dll_report())
     return output
+
+
+def _dll_report() -> str:
+    """Which VC++/OpenMP runtime DLLs this PC can load (a missing one breaks torch extensions)."""
+    if os.name != 'nt':
+        return ''
+    import ctypes
+    lines = []
+    for name in ('vcomp140.dll', 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'):
+        try:
+            ctypes.WinDLL(name)
+            lines.append(f'{name}: ok')
+        except OSError as exc:
+            lines.append(f'{name}: MISSING ({exc})')
+    return '\n--- system DLLs ---\n' + '\n'.join(lines)
+
+
+def _ensure_openmp(env: Path) -> None:
+    """Put vcomp140.dll (shipped by the msvc-runtime wheel) next to torch/torchaudio extensions.
+
+    ponytail: always copied (not only when the system lacks it) so every PC behaves like CI.
+    """
+    source = next((p for p in (env / 'Scripts' / 'vcomp140.dll', env / 'vcomp140.dll') if p.is_file()), None)
+    if source is None:
+        return
+    for sub in ('torchaudio/lib', 'torch/lib'):
+        target = env / 'Lib' / 'site-packages' / sub
+        if target.is_dir():
+            shutil.copy2(source, target / 'vcomp140.dll')
 
 
 def _run(command: list[str], error: str, label: str, progress=None, cwd: str | None = None) -> None:
@@ -446,7 +477,7 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *
                     'diarization': {'numpy', 'soundfile'},
                 }
                 # All runtime profiles probe audio I/O in addition to the SDK.
-                wanted = {'numpy', 'soundfile'} | set().union(*(feature_core.get(feature, set()) for feature in features))
+                wanted = {'numpy', 'soundfile', 'msvc-runtime'} | set().union(*(feature_core.get(feature, set()) for feature in features))
                 if demucs:
                     wanted.update({'pyyaml', 'tqdm', 'six'})
                 core = tuple(spec for spec in CORE if spec.split('==')[0] in wanted)
@@ -612,6 +643,7 @@ def _install_runtime(progress: Progress | None = None, *, demucs: bool = False, 
             emit(15, 'prepare_python', currentPackage=f'Python {PYTHON_VERSION}')
             python = _prepare(uv, candidate)
             _install_packages(uv, python, profile, demucs, emit, **feature_options)
+            _ensure_openmp(candidate)
             emit(85, 'probe')
             diagnostics = _probe(candidate, profile, demucs, **feature_options)
             (candidate / '.app-runtime.json').write_text(json.dumps({'recipe': RECIPE_VERSION}), encoding='utf-8')
