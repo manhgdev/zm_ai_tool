@@ -311,6 +311,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
             resolution: seriesSettings.resolution || '360p',
             quality: seriesSettings.quality || seriesSettings.resolution || '360p',
             concurrency: seriesSettings.concurrency || '1',
+            removeLogo,
           },
           imageModel,
           autoApprove: true,
@@ -370,6 +371,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
             resolution: seriesSettings.resolution || '360p',
             quality: seriesSettings.quality || seriesSettings.resolution || '360p',
             count: 1,
+            ...(isKeyframe ? { removeLogo } : {}),
           },
           headless,
         }),
@@ -418,6 +420,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
               resolution: seriesSettings.resolution || '360p',
               quality: seriesSettings.quality || seriesSettings.resolution || '360p',
               count: 1,
+              ...(isKeyframe ? { removeLogo } : {}),
             },
             headless,
           }),
@@ -691,6 +694,15 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
   const toggleHeadless = () => {
     setHeadless((v) => {
       try { localStorage.setItem('zm-series:headless', String(!v)) } catch {}
+      return !v
+    })
+  }
+  const [removeLogo, setRemoveLogo] = useState(() => {
+    try { return localStorage.getItem('zm-series:removeLogo') === 'true' } catch { return false }
+  })
+  const toggleRemoveLogo = () => {
+    setRemoveLogo((v) => {
+      try { localStorage.setItem('zm-series:removeLogo', String(!v)) } catch {}
       return !v
     })
   }
@@ -1253,6 +1265,13 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                       <label className="fsp-headless-cb-row" htmlFor="fsp-headless-cb">
                         <input id="fsp-headless-cb" type="checkbox" className="fsp-headless-cb" checked={!headless} onChange={toggleHeadless} />
                         <span>{!headless ? t('Hiện', 'On') : t('Ẩn', 'Off')}</span>
+                      </label>
+                    </div>
+                    <div className="fsp-headless-field" title={t('Tài khoản Ultra không có logo nên sẽ tự bỏ qua', 'Ultra accounts have no logo, so they are skipped automatically')}>
+                      <label htmlFor="fsp-remove-logo-cb">{t('Xóa logo Flow (trừ Ultra)', 'Remove Flow logo (except Ultra)')}</label>
+                      <label className="fsp-headless-cb-row" htmlFor="fsp-remove-logo-cb">
+                        <input id="fsp-remove-logo-cb" type="checkbox" className="fsp-headless-cb" checked={removeLogo} onChange={toggleRemoveLogo} />
+                        <span>{removeLogo ? t('Bật', 'On') : t('Tắt', 'Off')}</span>
                       </label>
                     </div>
                   </div>

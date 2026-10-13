@@ -1306,7 +1306,7 @@ class AutomationService:
             jobs = flow_service.enqueue({
                 "prompts": prompt_lines,
                 "kind": "image", "mode": "text", "accountId": account_id,
-                "settings": {"model": str(flow_cfg.get("model") or "Nano Banana 2"), "ratio": str(flow_cfg.get("ratio") or "16:9"), "resolution": str(flow_cfg.get("resolution") or "1K"), "count": int(flow_cfg.get("count") or 1), "concurrency": str(flow_cfg.get("concurrency") or "3"), "outputDir": f"automation_{job_id}"},
+                "settings": {"model": str(flow_cfg.get("model") or "Nano Banana 2"), "ratio": str(flow_cfg.get("ratio") or "16:9"), "resolution": str(flow_cfg.get("resolution") or "1K"), "count": int(flow_cfg.get("count") or 1), "concurrency": str(flow_cfg.get("concurrency") or "3"), "removeLogo": bool(flow_cfg.get("removeLogo")), "outputDir": f"automation_{job_id}"},
             })
             child_ids = [str(item["id"]) for item in jobs]
             self.store.update_job(job_id, child_job_ids=child_ids, artifacts={**(self.store.get_job(job_id).get("artifacts") or {}), "images": str(image_dir)})

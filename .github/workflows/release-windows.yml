@@ -56,9 +56,13 @@ jobs:
             'C:\Program Files (x86)\Inno Setup 6' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           }
           New-Item -ItemType Directory -Force backend/pipeline/assets | Out-Null
-          if (-not (Test-Path backend/pipeline/assets/lama_fp32.onnx)) {
-            curl.exe -fL --retry 3 -o backend/pipeline/assets/lama_fp32.onnx https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
+          $lama = 'backend/pipeline/assets/lama_fp32.onnx'
+          if ((Test-Path $lama) -and ((Get-Item $lama).Length -lt 200000000)) { Remove-Item $lama -Force }
+          if (-not (Test-Path $lama)) {
+            curl.exe -fL --retry 3 -o $lama https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+          if ((Get-Item $lama).Length -lt 200000000) { throw 'lama_fp32.onnx is truncated' }
 
       - name: Build EXE
         shell: pwsh

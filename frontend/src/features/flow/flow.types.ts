@@ -41,6 +41,7 @@ export type FlowJob = {
     /** Video download menu quality (360p/720p/1080p/4K). */
     quality?: string;
     headless?: boolean;
+    removeLogo?: boolean;
     outputDir: string;
     concurrency?: string;
   };

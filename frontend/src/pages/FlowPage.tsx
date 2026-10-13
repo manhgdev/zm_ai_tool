@@ -379,6 +379,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     accountId: string;
     fresh: boolean;
     headless: boolean;
+    removeLogo: boolean;
     groups: Array<{
       kind: CreateKind;
       mode: ImageMode | VideoMode;
@@ -1501,6 +1502,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       groups,
       fresh: initialJobs.length > 0 && initialJobs.every(isFreshCreateJob),
       headless: settings.headless,
+      removeLogo: Boolean(selectedJob.settings.removeLogo ?? settings.removeLogo),
     });
   };
   const retryJob = (id: string) => {
@@ -1521,9 +1523,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setRetryBusy(true);
     setRetryTarget(null);
     const retryRequests = groups.flatMap((group) => {
-      const retrySettings = /omni.*flash/i.test(group.model) && group.duration.trim()
+      const retryBase = /omni.*flash/i.test(group.model) && group.duration.trim()
         ? { model: group.model, ratio: group.ratio, duration: group.duration, resolution: group.resolution, quality: group.quality, count: group.count, concurrency }
         : { model: group.model, ratio: group.ratio, resolution: group.resolution, quality: group.quality, count: group.count, concurrency };
+      const retrySettings = group.kind === "image" ? { ...retryBase, removeLogo: retryTarget.removeLogo } : retryBase;
       return group.jobs.map((job) => flowRequest<Record<string, unknown>>(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3799,6 +3802,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <input type="checkbox" checked={!retryTarget.headless} onChange={() => setRetryTarget((current) => current ? { ...current, headless: !current.headless } : current)} />
                   {t('Mở Chrome khi chạy', 'Open Chrome')}
                 </label>
+                {retryTarget.groups.some((group) => group.kind === "image") && (
+                  <label className="flow-retry-headless-cb flow-retry-headless-row" title={t("Tài khoản Ultra không có logo nên sẽ tự bỏ qua", "Ultra accounts have no logo, so they are skipped automatically")}>
+                    <input type="checkbox" checked={retryTarget.removeLogo} onChange={() => setRetryTarget((current) => current ? { ...current, removeLogo: !current.removeLogo } : current)} />
+                    {t("Xóa logo Flow (trừ Ultra)", "Remove Flow logo (except Ultra)")}
+                  </label>
+                )}
                 </div>
                 {retryTarget.groups.length > 1 && (
                   <div className="flow-retry-kind-groups">

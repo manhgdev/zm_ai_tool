@@ -67,9 +67,21 @@ VALID_CORNERS = {"bottom_right", "bottom_left", "top_right", "top_left"}
 VALID_MODES = {"auto", "smart_texture", "inpaint", "lama_local", "lama_plus"}
 
 
+def _ensure_ort():
+    """Thử import lại onnxruntime khi dùng (runtime có thể vừa được cài/kích hoạt sau khi app khởi động)."""
+    global ort, ORT_IMPORT_ERROR
+    if ort is None:
+        try:
+            import onnxruntime as loaded
+            ort, ORT_IMPORT_ERROR = loaded, ""
+        except Exception as exc:  # noqa: BLE001
+            ORT_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+    return ort
+
+
 def lama_runtime_available() -> bool:
     """ONNX Runtime đã import được trong process hiện tại hay chưa."""
-    return ort is not None
+    return _ensure_ort() is not None
 
 
 def lama_runtime_error() -> str:
@@ -584,7 +596,7 @@ def _lama_fill_with_mask(working: np.ndarray, full_mask: np.ndarray, settings: L
 def _flow_auto_cleanup(working: np.ndarray, settings: LogoRemovalSettings) -> tuple[np.ndarray, str, tuple[int, int, int, int]]:
     """Fix29: template mask Flow -> auto align -> LaMa crop -> residual pass."""
     mask, bbox, score, detected = _flow_template_match(working)
-    can_use_lama = bool(settings.lama_model_path and Path(settings.lama_model_path).expanduser().is_file() and ort is not None)
+    can_use_lama = bool(settings.lama_model_path and Path(settings.lama_model_path).expanduser().is_file() and _ensure_ort() is not None)
     if can_use_lama:
         try:
             processed = _lama_fill_with_mask(working, mask, settings)
@@ -606,7 +618,7 @@ def _flow_auto_cleanup(working: np.ndarray, settings: LogoRemovalSettings) -> tu
             return processed, fallback_mode, bbox
     processed = _inpaint_with_mask(working, mask, settings.inpaint_radius)
     model_exists = bool(settings.lama_model_path and Path(settings.lama_model_path).expanduser().is_file())
-    if model_exists and ort is None:
+    if model_exists and _ensure_ort() is None:
         mode = "flow_template_ns_onnxruntime_unavailable"
     elif not model_exists:
         mode = "flow_template_ns_no_model"
@@ -631,20 +643,20 @@ def _prepare_lama_input(roi: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, 
 _LAMA_SESSION_CACHE: dict[str, object] = {}
 
 
-def _get_lama_session(model_path: str):
+def _get_lama_session(model_path: str, cpu_only: bool = False):
     """Tái sử dụng ONNX session giữa nhiều ảnh để batch nhanh hơn."""
-    if ort is None:
+    if _ensure_ort() is None:
         raise LogoRemovalError("Chưa cài onnxruntime.")
     mp = Path(model_path).expanduser().resolve()
     key = str(mp)
-    cached = _LAMA_SESSION_CACHE.get(key)
+    cached = None if cpu_only else _LAMA_SESSION_CACHE.get(key)
     if cached is not None:
         return cached
     if not mp.is_file():
         raise LogoRemovalError(f"Không tìm thấy model LaMa ONNX: {mp}")
     providers = []
     try:
-        available = set(ort.get_available_providers())
+        available = set() if cpu_only else set(ort.get_available_providers())
         if "DmlExecutionProvider" in available:
             providers.append("DmlExecutionProvider")
         if "CUDAExecutionProvider" in available:
@@ -718,7 +730,13 @@ def _run_lama_session(inp: np.ndarray, mask: np.ndarray, model_path: str) -> np.
     try:
         outputs = session.run(None, feed)
     except Exception as exc:  # noqa: BLE001
-        raise LogoRemovalError(f"Chạy model LaMa thất bại: {exc}") from exc
+        # GPU (DirectML/CUDA) có thể mở được nhưng lỗi lúc chạy (GPU cũ, thiếu VRAM/DLL) → thử lại bằng CPU.
+        if session.get_providers()[0] == "CPUExecutionProvider":
+            raise LogoRemovalError(f"Chạy model LaMa thất bại: {exc}") from exc
+        try:
+            outputs = _get_lama_session(model_path, cpu_only=True).run(None, feed)
+        except Exception as cpu_exc:  # noqa: BLE001
+            raise LogoRemovalError(f"Chạy model LaMa thất bại: {exc}; CPU: {cpu_exc}") from cpu_exc
     if not outputs:
         raise LogoRemovalError("Model LaMa không trả về dữ liệu.")
 

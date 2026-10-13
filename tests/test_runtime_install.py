@@ -208,6 +208,24 @@ class HardwareTests(unittest.TestCase):
                 self.assertIn('--no-deps', command)
             self.assertIn('--no-binary', commands[-1])
             self.assertTrue(all('--no-index' in c for c in commands[:-1]))
+    def test_wheels_from_separate_hash_dirs_share_one_install_cwd(self):
+        with tempfile.TemporaryDirectory() as raw:
+            paths = []
+            for i, name in enumerate(('a-1-py3-none-any.whl', 'b-1-py3-none-any.whl')):
+                path = Path(raw) / 'wheels' / str(i) / name
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b'x')
+                paths.append(path)
+            seen = []
+            def run(command, error, label, progress=None, cwd=None):
+                seen.append([(Path(cwd) / n).is_file() for n in command if n.endswith('.whl')])
+            def downloaded(wheels, groups, emit, on_ready):
+                on_ready({'name': 'Core / ONNX', 'packages': []}, paths)
+            with patch.object(runtime, '_run', side_effect=run), patch.object(runtime, '_prefetch_packages', side_effect=downloaded), \
+                    patch.object(runtime, 'runtime_home', return_value=Path(raw)):
+                runtime._install_packages('uv', Path('python.exe'), 'cpu', False, lambda *a, **kw: None)
+            self.assertEqual(seen[0], [True, True])
+            self.assertEqual(list((Path(raw) / 'runtime' / 'stage').iterdir()), [])
 
     def test_network_and_timeout_report_useful_errors(self):
         with patch.object(install, '_pip_stream', return_value=subprocess.CompletedProcess([], 1, 'HTTP error: 407 Proxy Authentication Required', '')):

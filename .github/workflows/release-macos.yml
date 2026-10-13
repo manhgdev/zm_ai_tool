@@ -47,7 +47,9 @@ jobs:
           which ffmpeg
           ffmpeg -version | head -n 1
           mkdir -p backend/pipeline/assets
-          [ -f backend/pipeline/assets/lama_fp32.onnx ] || curl -fL --retry 3 -o backend/pipeline/assets/lama_fp32.onnx https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
+          lama=backend/pipeline/assets/lama_fp32.onnx
+          [ -f "$lama" ] && [ "$(stat -f%z "$lama")" -ge 200000000 ] || curl -fL --retry 3 -o "$lama" https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
+          [ "$(stat -f%z "$lama")" -ge 200000000 ] || { echo "lama_fp32.onnx is truncated"; exit 1; }
 
       - name: Build macOS app
         env:

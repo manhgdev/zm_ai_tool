@@ -39,7 +39,7 @@ type AutomationSettings = {
   promptEngine?: 'vi' | 'en' | 'ko' | 'custom'
   scriptBrief: { niche: string; audience: string; character: string; durationMinutes: number; videoType: string; tone: string; platform: string; primaryGoal: string; commonMistake: string }
   tts: { voice: string; speed: number; volume: number; pitch: number; style: string }
-  flow: { accountId: string; model: string; ratio: string; resolution: string; concurrency: string; promptEngine: 'vi' | 'en' | 'ko' | 'custom'; count?: string }
+  flow: { accountId: string; model: string; ratio: string; resolution: string; concurrency: string; promptEngine: 'vi' | 'en' | 'ko' | 'custom'; count?: string; removeLogo?: boolean }
   compose: {
     resolution: string; targetPlatform: string; fps: number; crf: number; encoder: 'auto' | 'gpu' | 'cpu'
     effect: string; transitionDuration: number; zoom: string; speed: number; volume: number; previewSeconds: number
@@ -770,6 +770,7 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
         <label><span>{t('Tỷ lệ khung hình', 'Aspect ratio')}</span><select value={flowRatioOptions.includes(settings.flow.ratio) ? settings.flow.ratio : flowRatioOptions[0]} onChange={event => updateNested('flow', 'ratio', event.target.value)}>{flowRatioOptions.map(ratio => <option key={ratio}>{ratio}</option>)}</select></label>
         <label><span>{t('Số ảnh mỗi prompt', 'Images per prompt')}</span><select value={settings.flow.count ?? '1'} onChange={event => updateNested('flow', 'count', event.target.value)}><option value="1">1</option><option value="2">2</option><option value="4">4</option></select></label>
         <label><span>{t('Số luồng Flow (tối đa 18)', 'Flow concurrency (max 18)')}</span><input type="number" min="1" max="18" value={settings.flow.concurrency} onChange={event => updateNested('flow', 'concurrency', String(Math.max(1, Math.min(18, Number(event.target.value) || 1))))} /></label>
+        <label className="automation-check" title={t('Tài khoản Ultra không có logo nên sẽ tự bỏ qua', 'Ultra accounts have no logo, so they are skipped automatically')}><input type="checkbox" checked={Boolean(settings.flow.removeLogo)} onChange={event => updateNested('flow', 'removeLogo', event.target.checked)} /><span>{t('Xóa logo Flow (trừ Ultra)', 'Remove Flow logo (except Ultra)')}</span></label>
       </div> : settingsTab === 'compose' ? <div id="automation-settings-compose" className="automation-setting-grid" role="tabpanel">
         <label><span>{t('Chất lượng xuất', 'Output quality')}</span><select value={settings.compose.resolution} onChange={event => updateNested('compose', 'resolution', event.target.value)}><option value="auto">{t('Auto theo media · 1080p', 'Auto from media · 1080p')}</option><option value="1920x1080">{t('1080p ngang', '1080p landscape')}</option><option value="1080x1920">{t('1080p dọc', '1080p portrait')}</option><option value="1080x1080">{t('1080p vuông', '1080p square')}</option><option value="1280x720">{t('720p ngang', '720p landscape')}</option></select></label>
         <label><span>{t('FPS xuất video', 'Output FPS')}</span><input type="number" min="1" max="120" value={settings.compose.fps} onChange={event => updateNested('compose', 'fps', Number(event.target.value) || 30)} /></label>

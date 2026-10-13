@@ -126,7 +126,7 @@ def install(progress: Callable | None = None) -> dict:
                 base_python = str(candidate)
             else:
                 base_python = sys.executable
-            _run([base_python, "-m", "venv", str(python.parent.parent)])
+            _run([base_python, "-I", "-m", "venv", *(["--copies"] if os.name == "nt" else []), str(python.parent.parent)])
         # Upstream's ONNX frontend imports torch/torchaudio for reference loading.
         # Keep their CPU wheels out of the application's GPU environment.
         report(15, "MOSS-TTS-Nano: cài thư viện CPU / installing CPU dependencies")

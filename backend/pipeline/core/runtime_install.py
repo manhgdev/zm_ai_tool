@@ -436,16 +436,34 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *
     def install(paths, label):
         nonlocal use_pip
         # uv/pip cắt đường dẫn tại '#' (định dạng fragment) → thư mục kiểu E:\#ZM_AI_TOOL cài lỗi.
-        # Tất cả wheel nằm chung một thư mục: chạy với cwd = thư mục đó và truyền tên file thuần.
+        # Mỗi wheel nằm trong thư mục riêng wheels/<sha256>/ nên gom (hardlink/copy) vào một thư mục
+        # tạm rồi chạy với cwd = thư mục đó và truyền tên file thuần.
+        stage = root / 'stage'
+        stage.mkdir(parents=True, exist_ok=True)
+        staged = []
+        for path in paths:
+            if not path.is_file():
+                continue
+            dest = stage / path.name
+            dest.unlink(missing_ok=True)
+            try:
+                os.link(path, dest)
+            except OSError:
+                shutil.copy2(path, dest)
+            staged.append(dest)
         command = ['--no-index', '--no-deps', *(path.name for path in paths)]
-        cwd = str(paths[0].parent)
+        cwd = str(stage)
         try:
-            _run([*(pip_base if use_pip else uv_base), *command], 'DEPENDENCY_INSTALL_FAILED', label, cwd=cwd)
-        except RuntimeInstallError as exc:
-            if use_pip or 'os error 448' not in exc.diagnostics.lower() or 'interpreter' not in exc.diagnostics.lower():
-                raise
-            use_pip = True
-            _run([*pip_base, *command], 'DEPENDENCY_INSTALL_FAILED', label, cwd=cwd)
+            try:
+                _run([*(pip_base if use_pip else uv_base), *command], 'DEPENDENCY_INSTALL_FAILED', label, cwd=cwd)
+            except RuntimeInstallError as exc:
+                if use_pip or 'os error 448' not in exc.diagnostics.lower() or 'interpreter' not in exc.diagnostics.lower():
+                    raise
+                use_pip = True
+                _run([*pip_base, *command], 'DEPENDENCY_INSTALL_FAILED', label, cwd=cwd)
+        finally:
+            for dest in staged:
+                dest.unlink(missing_ok=True)
     def install_ready(group, paths):
         install(paths, group['name'])
     _prefetch_packages(wheels, groups, emit, install_ready)
