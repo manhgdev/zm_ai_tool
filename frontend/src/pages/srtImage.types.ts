@@ -53,7 +53,7 @@ export const HELP = {
   preview: ['Preview', 'Giới hạn số giây render khi bấm Preview để kiểm tra nhanh trước khi xuất toàn bộ video.', '15 giây thường đủ để kiểm tra tỷ lệ, phụ đề, logo và âm lượng.'],
   metadata: ['Xóa metadata', 'Loại bỏ thông tin phụ như tên encoder và metadata khỏi file MP4 đầu ra.', 'Không ảnh hưởng hình hoặc tiếng. Bật nếu muốn file xuất sạch thông tin kỹ thuật.'],
   delogo: ['Xóa logo gốc', 'Xóa watermark AI (Veo 3, Grok…) bằng bộ lọc delogo của FFmpeg trên frame gốc trước khi scale.', 'Vùng xóa mặc định ở góc dưới phải. Tắt Tự định vị để kéo tay chọn vùng trên Preview.'],
-  delogoAuto: ['Tự định vị', 'Tự động đặt vùng xóa logo ở góc dưới phải — vị trí mặc định của Veo 3, Grok.', 'Tắt để kéo chuột vẽ vùng xóa tùy ý trên Preview trực tiếp.'],
+  delogoAuto: ['Tự định vị', 'Tự dò logo/watermark trong từng ảnh rồi xóa; ảnh không có logo thì giữ nguyên (không hiện khung trên preview).', 'Tắt để kéo chuột vẽ vùng xóa tùy ý trên Preview trực tiếp.'],
 } as const
 
 export type HelpKey = keyof typeof HELP

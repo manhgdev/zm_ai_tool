@@ -565,7 +565,7 @@ def _inpaint_still_logo(source: Path, dl: dict[str, Any], work: Path, index: int
     ckey = hashlib.sha1(json.dumps([
         str(source.resolve()), st.st_mtime_ns, st.st_size,
         [float(dl.get(k, d)) for k, d in (('x', 82), ('y', 94), ('w', 16), ('h', 4))],
-        bool(_model), "v1",
+        bool(_model), "v2", bool(dl.get("auto")),
     ]).encode()).hexdigest()[:24]
     cached = CACHE_ROOT / "delogo" / f"{ckey}.png"
     if cached.is_file() and cached.stat().st_size > 0:
@@ -575,10 +575,20 @@ def _inpaint_still_logo(source: Path, dl: dict[str, Any], work: Path, index: int
     if image is None:
         raise RuntimeError(f"Cannot decode logo input: {source.name}")
     height, width = image.shape[:2]
-    x = max(0, min(width - 1, round(float(dl.get("x", 82)) / 100 * width)))
-    y = max(0, min(height - 1, round(float(dl.get("y", 94)) / 100 * height)))
-    w = max(2, min(width - x, round(float(dl.get("w", 16)) / 100 * width)))
-    h = max(2, min(height - y, round(float(dl.get("h", 4)) / 100 * height)))
+    auto_mask = None
+    if dl.get("auto"):
+        # Tự định vị: dò watermark thật bằng template; không thấy logo thì giữ nguyên ảnh (không che bừa góc).
+        from pipeline.logo_remover import _flow_template_match
+        auto_mask, (x, y, x2, y2), _score, found = _flow_template_match(image)
+        if not found:
+            _inpaint_still_logo.last_engine = "auto: không thấy logo, giữ nguyên"
+            return source
+        w, h = max(2, x2 - x), max(2, y2 - y)
+    else:
+        x = max(0, min(width - 1, round(float(dl.get("x", 82)) / 100 * width)))
+        y = max(0, min(height - 1, round(float(dl.get("y", 94)) / 100 * height)))
+        w = max(2, min(width - x, round(float(dl.get("w", 16)) / 100 * width)))
+        h = max(2, min(height - y, round(float(dl.get("h", 4)) / 100 * height)))
     # Bộ xóa logo gốc (logo_remover): lấp bằng texture lân cận + seamlessClone,
     # lỗi thì rơi về inpaint OpenCV. Vùng = rect người dùng chọn.
     from pipeline.logo_remover import (
@@ -601,8 +611,11 @@ def _inpaint_still_logo(source: Path, dl: dict[str, Any], work: Path, index: int
             # Mask = đúng rect người dùng (+4px viền mờ); mask tự dò của _lama_local_fill bỏ sót logo đặc.
             lama_mask = np.zeros((height, width), dtype=np.uint8)
             m = max(3, pad // 3)
-            cv2.rectangle(lama_mask, (max(0, x - m), max(0, y - m)),
-                          (min(width - 1, x + w + m), min(height - 1, y + h + m)), 255, -1)
+            if auto_mask is not None:
+                lama_mask = auto_mask
+            else:
+                cv2.rectangle(lama_mask, (max(0, x - m), max(0, y - m)),
+                              (min(width - 1, x + w + m), min(height - 1, y + h + m)), 255, -1)
             restored = _lama_fill_with_mask(image, lama_mask, settings)
         except Exception as exc:  # noqa: BLE001 - mọi lỗi ONNX đều phải rơi về cách cũ
             engine = f"opencv (LaMa lỗi: {exc})"

@@ -506,11 +506,15 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
       toast.success(t('Đã tạo Series.', 'Series created.'))
     } catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
   }
+  const draftAbort = useRef<AbortController | null>(null)
   const draftWithAi = async () => {
     if (!topic.trim() || !aiConfig.provider) return
     setDrafting(true)
+    const ctrl = new AbortController()
+    draftAbort.current = ctrl
     try {
       const result = await request<{ text: string; bible: string; anchor_prompt?: string }>('/series/draft', {
+        signal: ctrl.signal,
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           topic,
@@ -525,6 +529,7 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
       if (result.anchor_prompt?.trim()) setAnchorPrompt(result.anchor_prompt.trim())
       setDraft(result)
     } catch (error) {
+      if (ctrl.signal.aborted) { toast.info(t('Đã huỷ tạo series.', 'Series creation cancelled.')); return }
       toast.error(t(`AI không viết được series: ${error instanceof Error ? error.message : String(error)}`, `AI could not write the series: ${error instanceof Error ? error.message : String(error)}`))
     } finally { setDrafting(false) }
   }
@@ -909,6 +914,11 @@ export default function FlowSeriesPanel({ onOpenScene, onGenerateAnchor, onOpenS
                 >
                   {drafting ? t('AI đang viết…', 'AI is writing…') : draft ? t('↻ Viết lại', '↻ Rewrite') : t('✨ Tạo series', '✨ Create series')}
                 </button>
+                {drafting && (
+                  <button type="button" className="fsp-btn" onClick={() => draftAbort.current?.abort()}>
+                    {t('Huỷ', 'Cancel')}
+                  </button>
+                )}
               </div>
 
               {drafting && (

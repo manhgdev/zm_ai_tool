@@ -2726,6 +2726,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     try { localStorage.setItem("zm-ai-tool:flow:prompt-height", String(height)); } catch { }
                   }, { once: true });
                 }}
+                onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+                onDrop={(event) => {
+                  const file = event.dataTransfer.files?.[0];
+                  if (!file) return;
+                  event.preventDefault();
+                  importPrompts(file);
+                }}
                 value={prompt}
                 onChange={(event) => {
                   setPrompt(event.target.value);

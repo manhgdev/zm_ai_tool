@@ -296,7 +296,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
         encoder, removeMetadata, subtitleSize, subtitleOffset, subtitleFontFamily, subtitleMargin,
         subtitleBackground, subtitleColor, subtitleBgColor, subtitleOpacity, previewSeconds: preview ? previewSeconds : 0,
         settingsFingerprint: renderSettingsFingerprint,
-        delogo: { enabled: delogoEnabled, ...activeDelogoRect },
+        delogo: { enabled: delogoEnabled, auto: delogoAuto, ...activeDelogoRect },
         drawing: { enabled: drawingEnabled, mode: drawingMode, tool: drawingTool, handId: drawingHandId, detail: drawingDetail, thickness: drawingThickness, strokeOrder: drawingStrokeOrder, resolution: '1080p' },
         logo: {
           enabled: logoEnabled, source: logoSource, text: logoText, icon: logoIcon,
@@ -1057,7 +1057,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
               mediaFolder={mediaFolder}
               delogoEnabled={delogoEnabled}
               delogoAuto={delogoAuto}
-              delogoRect={activeDelogoRect}
+              delogoRect={delogoAuto ? undefined : delogoRect}
               onDelogoRectChange={setDelogoRect}
               logo={logoProp}
             />
