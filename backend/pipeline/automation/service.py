@@ -114,13 +114,11 @@ class AutomationService:
         return self.get_settings()
 
     def start(self) -> None:
-        """Resume queued work and jobs interrupted by a previous app restart."""
+        """Never auto-run after a restart: leftover queued jobs become interrupted; the user presses Resume."""
+        interrupted = {"code": "AUTOMATION_INTERRUPTED", "message": "Job interrupted by app restart"}
         for job in self.store.list_jobs():
             if job["status"] == "queued":
-                self.start_job(job["id"])
-            elif job["status"] == "interrupted" and (job.get("error") or {}).get("code") == "AUTOMATION_INTERRUPTED":
-                self.store.update_job(job["id"], status="queued", error=None)
-                self.start_job(job["id"])
+                self.store.update_job(job["id"], status="interrupted", error=interrupted)
 
     def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=False)

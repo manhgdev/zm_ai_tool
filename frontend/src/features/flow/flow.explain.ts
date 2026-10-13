@@ -38,6 +38,7 @@ const STAGE_LABELS: Record<string, [string, string]> = {
   generating: ["Flow đang tạo", "Generating"],
   recovering: ["Đang tìm kết quả đã gửi", "Recovering submitted result"],
   downloading: ["Đang tải file", "Downloading"],
+  removing_logo: ["Đang xoá logo", "Removing logo"],
   retrying: ["Đang thử lại", "Retrying"],
   waiting_network: ["Đang chờ mạng", "Waiting for network"],
   model_fallback: ["Đang chuyển sang Nano Banana 2.1", "Switching to Nano Banana 2.1"],
@@ -95,12 +96,24 @@ export function explainFlowError(message: string): FlowExplain {
   if (code === "FLOW_COOKIE_EXPIRED") {
     return {
       code,
-      titleVi: "Cần kiểm tra phiên Flow",
-      titleEn: "Flow session needs checking",
-      summaryVi: "Thông báo cũ này chưa xác nhận Cookie hết hạn.",
-      summaryEn: "This legacy error does not confirm cookie expiry.",
-      actionVi: "Mở phiên để kiểm tra rồi thử kết nối lại. Nếu Flow vẫn hoạt động, giữ nguyên Cookie và xem lỗi chi tiết.",
-      actionEn: "Open the session to check it, then retry connecting. If Flow still works, keep the cookies and inspect the error details.",
+      titleVi: "Cookie đã hết hạn",
+      titleEn: "Cookie has expired",
+      summaryVi: "Phiên Google của Cookie không còn đăng nhập. Tài khoản được chuyển sang đăng nhập bằng Chrome.",
+      summaryEn: "The Cookie's Google session is no longer signed in. The account was switched to Chrome sign-in.",
+      actionVi: "Đăng nhập Google trong cửa sổ Chrome vừa mở. Nếu chưa mở, bấm Kết nối lại.",
+      actionEn: "Sign in to Google in the Chrome window that opened. If it did not open, select Reconnect.",
+    };
+  }
+
+  if (code === "FLOW_LOGO_REMOVE_FAILED") {
+    return {
+      code,
+      titleVi: "Xoá logo thất bại",
+      titleEn: "Logo removal failed",
+      summaryVi: detail,
+      summaryEn: detail,
+      actionVi: "Ảnh đã tải xong. Bấm Chạy lại chỉ để xoá logo, không tạo ảnh mới.",
+      actionEn: "The image is already downloaded. Retry only redoes logo removal and does not generate a new image.",
     };
   }
 

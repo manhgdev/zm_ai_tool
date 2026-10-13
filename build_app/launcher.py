@@ -787,9 +787,36 @@ def mark_update_ready(*_args: object) -> None:
         traceback.print_exc()
 
 
-def bind_desktop_events(window: object) -> None:
+def _heal_blank_page(window: object, url: str) -> None:
+    """Reload the UI when WebView2 shows an empty page (React never rendered #root).
+
+    ponytail: 4 checks x 6s; a healthy page exits on the first check, so it costs nothing normally.
+    """
+    from pipeline.core.app_log import append_log
+
+    for attempt in range(1, 5):
+        time.sleep(6)
+        try:
+            children = window.evaluate_js(
+                "(document.getElementById('root')||{}).childElementCount||0"
+            )
+        except Exception as exc:  # noqa: BLE001
+            children = 0
+            append_log(f"[desktop] blank-page check failed: {exc}")
+        if children:
+            return
+        append_log(f"[desktop] blank page (attempt {attempt}/4), reloading {url}")
+        try:
+            window.load_url(url)
+        except Exception as exc:  # noqa: BLE001
+            append_log(f"[desktop] reload failed: {exc}")
+
+
+def bind_desktop_events(window: object, url: str = "") -> None:
     """Forward native file drops with full paths to the React form."""
     mark_update_ready()
+    if url:
+        threading.Thread(target=_heal_blank_page, args=(window, url), name="blank-page-watchdog", daemon=True).start()
     try:
         from webview.dom import DOMEventHandler, _dnd_state
 
@@ -874,6 +901,7 @@ def run_desktop() -> int:
                 traceback.print_exc()
             return 1
         print(f"[desktop] API sẵn sàng sau {time.monotonic()-_t0:.1f}s tại {base}", flush=True)
+        page_url = f"{base}/text-to-speech?v={APP_VERSION}"
         win_w, win_h = 1440, 900
         x, y = centered_xy(win_w, win_h)
         icon = None
@@ -895,7 +923,7 @@ def run_desktop() -> int:
         try:
             window = webview.create_window(
                 f"{APP_DISPLAY_NAME} v{APP_VERSION}",
-                f"{base}/text-to-speech?v={APP_VERSION}",
+                page_url,
                 **win_kw,
             )
         except TypeError:
@@ -904,7 +932,7 @@ def run_desktop() -> int:
             win_kw.pop("text_select", None)
             window = webview.create_window(
                 f"{APP_DISPLAY_NAME} v{APP_VERSION}",
-                f"{base}/text-to-speech?v={APP_VERSION}",
+                page_url,
                 **win_kw,
             )
         try:
@@ -925,10 +953,10 @@ def run_desktop() -> int:
             traceback.print_exc()
         # webview.start() chặn đến khi user đóng cửa sổ — không thoát vì lỗi job nền
         try:
-            webview.start(bind_desktop_events, window, gui="edgechromium", debug=False)
+            webview.start(bind_desktop_events, (window, page_url), gui="edgechromium", debug=False)
         except Exception:
             try:
-                webview.start(bind_desktop_events, window, debug=False)
+                webview.start(bind_desktop_events, (window, page_url), debug=False)
             except Exception:
                 traceback.print_exc()
                 msg = (

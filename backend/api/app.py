@@ -104,12 +104,15 @@ def create_app() -> FastAPI:
         try:
             from pipeline.flow import service as flow_service
 
+            # Flow never auto-runs: jobs left over from the last session are marked stopped (user presses Run).
             flow_service.start()
         except Exception:
             pass
+
         try:
             from pipeline.automation import service as automation_service
 
+            # Never auto-run after a restart: leftover jobs become interrupted/stopped; the user presses Run/Resume.
             automation_service.start()
         except Exception:
             pass

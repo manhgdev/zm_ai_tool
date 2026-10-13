@@ -2,6 +2,10 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.12
 psutil>=5.9.0
+# Bundled core: logo removal / LaMa (must match requirements-app.txt pins).
+numpy>=2.2.6
+opencv-python-headless>=4.12.0.88
+onnxruntime>=1.20.1
 # flow package inlined at backend/pipeline/flow/_flow/ — no external pip dep needed
 faster-whisper>=1.1.0
 av==16.0.1

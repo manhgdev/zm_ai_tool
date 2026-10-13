@@ -88,12 +88,12 @@ def get(job_id: str) -> dict[str, Any] | None:
 
 
 def mark_interrupted() -> None:
-    """RUNNING jobs become resumable after a crash/restart."""
+    """RUNNING/QUEUED jobs left from a previous session wait for an explicit Resume (never auto-run)."""
     with _lock:
         jobs = load_all()
         changed = False
         for job in jobs:
-            if job.get("status") == "running":
+            if job.get("status") in {"running", "queued"}:
                 job["status"] = "interrupted"
                 job["updatedAt"] = time.time()
                 changed = True

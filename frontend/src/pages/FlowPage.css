@@ -1431,7 +1431,6 @@
 .flow-retry-kind-card { display: grid; gap: 9px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: color-mix(in srgb, var(--background) 86%, var(--primary) 14%); }
 .flow-retry-kind-card > strong { color: var(--ink); font-size: 0.78rem; }
 .flow-retry-kind-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.flow-retry-dialog[data-multi-kind="true"] .flow-retry-fields > label:not(.flow-retry-include-done) { display: none; }
 /* macOS native selects use a different intrinsic baseline/arrow box. Keep
    every retry field on the same fixed box so the two-column grid stays even. */
 .platform-macos .flow-retry-dialog .flow-retry-fields select {

@@ -470,11 +470,14 @@ def _refine_mask_by_color(working: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return refined
 
 
-def _flow_template_match(working: np.ndarray) -> tuple[np.ndarray, tuple[int,int,int,int], float, bool]:
+def _flow_template_match(working: np.ndarray, reach_px: float = 22.0) -> tuple[np.ndarray, tuple[int,int,int,int], float, bool]:
     """Căn template watermark Flow trong một cửa sổ nhỏ ở góc phải dưới."""
     h, w = working.shape[:2]
-    sx1, sy1 = int(w * 0.84), int(h * 0.72)
-    sx2, sy2 = min(w, int(w * 0.997)), min(h, int(h * 0.985))
+    # Đo trên ảnh Flow 1K (16:9, 9:16, 4:3, 1:1): sparkle cách góc phải ~94px, góc dưới ~99px, cỡ ~55x58px
+    # cho MỌI tỉ lệ (không tỉ lệ theo w/h). Ảnh 2K/4K giả định scale theo cạnh dài so với 1376.
+    f = max(1.0, max(w, h) / 1376.0)
+    sx1, sy1 = max(0, int(w - 220 * f)), max(0, int(h - 215 * f))
+    sx2, sy2 = min(w, int(w - 4 * f)), min(h, int(h - 11 * f))
     search = working[sy1:sy2, sx1:sx2]
     full = np.zeros((h, w), dtype=np.uint8)
     if search.size == 0:
@@ -482,14 +485,14 @@ def _flow_template_match(working: np.ndarray) -> tuple[np.ndarray, tuple[int,int
 
     evidence = _flow_template_evidence(search)
     base = _load_flow_template()
-    # Kích thước thực tế đo trên ảnh Flow 1376x768: khoảng 48-62 x 52-66 px.
-    base_w = max(28, int(round(w * 0.040)))
-    base_h = max(30, int(round(h * 0.075)))
-    expected_cx = w * 0.932
-    expected_cy = h * 0.872
+    base_w = max(28, int(round(55 * f)))
+    base_h = max(30, int(round(58 * f)))
+    expected_cx = w - 94 * f
+    expected_cy = h - 99 * f
 
     best = None
-    for scale in (0.86, 0.94, 1.00, 1.08, 1.16):
+    reach = reach_px * f  # vị trí cố định theo pixel: chỉ tinh chỉnh quanh điểm chuẩn
+    for scale in (0.86, 0.94, 1.00, 1.08, 1.16, 1.24, 1.32):
         tw = max(18, int(round(base_w * scale)))
         th = max(20, int(round(base_h * scale)))
         if tw >= evidence.shape[1] or th >= evidence.shape[0]:
@@ -497,11 +500,18 @@ def _flow_template_match(working: np.ndarray) -> tuple[np.ndarray, tuple[int,int
         templ = cv2.resize(base, (tw, th), interpolation=cv2.INTER_AREA)
         templ_bin = (templ > 20).astype(np.uint8) * 255
         result = cv2.matchTemplate(evidence, templ_bin, cv2.TM_CCOEFF_NORMED)
-        _, score, _, loc = cv2.minMaxLoc(result)
+        jx1 = max(0, int(expected_cx - reach - tw / 2.0 - sx1))
+        jx2 = min(result.shape[1], int(expected_cx + reach - tw / 2.0 - sx1) + 1)
+        iy1 = max(0, int(expected_cy - reach - th / 2.0 - sy1))
+        iy2 = min(result.shape[0], int(expected_cy + reach - th / 2.0 - sy1) + 1)
+        if jx1 >= jx2 or iy1 >= iy2:
+            continue
+        _, score, _, loc = cv2.minMaxLoc(result[iy1:iy2, jx1:jx2])
+        loc = (loc[0] + jx1, loc[1] + iy1)
         cx = sx1 + loc[0] + tw / 2.0
         cy = sy1 + loc[1] + th / 2.0
-        dx = (cx - expected_cx) / max(1.0, w * 0.035)
-        dy = (cy - expected_cy) / max(1.0, h * 0.055)
+        dx = (cx - expected_cx) / (48.0 * f)
+        dy = (cy - expected_cy) / (42.0 * f)
         positional_penalty = 0.045 * (dx * dx + dy * dy)
         adjusted = float(score) - positional_penalty
         if best is None or adjusted > best[0]:
@@ -511,9 +521,9 @@ def _flow_template_match(working: np.ndarray) -> tuple[np.ndarray, tuple[int,int
     if best is not None and detected:
         _, raw_score, loc, tw, th, templ = best
         x1, y1 = sx1 + int(loc[0]), sy1 + int(loc[1])
-        local = (templ > 28).astype(np.uint8) * 255
-        # Ăn hết halo bán trong suốt nhưng không phá rộng ra nền.
-        dilate_px = max(2, int(round(min(w, h) * 0.0035)))
+        local = (templ > 16).astype(np.uint8) * 255
+        # Ăn hết halo bán trong suốt (sparkle có viền mờ rộng ~6-8px).
+        dilate_px = max(6, int(round(min(w, h) * 0.008)))
         local = cv2.dilate(local, np.ones((dilate_px * 2 + 1, dilate_px * 2 + 1), np.uint8), iterations=1)
         full[y1:y1+th, x1:x1+tw] = local
         score = raw_score
@@ -524,12 +534,16 @@ def _flow_template_match(working: np.ndarray) -> tuple[np.ndarray, tuple[int,int
         x1 = max(0, min(w-tw, cx - tw//2))
         y1 = max(0, min(h-th, cy - th//2))
         templ = cv2.resize(base, (tw, th), interpolation=cv2.INTER_AREA)
-        local = (templ > 24).astype(np.uint8) * 255
-        local = cv2.dilate(local, np.ones((5,5), np.uint8), iterations=1)
+        local = (templ > 16).astype(np.uint8) * 255
+        local = cv2.dilate(local, np.ones((13,13), np.uint8), iterations=1)
         full[y1:y1+th, x1:x1+tw] = local
         score = 0.0
 
-    full = _refine_mask_by_color(working, full)
+    refined = _refine_mask_by_color(working, full)
+    inter = int(np.count_nonzero((refined > 0) & (full > 0)))
+    union = int(np.count_nonzero((refined > 0) | (full > 0)))
+    # Refinement may latch onto a similar-coloured neighbour; only trust it if it still sits on the template.
+    full = refined if union and inter / union >= 0.5 else full
     ys, xs = np.where(full > 0)
     if len(xs) == 0:
         return full, (sx1, sy1, sx2, sy2), score, detected
@@ -584,9 +598,10 @@ def _lama_fill_with_mask(working: np.ndarray, full_mask: np.ndarray, settings: L
     restored = _run_lama_session(inp, mask_f, settings.lama_model_path)
     oh, ow = orig_size
     restored = restored[:oh, :ow]
-    feather = max(3, ((settings.inpaint_radius // 2) * 2 + 1))
+    # Feather rộng hơn để blend mượt vào nền, tránh viền cứng quanh vùng inpaint.
+    feather = max(11, ((settings.inpaint_radius) * 2 + 1) | 1)
     alpha = cv2.GaussianBlur(mask, (feather, feather), 0).astype(np.float32) / 255.0
-    alpha = np.clip(alpha * 1.04, 0.0, 1.0)[..., None]
+    alpha = np.clip(alpha * 1.08, 0.0, 1.0)[..., None]
     mixed = np.clip(restored.astype(np.float32) * alpha + crop.astype(np.float32) * (1.0 - alpha), 0, 255).astype(np.uint8)
     result = working.copy()
     result[y1:y2, x1:x2] = mixed
@@ -600,14 +615,10 @@ def _flow_auto_cleanup(working: np.ndarray, settings: LogoRemovalSettings) -> tu
     if can_use_lama:
         try:
             processed = _lama_fill_with_mask(working, mask, settings)
-            # Nếu watermark vẫn còn tương quan rõ, pass 2 bằng mask nở rất nhẹ.
-            residual = _flow_residual_score(processed)
-            if residual >= max(0.24, score * 0.72):
-                stronger = cv2.dilate(mask, np.ones((5,5), np.uint8), iterations=1)
-                processed = _lama_fill_with_mask(processed, stronger, settings)
-                mode = "flow_template_lama_2pass"
-            else:
-                mode = "flow_template_lama"
+            # Pass 2 luôn chạy với mask nở rộng hơn để xoá sạch halo bán trong suốt.
+            stronger = cv2.dilate(mask, np.ones((9, 9), np.uint8), iterations=1)
+            processed = _lama_fill_with_mask(processed, stronger, settings)
+            mode = "flow_template_lama_2pass"
             return processed, mode + ("_aligned" if detected else "_fixed"), bbox
         except LogoRemovalError as exc:
             if not settings.auto_fallback:

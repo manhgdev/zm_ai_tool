@@ -378,9 +378,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     concurrency: string;
     accountId: string;
     fresh: boolean;
+    touched: string[];
     headless: boolean;
     removeLogo: boolean;
     groups: Array<{
+      key: string;
       kind: CreateKind;
       mode: ImageMode | VideoMode;
       jobs: FlowJob[];
@@ -962,12 +964,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             ? t("Đã hủy", "Cancelled")
             : t("Lỗi", "Failed");
   const jobStatusText = (job: FlowJob) => {
+    if (job.status === "cancelled" && job.stage === "stopped") return t("Đã dừng", "Stopped");
     if (job.status !== "processing") return statusText(job.status);
     if (job.stage === "retrying") return t("Đang thử tạo lại", "Retrying generation");
     if (job.stage === "waiting_network") return t("Đang chờ mạng", "Waiting for network");
     if (job.stage === "recovering") return t("Đang tìm kết quả đã gửi", "Recovering submitted result");
     if (job.stage === "resubmitting" || job.stage === "submitting") return t("Đang gửi yêu cầu", "Submitting request");
     if (job.stage === "downloading") return t("Đang tải kết quả", "Downloading result");
+    if (job.stage === "removing_logo") return t("Đang xoá logo", "Removing logo");
     if (job.stage === "generating") return t("Flow đang tạo", "Generating in Flow");
     if (job.stage === "preparing" || job.stage === "starting") return t("Đang chuẩn bị", "Preparing");
     return statusText(job.status);
@@ -1448,6 +1452,28 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         setApiError(msg);
         toast.error(msg);
       });
+  // Group by the jobs' own settings: identical jobs share a card, different jobs keep their original setup.
+  const buildRetryGroups = (list: FlowJob[], fallbackAccountId: string, existing: NonNullable<typeof retryTarget>["groups"] = []) => {
+    const online = accounts.filter(isFlowAccountConnected);
+    const spec = (job: FlowJob) => ({
+      kind: job.kind as CreateKind,
+      mode: job.mode as ImageMode | VideoMode,
+      model: job.settings.model,
+      ratio: job.settings.ratio,
+      duration: job.settings.duration || "",
+      resolution: job.settings.resolution || "",
+      quality: job.settings.quality || "",
+      count: Math.max(1, Math.min(4, Number((job.settings as { count?: number }).count) || 1)),
+      accountId: job.randomAccount ? "random" : (online.some((account) => account.id === job.accountId) ? (job.accountId || fallbackAccountId) : fallbackAccountId),
+    });
+    const keyOf = (s: ReturnType<typeof spec>) => JSON.stringify(s);
+    const keys = [...new Set(list.map((job) => keyOf(spec(job))))];
+    return keys.map((key) => {
+      const groupJobs = list.filter((job) => keyOf(spec(job)) === key);
+      const kept = existing.find((group) => group.key === key);
+      return kept ? { ...kept, jobs: groupJobs } : { key, ...spec(groupJobs[0]), jobs: groupJobs };
+    });
+  };
   const openRetrySettings = (retryJobs: FlowJob[], opts?: { askIncludeDone?: boolean }) => {
     if (retryBusyRef.current) return;
     const job = retryJobs[0];
@@ -1465,25 +1491,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       || onlineAccounts.find((account) => account.label === selectedJob.account)?.id
       || onlineAccounts[0]?.id
       || "random");
-    const groups = [...new Set(initialJobs.map((item) => `${item.kind}:${item.mode}`))].map((groupKey) => {
-      const [kind, mode] = groupKey.split(":") as [CreateKind, ImageMode | VideoMode];
-      const groupJobs = initialJobs.filter((item) => item.kind === kind && item.mode === mode);
-      const first = groupJobs[0];
-      const groupAccountId = first.randomAccount ? "random" : onlineAccounts.some((account) => account.id === first.accountId)
-        ? (first.accountId || resolvedAccountId) : resolvedAccountId;
-      return {
-        kind,
-        mode,
-        jobs: groupJobs,
-        model: first.settings.model,
-        ratio: first.settings.ratio,
-        duration: first.settings.duration || "",
-        resolution: first.settings.resolution || "",
-        quality: first.settings.quality || "",
-        count: Math.max(1, Math.min(4, Number((first.settings as { count?: number }).count) || 1)),
-        accountId: groupAccountId,
-      };
-    });
+    const groups = buildRetryGroups(initialJobs, resolvedAccountId);
     setRetryTarget({
       job: selectedJob,
       jobs: initialJobs,
@@ -1501,18 +1509,38 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       accountId: resolvedAccountId,
       groups,
       fresh: initialJobs.length > 0 && initialJobs.every(isFreshCreateJob),
+      touched: [],
       headless: settings.headless,
       removeLogo: Boolean(selectedJob.settings.removeLogo ?? settings.removeLogo),
     });
   };
   const retryJob = (id: string) => {
     const job = jobs.find((item) => item.id === id);
-    if (job) openRetrySettings([job]);
+    if (!job) return;
+    if (String(job.error || "").startsWith("FLOW_LOGO_REMOVE_FAILED")) {
+      // Images are already downloaded: backend redoes only logo removal (no account/model needed).
+      void flowRequest<Record<string, unknown>>(`/api/flow/jobs/${id}/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manual: true }),
+      })
+        .then((raw) => {
+          updateJob(raw);
+          toast.success(t("Đang chạy lại bước xoá logo.", "Retrying logo removal only."));
+        })
+        .catch((error) => {
+          const msg = error instanceof Error ? error.message : String(error);
+          setApiError(msg);
+          toast.error(msg);
+        });
+      return;
+    }
+    openRetrySettings([job]);
   };
   const confirmRetryJob = () => {
     if (!retryTarget || retryBusyRef.current) return;
     const { jobs: retryJobs, concurrency } = retryTarget;
-    const groups = retryTarget.groups.length === 1
+    const groups = retryTarget.jobs.length === 1
       ? [{ ...retryTarget.groups[0], mode: retryTarget.mode, model: retryTarget.model, ratio: retryTarget.ratio, duration: retryTarget.duration, resolution: retryTarget.resolution, quality: retryTarget.quality, count: retryTarget.count, accountId: retryTarget.accountId }]
       : retryTarget.groups;
     if (groups.some((group) => !group.accountId || (group.accountId !== "random" && !accounts.some((account) => account.id === group.accountId && isFlowAccountConnected(account))))) {
@@ -3768,24 +3796,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             includeDone,
                             jobs: nextJobs,
                             job: nextJobs[0] || current.job,
-                            groups: [...new Set(nextJobs.map((item) => `${item.kind}:${item.mode}`))].map((groupKey) => {
-                              const [kind, mode] = groupKey.split(":") as [CreateKind, ImageMode | VideoMode];
-                              const existing = current.groups.find((group) => group.kind === kind && group.mode === mode);
-                              if (existing) return { ...existing, jobs: nextJobs.filter((item) => item.kind === kind && item.mode === mode) };
-                              const first = nextJobs.find((item) => item.kind === kind && item.mode === mode) as FlowJob;
-                              return {
-                                kind,
-                                mode,
-                                jobs: nextJobs.filter((item) => item.kind === kind && item.mode === mode),
-                                model: first.settings.model,
-                                ratio: first.settings.ratio,
-                                duration: first.settings.duration || "",
-                                resolution: first.settings.resolution || "",
-                                quality: first.settings.quality || "",
-                                count: Math.max(1, Math.min(4, Number((first.settings as { count?: number }).count) || 1)),
-                                accountId: current.accountId,
-                              };
-                            }),
+                            ...(() => {
+                              // Single-group edits live in the top-level fields: fold them in before regrouping.
+                              const base = current.jobs.length === 1
+                                ? [{ ...current.groups[0], mode: current.mode, model: current.model, ratio: current.ratio, duration: current.duration, resolution: current.resolution, quality: current.quality, count: current.count, accountId: current.accountId }]
+                                : current.groups;
+                              const groups = buildRetryGroups(nextJobs, current.accountId, base);
+                              const only = groups.length === 1 && !(base.length === 1 && base[0].key === groups[0].key) ? groups[0] : null;
+                              return { groups, ...(only ? { mode: only.mode, model: only.model, ratio: only.ratio, duration: only.duration, resolution: only.resolution, quality: only.quality, count: only.count, accountId: only.accountId } : {}) };
+                            })(),
                           };
                         });
                       }}
@@ -3809,42 +3828,35 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   </label>
                 )}
                 </div>
-                {retryTarget.groups.length > 1 && (
-                  <div className="flow-retry-kind-groups">
-                    <p className="flow-retry-kind-help">{t("Mỗi loại media giữ cấu hình riêng. Chỉnh Model và tài khoản theo từng nhóm.", "Each media type keeps its own settings. Choose the model and account per group.")}</p>
-                    {retryTarget.groups.map((group, index) => {
-                      const groupAccount = accounts.find((account) => account.id === group.accountId);
-                      const capabilities = accountCapabilityModels(groupAccount, group.kind);
-                      const models = capabilities.length ? capabilities.map((item) => item.name) : group.kind === "video" ? [...FLOW_VIDEO_MODELS] : [...FLOW_IMAGE_MODELS];
-                      const capability = capabilities.find((item) => item.name === group.model);
-                      const ratios = capability?.ratios.length ? capability.ratios : group.kind === "video" ? ["16:9", "9:16"] : ["1:1", "16:9", "9:16", "4:3", "3:4"];
-                      return (
-                        <div className="flow-retry-kind-card" key={`${group.kind}:${group.mode}`}>
-                          <strong>{group.kind === "video" ? t("Video", "Video") : t("Ảnh", "Image")} · {group.jobs.length} {t("job", "jobs")}</strong>
-                          <div className="flow-retry-kind-grid">
-                            <FlowSelect label={t("Chế độ", "Mode")} value={group.mode} options={group.kind === "video" ? ["text", "frame"] : ["text", "edit", "reference"]} onChange={(mode) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, mode: mode as ImageMode | VideoMode } : item) } : current)} optionLabels={{ text: t("Văn bản", "Text"), frame: t("Khung hình", "Frames"), edit: t("Chỉnh sửa", "Edit"), reference: t("Tham chiếu", "Reference") }} disabled={group.jobs.some((item) => Boolean(item.seriesContext))} />
-                            <FlowSelect label={t("Model", "Model")} value={group.model} options={models} onChange={(model) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, model } : item) } : current)} />
-                            <FlowSelect label={t("Tỷ lệ", "Ratio")} value={group.ratio} options={ratios} onChange={(ratio) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, ratio } : item) } : current)} />
-                            {(() => {
-                              const groupResolutions = capability?.resolutions?.length
-                                ? capability.resolutions
-                                : group.kind === "image" ? flowImageResolutions(groupAccount?.plan || "Free") : [];
-                              return groupResolutions.length > 0 ? (
-                                <FlowSelect
-                                  label={t("Độ phân giải", "Resolution")}
-                                  value={groupResolutions.includes(group.resolution) ? group.resolution : groupResolutions[0]}
-                                  options={groupResolutions}
-                                  onChange={(resolution) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, resolution } : item) } : current)}
-                                />
-                              ) : null;
-                            })()}
-                            <FlowSelect label={t("Tài khoản", "Account")} value={group.accountId} options={["random", ...accounts.filter(isFlowAccountConnected).map((account) => account.id)]} onChange={(accountId) => setRetryTarget((current) => current ? { ...current, groups: current.groups.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item) } : current)} optionLabels={{ random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"), ...Object.fromEntries(accounts.map((account) => [account.id, `${account.label} · ${t(`Gói ${account.plan}`, `${account.plan} plan`)}${account.suspendedUntil && account.suspendedUntil > Date.now() / 1000 ? ` · ⚠️ ${t("Tạm cách ly", "Suspended")}` : ""}`])) }} />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                {retryTarget.jobs.length > 1 && (() => {
+                  const KEEP = "__keep__";
+                  type Field = "mode" | "model" | "ratio" | "duration" | "resolution" | "quality" | "count";
+                  const common = (field: Field) => {
+                    const values = new Set(retryTarget.groups.map((group) => String(group[field])));
+                    return retryTarget.touched.includes(field) && values.size === 1 ? [...values][0] : KEEP;
+                  };
+                  const setAll = (field: Field, value: string) => value !== KEEP && setRetryTarget((current) => current ? { ...current, touched: [...new Set([...current.touched, field])], groups: current.groups.map((group) => ({ ...group, [field]: field === "count" ? Number(value) : value })) } : current);
+                  const mixedLabel = { [KEEP]: t("Đã chọn", "Selected") };
+                  const withKeep = (field: Field, options: string[]) => (common(field) === KEEP ? [KEEP, ...options] : options);
+                  return (
+                    <>
+                      <FlowSelect label={t("Chế độ", "Mode")} value={common("mode")} options={withKeep("mode", retryTarget.job.kind === "video" ? ["text", "frame"] : ["text", "edit", "reference"])} optionLabels={{ ...mixedLabel, text: t("Văn bản", "Text"), frame: t("Khung hình", "Frames"), edit: t("Chỉnh sửa", "Edit"), reference: t("Tham chiếu", "Reference") }} onChange={(value) => setAll("mode", value)} disabled={retryTarget.jobs.some((item) => Boolean(item.seriesContext))} />
+                      <FlowSelect label={t("Model", "Model")} value={common("model")} options={withKeep("model", retryModelOptions)} optionLabels={mixedLabel} onChange={(value) => setAll("model", value)} />
+                      <FlowSelect label={t("Tỷ lệ", "Ratio")} value={common("ratio")} options={withKeep("ratio", retryRatioOptions)} optionLabels={mixedLabel} onChange={(value) => setAll("ratio", value)} />
+                      {retryTarget.job.kind === "video" && retryDurationOptions.length > 0 && (
+                        <FlowSelect label={t("Thời lượng", "Duration")} value={common("duration")} options={withKeep("duration", retryDurationOptions)} optionLabels={mixedLabel} suffix={t(" giây", " sec")} onChange={(value) => setAll("duration", value)} />
+                      )}
+                      {retryResolutionOptions.length > 0 && (
+                        <FlowSelect label={t("Độ phân giải", "Resolution")} value={common("resolution")} options={withKeep("resolution", retryResolutionOptions)} optionLabels={mixedLabel} onChange={(value) => setAll("resolution", value)} />
+                      )}
+                      {retryTarget.job.kind === "video" && retryQualityOptions.length > 0 && (
+                        <FlowSelect label={t("Chất lượng tải", "Download quality")} value={common("quality")} options={withKeep("quality", retryQualityOptions)} optionLabels={mixedLabel} onChange={(value) => setAll("quality", value)} />
+                      )}
+                      <FlowSelect label={retryTarget.job.kind === "video" ? t("Số video", "Videos") : t("Số ảnh", "Images")} value={common("count")} options={withKeep("count", ["1", "2", "3", "4"])} optionLabels={mixedLabel} onChange={(value) => setAll("count", value)} />
+                    </>
+                  );
+                })()}
+                {retryTarget.jobs.length === 1 && (<>
                 <FlowSelect
                   label={t("Chế độ", "Mode")}
                   value={retryTarget.mode}
@@ -3918,12 +3930,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     <button type="button" onClick={() => setRetryTarget((current) => current ? { ...current, count: Math.min(4, current.count + 1) } : current)} aria-label={t("Tăng số lượng", "Increase quantity")}>+</button>
                   </div>
                 </label>
+                </>)}
                 <FlowSelect
-                  label={retryTarget.groups.length > 1 ? t("Áp dụng tài khoản cho mọi nhóm", "Apply account to all groups") : t("Tài khoản", "Account")}
-                  value={retryTarget.accountId}
-                  onChange={(accountId) => setRetryTarget((current) => current ? { ...current, accountId, groups: current.groups.map((group) => ({ ...group, accountId })) } : current)}
-                  options={["random", ...accounts.filter(isFlowAccountConnected).map((account) => account.id)]}
+                  label={t("Tài khoản", "Account")}
+                  value={retryTarget.jobs.length > 1 && !retryTarget.touched.includes("accountId") ? "__keep__" : retryTarget.accountId}
+                  onChange={(accountId) => accountId !== "__keep__" && setRetryTarget((current) => current ? { ...current, accountId, touched: [...new Set([...current.touched, "accountId"])], groups: current.groups.map((group) => ({ ...group, accountId })) } : current)}
+                  options={[...(retryTarget.jobs.length > 1 && !retryTarget.touched.includes("accountId") ? ["__keep__"] : []), "random", ...accounts.filter(isFlowAccountConnected).map((account) => account.id)]}
                   optionLabels={{
+                    __keep__: t("Đã chọn", "Selected"),
                     random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
                     ...Object.fromEntries(accounts.map((account) => [
                       account.id,

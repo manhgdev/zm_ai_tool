@@ -76,6 +76,37 @@ class FlowAuthReconnectTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('acc1', service._connecting_accounts)
                 requeue.assert_not_called()
 
+    async def test_expired_cookie_switches_account_to_chrome_login(self):
+        for auto_headless in (False, True):
+            expect_switch = True
+            with self.subTest(auto_headless=auto_headless):
+                service = FlowService()
+                page = MagicMock(url='https://accounts.google.com/ServiceLogin')
+                page.goto = AsyncMock()
+                page.locator.return_value.first.count = AsyncMock(return_value=0)
+                browser = MagicMock(headless=True)
+                browser.start = AsyncMock()
+                browser.stop = AsyncMock()
+                browser.page = AsyncMock(return_value=page)
+                browser.context.add_cookies = AsyncMock()
+                cookies = [{'name': 'test', 'value': 'test', 'domain': '.google.com', 'path': '/'}]
+                second = AsyncMock()
+                service._login = second  # the follow-up interactive login
+                with patch('pipeline.flow.browser.BrowserManager', return_value=browser), \
+                     patch('pipeline.flow.service.store.get_row', return_value={'id': 'acc1'}), \
+                     patch('pipeline.flow.service.store.patch_row') as update, \
+                     patch('pipeline.flow.service.asyncio.sleep', new_callable=AsyncMock), \
+                     patch('pipeline.core.desktop_window.request_desktop_foreground'), \
+                     patch.object(service, '_log'), patch.object(service, '_wake_account_waiters'):
+                    await FlowService._login(service, 'acc1', cookies=cookies, headless=auto_headless)
+                patches = [call.args[2] for call in update.call_args_list]
+                self.assertTrue(any(p.get('error') == 'FLOW_COOKIE_EXPIRED' for p in patches))
+                self.assertEqual(any(p.get('authMethod') == 'chrome' for p in patches), expect_switch)
+                if expect_switch:
+                    second.assert_awaited_once_with('acc1', force_interactive=True, headless=False)
+                else:
+                    second.assert_not_awaited()
+
     def test_authenticated_lobby_still_enters_project_selection(self):
         import ast
         import inspect

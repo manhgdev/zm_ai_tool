@@ -220,6 +220,32 @@ class ImageRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(retried['resumeOnly'])
         self.assertEqual(retried['status'], 'queued')
 
+    def test_retry_stopped_job_resumes_submitted_generation(self):
+        service = FlowService()
+        account = {'id': 'a', 'status': 'online', 'projectId': 'p', 'plan': 'Ultra', 'credits': 100}
+        job = {
+            'id': 'j', 'accountId': 'a', 'kind': 'image', 'mode': 'text',
+            'status': 'cancelled', 'stage': 'stopped', 'error': None,
+            'submissionStartedAt': 100, 'submissionProjectId': 'p',
+            'baselineMediaIds': ['old'], 'baselineThumbs': [], 'mediaIds': [],
+            'outputs': [], 'settings': {'model': 'Nano Banana 2', 'ratio': '16:9', 'count': 1},
+        }
+
+        def patch_row(table, row_id, data):
+            job.update(data)
+            return job
+
+        with patch('pipeline.flow.service.store.get_row', side_effect=lambda t, i: account if t == 'accounts' else job), \
+             patch('pipeline.flow.service.store.list_rows', return_value=[]), \
+             patch('pipeline.flow.service.store.patch_row', side_effect=patch_row), \
+             patch('pipeline.flow.service.threading.Thread'), patch.object(service, '_log'):
+            retried = service.retry('j', {'manual': True})
+
+        self.assertEqual(retried['submissionStartedAt'], 100)
+        self.assertEqual(retried['baselineMediaIds'], ['old'])
+        self.assertTrue(retried['resumeOnly'])
+
+
     async def test_submitted_recovery_does_not_claim_old_visible_error_tile(self):
         service = FlowService()
         job = {

@@ -1494,11 +1494,16 @@ class FlowService:
         store.delete_rows("logs", {str(row.get("id") or "") for row in excess if row.get("id")})
 
     def start(self) -> None:
-        """Resume work that was queued or interrupted by an app restart."""
+        """Stop work left over from the previous app session; the user presses Run again.
+
+        Closing the app kills every browser/worker, so queued/processing rows can no longer be
+        running. They become cancelled+stage ``stopped`` (retryable) rather than auto-restarting.
+        """
         for job in self.jobs():
-            if job.get("status") in {"queued", "processing"}:
-                store.patch_row("jobs", job["id"], {"status": "queued", "stage": "queued", "progress": 0, "updatedAt": time.time()})
-                threading.Thread(target=self._run_sync, args=(job["id"],), daemon=True, name=f"flow-resume-{job['id']}").start()
+            if job.get("status") == "processing" and job.get("stage") == "removing_logo" and self._outputs_exist(job.get("outputs")):
+                self._fail_logo_removal(job["id"], list(job.get("outputs")), "interrupted by app restart")
+            elif job.get("status") in {"queued", "processing"}:
+                store.patch_row("jobs", job["id"], {"status": "cancelled", "stage": "stopped", "progress": 0, "error": None, "updatedAt": time.time()})
             elif job.get("status") == "done" and not self._outputs_exist(job.get("outputs")):
                 store.patch_row("jobs", job["id"], {
                     "status": "failed",
@@ -1507,6 +1512,59 @@ class FlowService:
                     "error": "FLOW_EMPTY_OUTPUT: generation finished without a downloaded media file",
                     "updatedAt": time.time(),
                 })
+
+    async def _remove_flow_logos(self, job_id: str, outputs: list[str]) -> str:
+        """Remove the Flow logo from downloaded images; return "" on success or the failure text.
+
+        Files already cleaned (``logoDone``) are skipped, so a retry never inpaints twice.
+        """
+        store.patch_row("jobs", job_id, {"stage": "removing_logo", "outputs": outputs, "updatedAt": time.time()})
+        try:
+            import importlib
+            logo_mod = await asyncio.to_thread(importlib.import_module, "pipeline.logo_remover")
+            cfg = logo_mod.LogoRemovalSettings(
+                enabled=True, keep_original=False, mode="auto", lama_model_path=logo_mod.DEFAULT_LAMA_MODEL)
+        except Exception as exc:  # thiếu/cài lỗi runtime
+            self._log("warning", "logo_remove_failed", job_id=job_id, message=str(exc))
+            return str(exc) or exc.__class__.__name__
+        done = [str(p) for p in (store.get_row("jobs", job_id) or {}).get("logoDone") or []]
+        errors: list[str] = []
+        for out_path in outputs:
+            if str(out_path) in done:
+                continue
+            try:
+                result = await asyncio.to_thread(logo_mod.remove_logo_from_file, out_path, cfg)
+                self._log("info", "logo_removed", job_id=job_id, message=result.mode_used)
+                done.append(str(out_path))
+                store.patch_row("jobs", job_id, {"logoDone": done})
+            except Exception as exc:
+                self._log("warning", "logo_remove_failed", job_id=job_id, message=str(exc))
+                errors.append(str(exc) or exc.__class__.__name__)
+        return errors[0] if errors else ""
+
+    def _fail_logo_removal(self, job_id: str, outputs: list[str], error: str, *, account_id: str = "") -> None:
+        """Downloaded files stay on the job; Retry re-runs only the logo step (see retry())."""
+        current = store.get_row("jobs", job_id) or {}
+        if current.get("status") == "cancelled" or job_id in self._cancelled:
+            return
+        store.patch_row("jobs", job_id, {
+            "status": "failed", "stage": "failed", "progress": 100, "outputs": outputs,
+            "error": f"FLOW_LOGO_REMOVE_FAILED: {error[:300]}", "updatedAt": time.time(),
+        })
+        self._log("error", "job_logo_failed", job_id=job_id, account_id=account_id, message=error)
+
+    async def _logo_only_retry(self, job_id: str) -> None:
+        job = store.get_row("jobs", job_id) or {}
+        outputs = [str(p) for p in job.get("outputs") or []]
+        error = await self._remove_flow_logos(job_id, outputs)
+        if error:
+            self._fail_logo_removal(job_id, outputs, error, account_id=str(job.get("accountId") or ""))
+            return
+        store.patch_row("jobs", job_id, {"status": "done", "stage": "done", "progress": 100, "error": None, "updatedAt": time.time()})
+        if job.get("seriesContext"):
+            from . import series
+            series.mark_job_complete(job, outputs)
+        self._log("success", "job_completed", job_id=job_id, account_id=str(job.get("accountId") or ""), details={"outputCount": len(outputs)})
 
     @staticmethod
     def _outputs_exist(outputs: Any) -> bool:
@@ -3277,6 +3335,7 @@ class FlowService:
 
         browser = None
         login_ok = False
+        switch_to_login = False
         with self._guard:
             self._login_passwords.pop(account_id, None)
         password = ""
@@ -3543,9 +3602,14 @@ class FlowService:
             login_ok = False
             detail = str(exc).replace(password, "[redacted]") if password else str(exc)
             login_wall = await _browser_at_login_wall(browser)
+            cookie_expired = bool(cookie_auth and login_wall)
+            # Expired cookies cannot sign in again and only the user can fix it: switch to Chrome
+            # login and open the visible window below (even for an automatic reconnect).
+            switch_to_login = cookie_expired
             store.patch_row("accounts", account_id, {
                 "status": "reconnect",
-                "error": "FLOW_COOKIE_EXPIRED" if cookie_auth and login_wall else detail,
+                "error": "FLOW_COOKIE_EXPIRED" if cookie_expired else detail,
+                **({"authMethod": "chrome"} if switch_to_login else {}),
                 "updatedAt": time.time(),
             })
             self._log("error", "account_connect_failed", account_id=account_id, message=detail)
@@ -3574,6 +3638,12 @@ class FlowService:
                     "updatedAt": time.time(),
                 })
                 self._requeue_auth_failed_jobs(account_id)
+        if switch_to_login:
+            self._log("warning", "cookie_expired_switch_to_login", account_id=account_id)
+            with self._guard:
+                self._connecting_accounts.add(account_id)
+            store.patch_row("accounts", account_id, {"status": "connecting", "error": None, "updatedAt": time.time()})
+            await self._login(account_id, force_interactive=True, headless=False)
 
 
     async def _create_flow_project_ui(self, page, *, avoid_project_id: str = "") -> str:
@@ -6923,28 +6993,15 @@ class FlowService:
                 outputs = list(await asyncio.gather(*[_dl(img, i) for i, img in enumerate(media_items, 1)]))
                 # Sync credits after download (non-blocking)
                 asyncio.create_task(self._sync_credits(api, account["id"]))
-                # Xóa logo Flow ngay sau khi tải; Ultra không có logo nên bỏ qua.
-                if settings.get("removeLogo") and str(account.get("plan") or "") != "Ultra":
-                    try:
-                        import importlib
-                        logo_mod = await asyncio.to_thread(importlib.import_module, "pipeline.logo_remover")
-                        DEFAULT_LAMA_MODEL, LogoRemovalSettings, remove_logo_from_file = (
-                            logo_mod.DEFAULT_LAMA_MODEL, logo_mod.LogoRemovalSettings, logo_mod.remove_logo_from_file)
-                    except Exception as runtime_exc:  # thiếu/cài lỗi runtime: ảnh vẫn dùng được, chỉ còn logo
-                        self._log("warning", "logo_remove_failed", job_id=job_id, message=str(runtime_exc))
-                        remove_logo_from_file = None
-                    logo_settings = LogoRemovalSettings(
-                        enabled=True, keep_original=False, mode="auto", lama_model_path=DEFAULT_LAMA_MODEL,
-                    ) if remove_logo_from_file else None
-                    for out_path in outputs if remove_logo_from_file else []:
-                        try:
-                            logo_result = await asyncio.to_thread(remove_logo_from_file, out_path, logo_settings)
-                            self._log("info", "logo_removed", job_id=job_id, message=logo_result.mode_used)
-                        except Exception as logo_exc:  # ảnh vẫn dùng được, chỉ còn logo
-                            self._log("warning", "logo_remove_failed", job_id=job_id, message=str(logo_exc))
             output_error = self._output_validation_error(outputs)
             if output_error:
                 raise RuntimeError(output_error)
+            # Xóa logo Flow ngay sau khi tải (cả ảnh mới lẫn ảnh khôi phục); Ultra không có logo nên bỏ qua.
+            if job["kind"] == "image" and settings.get("removeLogo") and str(account.get("plan") or "") != "Ultra":
+                logo_error = await self._remove_flow_logos(job_id, outputs)
+                if logo_error:
+                    self._fail_logo_removal(job_id, outputs, logo_error, account_id=str(account["id"]))
+                    return
             current = store.get_row("jobs", job_id) or {}
             if generation_token and str(current.get("generationToken") or "") != generation_token:
                 return
@@ -7274,6 +7331,17 @@ class FlowService:
         if not existing:
             return None
         overrides = overrides or {}
+        if str(existing.get("error") or "").startswith("FLOW_LOGO_REMOVE_FAILED") and self._outputs_exist(existing.get("outputs")):
+            # Images are already downloaded: redo only the logo step, no Flow account needed.
+            self._cancelled.discard(job_id)
+            job = store.patch_row("jobs", job_id, {
+                "status": "processing", "stage": "removing_logo", "progress": 95, "error": None, "updatedAt": time.time(),
+            })
+            self._log("info", "job_retry_logo_only", job_id=job_id, account_id=str(existing.get("accountId") or ""))
+            threading.Thread(
+                target=lambda: asyncio.run(self._logo_only_retry(job_id)), daemon=True, name=f"flow-logo-{job_id}",
+            ).start()
+            return job
         manual_retry = bool(overrides.get("manual"))
         download_recovery = bool(
             existing.get("kind") == "video"
@@ -7285,6 +7353,15 @@ class FlowService:
         # UI sent a stale fresh flag; retrying this error means download only.
         force_new = bool(overrides.get("fresh")) and not download_recovery and bool(
             existing.get("status") == "done" and not existing.get("error")
+        )
+        # A job stopped by closing the app (see start()) was already submitted:
+        # resume it, never submit a duplicate generation.
+        resume_stopped = bool(
+            not force_new
+            and existing.get("status") == "cancelled"
+            and existing.get("stage") == "stopped"
+            and not existing.get("outputs")
+            and (existing.get("submissionStartedAt") or existing.get("mediaIds"))
         )
         # A timeout can be reported before Flow finishes rendering. Retrying
         # that job should resume the persisted submission and claim its late
@@ -7299,7 +7376,7 @@ class FlowService:
                 r"FLOW_GENERATION_TIMEOUT|no completed\s+(?:image|video)\s+media appeared after submit",
                 str(existing.get("error") or ""), re.I,
             )
-        ) or download_recovery
+        ) or download_recovery or resume_stopped
         requested_account_id = str(overrides.get("accountId") or existing.get("accountId") or "").strip()
         account_id = requested_account_id
         settings = dict(existing.get("settings") or {})
@@ -7404,6 +7481,7 @@ class FlowService:
                 "autoRetryCount": 0,
                 "authRetryCount": 0,
                 "forceNew": force_new,
+                "logoDone": [],
             })
             self._account_condition.notify_all()
         if job:
