@@ -55,6 +55,7 @@ jobs:
             choco install innosetup -y --no-progress
             'C:\Program Files (x86)\Inno Setup 6' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           }
+          New-Item -ItemType Directory -Force backend/pipeline/assets | Out-Null
           if (-not (Test-Path backend/pipeline/assets/lama_fp32.onnx)) {
             curl.exe -fL --retry 3 -o backend/pipeline/assets/lama_fp32.onnx https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
           }

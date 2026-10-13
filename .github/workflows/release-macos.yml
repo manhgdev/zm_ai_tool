@@ -46,6 +46,7 @@ jobs:
           brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
           which ffmpeg
           ffmpeg -version | head -n 1
+          mkdir -p backend/pipeline/assets
           [ -f backend/pipeline/assets/lama_fp32.onnx ] || curl -fL --retry 3 -o backend/pipeline/assets/lama_fp32.onnx https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx
 
       - name: Build macOS app
