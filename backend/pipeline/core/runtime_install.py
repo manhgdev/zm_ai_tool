@@ -482,6 +482,14 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *
         # Mỗi wheel nằm trong thư mục riêng wheels/<sha256>/ nên gom (hardlink/copy) vào một thư mục
         # tạm rồi chạy với cwd = thư mục đó và truyền tên file thuần.
         stage = root / 'stage'
+        # uv ghép cwd + tên file thành URL file:// không escape '#', nên cwd cũng phải sạch ký tự đó.
+        if any(ch in str(stage) for ch in '#?%'):
+            import tempfile
+            safe = [Path(tempfile.gettempdir()), Path(os.environ.get('SystemDrive', 'C:') + os.sep)]
+            base = next((p for p in safe if not any(ch in str(p) for ch in '#?%')), None)
+            if base is None:
+                raise RuntimeInstallError('DEPENDENCY_INSTALL_FAILED', 'No safe staging directory', diagnostics=str(stage))
+            stage = base / 'zm-runtime-stage'
         stage.mkdir(parents=True, exist_ok=True)
         staged = []
         for path in paths:
