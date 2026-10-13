@@ -35,7 +35,7 @@ ROOT = DATA / "srt_image"
 ROOT.mkdir(parents=True, exist_ok=True)
 CACHE_ROOT = ROOT / "render-cache"
 CACHE_INDEX = CACHE_ROOT / "index.json"
-CACHE_VERSION = 4  # đổi khi logic render đổi (khung chuẩn 1920×1080, zoom, LaMa delogo) để không tái dùng video cũ
+CACHE_VERSION = 5  # đổi khi logic render đổi (khung chuẩn 1920×1080, zoom, LaMa delogo) để không tái dùng video cũ
 DEFAULT_OUTPUT_RESOLUTION = "auto"
 _LOCK = threading.Lock()
 _CACHE_LOCK = threading.Lock()
@@ -109,6 +109,62 @@ def _write_cache_index(index: dict) -> None:
     temporary = CACHE_INDEX.with_suffix(".tmp")
     temporary.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(CACHE_INDEX)
+
+
+_WORK_PATTERNS = {  # file tạm trong thư mục upload_* của mỗi job
+    "segments": ("segment_*.mp4", "media.ffconcat"),  # clip zoom / hiệu ứng chuyển cảnh
+    "subtitles": ("subtitle_frames", "subtitles-prepared.srt", "*.sub.ass"),
+    "normalized": ("media-normalized", "delogo-still-*.png"),  # ảnh webp→png, ảnh đã xóa logo của job
+    "clips": ("drawing_*.mp4", "logo-generated.png"),  # clip vẽ tay + logo sinh ra của job
+}
+CACHE_KINDS = ("render", "drawing", "delogo", *_WORK_PATTERNS, "uploads", "published")
+
+
+def _cache_items(kind: str) -> list[Path]:
+    """render = video cuối + index ở gốc; drawing/delogo = thư mục con riêng;
+    segments/subtitles/normalized/clips = file tạm lẻ trong upload_*; uploads = cả thư mục upload_*
+    (bỏ qua job đang chạy); published = srt-*.mp4 ở tab Rendered."""
+    if kind == "uploads" or kind in _WORK_PATTERNS:
+        with _LOCK:
+            busy = {str(j.get("work")) for j in _JOBS.values() if j.get("status") in ("queued", "running")}
+        dirs = [p for p in ROOT.glob("upload_*") if p.is_dir() and str(p) not in busy]
+        if kind == "uploads":
+            return dirs
+        return [m for d in dirs for pattern in _WORK_PATTERNS[kind] for m in d.glob(pattern)]
+    if kind == "published":
+        return list((PUBLIC_DATA / "exports").glob("srt-*"))
+    if not CACHE_ROOT.is_dir():
+        return []
+    if kind == "render":
+        return [p for p in CACHE_ROOT.iterdir() if p.is_file()]
+    return [CACHE_ROOT / kind] if (CACHE_ROOT / kind).is_dir() else []
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size if path.is_file() else sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    except OSError:
+        return 0
+
+
+def cache_sizes() -> dict[str, int]:
+    return {kind: sum(_size(p) for p in _cache_items(kind)) for kind in CACHE_KINDS}
+
+
+def clear_render_cache(kinds: list[str] | None = None) -> int:
+    """Xóa các nhóm cache được chọn (mặc định tất cả); trả về số byte đã giải phóng."""
+    freed = 0
+    with _CACHE_LOCK:
+        for kind in kinds or CACHE_KINDS:
+            if kind not in CACHE_KINDS:
+                continue
+            for item in _cache_items(kind):
+                freed += _size(item)
+                try:
+                    shutil.rmtree(item) if item.is_dir() else item.unlink()
+                except OSError:
+                    pass
+    return freed
 
 
 def _cached_render(key: str) -> Path | None:
@@ -706,7 +762,7 @@ def _prepare_video_segments(
 
     # ponytail: pre-compute mỗi segment trước khi song song hóa — random variant
     # phải tuần tự để tránh 2 cảnh liên tiếp dùng cùng hướng Ken Burns.
-    segment_plans: list[tuple[int, Path, float, str, bool]] = []
+    segment_plans: list[tuple[int, Path, float, str, bool, tuple[Path, str] | None]] = []
     last_variant = -1
     for index, (source, duration) in enumerate(zip(media, durations)):
         variant = random.randrange(16)
@@ -717,20 +773,32 @@ def _prepare_video_segments(
         # Ảnh đã được LaMa xử lý từ trước (_inpaint_still_logo); chỉ clip video dùng delogo.
         use_dl = bool(delogo_prefix) and is_video(source)
         chosen_vf = base_vf_dl if use_dl else base_vf_no_dl
-        # Chuyển cảnh: fade qua đen tại mỗi điểm cắt, giữ nguyên thời lượng clip → khớp audio/phụ đề.
-        # ponytail: dissolve dùng chung kiểu fade; random = độ dài ngẫu nhiên 50–100% mỗi cảnh.
+        # Chuyển cảnh trượt (smoothstep), giữ nguyên thời lượng clip → khớp audio/phụ đề.
         fade_vf = ""
-        if effect in {"fade", "dissolve", "random"} and transition > 0:
-            half = transition * (random.uniform(0.5, 1.0) if effect == "random" else 1.0) / 2
-            half = min(half, duration / 3)
-            parts = []
+        kind = effect
+        if effect == "random":
+            kind = random.choice(["dissolve", "slideleft", "slideright", "slideup", "slidedown"])
+        if kind.startswith("slide") and transition > 0:
+            # Cảnh trượt vào từ mép, giữ nguyên thời lượng → không lệch audio/phụ đề.
             if index > 0:
-                parts.append(f"fade=t=in:st=0:d={half:.3f}")
-            if index < len(media) - 1:
-                parts.append(f"fade=t=out:st={max(0.0, duration - half):.3f}:d={half:.3f}")
-            fade_vf = "".join("," + p for p in parts)
+                s = max(0.01, min(max(transition * 2, 0.4), duration / 3))
+                u = f"min(t/{s:.3f}\\,1)"
+                p = f"({u}*{u}*(3-2*{u}))"  # smoothstep: vào/ra mềm, không giật
+                W, H = width, height
+                pad, crop = {
+                    "slideleft": (f"pad={2*W}:{H}:{W}:0", f"crop={W}:{H}:{W}*{p}:0"),
+                    "slideright": (f"pad={2*W}:{H}:0:0", f"crop={W}:{H}:{W}*(1-{p}):0"),
+                    "slideup": (f"pad={W}:{2*H}:0:{H}", f"crop={W}:{H}:0:{H}*{p}"),
+                    "slidedown": (f"pad={W}:{2*H}:0:0", f"crop={W}:{H}:0:{H}*(1-{p})"),
+                }[kind]
+                fade_vf = f",{pad},{crop}"
+        # Dissolve thật: cảnh trước mờ dần chồng lên đầu cảnh này; thời lượng clip giữ nguyên → khớp audio/phụ đề.
+        dis: tuple[Path, str] | None = None
+        if kind == "dissolve" and transition > 0 and index > 0:
+            s = max(0.01, min(max(transition * 2, 0.4), duration / 3))
+            dis = (media[index - 1], f"{base_vf_no_dl},format=yuva420p,fade=t=out:st=0:d={s:.3f}:alpha=1")
         vf = f"{chosen_vf}{',' + motion if motion else ''}{fade_vf},format=yuv420p"
-        segment_plans.append((index, source, duration, vf, use_dl))
+        segment_plans.append((index, source, duration, vf, use_dl, dis))
 
     total = len(segment_plans)
     # ponytail: session limit per encoder type
@@ -744,8 +812,8 @@ def _prepare_video_segments(
     segments: list[Path | None] = [None] * total
     completed = 0
 
-    def _encode_one(plan: tuple[int, Path, float, str, bool]) -> tuple[int, Path]:
-        idx, source, duration, vf, did_dl = plan
+    def _encode_one(plan: tuple[int, Path, float, str, bool, tuple[Path, str] | None]) -> tuple[int, Path]:
+        idx, source, duration, vf, did_dl, dis = plan
         if did_dl:
             _log(job_id, f"Clip {idx + 1}: delogo ✓ · {source.name}")
         _log(job_id, f"Chuẩn bị clip {idx + 1}/{total}: {source.name} ({duration:.2f}s)")
@@ -753,11 +821,19 @@ def _prepare_video_segments(
         cmd = [_ff_bin("ffmpeg"), "-y"]
         cmd += ["-stream_loop", "-1"] if is_video(source) else ["-loop", "1"]
         cmd += ["-i", str(source)]
+        extra = 1
+        if dis:
+            cmd += (["-stream_loop", "-1"] if is_video(dis[0]) else ["-loop", "1"]) + ["-i", str(dis[0])]
+            extra = 2
         if preserve_audio and not (is_video(source) and _has_audio_stream(source)):
             cmd += ["-f", "lavfi", "-t", f"{duration:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
-        cmd += ["-t", f"{duration:.3f}", "-vf", vf]
+        if dis:
+            cmd += ["-t", f"{duration:.3f}", "-filter_complex",
+                    f"[0:v]{vf}[a];[1:v]{dis[1]}[b];[a][b]overlay=format=auto,format=yuv420p[v]", "-map", "[v]"]
+        else:
+            cmd += ["-t", f"{duration:.3f}", "-vf", vf]
         if preserve_audio:
-            cmd += ["-map", "0:v:0", "-map", "0:a:0" if is_video(source) and _has_audio_stream(source) else "1:a:0",
+            cmd += ([] if dis else ["-map", "0:v:0"]) + ["-map", "0:a:0" if is_video(source) and _has_audio_stream(source) else f"{extra}:a:0",
                     "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
         else:
             cmd += ["-an"]
@@ -1453,7 +1529,7 @@ DRAWING_CACHE_ROOT = CACHE_ROOT / "drawing"
 
 def _drawing_cache_key(source: Path, d_opts: dict) -> str:
     sig = _file_signature(str(source)) or {}
-    payload = {"source": sig, "options": d_opts}
+    payload = {"version": CACHE_VERSION, "source": sig, "options": d_opts}
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -1664,7 +1740,7 @@ def run(job_id: str) -> None:
             preserve_source_audio
             or
             zoom_mode != "off"
-            or effect_mode in {"fade", "dissolve", "random"}
+            or effect_mode in {"dissolve", "random", "slideleft", "slideright", "slideup", "slidedown"}
             or (not all_raw_still and not is_drawing)
         )
         sources = (

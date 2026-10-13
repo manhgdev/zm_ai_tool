@@ -482,6 +482,14 @@ if runtime_site.is_dir():
         except Exception:
             traceback.print_exc()
 
+if getattr(sys, "frozen", False):
+    try:
+        from pipeline.core.runtime_site import install_auto_install_hook
+
+        install_auto_install_hook()  # thiếu cv2/numpy/PIL/onnxruntime/soundfile → tự cài gói OCR khi import
+    except Exception:
+        traceback.print_exc()
+
 ocr_venv = home / ".venv-ocr"
 ocr_site = (
     ocr_venv / "Lib" / "site-packages"

@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import './SrtImagePage.css'
 import { localize, useLocale } from '../app/i18n'
 import { BackTitle } from '../shared/components/BackTitle'
+import { ConfirmDialog } from '../shared/components/ConfirmDialog'
 import { copyText } from '../shared/lib/clipboard'
 import { randomId } from '../shared/lib/randomId'
 import { useRemountState } from '../shared/lib/useRemountState'
@@ -36,6 +37,12 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   const cached = useRef(cachedSettings()).current
   const [tab, setTab] = useState<'project' | 'settings'>('project')
   const [helpKey, setHelpKey] = useState<HelpKey | null>(null)
+  // Kéo thanh giữa đổi độ rộng khung Preview; nhớ lại sau khi tải trang, nhấp đúp để về mặc định.
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const paneDrag = useRef<{ x: number; width: number } | null>(null)
+  const [previewWidth, setPreviewWidth] = useState(() => Number(localStorage.getItem('siv-preview-width')) || 460)
+  useEffect(() => { localStorage.setItem('siv-preview-width', String(previewWidth)) }, [previewWidth])
+  const [cacheDialog, setCacheDialog] = useState<{ sizes: Record<string, number>; picked: string[] } | null>(null)
   const [mediaFolder, setMediaFolder] = useState(String(cached.mediaFolder ?? ''))
   const [audioPath, setAudioPath] = useState(String(cached.audioPath ?? ''))
   const [timelinePath, setTimelinePath] = useState(String(cached.timelinePath ?? ''))
@@ -85,6 +92,8 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   const [delogoRect, setDelogoRect] = useState(
     (cached.delogoRect as { x: number; y: number; w: number; h: number } | undefined) ?? { x: 82, y: 94, w: 16, h: 4 }
   )
+  // Tự định vị = góc dưới phải cố định; chỉ dùng vùng kéo tay khi tắt tự định vị
+  const activeDelogoRect = delogoAuto ? AUTO_DELOGO_RECT : delogoRect
   const [watermarkPath, setWatermarkPath] = useState(String(cached.watermarkPath ?? ''))
   const [logoEnabled, setLogoEnabled] = useState(Boolean(cached.logoEnabled ?? false))
   const [logoSource, setLogoSource] = useState<'text' | 'image' | 'icon'>(
@@ -287,7 +296,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
         encoder, removeMetadata, subtitleSize, subtitleOffset, subtitleFontFamily, subtitleMargin,
         subtitleBackground, subtitleColor, subtitleBgColor, subtitleOpacity, previewSeconds: preview ? previewSeconds : 0,
         settingsFingerprint: renderSettingsFingerprint,
-        delogo: { enabled: delogoEnabled, ...delogoRect },
+        delogo: { enabled: delogoEnabled, ...activeDelogoRect },
         drawing: { enabled: drawingEnabled, mode: drawingMode, tool: drawingTool, handId: drawingHandId, detail: drawingDetail, thickness: drawingThickness, strokeOrder: drawingStrokeOrder, resolution: '1080p' },
         logo: {
           enabled: logoEnabled, source: logoSource, text: logoText, icon: logoIcon,
@@ -714,7 +723,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
         </div>
       </header>
 
-      <div className="siv-layout">
+      <div className="siv-layout" ref={layoutRef} style={{ '--siv-preview-w': `${previewWidth}px` } as React.CSSProperties}>
         <div className="siv-main-pane">
           <section className="siv-workspace">
         <nav className="siv-tabs" aria-label="Thiết lập Ghép ảnh SRT">
@@ -728,7 +737,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
               <div className="siv-row">
                 <label>Thư mục media <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('media') }}>i</span></label>
                 <div {...dropProps('media')} data-siv-drop="media" className={`siv-input siv-drop-input${dragTarget === 'media' ? ' is-dragging' : ''}`}>
-                  <input data-siv-drop="media" type="text" value={mediaFolder} onChange={(e) => setMediaFolder(e.target.value)} placeholder={t('Dán hoặc nhập đường dẫn thư mục hoặc thả thư mục vào đây...', 'Paste or type a folder path or drop a folder here...')} spellCheck={false} />
+                  <PathInput data-siv-drop="media" type="text" value={mediaFolder} onChange={(e) => setMediaFolder(e.target.value)} placeholder={t('Dán hoặc nhập đường dẫn thư mục hoặc thả thư mục vào đây...', 'Paste or type a folder path or drop a folder here...')} spellCheck={false} />
                 </div>
                 <button onClick={chooseMediaFolder}>Chọn</button>
                 <button onClick={() => { setMediaFolder(''); toast.success(t('Đã xóa thư mục media.', 'Media folder cleared.')) }} disabled={!mediaFolder}>Xóa</button>
@@ -736,7 +745,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
               <div className="siv-row">
                 <label>File audio <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('audio') }}>i</span></label>
                 <div {...dropProps('audio')} data-siv-drop="audio" className={`siv-input siv-drop-input${dragTarget === 'audio' ? ' is-dragging' : ''}`}>
-                  <input data-siv-drop="audio" type="text" value={audioPath} onChange={(e) => { setDroppedAudio(null); setAudioPath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn file audio hoặc thả file vào đây...', 'Paste or type an audio path or drop the file here...')} spellCheck={false} />
+                  <PathInput data-siv-drop="audio" type="text" value={audioPath} onChange={(e) => { setDroppedAudio(null); setAudioPath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn file audio hoặc thả file vào đây...', 'Paste or type an audio path or drop the file here...')} spellCheck={false} />
                 </div>
                 <button onClick={() => chooseInputFile('audio')}>Chọn</button>
                 <button onClick={() => { setAudioPath(''); setDroppedAudio(null); toast.success(t('Đã xóa file audio.', 'Audio file cleared.')) }} disabled={!audioPath && !droppedAudio}>Xóa</button>
@@ -751,7 +760,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
                       placeholder={t('Dán nội dung timeline (ví dụ: 001_[00:00:00.00-00:00:08.50], 001_[00.00-00.05], 001_[00:00-00:05] hoặc SRT/VTT/CSV/JSON…)', 'Paste timeline content (e.g. 001_[00:00:00.00-00:00:08.50], 001_[00.00-00.05], 001_[00:00-00:05], or SRT/VTT/CSV/JSON…)')}
                       onChange={(event) => setTimelineText(event.target.value)}
                     />
-                  : <div {...dropProps('timeline')} data-siv-drop="timeline" className={`siv-input siv-drop-input${dragTarget === 'timeline' ? ' is-dragging' : ''}`}><input data-siv-drop="timeline" type="text" value={timelinePath} onChange={(e) => { setDroppedTimeline(null); setTimelinePath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn timeline hoặc thả file vào đây...', 'Paste or type a timeline path or drop the file here...')} spellCheck={false} /></div>}
+                  : <div {...dropProps('timeline')} data-siv-drop="timeline" className={`siv-input siv-drop-input${dragTarget === 'timeline' ? ' is-dragging' : ''}`}><PathInput data-siv-drop="timeline" type="text" value={timelinePath} onChange={(e) => { setDroppedTimeline(null); setTimelinePath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn timeline hoặc thả file vào đây...', 'Paste or type a timeline path or drop the file here...')} spellCheck={false} /></div>}
                 <div className="siv-row-actions" role="group" aria-label={t('Nguồn timeline', 'Timeline source')}>
                   <div className="siv-source-switch">
                     <button
@@ -776,7 +785,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
               </div>
               <div className="siv-row">
                 <label>File phụ đề <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('subtitles') }}>i</span></label>
-                <div {...dropProps('srt')} data-siv-drop="srt" className={`siv-input siv-drop-input${dragTarget === 'srt' ? ' is-dragging' : ''}`}><input data-siv-drop="srt" type="text" value={srtPath} onChange={(e) => { setDroppedSrt(null); setSrtPath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn file SRT hoặc thả file vào đây...', 'Paste or type an SRT path or drop the file here...')} spellCheck={false} /></div>
+                <div {...dropProps('srt')} data-siv-drop="srt" className={`siv-input siv-drop-input${dragTarget === 'srt' ? ' is-dragging' : ''}`}><PathInput data-siv-drop="srt" type="text" value={srtPath} onChange={(e) => { setDroppedSrt(null); setSrtPath(e.target.value) }} placeholder={t('Dán hoặc nhập đường dẫn file SRT hoặc thả file vào đây...', 'Paste or type an SRT path or drop the file here...')} spellCheck={false} /></div>
                 <button onClick={() => chooseInputFile('srt')}>Chọn</button>
                 <button onClick={() => { setSrtPath(''); setDroppedSrt(null); toast.success(t('Đã xóa file phụ đề SRT.', 'SRT subtitle file cleared.')) }} disabled={!srtPath && !droppedSrt}>Xóa</button>
               </div>
@@ -863,8 +872,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
               <div className="siv-set-row siv-set-row--two">
                 <label><span className="siv-setting-title">{t('Hiệu ứng', 'Effect')} <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('effect') }}>i</span></span>
                   <select value={effect} onChange={(e) => setEffect(e.target.value)}>
-                    <option value="random">{t('Ngẫu nhiên', 'Random')}</option><option value="fade">Fade</option>
-                    <option value="dissolve">Dissolve</option><option value="none">{t('Tắt', 'Off')}</option>
+                    <option value="random">{t('Ngẫu nhiên', 'Random')}</option><option value="dissolve">Dissolve</option><option value="slideleft">{t('Trượt từ phải', 'Slide from right')}</option><option value="slideright">{t('Trượt từ trái', 'Slide from left')}</option><option value="slideup">{t('Trượt từ dưới', 'Slide from bottom')}</option><option value="slidedown">{t('Trượt từ trên', 'Slide from top')}</option><option value="none">{t('Tắt', 'Off')}</option>
                   </select>
                 </label>
                 <label><span className="siv-setting-title">Zoom <span role="button" tabIndex={0} className="siv-info" onClick={(e) => { e.stopPropagation(); setHelpKey('zoom') }}>i</span></span>
@@ -964,6 +972,12 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
                 {job?.status === 'paused' ? 'Tiếp tục' : 'Tạm dừng'}
               </button>
               <button disabled={!busy || cancelling} onClick={cancel}>{cancelling ? t('Đang gửi hủy…', 'Cancelling…') : t('Hủy', 'Cancel')}</button>
+              <button disabled={busy} onClick={async () => {
+                const response = await fetch('/api/media-compose/cache').catch(() => null)
+                if (!response?.ok) { toast.error(t('Không đọc được cache.', 'Could not read cache.')); return }
+                const sizes = await response.json() as Record<string, number>
+                setCacheDialog({ sizes, picked: Object.keys(sizes).filter((key) => sizes[key] > 0) })
+              }}>{t('Xóa cache', 'Clear cache')}</button>
               <button onClick={openFolder}>Thư mục</button>
               <span>{statusText}</span>
             </footer>
@@ -976,7 +990,22 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
         )}
           </section>
         </div>
-        
+        <div
+          className="siv-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t('Kéo để đổi độ rộng hai khung', 'Drag to resize the two panes')}
+          onPointerDown={(event) => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); paneDrag.current = { x: event.clientX, width: previewWidth }; document.body.classList.add('siv-resizing') }}
+          onPointerMove={(event) => {
+            const drag = paneDrag.current
+            const total = layoutRef.current?.clientWidth ?? 0
+            if (drag) setPreviewWidth(Math.max(320, Math.min(total - 380, Math.round(drag.width + drag.x - event.clientX))))
+          }}
+          onPointerUp={() => { paneDrag.current = null; document.body.classList.remove('siv-resizing') }}
+          onPointerCancel={() => { paneDrag.current = null; document.body.classList.remove('siv-resizing') }}
+          onDoubleClick={() => setPreviewWidth(460)}
+        />
+
         <div className="siv-preview-pane">
           <div className="siv-preview-header">
             <span>{job?.status === 'done' ? 'Video Output' : 'Preview trực tiếp'}</span>
@@ -1012,6 +1041,8 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
             </div>
           ) : (
             <SubtitleLivePreview
+              onFontSizeChange={setSubtitleSize}
+              onMarginChange={setSubtitleMargin}
               fontFamily={subtitleFontFamily}
               textColor={subtitleColor}
               bgStyle={subtitleBackground}
@@ -1026,13 +1057,61 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
               mediaFolder={mediaFolder}
               delogoEnabled={delogoEnabled}
               delogoAuto={delogoAuto}
-              delogoRect={delogoRect}
+              delogoRect={activeDelogoRect}
               onDelogoRectChange={setDelogoRect}
               logo={logoProp}
             />
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={!!cacheDialog}
+        danger
+        title={t('Xóa cache', 'Clear cache')}
+        message={t('Chọn phần cache muốn xóa. Video đã xuất ra thư mục output không bị ảnh hưởng.', 'Choose which cache to delete. Videos already exported to the output folder are not affected.')}
+        confirmLabel={t('Xóa mục đã chọn', 'Delete selected')}
+        cancelLabel={t('Hủy', 'Cancel')}
+        confirmDisabled={!cacheDialog?.picked.length}
+        onCancel={() => setCacheDialog(null)}
+        onConfirm={async () => {
+          if (!cacheDialog) return
+          const response = await fetch('/api/media-compose/cache/clear', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kinds: cacheDialog.picked }),
+          }).catch(() => null)
+          if (!response?.ok) { toast.error(t('Không xóa được cache.', 'Could not clear cache.')); return }
+          const { freed } = await response.json() as { freed: number }
+          setCacheDialog(null)
+          toast.success(t(`Đã xóa cache (${(freed / 1_048_576).toFixed(1)} MB).`, `Cache cleared (${(freed / 1_048_576).toFixed(1)} MB).`))
+        }}
+      >
+        {cacheDialog && (
+          <div className="app-confirm-options">
+            {([
+              ['render', t('Video đã render (cache + preview)', 'Rendered videos (cache + preview)')],
+              ['published', t('Video ở tab Rendered', 'Videos in Rendered tab')],
+              ['segments', t('Clip zoom / hiệu ứng chuyển cảnh', 'Zoom / transition clips')],
+              ['subtitles', t('File phụ đề tạm', 'Temporary subtitle files')],
+              ['normalized', t('Ảnh chuẩn hóa / đã xóa logo (job)', 'Normalized / logo-removed images (job)')],
+              ['clips', t('Clip vẽ tay + logo tạm (job)', 'Hand-drawing clips + logo (job)')],
+              ['drawing', t('Cache ảnh vẽ tay', 'Hand-drawing cache')],
+              ['delogo', t('Cache ảnh đã xóa logo', 'Logo-removed image cache')],
+              ['uploads', t('Toàn bộ file upload tạm', 'All temporary uploads')],
+            ] as const).map(([key, label]) => {
+              const bytes = cacheDialog.sizes[key] || 0
+              const size = bytes >= 1_073_741_824 ? `${(bytes / 1_073_741_824).toFixed(1)} GB` : `${(bytes / 1_048_576).toFixed(1)} MB`
+              return (
+                <label key={key} className="app-confirm-option">
+                  <input type="checkbox" checked={cacheDialog.picked.includes(key)}
+                    onChange={(event) => setCacheDialog({ ...cacheDialog, picked: event.target.checked ? [...cacheDialog.picked, key] : cacheDialog.picked.filter((item) => item !== key) })} />
+                  <span>{label}</span>
+                  <small>{size}</small>
+                </label>
+              )
+            })}
+          </div>
+        )}
+      </ConfirmDialog>
 
       {helpKey && (
         <div className="siv-help-backdrop" role="presentation" onMouseDown={() => setHelpKey(null)}>
@@ -1217,6 +1296,8 @@ type PreviewProps = {
   bgOpacity: number
   fontSize: number
   marginBottom: number
+  onFontSizeChange?: (size: number) => void
+  onMarginChange?: (margin: number) => void
   resolution: string
   onResolutionChange: (r: string) => void
   platform: string
@@ -1250,7 +1331,19 @@ type PreviewProps = {
   }
 }
 
+const AUTO_DELOGO_RECT = { x: 82, y: 94, w: 16, h: 4 }
 const SAMPLE_LINES = ['Đây là dòng phụ đề mẫu,', 'hiển thị trực tiếp theo cài đặt.']
+
+// Khi không focus: hiện phần cuối đường dẫn (…/thư-mục/file) cho dễ nhận biết; focus thì hiện đầy đủ để sửa.
+function tailPath(value: string) {
+  if (value.length <= 30) return value
+  const parts = value.split(/[\\/]/).filter(Boolean)
+  return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : value
+}
+function PathInput({ value, ...rest }: React.InputHTMLAttributes<HTMLInputElement> & { value: string }) {
+  const [focused, setFocused] = useState(false)
+  return <input {...rest} value={focused ? value : tailPath(value)} title={value} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)} />
+}
 
 // Platform → resolution mapping (exact specs)
 const PLATFORM_OPTIONS = [
@@ -1266,7 +1359,7 @@ const PLATFORM_OPTIONS = [
     icon: <svg viewBox="0 0 24 24" fill="#1877F2" width="16" height="16"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg> },
 ]
 
-const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, textColor, bgStyle, bgColor, bgOpacity, fontSize, marginBottom, resolution, onResolutionChange, platform, onPlatformChange, mediaFolder, delogoEnabled, delogoAuto, delogoRect, onDelogoRectChange, logo }: PreviewProps) {
+const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, textColor, bgStyle, bgColor, bgOpacity, fontSize, marginBottom, onFontSizeChange, onMarginChange, resolution, onResolutionChange, platform, onPlatformChange, mediaFolder, delogoEnabled, delogoAuto, delogoRect, onDelogoRectChange, logo }: PreviewProps) {
   const { locale } = useLocale()
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
   // Fetch kích thước thực tế của media khi resolution=auto
@@ -1375,6 +1468,18 @@ const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, text
     (Number(logo.visibleSec) - logoLocalTime) / logoFade,
   )
 
+  // Live-edit: kéo phụ đề lên/xuống = đổi lề dưới; lăn chuột hoặc A−/A+ = đổi cỡ chữ.
+  // ponytail: backend chỉ hỗ trợ căn giữa + lề dưới nên chỉ kéo dọc, không kéo ngang.
+  const captionRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ y: number; margin: number } | null>(null)
+  const changeSize = useCallback((delta: number) => onFontSizeChange?.(Math.max(6, Math.min(120, fontSize + delta))), [fontSize, onFontSizeChange])
+  useEffect(() => {
+    const el = captionRef.current
+    if (!el) return
+    const wheel = (event: WheelEvent) => { event.preventDefault(); changeSize(event.deltaY < 0 ? 1 : -1) }
+    el.addEventListener('wheel', wheel, { passive: false })
+    return () => el.removeEventListener('wheel', wheel)
+  }, [changeSize])
 
   return (
     <div className="siv-live-preview-wrap">
@@ -1396,13 +1501,20 @@ const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, text
         ))}
       </div>
       <div className="siv-live-preview-stage">
+        <div className="siv-live-frame-col" style={ap.h > ap.w ? { height: '100%' } : { width: '100%' }}>
+        <div className="siv-live-caption-tools">
+          <span>{t('Cỡ chữ phụ đề', 'Subtitle size')}</span>
+          <button type="button" aria-label={t('Giảm cỡ chữ', 'Smaller text')} onClick={() => changeSize(-1)}>A−</button>
+          <b>{fontSize}</b>
+          <button type="button" aria-label={t('Tăng cỡ chữ', 'Larger text')} onClick={() => changeSize(1)}>A+</button>
+        </div>
         <div
           ref={frameRef}
           className="siv-live-preview-frame"
           style={{
             aspectRatio: `${ap.w}/${ap.h}`,
             ...(ap.h > ap.w
-              ? { height: '100%', width: 'auto' }
+              ? { height: 'calc(100% - 32px)', width: 'auto' } /* 32px = thanh A−/A+ (26px) + khoảng cách (6px) */
               : { width: '100%' }),
           }}
         >
@@ -1470,26 +1582,39 @@ const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, text
                     : logo.source === 'icon' ? logo.icon : logo.text}
                 </div>
               )}
-              {/* Phụ đề mẫu */}
+              {/* Phụ đề mẫu: kéo để đổi lề dưới, lăn chuột để đổi cỡ chữ */}
               <div
                 className="siv-live-caption-wrap"
                 style={{ paddingBottom: `${scaledMarginBottom}px` }}
               >
-                {SAMPLE_LINES.map((line, i) => (
-                  <div
-                    key={i}
-                    className="siv-live-caption-line"
-                    style={{
-                      ...captionStyle,
-                      fontFamily: fontCss,
-                      fontSize: `${scaledFontSize}px`,
-                      lineHeight: 1.15,
-                      ...(outlinePx > 0 && { padding: `${outlinePx}px` }),
-                    }}
-                  >
-                    {line}
-                  </div>
-                ))}
+                <div
+                  ref={captionRef}
+                  className="siv-live-caption-drag"
+                  title={t('Kéo để di chuyển · lăn chuột để đổi cỡ chữ', 'Drag to move · scroll to resize')}
+                  onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); dragRef.current = { y: event.clientY, margin: marginBottom } }}
+                  onPointerMove={(event) => {
+                    const drag = dragRef.current
+                    if (drag) onMarginChange?.(Math.max(0, Math.min(250, Math.round(drag.margin - (event.clientY - drag.y) / scale))))
+                  }}
+                  onPointerUp={() => { dragRef.current = null }}
+                  onPointerCancel={() => { dragRef.current = null }}
+                >
+                  {SAMPLE_LINES.map((line, i) => (
+                    <div
+                      key={i}
+                      className="siv-live-caption-line"
+                      style={{
+                        ...captionStyle,
+                        fontFamily: fontCss,
+                        fontSize: `${scaledFontSize}px`,
+                        lineHeight: 1.15,
+                        ...(outlinePx > 0 && { padding: `${outlinePx}px` }),
+                      }}
+                    >
+                      {line}
+                    </div>
+                  ))}
+                </div>
               </div>
               {/* Delogo: vùng xóa logo */}
               {delogoEnabled && delogoRect && (
@@ -1537,6 +1662,7 @@ const SubtitleLivePreview = memo(function SubtitleLivePreview({ fontFamily, text
                 />
               )}
             </>
+        </div>
         </div>
       </div>
     </div>

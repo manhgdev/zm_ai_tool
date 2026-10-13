@@ -6,6 +6,7 @@ Install a meta-path finder so runtime-root imports resolve from site-packages.
 """
 from __future__ import annotations
 
+import importlib
 import ntpath
 import os
 import sys
@@ -109,6 +110,55 @@ class _RuntimeSiteFinder:
         if "." in fullname:
             return None
         return PathFinder.find_spec(fullname, [self._site])
+
+
+# Nhóm nhẹ do gói OCR cài (cv2/numpy/PIL/onnxruntime/soundfile). torch/whisper/vieneu cài qua nút trong app.
+_AUTO_INSTALL_ROOTS = frozenset({"cv2", "numpy", "PIL", "onnxruntime", "soundfile"})
+_auto_install_lock = threading.Lock()
+_auto_install_tls = threading.local()
+
+
+class _AutoInstallFinder:
+    """Đứng cuối meta_path: import module nhẹ bị thiếu → cài gói OCR vào .venv-runtime rồi nạp lại.
+
+    ponytail: chỉ kích hoạt khi mọi finder khác không tìm thấy; bỏ qua importlib.util.find_spec
+    (các lần dò trạng thái) để việc dò không vô tình kéo một lần cài kéo dài vài phút.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):  # noqa: ANN001
+        if fullname not in _AUTO_INSTALL_ROOTS or getattr(_auto_install_tls, "busy", False):
+            return None
+        frame = sys._getframe(1)
+        while frame:
+            if frame.f_code.co_name == "find_spec" and frame.f_globals.get("__name__") == "importlib.util":
+                return None
+            frame = frame.f_back
+        _auto_install_tls.busy = True  # cài đặt tự import lại cv2/numpy: tránh đệ quy
+        try:
+            with _auto_install_lock:
+                root = runtime_site_packages()
+                spec = PathFinder.find_spec(fullname, [str(root)]) if root else None
+                if spec is None:  # chưa ai cài (thread khác cài xong sẽ vào nhánh trên)
+                    from .system_check.install import install_ocr_runtime
+
+                    install_ocr_runtime()
+                    root = runtime_site_packages()
+                    if not root:
+                        return None
+                    prepare_cv2_import_path(root)
+                    importlib.invalidate_caches()
+                    spec = PathFinder.find_spec(fullname, [str(root)])
+                return spec
+        except Exception:
+            return None
+        finally:
+            _auto_install_tls.busy = False
+
+
+def install_auto_install_hook() -> None:
+    """Gắn finder tự cài module nhẹ (chỉ bản đóng gói)."""
+    if getattr(sys, "frozen", False) and not any(isinstance(f, _AutoInstallFinder) for f in sys.meta_path):
+        sys.meta_path.append(_AutoInstallFinder())
 
 
 def runtime_site_packages() -> Path | None:

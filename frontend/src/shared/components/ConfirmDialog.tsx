@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import './ConfirmDialog.css'
 
 type ConfirmDialogProps = {
@@ -11,6 +11,8 @@ type ConfirmDialogProps = {
   onCancel: () => void
   danger?: boolean
   scrollMessage?: boolean
+  children?: ReactNode
+  confirmDisabled?: boolean
 }
 
 /** Small in-app confirmation surface shared by destructive actions. */
@@ -24,6 +26,8 @@ export function ConfirmDialog({
   onCancel,
   danger = false,
   scrollMessage = false,
+  children,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement>(null)
 
@@ -52,9 +56,10 @@ export function ConfirmDialog({
           <button type="button" onClick={onCancel} aria-label={cancelLabel}>×</button>
         </header>
         <p style={scrollMessage ? { maxHeight: '50vh', overflowY: 'auto', whiteSpace: 'pre-wrap' } : undefined}>{message}</p>
+        {children}
         <footer>
           <button ref={cancelRef} type="button" onClick={onCancel}>{cancelLabel}</button>
-          <button type="button" className={danger ? 'is-danger' : ''} onClick={onConfirm}>{confirmLabel}</button>
+          <button type="button" className={danger ? 'is-danger' : ''} disabled={confirmDisabled} onClick={onConfirm}>{confirmLabel}</button>
         </footer>
       </section>
     </div>

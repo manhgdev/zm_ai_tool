@@ -113,6 +113,7 @@ def _pip_stream(
     idle_timeout: float | None = 900,
     progress: tuple[int, int, str] | None = None,
     environment: dict[str, str] | None = None,
+    cwd: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Stream installer output without waiting forever on a silent Windows pipe."""
     import queue as _queue
@@ -146,6 +147,7 @@ def _pip_stream(
         stderr=subprocess.STDOUT,
         bufsize=0,
         env=env,
+        cwd=cwd,
     )
     assert proc.stdout
     t = threading.Thread(target=_reader, args=(proc.stdout,), daemon=True)

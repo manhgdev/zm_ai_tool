@@ -188,14 +188,14 @@ def _probe(root: Path, profile: str, demucs: bool = False, *, features: tuple[st
     return output
 
 
-def _run(command: list[str], error: str, label: str, progress=None) -> None:
+def _run(command: list[str], error: str, label: str, progress=None, cwd: str | None = None) -> None:
     from .system_check.install import _pip_stream, _install_log_fn
     if _install_log_fn:
         _install_log_fn(subprocess.list2cmdline(command) + '\n')
     temporary = runtime_home() / 'runtime' / 'tmp'
     temporary.mkdir(parents=True, exist_ok=True)
     try:
-        result = _pip_stream(command, timeout=2700, idle_timeout=300, progress=progress, environment={
+        result = _pip_stream(command, timeout=2700, idle_timeout=300, progress=progress, cwd=cwd, environment={
             'UV_PYTHON_INSTALL_DIR': str(runtime_home() / 'runtime' / 'python'),
             'UV_CACHE_DIR': str(runtime_home() / 'runtime' / 'cache'),
             'PIP_CACHE_DIR': str(runtime_home() / 'runtime' / 'pip-cache'),
@@ -216,6 +216,11 @@ def _run(command: list[str], error: str, label: str, progress=None) -> None:
             raise RuntimeInstallError('DISK_FULL', f'Insufficient disk space at {runtime_home()}',
                                       retryable=False, diagnostics=output[-12000:])
         code, retryable = classify_error(RuntimeError(output), error)
+        try:  # log hệ thống từng không ghi lỗi cài gói: ghi phần đuôi output của installer
+            from .app_log import append_log
+            append_log(f'[runtime-install] {label} failed ({code}): {output[-3000:]}', also_print=False)
+        except Exception:
+            pass
         raise RuntimeInstallError(code, f'{label} failed', retryable=retryable, diagnostics=output[-12000:])
 
 
@@ -428,23 +433,19 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *
                 '--cache-dir', str(root / 'cache'), '--disable-pip-version-check', '--no-input', '--no-compile']
     uv_base = [uv, 'pip', 'install', '--python', str(python), '--link-mode', 'copy']
     use_pip = False
-    requirements_dir = root / 'requirements'
-    requirements_dir.mkdir(parents=True, exist_ok=True)
     def install(paths, label):
         nonlocal use_pip
-        requirement_file = requirements_dir / (re.sub(r'[^A-Za-z0-9_.-]+', '_', label) + '.txt')
-        # uv parses backslashes in Windows requirement files as escapes/project roots;
-        # use forward-slash absolute paths so `E:/.../*.whl` remains a wheel path.
-        wheel_uris = [path.as_uri() for path in paths]
-        requirement_file.write_text('\n'.join(wheel_uris) + '\n', encoding='utf-8')
-        command = ['--no-index', '--no-deps', '--requirement', requirement_file.as_uri()]
+        # uv/pip cắt đường dẫn tại '#' (định dạng fragment) → thư mục kiểu E:\#ZM_AI_TOOL cài lỗi.
+        # Tất cả wheel nằm chung một thư mục: chạy với cwd = thư mục đó và truyền tên file thuần.
+        command = ['--no-index', '--no-deps', *(path.name for path in paths)]
+        cwd = str(paths[0].parent)
         try:
-            _run([*(pip_base if use_pip else uv_base), *command], 'DEPENDENCY_INSTALL_FAILED', label)
+            _run([*(pip_base if use_pip else uv_base), *command], 'DEPENDENCY_INSTALL_FAILED', label, cwd=cwd)
         except RuntimeInstallError as exc:
             if use_pip or 'os error 448' not in exc.diagnostics.lower() or 'interpreter' not in exc.diagnostics.lower():
                 raise
             use_pip = True
-            _run([*pip_base, *command], 'DEPENDENCY_INSTALL_FAILED', label)
+            _run([*pip_base, *command], 'DEPENDENCY_INSTALL_FAILED', label, cwd=cwd)
     def install_ready(group, paths):
         install(paths, group['name'])
     _prefetch_packages(wheels, groups, emit, install_ready)

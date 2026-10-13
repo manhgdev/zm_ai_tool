@@ -21,10 +21,27 @@
 }
 .siv-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 460px;
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr) 20px var(--siv-preview-w, 460px);
+  gap: 0;
   align-items: stretch;
 }
+.siv-resizer {
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+.siv-resizer::after {
+  content: '';
+  position: absolute;
+  inset: 0 8px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.15s;
+}
+.siv-resizer:hover::after,
+body.siv-resizing .siv-resizer::after { background: var(--primary); }
+body.siv-resizing { cursor: col-resize; user-select: none; }
+body.siv-resizing * { cursor: col-resize !important; }
 .siv-preview-pane {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -368,7 +385,9 @@
 @media (max-width: 1100px) {
   .siv-layout {
     grid-template-columns: 1fr;
+    gap: 20px;
   }
+  .siv-resizer { display: none; }
   .siv-preview-pane {
     position: static;
   }
@@ -907,18 +926,38 @@
     grid-template-columns: 1fr;
   }
 }
+.siv-main-pane { container-type: inline-size; min-width: 0; }
+@container (max-width: 640px) {
+  .siv-hint { display: none; }
+}
 .siv-subtitle-options {
+  /* Cột nhãn 112px giống các hàng đường dẫn → ô nhập thẳng cột; ô số/màu nhỏ, không giãn. */
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px 16px;
-  margin: 0 0 2px 120px;
+  grid-template-columns: 112px minmax(0, 1fr) auto 56px;
+  align-items: center;
+  gap: 10px 8px;
+  margin: 2px 0;
 }
 .siv-subtitle-options > label {
-  display: grid;
-  grid-template-columns: 85px minmax(0, 1fr);
-  align-items: center;
-  gap: 6px;
+  display: contents;
   font-size: 0.82rem;
+}
+.siv-subtitle-options > label:nth-child(even) .siv-subtitle-title { margin-left: 12px; }
+.siv-subtitle-options > label input[type='number'],
+.siv-subtitle-options > label input.siv-text-color { justify-self: start; }
+.siv-subtitle-options > label input[type='number'] { width: 56px; }
+.siv-subtitle-options > label input.siv-text-color { width: 48px; }
+@container (min-width: 500px) {
+  .siv-subtitle-options { grid-template-columns: 112px minmax(80px, 180px) auto 56px auto 56px; }
+  .siv-subtitle-options > label:nth-child(even) .siv-subtitle-title { margin-left: 0; }
+  .siv-subtitle-options > label:nth-child(2) .siv-subtitle-title,
+  .siv-subtitle-options > label:nth-child(3) .siv-subtitle-title,
+  .siv-subtitle-options > label:nth-child(5) .siv-subtitle-title { margin-left: 12px; }
+}
+/* Rộng: cả 5 thiết lập nằm trên một hàng. */
+@container (min-width: 840px) {
+  .siv-subtitle-options { grid-template-columns: 112px minmax(100px, 180px) auto 48px auto 56px auto 56px auto 56px; }
+  .siv-subtitle-options > label:not(:first-child) .siv-subtitle-title { margin-left: 12px; }
 }
 .siv-subtitle-title {
   display: flex;
@@ -931,10 +970,11 @@
 }
 .siv-subtitle-options input,
 .siv-subtitle-options select {
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  height: 34px;
-  padding: 0 10px;
+  height: 32px;
+  padding: 0 6px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--background);
@@ -954,7 +994,7 @@
 .siv-bg-label {
   grid-column: 1/-1;
   display: grid;
-  grid-template-columns: 85px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   font-size: 0.82rem;
@@ -962,8 +1002,9 @@
 .siv-bg-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 .siv-bg-tabs {
   display: flex;
@@ -1027,13 +1068,6 @@
   font-weight: 500;
 }
 @media (max-width: 760px) {
-  .siv-subtitle-options {
-    grid-template-columns: 1fr;
-    margin-left: 0;
-  }
-  .siv-subtitle-options > label {
-    grid-template-columns: 110px minmax(0, 1fr);
-  }
   .siv-subtitle-bg {
     margin-left: 0;
     flex-wrap: wrap;
@@ -1320,14 +1354,26 @@
   font-weight: 600;
 }
 .siv-live-preview-stage {
-  flex: 1;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 16px;
+  box-sizing: border-box;
+  /* Chiều cao xác định để height:% và aspect-ratio của khung 9:16 tính đúng (trước đây height auto làm khung dài theo ảnh) */
+  height: min(calc(100vh - 260px), 640px);
   min-height: 220px;
   background: color-mix(in srgb, var(--surface) 70%, var(--background) 30%);
   overflow: hidden;
+}
+.siv-live-frame-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 0;
 }
 .siv-live-preview-frame {
   position: relative;
@@ -1365,7 +1411,43 @@
   gap: 2px;
   padding: 0 8px;
   z-index: 10;
+  pointer-events: none;
 }
+.siv-live-caption-drag {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.siv-live-caption-drag:active { cursor: grabbing; }
+.siv-live-caption-tools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0;
+  flex: none;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+.siv-live-caption-tools b { min-width: 24px; text-align: center; color: var(--ink); }
+.siv-live-caption-tools button {
+  height: 26px;
+  min-width: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.siv-live-caption-tools button:hover { border-color: var(--primary); color: var(--primary); }
 .siv-live-caption-line {
   display: inline-block;
   text-align: center;

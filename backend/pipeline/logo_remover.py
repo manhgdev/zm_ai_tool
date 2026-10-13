@@ -14,8 +14,12 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
-import numpy as np
+from pipeline.core.runtime_site import ensure_cv2
+
+# ensure_cv2 thêm site-packages của .venv-runtime vào sys.path trước (bản APP loại cv2/numpy khỏi bundle);
+# thiếu thì hook trong runtime_site tự cài gói OCR.
+cv2 = ensure_cv2()
+import numpy as np  # noqa: E402
 
 ORT_IMPORT_ERROR = ""
 try:

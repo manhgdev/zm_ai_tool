@@ -10,11 +10,11 @@ import sys
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from pipeline.srt_image import (
-    ROOT, cancel, create_job, get_job, list_jobs, output_path,
+    ROOT, cache_sizes, cancel, clear_render_cache, create_job, get_job, list_jobs, output_path,
     parse_timing_cues_detailed, parse_timing_times, pause, start,
 )
 from pipeline.core.output_paths import downloads_folder
@@ -228,6 +228,16 @@ async def create(
     )
     start(job["id"])
     return job
+
+
+@router.get("/api/media-compose/cache")
+def cache_info():
+    return cache_sizes()
+
+
+@router.post("/api/media-compose/cache/clear")
+def clear_cache(kinds: list[str] = Body(..., embed=True)):
+    return {"ok": True, "freed": clear_render_cache(kinds)}
 
 
 @router.get("/api/media-compose/jobs/{job_id}")

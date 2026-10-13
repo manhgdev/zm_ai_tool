@@ -5,6 +5,12 @@
 .app-confirm-dialog>header button{min-width:30px;min-height:30px;padding:0;border:0;background:transparent;color:inherit;font-size:1.15rem;cursor:pointer}
 .app-confirm-dialog>p{margin:0;padding:16px 13px;color:var(--foreground);font-size:.8rem;line-height:1.45;overflow-wrap:anywhere}
 .app-prompt-field{display:grid;gap:6px;padding:0 13px 16px}.app-prompt-field label{color:var(--muted-foreground);font-size:.72rem;font-weight:700}.app-prompt-field input{width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--foreground);font:400 .8rem/1.35 var(--font);outline:none}.app-prompt-field input:focus{border-color:var(--primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 15%,transparent)}
+.app-confirm-options{display:grid;gap:6px;padding:0 13px 14px}
+.app-confirm-option{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--background);font-size:.8rem;cursor:pointer}
+.app-confirm-option:hover{border-color:var(--primary)}
+.app-confirm-option input{width:15px;height:15px;margin:0;accent-color:var(--primary)}
+.app-confirm-option span{flex:1;min-width:0}
+.app-confirm-option small{color:var(--muted-foreground);font-size:.72rem;font-weight:700;white-space:nowrap}
 .app-confirm-dialog>footer{justify-content:flex-end;gap:7px;border-top:1px solid var(--border)}
 .app-confirm-dialog>footer button{min-height:32px;padding:0 11px;border:1px solid var(--border);border-radius:7px;background:var(--background);color:var(--foreground);font-size:.72rem;font-weight:750;cursor:pointer}
 .app-confirm-dialog>footer button:hover{border-color:var(--primary);color:var(--primary)}

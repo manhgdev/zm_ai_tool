@@ -113,7 +113,7 @@ class HardwareTests(unittest.TestCase):
 
     def test_uv_448_switches_to_pip_once_without_changing_gpu_profile(self):
         calls = []
-        def run(command, *args):
+        def run(command, *args, **kwargs):
             calls.append(command)
             if command[0] == 'uv':
                 raise runtime.RuntimeInstallError('DEPENDENCY_INSTALL_FAILED', 'query failed',
@@ -137,7 +137,7 @@ class HardwareTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw, patch.dict(os.environ, {'ZM_AI_TOOL_HOME': raw}):
             python = Path(raw) / 'runtime/python/cpython-3.12.10-windows-x86_64-none/python.exe'
             commands = []
-            def run(command, *args):
+            def run(command, *args, **kwargs):
                 commands.append(command)
                 if command[1:3] == ['python', 'install']:
                     python.parent.mkdir(parents=True)
@@ -188,9 +188,10 @@ class HardwareTests(unittest.TestCase):
     def test_profile_commands_have_one_torch_and_one_provider(self):
         for profile in ('cpu', 'directml', 'nvidia-cu124', 'nvidia-cu128'):
             commands = []
-            with patch.object(runtime, '_run', side_effect=lambda command, *args: commands.append(command)):
+            with patch.object(runtime, '_run', side_effect=lambda command, *args, **kwargs: commands.append(command)):
                 runtime._install_packages('uv', Path('candidate/python.exe'), profile, True, lambda *a, **kw: None)
-            wheel_files = [Path(c[c.index('--requirement') + 1]).read_text() for c in commands if '--requirement' in c]
+            # Wheel được truyền bằng tên file (cwd = thư mục wheels) để '#' trong đường dẫn không bị cắt.
+            wheel_files = ['\n'.join(a for a in c if a.endswith('.whl')) for c in commands]
             self.assertEqual(sum('torch-1.0-' in text for text in wheel_files), 1)
             ort = [path for text in wheel_files for path in text.splitlines() if Path(path).name.startswith('onnxruntime')]
             self.assertEqual(len(ort), 1)

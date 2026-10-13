@@ -6910,11 +6910,18 @@ class FlowService:
                 asyncio.create_task(self._sync_credits(api, account["id"]))
                 # Xóa logo Flow ngay sau khi tải; Ultra không có logo nên bỏ qua.
                 if settings.get("removeLogo") and str(account.get("plan") or "") != "Ultra":
-                    from pipeline.logo_remover import DEFAULT_LAMA_MODEL, LogoRemovalSettings, remove_logo_from_file
+                    try:
+                        import importlib
+                        logo_mod = await asyncio.to_thread(importlib.import_module, "pipeline.logo_remover")
+                        DEFAULT_LAMA_MODEL, LogoRemovalSettings, remove_logo_from_file = (
+                            logo_mod.DEFAULT_LAMA_MODEL, logo_mod.LogoRemovalSettings, logo_mod.remove_logo_from_file)
+                    except Exception as runtime_exc:  # thiếu/cài lỗi runtime: ảnh vẫn dùng được, chỉ còn logo
+                        self._log("warning", "logo_remove_failed", job_id=job_id, message=str(runtime_exc))
+                        remove_logo_from_file = None
                     logo_settings = LogoRemovalSettings(
                         enabled=True, keep_original=False, mode="auto", lama_model_path=DEFAULT_LAMA_MODEL,
-                    )
-                    for out_path in outputs:
+                    ) if remove_logo_from_file else None
+                    for out_path in outputs if remove_logo_from_file else []:
                         try:
                             logo_result = await asyncio.to_thread(remove_logo_from_file, out_path, logo_settings)
                             self._log("info", "logo_removed", job_id=job_id, message=logo_result.mode_used)
