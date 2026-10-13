@@ -544,6 +544,23 @@ def _write_pointer(root: Path, name: str, data: dict[str, Any]) -> None:
 
 
 def install_runtime(progress: Progress | None = None, *, demucs: bool = False, compute_mode: str | None = None, features: tuple[str, ...] | None = None) -> dict[str, Any]:
+    try:
+        return _install_runtime(progress, demucs=demucs, compute_mode=compute_mode, features=features)
+    except RuntimeInstallError as exc:
+        # ponytail: GPU probe failed -> one automatic CPU retry; CPU mode is then persisted in current.json.
+        from .runtime_active import cpu_mode_enabled
+        if exc.code != 'RUNTIME_PROBE_FAILED' or compute_mode == 'cpu' or cpu_mode_enabled():
+            raise
+        try:
+            result = _install_runtime(progress, demucs=demucs, compute_mode='cpu', features=features)
+        except RuntimeInstallError as cpu_exc:
+            raise RuntimeInstallError(cpu_exc.code, str(cpu_exc), retryable=cpu_exc.retryable,
+                                      diagnostics=f'{cpu_exc.diagnostics}\n--- GPU probe failure ---\n{exc.diagnostics}') from cpu_exc
+        result['diagnostics'] = f"{result.get('diagnostics', '')}\n--- GPU probe failed, installed CPU runtime ---\n{exc.diagnostics}"
+        return result
+
+
+def _install_runtime(progress: Progress | None = None, *, demucs: bool = False, compute_mode: str | None = None, features: tuple[str, ...] | None = None) -> dict[str, Any]:
     from .system_check.install import _find_uv
     from .runtime_active import cpu_mode_enabled, clear_compute_caches
     if compute_mode not in (None, 'cpu'):

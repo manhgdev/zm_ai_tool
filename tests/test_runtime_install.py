@@ -367,6 +367,18 @@ class TransactionTests(unittest.TestCase):
             runtime.rollback_runtime()
         self.assertEqual(active_runtime_dir(), legacy)
 
+    def test_gpu_probe_failure_falls_back_to_cpu_install(self):
+        calls = []
+        def fake(progress=None, *, demucs=False, compute_mode=None, features=None):
+            calls.append(compute_mode)
+            if compute_mode != 'cpu':
+                raise runtime.RuntimeInstallError('RUNTIME_PROBE_FAILED', 'Runtime probe failed', diagnostics='cuda boom')
+            return {'ok': True, 'diagnostics': 'cpu ok'}
+        with patch.object(runtime, '_install_runtime', fake):
+            result = runtime.install_runtime()
+        self.assertEqual(calls, [None, 'cpu'])
+        self.assertIn('cuda boom', result['diagnostics'])
+
 
 if __name__ == '__main__':
     unittest.main()
