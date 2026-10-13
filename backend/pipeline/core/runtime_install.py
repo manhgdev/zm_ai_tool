@@ -520,7 +520,7 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *
     _prefetch_packages(wheels, groups, emit, install_ready)
     if demucs:
         emit(75, 'install', currentPackage='Demucs')
-        demucs_command = ['--only-binary', ':all:', '--no-binary', ','.join(SOURCE_ALLOWED), '--no-deps', *DEMUCS]
+        demucs_command = ['--only-binary', ':all:', *(arg for name in SOURCE_ALLOWED for arg in ('--no-binary', name)), '--no-deps', *DEMUCS]
         try:
             _run([*(pip_base if use_pip else uv_base), *demucs_command], 'DEPENDENCY_INSTALL_FAILED', 'Demucs')
         except RuntimeInstallError as exc:
