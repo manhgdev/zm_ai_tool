@@ -151,6 +151,18 @@ export default function TtsInputPanel({
             onChange={(e) => onTextChange(e.target.value)}
             placeholder="Nhập hoặc dán văn bản của bạn ở đây…"
           />
+          {emotionCues && (
+            <div id="tts-emotion-cues" className="tts-cues">
+              <span>{t('Cảm xúc / cue phi ngôn ngữ: chèn thẳng vào văn bản:', 'Emotion / non-verbal cues: drop straight into the text:')}</span>
+              <div className="tts-cues-row">
+                {EMOTION_CUES.map(([vi, en], i) => (
+                  <button key={vi} type="button" className="tts-cue" data-cue={i + 1} onClick={() => insertCue(locale === 'en' ? en : vi)}>
+                    {locale === 'en' ? en : vi}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="tts-foot-row">
             <span>{text.length} ký tự</span>
             <button type="button" onClick={onClearText}>
@@ -185,23 +197,6 @@ export default function TtsInputPanel({
               'Blank lines always split paragraphs. “Auto-split sentences” also cuts on . ! ?',
             )}
           </p>
-          {emotionCues && (
-            <div id="tts-emotion-cues" style={{ margin: '6px 0 0', fontSize: '0.72rem', color: 'var(--tts-muted)' }}>
-              <p style={{ margin: 0 }}>
-                {t(
-                  'Cảm xúc / cue phi ngôn ngữ (thử nghiệm): chèn thẳng vào văn bản, VieNeu sẽ đọc thành tiếng cười, thở dài, hắng giọng.',
-                  'Emotion / non-verbal cues (experimental): drop [chuckle], [sigh], [clear throat] straight into the text. Vietnamese tags also work.',
-                )}
-              </p>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-                {EMOTION_CUES.map(([vi, en]) => (
-                  <button key={vi} type="button" onClick={() => insertCue(locale === 'en' ? en : vi)}>
-                    {locale === 'en' ? en : vi}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </>
       )}
     </section>

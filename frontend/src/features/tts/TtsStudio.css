@@ -2559,3 +2559,12 @@ html.dark .tts-log-row-head button {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+/* VieNeu emotion / non-verbal cue chips */
+.tts-cues { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; font-size: 0.74rem; font-weight: 600; color: var(--tts-purple); }
+.tts-cues-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.tts-cue { --cue: var(--tts-purple); padding: 3px 12px; border: 1px solid var(--cue); border-radius: 999px; background: color-mix(in srgb, var(--cue) 14%, transparent); color: var(--cue); font-size: 0.78rem; font-weight: 700; cursor: pointer; transition: background .15s, color .15s, transform .15s; }
+.tts-cue:hover { background: var(--cue); color: #fff; transform: translateY(-1px); }
+.tts-cue[data-cue="1"] { --cue: #d97706; }
+.tts-cue[data-cue="2"] { --cue: var(--tts-blue); }
+.tts-cue[data-cue="3"] { --cue: var(--tts-green); }
