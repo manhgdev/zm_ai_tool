@@ -1087,6 +1087,18 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
       >
         {cacheDialog && (
           <div className="app-confirm-options">
+            {(() => {
+              const all = Object.keys(cacheDialog.sizes)
+              const allPicked = all.length > 0 && all.every((key) => cacheDialog.picked.includes(key))
+              return (
+                <label className="app-confirm-option">
+                  <input type="checkbox" checked={allPicked}
+                    ref={(el) => { if (el) el.indeterminate = !allPicked && cacheDialog.picked.length > 0 }}
+                    onChange={() => setCacheDialog({ ...cacheDialog, picked: allPicked ? [] : all })} />
+                  <span><b>{allPicked ? t('Bỏ chọn tất cả', 'Deselect all') : t('Chọn tất cả', 'Select all')}</b></span>
+                </label>
+              )
+            })()}
             {([
               ['render', t('Video đã render (cache + preview)', 'Rendered videos (cache + preview)')],
               ['published', t('Video ở tab Rendered', 'Videos in Rendered tab')],
