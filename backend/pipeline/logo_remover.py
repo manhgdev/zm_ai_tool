@@ -598,10 +598,9 @@ def _lama_fill_with_mask(working: np.ndarray, full_mask: np.ndarray, settings: L
     restored = _run_lama_session(inp, mask_f, settings.lama_model_path)
     oh, ow = orig_size
     restored = restored[:oh, :ow]
-    # Feather rộng hơn để blend mượt vào nền, tránh viền cứng quanh vùng inpaint.
-    feather = max(11, ((settings.inpaint_radius) * 2 + 1) | 1)
+    feather = max(3, ((settings.inpaint_radius // 2) * 2 + 1))
     alpha = cv2.GaussianBlur(mask, (feather, feather), 0).astype(np.float32) / 255.0
-    alpha = np.clip(alpha * 1.08, 0.0, 1.0)[..., None]
+    alpha = alpha[..., None]
     mixed = np.clip(restored.astype(np.float32) * alpha + crop.astype(np.float32) * (1.0 - alpha), 0, 255).astype(np.uint8)
     result = working.copy()
     result[y1:y2, x1:x2] = mixed
@@ -615,8 +614,8 @@ def _flow_auto_cleanup(working: np.ndarray, settings: LogoRemovalSettings) -> tu
     if can_use_lama:
         try:
             processed = _lama_fill_with_mask(working, mask, settings)
-            # Pass 2 luôn chạy với mask nở rộng hơn để xoá sạch halo bán trong suốt.
-            stronger = cv2.dilate(mask, np.ones((9, 9), np.uint8), iterations=1)
+            # Pass 2 xử lý nhẹ phần halo, không mở rộng vùng ảnh cần tái tạo quá mức.
+            stronger = cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1)
             processed = _lama_fill_with_mask(processed, stronger, settings)
             mode = "flow_template_lama_2pass"
             return processed, mode + ("_aligned" if detected else "_fixed"), bbox

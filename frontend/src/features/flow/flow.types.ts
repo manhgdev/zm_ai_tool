@@ -19,6 +19,7 @@ export type FlowJob = {
   prompt: string;
   inputType: PromptInputType;
   createdAt: number;
+  updatedAt?: number;
   status: JobStatus;
   stage?: string;
   progress: number;
@@ -40,6 +41,7 @@ export type FlowJob = {
     resolution: string;
     /** Video download menu quality (360p/720p/1080p/4K). */
     quality?: string;
+    format?: string;
     headless?: boolean;
     removeLogo?: boolean;
     outputDir: string;

@@ -317,6 +317,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
           ? clampFlowImageResolution(String(s.resolution || "1K"))
           : (isFlowVideoUiResolution(String(s.resolution || "")) ? String(s.resolution) : ""),
         quality: String(s.quality || ""),
+        format: String(s.format || "jpg"),
         headless: typeof s.headless === "boolean" ? s.headless : undefined,
         removeLogo: typeof s.removeLogo === "boolean" ? s.removeLogo : undefined,
         outputDir: String(s.outputDir || "flow"),
@@ -329,8 +330,8 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
 /** Compact job meta line: model · ratio · duration · res · download quality. */
 export function formatFlowJobSettingsMeta(
   kind: CreateKind,
-  settings: Pick<FlowJob["settings"], "model" | "ratio" | "duration" | "resolution" | "quality">,
-  opts?: { downloadLabel?: string },
+  settings: Pick<FlowJob["settings"], "model" | "ratio" | "duration" | "resolution" | "quality" | "format" | "removeLogo">,
+  opts?: { downloadLabel?: string; logoLabel?: string },
 ): string {
   const parts: string[] = [];
   const model = String(settings.model || "").trim();
@@ -356,6 +357,9 @@ export function formatFlowJobSettingsMeta(
       ? String(settings.resolution).trim().toUpperCase().replace(/K$/i, "K")
       : "";
     if (resolution) parts.push(resolution);
+    const format = String(settings.format || "").trim().toUpperCase();
+    if (format) parts.push(format);
+    if (settings.removeLogo && opts?.logoLabel) parts.push(opts.logoLabel);
   }
   return parts.join(" · ");
 }

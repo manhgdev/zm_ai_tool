@@ -952,7 +952,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     : [];
   const previewOutput = preview?.job.outputs?.[preview.outputIndex] || "";
   const previewMediaKind = preview ? flowOutputMediaKind(previewOutput, preview.job.kind) : "file";
-  const previewSrc = preview ? `/api/flow/jobs/${preview.job.id}/outputs/${preview.outputIndex}` : "";
+  // The logo-removal step overwrites the downloaded file in place. Include the
+  // job revision so Preview cannot keep showing the pre-cleanup image from the
+  // browser cache after the output has been replaced.
+  const previewSrc = preview
+    ? `/api/flow/jobs/${preview.job.id}/outputs/${preview.outputIndex}?v=${encodeURIComponent(String(preview.job.updatedAt || preview.job.createdAt))}`
+    : "";
   const statusText = (status: JobStatus) =>
     status === "processing"
       ? t("Đang xử lý", "Processing")
@@ -3335,6 +3340,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           <span>
                             {formatFlowJobSettingsMeta(job.kind, job.settings, {
                               downloadLabel: t("tải", "DL"),
+                              logoLabel: t("Del Logo", "Del Logo"),
                             })}{" "}
                             · {job.randomAccount ? "🎲 " : ""}{job.account}
                             {job.settings.headless === false && <> · {t("Mở Chrome", "Open Chrome")}</>}
