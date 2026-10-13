@@ -23,22 +23,36 @@ def profile_dir(account_id: str) -> Path:
     return path
 
 
+# ponytail: this process is the only writer, so parsed tables are cached in
+# memory (invalidated by mtime). Ceiling: external edits are seen only after
+# the file's mtime changes; upgrade path is sqlite.
+_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
 def _read(name: str) -> list[dict[str, Any]]:
     path = root() / f"{name}.json"
-    if not path.exists():
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
         return []
+    cached = _CACHE.get(name)
+    if cached and cached[0] == mtime:
+        return list(cached[1])
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, list) else []
+        rows = value if isinstance(value, list) else []
     except (OSError, json.JSONDecodeError):
         return []
+    _CACHE[name] = (mtime, rows)
+    return list(rows)
 
 
 def _write(name: str, rows: list[dict[str, Any]]) -> None:
     path = root() / f"{name}.json"
     temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
     temp.replace(path)
+    _CACHE[name] = (path.stat().st_mtime_ns, rows)
 
 
 def list_rows(name: str) -> list[dict[str, Any]]:

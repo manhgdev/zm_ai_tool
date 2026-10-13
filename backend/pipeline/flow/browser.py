@@ -175,6 +175,17 @@ def free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
+
+async def _goto_tolerant(page, url: str) -> None:
+    """goto() that accepts being superseded by a parallel navigation to the same page."""
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+    except Exception as exc:
+        # ponytail: another job navigating the shared tab is harmless; anything else re-raises.
+        if "interrupted by another navigation" not in str(exc) and "ERR_ABORTED" not in str(exc):
+            raise
+        await asyncio.sleep(1.5)
+
 class BrowserManager:
     """Subset of flow-py's browser contract backed by installed Google Chrome."""
 
@@ -395,7 +406,7 @@ class BrowserManager:
             if self._owns_page:
                 self._page = next((candidate for candidate in pages if candidate.url in {"", "about:blank"}), None) or await self.context.new_page()
                 if self._page.url in {"", "about:blank"}:
-                    await self._page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
+                    await _goto_tolerant(self._page, FLOW_BASE_URL)
                 if not self.headless:
                     if not self._window_placed:
                         await self._place_visible_window(self._page)
@@ -431,7 +442,7 @@ class BrowserManager:
             except Exception:
                 pass
         if self._page.url in {"", "about:blank"}:
-            await self._page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
+            await _goto_tolerant(self._page, FLOW_BASE_URL)
         for extra in list(self.context.pages):
             if extra is not self._page and extra.url in {"", "about:blank"}:
                 try:

@@ -403,6 +403,18 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setLimitNotice(flowLimitPopupCopy(raw, t));
   }, [t]);
   const [queueKind, setQueueKind] = useState<CreateKind | "all">("all");
+  // ponytail: sessionStorage is enough; restore once content is tall enough to scroll.
+  const queueListRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    const saved = Number(sessionStorage.getItem("flow-queue-scroll") || 0);
+    if (!saved) return;
+    let tries = 0;
+    const apply = () => {
+      node.scrollTop = saved;
+      if (node.scrollTop < saved - 2 && tries++ < 20) setTimeout(apply, 150);
+    };
+    requestAnimationFrame(apply);
+  }, []);
   const selectCreateKind = (kind: CreateKind) => {
     setCreateKind(kind);
     setSourceFiles([]);
@@ -3153,7 +3165,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 </button>
               ))}
             </div>
-            <div className="flow-queue-list">
+            <div className="flow-queue-list" ref={queueListRef} onScroll={(event) => { try { sessionStorage.setItem("flow-queue-scroll", String(event.currentTarget.scrollTop)); } catch { /* ignore */ } }}>
               {activeQueueGroups.map((group) => {
                 const groupKey = `${group.kind}-${group.outputDir}`;
                 const isCollapsed = !!collapsedFolders[groupKey];
