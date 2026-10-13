@@ -1582,6 +1582,36 @@ class FlowService:
         except OSError:
             return False
 
+    def _outputs_ready_for_completion(self, job: dict[str, Any], *, account_plan: str = "") -> bool:
+        """Return true when downloaded files are safe to expose as a completed job.
+
+        A stale worker may finish after a retry has changed the row token.  The
+        files and logo markers are the durable result in that case; do not put
+        an already-complete job back into the queue.
+        """
+        outputs = [str(value) for value in (job.get("outputs") or []) if str(value).strip()]
+        if not self._outputs_exist(outputs):
+            return False
+        settings = job.get("settings") or {}
+        if not (job.get("kind") == "image" and settings.get("removeLogo") and account_plan != "Ultra"):
+            return True
+        done = {str(value) for value in (job.get("logoDone") or [])}
+        return bool(outputs) and all(path in done for path in outputs)
+
+    def _finalize_existing_outputs(self, job_id: str, job: dict[str, Any], *, account_id: str = "", account_plan: str = "") -> None:
+        if not self._outputs_ready_for_completion(job, account_plan=account_plan):
+            return
+        outputs = list(job.get("outputs") or [])
+        store.patch_row("jobs", job_id, {
+            "status": "done", "stage": "done", "progress": 100,
+            "outputs": outputs, "error": None, "updatedAt": time.time(),
+        })
+        if job.get("seriesContext"):
+            from . import series
+            series.mark_job_complete(job, outputs)
+        self._log("success", "job_completed", job_id=job_id, account_id=account_id,
+                  details={"outputCount": len(outputs), "recovered": True})
+
     @classmethod
     def _output_validation_error(cls, outputs: Any) -> str | None:
         paths = [Path(str(value)) for value in (outputs or []) if str(value).strip()]
@@ -1595,6 +1625,28 @@ class FlowService:
                     return f"FLOW_OUTPUT_EMPTY: {path}"
             except OSError as exc:
                 return f"FLOW_OUTPUT_UNREADABLE: {path}: {exc}"
+        return None
+
+    @staticmethod
+    def _image_ratio_validation_error(outputs: Any, ratio: str) -> str | None:
+        """Reject a Flow image whose downloaded dimensions do not match its job."""
+        expected = {"1:1": 1.0, "16:9": 16 / 9, "9:16": 9 / 16, "4:3": 4 / 3, "3:4": 3 / 4}.get(str(ratio or "").strip())
+        if expected is None:
+            return None
+        try:
+            from pipeline.core.runtime_site import ensure_cv2
+            import numpy as np
+            cv2 = ensure_cv2()
+            for value in outputs or []:
+                path = Path(str(value))
+                image = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+                if image is None or image.shape[1] <= 0 or image.shape[0] <= 0:
+                    return f"FLOW_IMAGE_RATIO_INVALID: {path}"
+                actual = image.shape[1] / image.shape[0]
+                if abs(actual - expected) / expected > 0.04:
+                    return f"FLOW_IMAGE_RATIO_MISMATCH: expected {ratio}, got {image.shape[1]}x{image.shape[0]}"
+        except Exception as exc:
+            return f"FLOW_IMAGE_RATIO_CHECK_FAILED: {exc}"
         return None
 
     def save_account(self, payload: dict[str, Any], account_id: str | None = None) -> dict[str, Any]:
@@ -2278,7 +2330,18 @@ class FlowService:
             # old-session block after the owner, so join the existing cycle
             # instead of spending a second reset budget.
             if reconnect_count >= 1 or (recovery_job_id and str(job_id) in active_job_ids):
-                if recovery_job_id and str(job_id) in active_job_ids:
+                # A concurrent worker can report the same block just after the
+                # first worker records its cohort.  If the shared reset is still
+                # pending, join it even when this job was not in the first
+                # snapshot; otherwise it is incorrectly quarantined as a new
+                # incident before reconnect has had a chance to run.
+                if account.get("automationRecoveryPending") and not account.get("automationRecoveryBlocked") and recovery_job_id:
+                    if str(job_id) not in active_job_ids:
+                        active_job_ids.append(str(job_id))
+                        store.patch_row("accounts", account_id, {
+                            "automationRecoveryActiveJobIds": active_job_ids,
+                            "updatedAt": time.time(),
+                        })
                     store.patch_row("jobs", job_id, {
                         "status": "action_required",
                         "stage": "reconnecting",
@@ -2390,6 +2453,20 @@ class FlowService:
                 # reconnect budget (automationReconnectCount) is already spent,
                 # so a failure here is final: the user presses Connect.
                 self.connect(account_id, headless=self._auto_headless(account_id))
+                # connect() starts the login worker asynchronously. Do not
+                # clear recovery state until that worker has actually brought
+                # the account online; otherwise queued jobs remain stuck with
+                # the misleading "retrying once" message.
+                deadline = time.monotonic() + 90
+                while time.monotonic() < deadline:
+                    refreshed = store.get_row("accounts", account_id) or {}
+                    if refreshed.get("status") == "online":
+                        break
+                    if refreshed.get("status") == "reconnect" and refreshed.get("error"):
+                        raise RuntimeError(str(refreshed.get("error")))
+                    time.sleep(0.5)
+                else:
+                    raise RuntimeError("FLOW_RECONNECT_TIMEOUT: account did not become online")
                 store.patch_row("accounts", account_id, {
                     "automationRecoveryPending": False,
                     "automationRecoveryBlocked": False,
@@ -3376,20 +3453,20 @@ class FlowService:
             existing_email = str(account.get("email") or "").strip()
             from urllib.parse import quote
 
-            if cookie_auth:
-                start_url = "https://labs.google/fx/tools/flow"
-                if existing_project_id:
-                    start_url += f"/project/{quote(existing_project_id, safe='')}"
-            elif existing_project_id:
-                # Tài khoản cũ: login_hint + continue về project cụ thể
-                project_url = f"https://flow.google.com/project/{existing_project_id}"
+            if cookie_auth and existing_project_id and not force_interactive:
+                # Automatic cookie recovery must return to the saved project
+                # context so Flow can restore the authenticated session.
+                project_url = f"https://flow.google.com/project/{quote(existing_project_id, safe='')}"
                 start_url = (
                     f"https://accounts.google.com/ServiceLogin"
                     f"?service=wise&continue={quote(project_url, safe='')}"
                     f"&login_hint={quote(existing_email, safe='')}"
                 )
+            elif cookie_auth:
+                start_url = "https://flow.google.com/"
             else:
-                # Tài khoản mới: login_hint + continue về Flow home
+                # Manual Connect always lands on Flow home. Project selection
+                # belongs to generation, not the account login screen.
                 start_url = (
                     f"https://accounts.google.com/ServiceLogin"
                     f"?service=wise&continue={quote('https://flow.google.com/', safe='')}"
@@ -3729,14 +3806,39 @@ class FlowService:
         kind: str = "image",
     ) -> dict[str, Any]:
         """Open the kind-specific account project; repair it if deleted."""
-        project_field = _flow_project_field(kind)
-        target_id = _flow_project_id(account, kind)
+        current_job = store.get_row("jobs", job_id) if job_id else None
+        scoped = bool(current_job)
+        settings = (current_job or {}).get("settings") or {}
+        project_field = (
+            "laneProject_" + safe_output_part(kind) + "_"
+            + safe_output_part(settings.get("ratio") or "16:9") + "_"
+            + safe_output_part(settings.get("resolution") or "default")
+            if scoped else _flow_project_field(kind)
+        )
+        target_id = str((current_job or {}).get("submissionProjectId") or account.get(project_field) or "") if scoped else _flow_project_id(account, kind)
+        if scoped and not target_id:
+            account_id = str(account.get("id") or "")
+            with self._guard:
+                lane_lock = self._project_recovery_locks.setdefault(account_id + ":" + project_field, threading.Lock())
+            while not lane_lock.acquire(blocking=False):
+                await asyncio.sleep(0.1)
+            try:
+                persisted = store.get_row("accounts", account_id) or {}
+                target_id = str(persisted.get(project_field) or "")
+                if not target_id:
+                    target_id = await self._create_flow_project_ui(page)
+                    if not target_id:
+                        raise RuntimeError("FLOW_PROJECT_NOT_FOUND: Could not create scoped project")
+                    store.patch_row("accounts", account_id, {project_field: target_id})
+                account = {**account, project_field: target_id}
+            finally:
+                lane_lock.release()
         legacy_id = str(account.get("projectId") or "").strip()
-        if kind == "image" and not account.get(project_field) and legacy_id:
+        if not scoped and kind == "image" and not account.get(project_field) and legacy_id:
             store.patch_row("accounts", str(account.get("id") or ""), {project_field: legacy_id})
             account = {**account, project_field: legacy_id}
             target_id = legacy_id
-        elif kind == "video" and not target_id:
+        elif not scoped and kind == "video" and not target_id:
             # Existing accounts have one legacy project. Preserve it for images
             # and create a dedicated gallery for video on first use.
             new_id = await self._create_flow_project_ui(page, avoid_project_id=legacy_id)
@@ -3779,13 +3881,14 @@ class FlowService:
         old_id = str(target_id or client.project_id or "")
         account_id = str(account.get("id") or "")
         with self._guard:
-            recovery_lock = self._project_recovery_locks.setdefault(account_id, threading.Lock())
-        recovery_lock.acquire()
+            recovery_lock = self._project_recovery_locks.setdefault(account_id + ":" + project_field, threading.Lock())
+        while not recovery_lock.acquire(blocking=False):
+            await asyncio.sleep(0.1)
         try:
             # Another worker may have repaired this account while this worker
             # was waiting. Reuse its project instead of creating a second one.
             persisted = store.get_row("accounts", account_id) or {}
-            persisted_id = _flow_project_id(persisted, kind)
+            persisted_id = str(persisted.get(project_field) or "") if scoped else _flow_project_id(persisted, kind)
             if persisted_id and persisted_id != old_id:
                 self._bind_flow_project(api, client, persisted_id)
                 await client._ensure_project_page(page)
@@ -3813,7 +3916,7 @@ class FlowService:
                 "error": None,
                 "updatedAt": time.time(),
             }
-            if kind == "image":
+            if kind == "image" and not scoped:
                 patch["projectId"] = new_id
                 patch["projectChangedAt"] = changed_at
             store.patch_row("accounts", str(account["id"]), patch)
@@ -4433,7 +4536,7 @@ class FlowService:
                     and (
                         not finished.get("submissionStartedAt")
                         # ponytail: lost results retry fresh (small duplicate-charge risk, user chose completion).
-                        or re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT|has been closed|Target closed|Connection closed", finished_error)
+                        or re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT|ERR_ABORTED|has been closed|Target closed|Connection closed", finished_error, re.I)
                     )
                     and not finished.get("mediaIds")
                     and not finished.get("outputs")
@@ -4462,7 +4565,7 @@ class FlowService:
                 }
                 if rejected:
                     patch["generationRejectRetryCount"] = next_count
-                if re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT", finished_error):
+                if re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT", finished_error, re.I):
                     patch.update({
                         "submissionStartedAt": None, "submissionProjectId": None,
                         "baselineMediaIds": [], "mediaIds": [], "resumeOnly": False,
@@ -4542,7 +4645,18 @@ class FlowService:
 
             current_job = store.get_row("jobs", job_id) or {}
             current_token = str(current_job.get("generationToken") or "")
-            if current_token != generation_token and current_job.get("status") == "queued":
+            if current_job.get("status") == "queued" and self._outputs_ready_for_completion(
+                current_job,
+                account_plan=str((store.get_row("accounts", account_id) or {}).get("plan") or ""),
+            ):
+                self._finalize_existing_outputs(
+                    job_id, current_job, account_id=account_id,
+                    account_plan=str((store.get_row("accounts", account_id) or {}).get("plan") or ""),
+                )
+            elif current_job.get("status") == "queued":
+                # Internal auto-retries intentionally keep the generation token;
+                # always hand the queued row back to the scheduler after this
+                # worker releases its slot.
                 threading.Thread(target=self._run_sync, args=(job_id,), daemon=True, name=f"flow-job-retry-{job_id}").start()
             elif current_job.get("stage") == "model_fallback" and job_id not in self._cancelled:
                 self.retry(job_id, {"accountId": account_id})
@@ -5764,6 +5878,16 @@ class FlowService:
         empty_checks = 0
         while deadline is None or time.monotonic() < deadline:
             self._check_cancel(job["id"])
+            visible_error = await self._claim_visible_flow_error(page, job, count)
+            if visible_error:
+                classified = _classify_visible_flow_error(visible_error)
+                if classified.startswith("FLOW_GENERATION_REJECTED:"):
+                    store.patch_row("jobs", job["id"], {
+                        "submissionStartedAt": None, "submissionProjectId": None,
+                        "baselineMediaIds": [], "mediaIds": [], "resumeOnly": False,
+                        "updatedAt": time.time(),
+                    })
+                raise RuntimeError(classified)
             # Recovery may need to claim media records whose request metadata
             # is absent in Flow's project payload. Keep this flag local to the
             # recovery probe so the initial parallel poll remains strict.
@@ -6004,6 +6128,13 @@ class FlowService:
                 expected_count,
             )
             if flow_error:
+                classified = _classify_visible_flow_error(flow_error)
+                if classified.startswith("FLOW_GENERATION_REJECTED:"):
+                    store.patch_row("jobs", job_id, {
+                        "submissionStartedAt": None, "submissionProjectId": None,
+                        "baselineMediaIds": [], "mediaIds": [], "resumeOnly": False,
+                        "updatedAt": time.time(),
+                    })
                 store.patch_row("jobs", job_id, {
                     "submissionStartedAt": None,
                     "submissionProjectId": None,
@@ -6013,7 +6144,7 @@ class FlowService:
                     "progress": 0,
                     "updatedAt": time.time(),
                 })
-                raise RuntimeError(_classify_visible_flow_error(flow_error))
+                raise RuntimeError(classified)
             current_progress = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
             pct = await self._flow_tile_percent(page, expected_count)
             # Real Flow tile % only (20..88); no time-based guessing.
@@ -6441,7 +6572,7 @@ class FlowService:
             self._check_cancel(job_id)
             self._log("info", "job_started", job_id=job_id, account_id=account["id"], details={"kind": job["kind"]})
             job_kind = str(job.get("kind") or "video")
-            project_id = _flow_project_id(account, job_kind, legacy_for_video=True)
+            project_id = str(job.get("submissionProjectId") or "") or _flow_project_id(account, job_kind, legacy_for_video=True)
             if account.get("status") != "online" or not project_id:
                 raise RuntimeError("FLOW_LOGIN_REQUIRED: connect the Google Flow account first")
             from ._flow._api import FlowAPI
@@ -6553,12 +6684,17 @@ class FlowService:
             # Validate the persisted project before a fresh submission too.
             # A deleted Flow project must be replaced instead of surfacing a
             # raw 404 and stopping the new image/video job.
-            if not (job.get("submissionStartedAt") or job.get("mediaIds") or job.get("resumeOnly")):
+            recovery_state = (
+                str(job.get("stage") or "") in {"recovering", "downloading"}
+                or bool(job.get("mediaIds"))
+                or bool(job.get("resumeOnly"))
+            )
+            if not recovery_state:
                 page = await browser.page()
                 account = await self._ensure_account_project_page(
                     page, api=api, client=client, account=account, job_id=job_id, kind=job_kind,
                 )
-                project_id = _flow_project_id(account, job_kind, legacy_for_video=True)
+                project_id = str(client.project_id)
             submission_project_id = str(job.get("submissionProjectId") or "")
             project_changed_at = _flow_project_changed_at(account, job_kind)
             submitted_at = float(job.get("submissionStartedAt") or 0)
@@ -6602,12 +6738,12 @@ class FlowService:
                     },
                 )
             store.patch_row("jobs", job_id, {"status": "processing", "stage": "submitting", "progress": 5, "updatedAt": time.time()})
-            if job.get("submissionStartedAt") or job.get("mediaIds") or job.get("resumeOnly"):
+            if recovery_state:
                 page = await browser.page()
                 account = await self._ensure_account_project_page(
                     page, api=api, client=client, account=account, job_id=job_id, kind=job_kind,
                 )
-                project_id = _flow_project_id(account, job_kind, legacy_for_video=True)
+                project_id = str(client.project_id)
                 media_ids = list(job.get("mediaIds") or [])
                 if not media_ids:
                     recovery_timeout = (
@@ -6742,7 +6878,7 @@ class FlowService:
                 account = await self._ensure_account_project_page(
                     page, api=api, client=client, account=account, job_id=job_id, kind=job_kind,
                 )
-                project_id = _flow_project_id(account, job_kind, legacy_for_video=True)
+                project_id = str(client.project_id)
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
                 # Populate the composer first so Flow exposes the quick-settings
                 # controls, using the same order as image generation.
@@ -6872,7 +7008,7 @@ class FlowService:
                 account = await self._ensure_account_project_page(
                     page, api=api, client=client, account=account, job_id=job_id, kind=job_kind,
                 )
-                project_id = _flow_project_id(account, job_kind, legacy_for_video=True)
+                project_id = str(client.project_id)
                 store.patch_row("jobs", job_id, {"stage": "preparing", "progress": 8, "updatedAt": time.time()})
                 prompt_text = _prompt_with_reference_strength(
                     job["prompt"], mode, settings.get("referenceStrength", 70),
@@ -6994,6 +7130,10 @@ class FlowService:
             output_error = self._output_validation_error(outputs)
             if output_error:
                 raise RuntimeError(output_error)
+            if job["kind"] == "image":
+                ratio_error = self._image_ratio_validation_error(outputs, str(settings.get("ratio") or ""))
+                if ratio_error:
+                    raise RuntimeError(ratio_error)
             # Xóa logo Flow ngay sau khi tải (cả ảnh mới lẫn ảnh khôi phục); Ultra không có logo nên bỏ qua.
             if job["kind"] == "image" and settings.get("removeLogo") and str(account.get("plan") or "") != "Ultra":
                 logo_error = await self._remove_flow_logos(job_id, outputs)
@@ -7002,6 +7142,13 @@ class FlowService:
                     return
             current = store.get_row("jobs", job_id) or {}
             if generation_token and str(current.get("generationToken") or "") != generation_token:
+                # A retry can rotate the token after this worker downloaded and
+                # cleaned the files.  Preserve that durable result instead of
+                # allowing the stale worker to strand the row in ``queued``.
+                self._finalize_existing_outputs(
+                    job_id, current, account_id=str(account.get("id") or ""),
+                    account_plan=str(account.get("plan") or ""),
+                )
                 return
             if current.get("status") == "cancelled" or job_id in self._cancelled:
                 return

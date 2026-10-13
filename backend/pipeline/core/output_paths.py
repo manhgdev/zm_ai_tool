@@ -88,9 +88,8 @@ def app_output_root() -> Path:
     """User-visible output root, resolved in priority order:
 
     1. outputRoot saved in ui_preferences.json (user picked once via Settings)
-    2. ZM_AI_TOOL_OUTPUT_ROOT env var (set by launcher per platform:
-       Windows = ~/Documents/ZM_AI_TOOL, macOS/Linux = ~/Downloads/ZM_AI_TOOL)
-    3. Hard fallback: same platform defaults as (2)
+    2. ZM_AI_TOOL_OUTPUT_ROOT env var (set by launcher per platform)
+    3. Hard fallback: Documents on Windows/macOS, Downloads on Linux
     """
     from .ui_preferences import load_output_root  # ponytail: lazy to avoid circular at import
     saved = load_output_root()
@@ -105,7 +104,7 @@ def app_output_root() -> Path:
             return ensure_writable_output_root(Path(env))
         except OSError:
             pass
-    if sys.platform == "win32":
+    if sys.platform in {"win32", "darwin"}:
         folder = Path.home() / "Documents" / APP_OUTPUT_ROOT_NAME
     else:
         folder = Path.home() / "Downloads" / APP_OUTPUT_ROOT_NAME

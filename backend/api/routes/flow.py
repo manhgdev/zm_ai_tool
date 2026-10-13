@@ -255,7 +255,9 @@ def accounts_delete(account_id: str):
 @router.post("/accounts/{account_id}/connect")
 def accounts_connect(account_id: str):
     try:
-        return service.connect(account_id)
+        # Manual Connect should open the Flow home page so the user can choose
+        # the account/project context; generation selects its scoped project.
+        return service.connect(account_id, force_interactive=True)
     except KeyError as exc:
         raise HTTPException(404, "Flow account not found") from exc
     except RuntimeError as exc:

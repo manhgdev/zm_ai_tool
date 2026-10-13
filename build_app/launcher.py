@@ -256,11 +256,11 @@ if sys.platform == "win32":
     os.environ["UV_CACHE_DIR"] = str(home / "data" / "cache" / "uv")
     os.environ["HF_HOME"] = str(home / "data" / "cache" / "hf")
     os.environ["TORCH_HOME"] = str(home / "data" / "cache" / "torch")
-# OUTPUT_ROOT: Windows → ~/Documents/ZM_AI_TOOL; macOS/Linux → ~/Downloads/ZM_AI_TOOL.
+# OUTPUT_ROOT: Windows/macOS → ~/Documents/ZM_AI_TOOL; Linux → ~/Downloads/ZM_AI_TOOL.
 # ui_preferences.json can override this once via Settings.
 _default_output = (
     str(Path.home() / "Documents" / "ZM_AI_TOOL")
-    if sys.platform == "win32"
+    if sys.platform in {"win32", "darwin"}
     else str(Path.home() / "Downloads" / "ZM_AI_TOOL")
 )
 set_desktop_path("ZM_AI_TOOL_OUTPUT_ROOT", _default_output)

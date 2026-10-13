@@ -264,7 +264,7 @@ def public_app_config() -> dict[str, Any]:
         # Bản đóng gói / launcher — file đã trên máy, không cần «Tải xuống»
         "desktop": is_desktop,
         # Dynamic: reflects user-chosen root or platform default.
-        # Windows: ~/Documents/ZM_AI_TOOL | macOS/Linux: ~/Downloads/ZM_AI_TOOL
+        # Windows/macOS: ~/Documents/ZM_AI_TOOL | Linux: ~/Downloads/ZM_AI_TOOL
         "desktopOutputRoot": str(app_output_root()),
     }
 
