@@ -1384,14 +1384,14 @@ def _motion_filter(
     size = f"{width}x{height}"
     if mode == "zoomIn":
         return (
-            "scale=iw*2:ih*2,"
+            "scale=iw*4:ih*4,"
             "zoompan=z='min(1.06,1+on*0.00020)':"
             "x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':"
             f"d=1:s={size}:fps={fps}"
         )
     if mode == "zoomOut":
         return (
-            "scale=iw*2:ih*2,"
+            "scale=iw*4:ih*4,"
             "zoompan=z='max(1,1.06-on*0.00020)':"
             "x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':"
             f"d=1:s={size}:fps={fps}"
@@ -1404,7 +1404,7 @@ def _motion_filter(
     }.get(mode)
     if axis:
         return (
-            "scale=iw*2:ih*2,"
+            "scale=iw*4:ih*4,"
             f"zoompan=z='min(1.06,1+on*0.00020)':x='{axis[0]}':y='{axis[1]}':"
             f"d=1:s={size}:fps={fps}"
         )
@@ -1429,7 +1429,7 @@ def _motion_filter(
         else f"1+0.09*{travel}"
     )
     return (
-        "scale=iw*2:ih*2,"
+        "scale=iw*4:ih*4,"
         f"zoompan=z='{zoom_curve}':"
         f"x='{x}':y='{y}':"
         f"d=1:s={size}:fps={fps}"
