@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import re
 import socket
 import subprocess
 import threading
@@ -133,14 +134,54 @@ def _visible_window_geometry(
 
 
 
+def _display_available() -> bool:
+    """False on a Linux VPS with no window server; desktop always has one."""
+    if sys.platform.startswith("linux"):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return True
+
+
 def _visible_window_args(*, fullscreen: bool = False) -> list[str]:
     """Start compactly; the page then supplies the real monitor work area."""
     # Do not create Tk/AppKit from a Flow worker thread.  macOS aborts the
     # process when Tk initializes Cocoa off the main thread (SIGABRT/-6).
     return [
         "--window-position=0,0",
-        *( ["--start-maximized"] if fullscreen else ["--window-size=1080,800"] ),
+        *(["--start-maximized"] if fullscreen else ["--window-size=1080,800"]),
     ]
+
+
+def _chrome_headed_user_agent(executable: Path) -> str:
+    """UA of headed Chrome for the same binary (drops HeadlessChrome token).
+
+    Probe headed vs true-headless only differed on that token; Flow unusual
+    activity correlates with HeadlessChrome in the user-agent.
+    """
+    version = "155.0.0.0"
+    try:
+        result = subprocess.run(
+            [str(executable), "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        match = re.search(r"(\d+)\.", (result.stdout or result.stderr or ""))
+        if match:
+            version = f"{match.group(1)}.0.0.0"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if sys.platform == "darwin":
+        return (
+            f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
+        )
+    if sys.platform == "win32":
+        return (
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
+        )
+    return (
+        f"Mozilla/5.0 (X11; Linux x86_64) "
+        f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
+    )
 
 
 def profile_lock(path: Path):
@@ -192,10 +233,12 @@ class BrowserManager:
 
     def __init__(self, *, headless: bool = True, profile_dir: Path | None = None, slow_mo: int = 0, google_login_compat: bool = False, fullscreen: bool = False, page_zoom: float = 1.0, cdp_url: str | None = None, remote_debugging_port: int | None = None, restore_last_session: bool = False) -> None:
         self.cdp_url = cdp_url  # flow-py checks this optional upstream attribute.
-        # Old clients can still request visible Chrome. A headless Linux VPS
-        # has no window server; normalize here for every Flow caller.
-        self.headless = headless or (sys.platform.startswith('linux')
-                                    and not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')))
+        # ``headless`` / ``_chromeless``: Playwright true headless when the user
+        # asks for no UI (or Linux has no display). Headed Chrome UA is applied
+        # so HeadlessChrome does not appear in navigator.userAgent.
+        no_display = not _display_available()
+        self.headless = bool(headless) or no_display
+        self._chromeless = self.headless
         self.profile_dir = Path(profile_dir or Path.cwd() / ".flow-profile")
         self.slow_mo = slow_mo
         self.google_login_compat = google_login_compat
@@ -212,7 +255,7 @@ class BrowserManager:
         self._window_placed = False
         self._profile_lock = profile_lock(self.profile_dir)
         self._owns_profile = False
-        # ponytail: captured only for visible windows; restored in stop().
+        # ponytail: captured only for on-screen windows; restored in stop().
         self._prior_app: Any = None
 
     @classmethod
@@ -252,14 +295,15 @@ class BrowserManager:
             await asyncio.sleep(0.1)
         self._owns_profile = True
         visible_launch_owned = False
-        if not self.headless:
+        show_window = not self.headless
+        if show_window:
             self._prior_app = _capture_active_window()
             while not _visible_launch_guard.acquire(blocking=False):
                 await asyncio.sleep(0.05)
             visible_launch_owned = True
         try:
             self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
-            visible_args = [] if self.headless else _visible_window_args(fullscreen=self.fullscreen)
+            window_args = _visible_window_args(fullscreen=self.fullscreen) if show_window else []
             launch_args = ["--lang=en-US", "--disable-extensions"]
             # Imported Cookie headers have no expiry metadata. Restore the
             # native session so Chrome keeps these session cookies on reopen.
@@ -274,23 +318,31 @@ class BrowserManager:
             # Keep the same browser compatibility surface for every Flow
             # session, including direct image/video workers.
             launch_args.append("--disable-blink-features=AutomationControlled")
-            launch_args.extend(["--disable-infobars", *visible_args])
+            launch_args.extend(["--disable-infobars", *window_args])
             # Linux root cannot use Chromium's sandbox. Keep it enabled for all
             # non-root sessions; do not retry arbitrary failures unsandboxed.
             sandbox = not (sys.platform.startswith("linux") and getattr(os, "geteuid", lambda: -1)() == 0)
+            launch_kwargs: dict[str, Any] = {
+                "executable_path": str(executable),
+                "headless": self._chromeless,
+                "slow_mo": self.slow_mo,
+                "accept_downloads": True,
+                "locale": "en-US",
+                "extra_http_headers": {"Accept-Language": "en-US,en;q=0.9"},
+                "chromium_sandbox": sandbox,
+                "args": launch_args,
+            }
+            if self._chromeless:
+                # Match headed window size; drop HeadlessChrome from the UA.
+                launch_kwargs["viewport"] = {"width": 1080, "height": 800}
+                launch_kwargs["user_agent"] = _chrome_headed_user_agent(executable)
+            else:
+                launch_kwargs["viewport"] = None
+                launch_kwargs["no_viewport"] = True
             self._ctx = await asyncio.wait_for(
                 self._pw.chromium.launch_persistent_context(
                     str(self.profile_dir),
-                    executable_path=str(executable),
-                    headless=self.headless,
-                    slow_mo=self.slow_mo,
-                    viewport={"width": 1440, "height": 900} if self.headless else None,
-                    no_viewport=not self.headless,
-                    accept_downloads=True,
-                    locale="en-US",
-                    extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
-                    chromium_sandbox=sandbox,
-                    args=launch_args,
+                    **launch_kwargs,
                 ),
                 timeout=60,
             )
@@ -301,7 +353,7 @@ class BrowserManager:
             await self._ctx.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
-            if visible_args and visible_launch_owned:
+            if window_args and visible_launch_owned:
                 _visible_launch_guard.release()
                 visible_launch_owned = False
             # Observe requests through UIInterceptor; do not replace page APIs.
@@ -401,6 +453,16 @@ class BrowserManager:
             raise RuntimeError("BrowserManager not started")
         return self._ctx
 
+    async def _finish_page(self, page: Page, *, bring_front: bool = False) -> Page:
+        """Place/zoom after the tab is ready (visible jobs only)."""
+        if not self.headless:
+            if not self._window_placed:
+                await self._place_visible_window(page)
+            if bring_front:
+                await page.bring_to_front()
+            await self._apply_visible_zoom(page)
+        return page
+
     async def page(self) -> Page:
         if self._page and not self._page.is_closed():
             if not self.headless:
@@ -422,11 +484,7 @@ class BrowserManager:
                 self._page = next((candidate for candidate in pages if candidate.url in {"", "about:blank"}), None) or await self.context.new_page()
                 if self._page.url in {"", "about:blank"}:
                     await _goto_tolerant(self._page, FLOW_BASE_URL)
-                if not self.headless:
-                    if not self._window_placed:
-                        await self._place_visible_window(self._page)
-                    await self._apply_visible_zoom(self._page)
-                return self._page
+                return await self._finish_page(self._page)
             for candidate in pages:
                 if "flow.google.com" in candidate.url or "labs.google" in candidate.url:
                     self._page = candidate
@@ -437,12 +495,7 @@ class BrowserManager:
                             await extra.close()
                         except Exception:
                             pass
-                    if not self.headless:
-                        if not self._window_placed:
-                            await self._place_visible_window(candidate)
-                        await candidate.bring_to_front()
-                        await self._apply_visible_zoom(candidate)
-                    return candidate
+                    return await self._finish_page(candidate, bring_front=True)
         # Prefer an existing Flow tab. Chrome profiles often start with a
         # blank tab beside it; close those blanks instead of exposing them.
         self._page = next((candidate for candidate in pages
@@ -464,12 +517,7 @@ class BrowserManager:
                     await extra.close()
                 except Exception:
                     pass
-        if not self.headless:
-            if not self._window_placed:
-                await self._place_visible_window(self._page)
-            await self._page.bring_to_front()
-            await self._apply_visible_zoom(self._page)
-        return self._page
+        return await self._finish_page(self._page, bring_front=True)
 
     async def _place_visible_window(self, page: Page) -> None:
         if self.fullscreen:

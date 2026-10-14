@@ -207,9 +207,9 @@ export function readSettings(): FlowSettings {
   const fallback: FlowSettings = {
     model: "Veo 3.1 - Fast", videoModel: "Veo 3.1 - Fast", imageModel: "Nano Banana 2.1",
     ratio: "16:9", imageRatio: "16:9", duration: "8", count: 1, imageCount: 1,
-    account: "Ultra 01",
-    videoAccount: "Ultra 01",
-    imageAccount: "Ultra 01",
+    account: "random",
+    videoAccount: "random",
+    imageAccount: "random",
     outputDir: defaultFlowOutputFolder(), quality: "720p", resolution: "1K",
     concurrency: "3", format: "JPG", filePrefix: "flow", referenceStrength: 70, autoDownload: true, headless: true,
   };
@@ -383,8 +383,21 @@ export function normalizeFlowAccounts(rows: FlowAccount[]): FlowAccount[] {
   });
 }
 
+const FLOW_PLAN_ORDER = ["Ultra", "Pro", "Plus", "Free"];
+
+/** Display order: default account first, then Ultra → Pro → Plus → Free (unknown plans last). */
+export function sortFlowAccounts(accounts: FlowAccount[]): FlowAccount[] {
+  const rank = (a: FlowAccount) => {
+    const plan = FLOW_PLAN_ORDER.indexOf(a.plan);
+    return plan < 0 ? FLOW_PLAN_ORDER.length : plan;
+  };
+  return [...accounts].sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)) || rank(a) - rank(b));
+}
+
 export function isFlowAccountConnected(account: FlowAccount): boolean {
-  return account.status === "online" && Boolean(account.projectId);
+  return account.status === "online" && Boolean(
+    account.projectId || account.imageProjectId || account.videoProjectId,
+  );
 }
 
 export function selectedFlowAccount(accounts: FlowAccount[], accountLabel: string) {

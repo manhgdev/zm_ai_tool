@@ -1327,6 +1327,84 @@
   background: var(--primary);
   color: var(--primary-foreground);
 }
+.flow-probe-dialog { width: min(360px, 92vw); }
+.flow-probe-dialog > header { align-items: flex-start; }
+.flow-probe-dialog > header strong { display: block; font-size: 0.86rem; }
+.flow-probe-dialog > header small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+.flow-probe-list {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+.flow-probe-list li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 14px;
+}
+.flow-probe-list li + li { border-top: 1px solid var(--line); }
+.flow-probe-list li > i {
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+}
+.flow-probe-list li > div { display: grid; gap: 2px; min-width: 0; }
+.flow-probe-list li strong {
+  overflow: hidden;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flow-probe-list li span {
+  color: var(--muted-foreground);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+.flow-probe-list li[data-status="checking"] > i {
+  border: 2px solid color-mix(in srgb, var(--primary) 22%, var(--line));
+  border-top-color: var(--primary);
+  animation: flow-probe-spin 0.7s linear infinite;
+}
+.flow-probe-list li[data-status="ok"] > i {
+  background: #16a34a;
+  box-shadow: inset 0 0 0 2px #16a34a;
+}
+.flow-probe-list li[data-status="ok"] > i::after {
+  content: "";
+  display: block;
+  width: 4px;
+  height: 7px;
+  margin: 2px 0 0 5px;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(40deg);
+}
+.flow-probe-list li[data-status="error"] > i {
+  position: relative;
+  background: #c93646;
+}
+.flow-probe-list li[data-status="error"] > i::before,
+.flow-probe-list li[data-status="error"] > i::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 3px;
+  width: 10px;
+  height: 1.5px;
+  background: #fff;
+}
+.flow-probe-list li[data-status="error"] > i::before { transform: rotate(45deg); }
+.flow-probe-list li[data-status="error"] > i::after { transform: rotate(-45deg); }
+@keyframes flow-probe-spin { to { transform: rotate(360deg); } }
 .flow-retry-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -252,12 +252,20 @@ def accounts_delete(account_id: str):
     return {"ok": True}
 
 
+@router.post("/accounts/{account_id}/prepare")
+async def accounts_prepare(account_id: str):
+    """Check cookies once per app session and merge newer ones. Never delete stored cookies."""
+    try:
+        return await service.prepare_account_cookies(account_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Flow account not found") from exc
+
+
 @router.post("/accounts/{account_id}/connect")
 def accounts_connect(account_id: str):
     try:
-        # Manual Connect should open the Flow home page so the user can choose
-        # the account/project context; generation selects its scoped project.
-        return service.connect(account_id, force_interactive=True)
+        # Try the saved session with no window. Open Chrome only if that fails.
+        return service.connect(account_id, headless=True, open_ui_on_failure=True)
     except KeyError as exc:
         raise HTTPException(404, "Flow account not found") from exc
     except RuntimeError as exc:
@@ -303,7 +311,7 @@ async def accounts_sync_one(account_id: str):
 def accounts_reset_session(account_id: str):
     """Clear local Chrome/session/project identity while keeping account settings."""
     try:
-        account = service.reset_account_session(account_id)
+        account = service.reset_account_session(account_id, open_ui_on_failure=True)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     if not account:

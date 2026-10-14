@@ -17,8 +17,8 @@ GitHub Release contains only macOS PKG and Windows Setup EXE.
 Audit reports remain in the corresponding Windows Actions run, not as
 additional release downloads.
 
-The full CI audit runs once for v8.3.3, or on manual workflow dispatch with
-`security_audit` enabled. Later ordinary releases only verify release hashes;
+The full CI audit runs on manual workflow dispatch with `security_audit`
+enabled. Ordinary releases only verify release hashes;
 they must not be described as Defender-scanned. The explicit audit scans
 EXE/payload and Setup before publishing. A missing scanner,
 nonzero result, new threat detection, deleted file or changed hash blocks the

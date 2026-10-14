@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pipeline.flow import store
-from pipeline.flow.service import FlowService
+from pipeline.flow.service import FlowService, _is_automation_block_error
 
 
 class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
@@ -86,9 +86,21 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
             service.retry("j")
             clear.assert_not_called()
 
-    def test_blocked_selected_account_never_falls_back(self):
-        for reason in ("FLOW_AUTOMATION_BLOCKED: warning", "FLOW_OUTPUT_UNAVAILABLE: unavailable",
-                       "FLOW_GENERATION_TIMEOUT: timeout"):
+    def test_blocked_selected_account_falls_back_after_unusual_activity(self):
+        service = FlowService()
+        job = {"id": "j", "status": "failed", "accountId": "selected", "randomAccount": False, "allowAccountFallback": False}
+        alt = {"id": "other", "label": "other"}
+        with patch("pipeline.flow.service.store.get_row", return_value=job), \
+             patch("pipeline.flow.service.store.patch_row") as update, \
+             patch("pipeline.flow.service.store.list_rows", return_value=[]), \
+             patch.object(service, "suspend_account"), \
+             patch.object(service, "_pick_eligible_account", return_value=alt), \
+             patch("threading.Thread"):
+            self.assertTrue(service._try_fallback_account("j", "selected", "FLOW_AUTOMATION_BLOCKED: warning"))
+            update.assert_called()
+
+    def test_blocked_selected_account_never_falls_back_for_other_errors(self):
+        for reason in ("FLOW_OUTPUT_UNAVAILABLE: unavailable", "FLOW_GENERATION_TIMEOUT: timeout"):
             for explicit in (False, None):
                 with self.subTest(reason=reason, explicit=explicit):
                     service = FlowService()
@@ -118,7 +130,9 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
             account = {"id": "a", "status": "online", "projectId": "p", "plan": "Pro", "credits": 100}
             store._write("accounts", [account])
             store._write("jobs", [
-                {"id": "j", "accountId": "a", "status": "queued", "kind": "image", "queueOrder": 0, "settings": {}},
+                # An earlier transient retry must not use up the unusual-activity retry.
+                {"id": "j", "accountId": "a", "status": "queued", "kind": "image", "queueOrder": 0, "settings": {},
+                 "autoRetryCount": 1},
                 {"id": "sibling", "accountId": "a", "status": "processing", "kind": "video", "queueOrder": 1, "settings": {}},
             ])
 
@@ -136,9 +150,13 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
 
             with patch.object(service, "_verify_account_plan_before_enqueue", return_value=account), \
                  patch.object(service, "_run", side_effect=run) as runner, \
-                 patch("pipeline.flow.service.time.sleep"):
+                 patch.object(service, "reset_account_session") as reset, \
+                 patch("pipeline.flow.service.time.sleep") as sleeper:
                 service._run_sync("j")
             self.assertEqual(runner.call_count, 2)
+            # Reset the shared profile without waiting for siblings, retry after 3s.
+            reset.assert_called_once_with("a", keep_running_jobs=True)
+            sleeper.assert_any_call(3)
             self.assertEqual(store.get_row("jobs", "j")["status"], "done")
             self.assertEqual(store.get_row("jobs", "sibling")["status"], "processing")
             refreshed = store.get_row("accounts", "a")
@@ -180,6 +198,54 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
             found = await service._find_existing_project_media(api, None, job, "image", 1)
         self.assertEqual([item["id"] for item in found], ["m1"])
 
+    async def test_unusual_activity_tile_fails_only_the_job_that_owns_it(self):
+        service = FlowService()
+        page = AsyncMock()
+        page.evaluate.return_value = [{"index": 0, "text": "Chúng tôi nhận thấy có hoạt động bất thường"}]
+        with patch("pipeline.flow.service.store.get_row", return_value={"projectId": "p"}), \
+             patch("pipeline.flow.service.store.patch_row"):
+            first = await service._claim_visible_flow_error(page, {"id": "a", "accountId": "acc"}, 1)
+            second = await service._claim_visible_flow_error(page, {"id": "b", "accountId": "acc"}, 1)
+        self.assertTrue(first)
+        # The sibling's Chrome is still generating: it keeps waiting for its image.
+        self.assertEqual(second, "")
+
+    async def test_new_unusual_tile_with_the_same_text_as_an_old_one_is_still_claimed(self):
+        service = FlowService()
+        page = AsyncMock()
+        text = "Chúng tôi nhận thấy có hoạt động bất thường"
+        page.evaluate.return_value = [{"index": 0, "text": text}]
+        rows = {"old": {"id": "old", "accountId": "acc", "submissionStartedAt": 1.0},
+                "new": {"id": "new", "accountId": "acc", "submissionStartedAt": 2.0e9, "baselineErrorTexts": [text]}}
+        get_row = lambda table, row_id: {"projectId": "p"} if table == "accounts" else rows[row_id]
+        with patch("pipeline.flow.service.store.get_row", side_effect=get_row), \
+             patch("pipeline.flow.service.store.patch_row"):
+            self.assertTrue(await service._claim_visible_flow_error(page, rows["old"], 1))
+            # The old tile was already on screen at this submit: not ours.
+            self.assertEqual(await service._claim_visible_flow_error(page, rows["new"], 1), "")
+            page.evaluate.return_value = [{"index": 0, "text": text}, {"index": 1, "text": text}]
+            self.assertEqual(await service._claim_visible_flow_error(page, rows["new"], 1), text)
+
+    async def test_sibling_unusual_tile_does_not_fail_this_submit(self):
+        service = FlowService()
+        service._scan_visible_errors = AsyncMock(return_value=[{
+            "index": 3, "text": "Chúng tôi nhận thấy có hoạt động bất thường", "tile": True,
+        }])
+        await service._raise_if_new_flow_error(MagicMock(), set())
+
+    async def test_in_flight_generate_rpc_fails_on_unusual_activity_toast(self):
+        page = MagicMock()
+        page.locator.return_value.inner_text = AsyncMock(return_value="ok")
+        button = MagicMock(hover=AsyncMock(), click=AsyncMock())
+        service = FlowService()
+        service._scan_visible_errors = AsyncMock(return_value=[{
+            "index": 0, "text": "Chúng tôi nhận thấy có hoạt động bất thường",
+        }])
+        with self.assertRaisesRegex(RuntimeError, "FLOW_AUTOMATION_BLOCKED"):
+            await service._click_flow_submit_and_confirm(
+                page, button, 0, "", set(), [object()], [],
+            )
+
     async def test_batchexecute_unusual_activity_fails_fast_as_automation_blocked(self):
         response = MagicMock(ok=True, status=200)
         response.text = AsyncMock(return_value=')]}\'\n[["wrb.fr","YhhmEf",null,null,null,[7,null,'
@@ -201,6 +267,32 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
             service._close_auto_session_if_idle("a", "image")
         browser.kill_now.assert_called_once()
         self.assertNotIn("a", service._auto_close_sessions)
+
+    def test_siblings_wait_until_first_job_proves_sign_in(self):
+        service = FlowService()
+        self.assertFalse(service._session_warmup_wait("a"))
+        service._account_active["a"] = 1
+        self.assertTrue(service._session_warmup_wait("a"))
+        service._mark_session_ready("a")
+        self.assertFalse(service._session_warmup_wait("a"))
+        service._clear_session_ready("a")
+        self.assertTrue(service._session_warmup_wait("a"))
+        service._account_active["a"] = 0
+        self.assertFalse(service._session_warmup_wait("a"))
+
+    async def test_login_wall_is_cookie_expired_not_account_failure(self):
+        service = FlowService()
+        page = MagicMock()
+        page.url = "https://accounts.google.com/ServiceLogin"
+        with self.assertRaisesRegex(RuntimeError, "FLOW_COOKIE_EXPIRED"):
+            await service._confirm_logged_in_session(page, "acc")
+        self.assertNotIn("acc", service._account_session_ready)
+        page.url = "about:blank"
+        await service._confirm_logged_in_session(page, "acc")
+        self.assertNotIn("acc", service._account_session_ready)
+        page.url = "https://flow.google.com/project/abc"
+        await service._confirm_logged_in_session(page, "acc")
+        self.assertIn("acc", service._account_session_ready)
 
     def test_stale_reconnect_status_does_not_hold_queue_forever(self):
         service = FlowService()

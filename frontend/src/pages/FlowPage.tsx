@@ -61,6 +61,7 @@ import {
   normalizeFlowJobs as normalizeFlowJobRows,
   normalizeFlowAccounts,
   isFlowAccountConnected,
+  sortFlowAccounts,
   selectedFlowAccount as resolveSelectedFlowAccount,
   flowRequest, loadFlowSnapshot,
   saveWebOutputRoot, loadWebOutputRoot,
@@ -249,6 +250,9 @@ function IconLog({ size = 18 }: { size?: number }) {
 }
 
 
+// Cleared when the app process quits. A later create in the same run does not probe again.
+const sessionCheckedAccounts = new Set<string>();
+
 export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => void; onOpenSrtImage: (mediaFolder: string) => void }) {
   const { locale } = useLocale();
   const t = (vi: string, en: string) => localize(locale, vi, en);
@@ -401,6 +405,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     run: () => void | Promise<unknown>;
   } | null>(null);
   const [limitNotice, setLimitNotice] = useState<{ title: string; message: string } | null>(null);
+  const [accountProbe, setAccountProbe] = useState<Array<{
+    id: string;
+    label: string;
+    status: "checking" | "ok" | "error";
+    message: string;
+  }> | null>(null);
   const notifiedLimitJobsRef = useRef<Set<string>>(new Set());
   const showLimitNotice = useCallback((raw: string | null | undefined) => {
     setLimitNotice(flowLimitPopupCopy(raw, t));
@@ -570,10 +580,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     } catch { }
   }, [videoMode]);
   useEffect(() => {
-    if (settings.account === "random" || !accounts.length || accounts.some((account) => account.label === settings.account && isFlowAccountConnected(account))) return;
+    const selected = createKind === "image"
+      ? (settings.imageAccount || settings.account)
+      : (settings.videoAccount || settings.account);
+    if (selected === "random" || !accounts.length || accounts.some((account) => account.label === selected && isFlowAccountConnected(account))) return;
     const fallback = selectedFlowAccount(accounts, "random");
     setSettings((current) => settingsWithSelectedAccount(current, createKind, fallback?.label || "random"));
-  }, [accounts, settings.account, createKind]);
+  }, [accounts, settings.account, settings.imageAccount, settings.videoAccount, createKind]);
   useEffect(() => {
     const account = selectedFlowAccount(accounts, settings.account);
     if (!account?.capabilityCatalog || account.capabilityStatus !== "verified") return;
@@ -869,7 +882,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const latestCompletedVideo = jobs.find(
     (job) => job.kind === "video" && job.status === "done" && job.outputs?.length,
   );
-  const displayedAccount = selectedFlowAccount(accounts, settings.account);
+  const selectedAccountLabel = createKind === "image"
+    ? (settings.imageAccount || settings.account)
+    : (settings.videoAccount || settings.account);
+  const displayedAccount = selectedFlowAccount(accounts, selectedAccountLabel);
+  const sortedAccounts = sortFlowAccounts(accounts);
   const accountOptionLabels = {
     random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
     ...Object.fromEntries(
@@ -1092,13 +1109,88 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       toast.error(error instanceof Error ? error.message : String(error));
     }
   };
+  const probeErrorMessage = (code: string, loginOpened = false) => {
+    if (code === "FLOW_COOKIE_EXPIRED" && loginOpened) {
+      return t(
+        "Phiên Google đã hết. Đã mở Chrome để đăng nhập lại như Kết nối; đăng nhập xong rồi chạy lại job.",
+        "The Google session ended. Chrome is open to sign in again, like Connect; run the job again after signing in.",
+      );
+    }
+    if (code === "FLOW_COOKIE_EXPIRED") {
+      return t("Cookie không vào được Flow. Cookie đã lưu vẫn được giữ.", "Flow did not accept the session. Saved cookies were kept.");
+    }
+    if (code === "FLOW_PROFILE_BUSY" || code === "SESSION_IN_USE") {
+      return t("Tài khoản đang chạy, bỏ qua kiểm tra.", "This account is already running, so the check was skipped.");
+    }
+    return t("Không kiểm tra được cookie. Kết nối lại tài khoản.", "Could not verify cookies. Reconnect the account.");
+  };
+  const probeAccountsBeforeJobs = async (targets: Array<{ id: string; label: string }>) => {
+    const runningIds = new Set(
+      jobs.filter((job) => job.status === "queued" || job.status === "processing").map((job) => job.accountId),
+    );
+    for (const target of targets) {
+      if (runningIds.has(target.id)) sessionCheckedAccounts.add(target.id);
+    }
+    const pending = targets.filter((item) => !sessionCheckedAccounts.has(item.id));
+    if (!pending.length) return true;
+    setAccountProbe(pending.map((item) => ({
+      ...item,
+      status: "checking",
+      message: t("Đang kiểm tra tài khoản…", "Checking account…"),
+    })));
+    let okCount = 0;
+    for (const target of pending) {
+      try {
+        const row = await flowRequest<{ ok?: boolean; code?: string; loginOpened?: boolean }>(
+          `/api/flow/accounts/${target.id}/prepare`,
+          { method: "POST" },
+        );
+        const ok = Boolean(row.ok) || row.code === "SESSION_IN_USE";
+        if (ok) {
+          okCount += 1;
+          sessionCheckedAccounts.add(target.id);
+        }
+        setAccountProbe((current) => (current || []).map((item) => (
+          item.id === target.id
+            ? {
+              ...item,
+              status: ok ? "ok" : "error",
+              message: ok
+                ? t("Cookie còn sống, đã cập nhật.", "Cookies are valid and updated.")
+                : probeErrorMessage(String(row.code || ""), Boolean(row.loginOpened)),
+            }
+            : item
+        )));
+      } catch (error) {
+        setAccountProbe((current) => (current || []).map((item) => (
+          item.id === target.id
+            ? {
+              ...item,
+              status: "error",
+              message: error instanceof Error ? error.message : probeErrorMessage("FLOW_PREPARE_FAILED"),
+            }
+            : item
+        )));
+      }
+    }
+    try {
+      const snapshot = await flowRequest<{ accounts?: FlowAccount[] }>("/api/flow/accounts");
+      if (snapshot.accounts) setAccounts(normalizeFlowAccounts(snapshot.accounts));
+    } catch {
+      // Probe results already describe cookie status.
+    }
+    if (okCount !== pending.length) return false;
+    await new Promise((resolve) => window.setTimeout(resolve, 400));
+    setAccountProbe(null);
+    return true;
+  };
   const createFlowJobs = async () => {
     if (postInFlightRef.current) return;
     const prompts = prompt
       .split(/\n\s*\n/)
       .map((item) => item.trim())
       .filter(Boolean);
-    const account = selectedFlowAccount(accounts, settings.account);
+    const account = selectedFlowAccount(accounts, selectedAccountLabel);
     const hasAvailableAccount = accounts.some(isFlowAccountAvailable);
     const accountUnavailable = !account || !isFlowAccountAvailable(account) || !hasAvailableAccount;
     if (!prompts.length || accountUnavailable) {
@@ -1125,7 +1217,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     // available while the request is still being accepted.
     setTab("queue");
     writeFlowRoutePanel("queue");
-    if (settings.account === "random") {
+    if (selectedAccountLabel === "random") {
       if (!hasAvailableAccount) {
         setUtilityView("accounts");
         writeFlowRoutePanel("accounts");
@@ -1217,7 +1309,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         };
       }
 
-      if (settings.account !== "random" && createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
+      if (selectedAccountLabel !== "random" && createKind === "image" && account.planStatus === "verified" && account.plan === "Free" && effectiveSettings.model === "Nano Banana Pro") {
         const proOnline = accounts.find((a) => a.status === "online" && (a.plan === "Ultra" || a.plan === "Pro" || a.plan === "Plus"));
         if (!proOnline) {
           setApiError(t("Tài khoản Free không hỗ trợ tạo ảnh Nano Banana Pro. Vui lòng chọn gói Pro/Plus/Ultra hoặc đổi sang model Nano Banana 2.", "Free accounts cannot generate with Nano Banana Pro. Please select a Pro/Plus/Ultra account or switch to Nano Banana 2."));
@@ -1229,6 +1321,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         setSettings(effectiveSettings);
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(effectiveSettings));
       }
+      const probeTargets = settings.account === "random"
+        ? accounts.filter(isFlowAccountAvailable).map((item) => ({ id: item.id, label: item.label }))
+        : [{ id: account.id, label: account.label }];
+      const cookiesReady = await probeAccountsBeforeJobs(probeTargets);
+      if (!cookiesReady) return;
       // A model without duration controls must omit the field entirely.
       const { duration: requestDuration, ...settingsWithoutDuration } = effectiveSettings;
       const requestSettings = requestDuration.trim()
@@ -1298,8 +1395,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         status: "queued" as const,
         stage: "",
         progress: 0,
-        accountId: settings.account === "random" ? "random" : account.id,
-        account: settings.account === "random" ? t("🎲 Ngẫu nhiên", "🎲 Random") : account.label,
+        accountId: selectedAccountLabel === "random" ? "random" : account.id,
+        account: selectedAccountLabel === "random" ? t("🎲 Ngẫu nhiên", "🎲 Random") : account.label,
         outputs: [],
         output: "",
         outputFolder: effectiveSettings.outputDir || "",
@@ -1340,7 +1437,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               : videoMode === "frame"
                 ? "frame"
                 : "text",
-          accountId: settings.account === "random" ? "random" : account.id,
+          accountId: selectedAccountLabel === "random" ? "random" : account.id,
           inputType: promptInputType,
           sourceFiles: uploaded,
           settings: requestSettings,
@@ -1523,10 +1620,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       groups,
       fresh: initialJobs.length > 0 && initialJobs.every(isFreshCreateJob),
       touched: [],
-      // Retry/create-new dialog must start headless every time. Opening Chrome
-      // is an explicit per-run choice, so a previous global preference cannot
-      // silently enable it here.
-      headless: true,
+      // Keep the last Open Chrome choice from this job (else quick settings).
+      headless: Boolean(selectedJob.settings.headless ?? settings.headless ?? true),
       removeLogo: Boolean(selectedJob.settings.removeLogo ?? settings.removeLogo),
     });
   };
@@ -1553,7 +1648,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
     openRetrySettings([job]);
   };
-  const confirmRetryJob = () => {
+  const confirmRetryJob = async () => {
     if (!retryTarget || retryBusyRef.current) return;
     const { jobs: retryJobs, concurrency } = retryTarget;
     const groups = retryTarget.jobs.length === 1
@@ -1566,6 +1661,20 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     retryBusyRef.current = true;
     setRetryBusy(true);
     setRetryTarget(null);
+    const probeTargets = Array.from(new Map(
+      groups.flatMap((group) => {
+        if (group.accountId === "random") {
+          return accounts.filter(isFlowAccountAvailable).map((item) => [item.id, { id: item.id, label: item.label }] as const);
+        }
+        const row = accounts.find((item) => item.id === group.accountId);
+        return row ? [[row.id, { id: row.id, label: row.label }] as const] : [];
+      }),
+    ).values());
+    if (!(await probeAccountsBeforeJobs(probeTargets))) {
+      retryBusyRef.current = false;
+      setRetryBusy(false);
+      return;
+    }
     const retryRequests = groups.flatMap((group) => {
       const retryBase = /omni.*flash/i.test(group.model) && group.duration.trim()
         ? { model: group.model, ratio: group.ratio, duration: group.duration, resolution: group.resolution, quality: group.quality, count: group.count, concurrency }
@@ -1842,8 +1951,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     // Chỉ 1 toast ngay khi nhấn — kết quả sẽ được toast bởi useEffect watch status
     toast.info(
       isReconnect
-        ? t("Đang thử kết nối lại...", "Attempting to reconnect...")
-        : t("Đang đăng nhập Google...", "Signing in to Google...")
+        ? t("Đang kết nối lại ở chế độ ẩn. Chỉ mở Chrome nếu lỗi.", "Reconnecting in the background. Chrome opens only if it fails.")
+        : t("Đang đăng nhập ở chế độ ẩn. Chỉ mở Chrome nếu lỗi.", "Signing in in the background. Chrome opens only if it fails.")
     );
     void flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/connect`, {
       method: "POST",
@@ -2158,14 +2267,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         </nav>
         <div className="flow-rail-credit">
           <strong>
-            {settings.account === "random"
+            {selectedAccountLabel === "random"
               ? accounts.filter((a) => a.status === "online").reduce((sum, a) => sum + (Number(a.credits) || 0), 0).toLocaleString()
               : (displayedAccount?.credits != null
                 ? displayedAccount.credits.toLocaleString()
                 : "—")}
           </strong>
           <span>
-            {settings.account === "random"
+            {selectedAccountLabel === "random"
               ? t("Tổng credits · tài khoản ngẫu nhiên", "Total credits · random accounts")
               : (displayedAccount?.credits != null
                 ? `${displayedAccount.label} · ${t("credits còn lại", "credits left")}`
@@ -2331,7 +2440,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               </form>
             )}
             <div className="flow-account-grid">
-              {accounts.map((account) => (
+              {sortedAccounts.map((account) => (
                 <article
                   key={account.id}
                   className={account.isDefault ? "is-default" : ""}
@@ -2537,7 +2646,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               setTab("queue");
               writeFlowRoutePanel("queue");
             }}
-            accounts={accounts.filter(isFlowAccountConnected).map((acc) => ({
+            accounts={sortedAccounts.filter(isFlowAccountConnected).map((acc) => ({
               id: acc.id, label: acc.label, status: acc.status, plan: acc.plan,
               capabilityCatalog: acc.capabilityCatalog, capabilityStatus: acc.capabilityStatus,
             }))}
@@ -3022,7 +3131,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     </div>
                     <FlowSelect
                       label=""
-                      value={settings.account}
+                      value={selectedAccountLabel}
                       onChange={(account) =>
                         setSettings((current) => {
                           const selected = accounts.find((item) => item.label === account);
@@ -3034,7 +3143,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           );
                         })
                       }
-                      options={["random", ...accounts.filter(isFlowAccountConnected).map((account) => account.label)]}
+                      options={["random", ...sortedAccounts.filter(isFlowAccountConnected).map((account) => account.label)]}
                       optionLabels={accountOptionLabels}
                       online={Boolean(displayedAccount)}
                       disabled={!accounts.some(isFlowAccountConnected)}
@@ -3082,7 +3191,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   )}
                   </div>
                 </div>
-                {settings.account === "random" && (
+                {selectedAccountLabel === "random" && (
                   <div className="flow-random-info-box">
                     🎲 {createKind === "image"
                       ? t(
@@ -3958,7 +4067,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   label={t("Tài khoản", "Account")}
                   value={retryTarget.jobs.length > 1 && !retryTarget.touched.includes("accountId") ? "__keep__" : retryTarget.accountId}
                   onChange={(accountId) => accountId !== "__keep__" && setRetryTarget((current) => current ? { ...current, accountId, touched: [...new Set([...current.touched, "accountId"])], groups: current.groups.map((group) => ({ ...group, accountId })) } : current)}
-                  options={[...(retryTarget.jobs.length > 1 && !retryTarget.touched.includes("accountId") ? ["__keep__"] : []), "random", ...accounts.filter(isFlowAccountConnected).map((account) => account.id)]}
+                  options={[...(retryTarget.jobs.length > 1 && !retryTarget.touched.includes("accountId") ? ["__keep__"] : []), "random", ...sortedAccounts.filter(isFlowAccountConnected).map((account) => account.id)]}
                   optionLabels={{
                     __keep__: t("Đã chọn", "Selected"),
                     random: t("🎲 Ngẫu nhiên tài khoản", "🎲 Random account"),
@@ -3977,8 +4086,44 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             </div>
               <footer>
                 <button type="button" onClick={() => setRetryTarget(null)}>{t("Quay lại", "Go back")}</button>
-                <button type="button" className="is-primary" onClick={confirmRetryJob} disabled={retryBusy || !retryTarget.jobs.length || !retryTarget.accountId}>{retryActionLabel(retryTarget.jobs)}</button>
+                <button type="button" className="is-primary" onClick={() => void confirmRetryJob()} disabled={retryBusy || !retryTarget.jobs.length || !retryTarget.accountId}>{retryActionLabel(retryTarget.jobs)}</button>
               </footer>
+            </section>
+          </div>
+        )}
+        {accountProbe && (
+          <div className="flow-preview-backdrop" role="presentation">
+            <section className="flow-confirm-dialog flow-probe-dialog" role="dialog" aria-modal="true" aria-labelledby="flow-probe-title">
+              <header>
+                <div>
+                  <strong id="flow-probe-title">{t("Kiểm tra tài khoản", "Account check")}</strong>
+                  <small>
+                    {accountProbe.some((item) => item.status === "checking")
+                      ? t("Đang kiểm tra tài khoản", "Checking accounts")
+                      : accountProbe.some((item) => item.status === "error")
+                        ? t("Chưa chạy được", "Not ready to run")
+                        : t("Sẵn sàng chạy", "Ready to run")}
+                  </small>
+                </div>
+              </header>
+              <ul className="flow-probe-list">
+                {accountProbe.map((item) => (
+                  <li key={item.id} data-status={item.status}>
+                    <i aria-hidden="true" />
+                    <div>
+                      <strong>{item.label}</strong>
+                      <span>{item.message}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              {accountProbe.some((item) => item.status === "error") && !accountProbe.some((item) => item.status === "checking") ? (
+                <footer>
+                  <button type="button" className="is-primary" onClick={() => setAccountProbe(null)}>
+                    {t("Đóng", "Close")}
+                  </button>
+                </footer>
+              ) : null}
             </section>
           </div>
         )}

@@ -2,9 +2,13 @@ import asyncio
 import time
 import unittest
 from unittest.mock import Mock, patch
-from urllib.parse import parse_qs, urlsplit
 
+from pipeline.flow.browser import FLOW_BASE_URL
 from pipeline.flow.service import FlowService
+
+
+async def _done(*_args, **_kwargs):
+    return None
 
 
 class _ManualPage:
@@ -23,7 +27,7 @@ class _ManualBrowser:
         self.kwargs = kwargs
         self.cdp_url = f"http://127.0.0.1:{kwargs.get('remote_debugging_port', 0)}"
         self.page_instance = _ManualPage()
-        self.context = Mock(pages=[self.page_instance])
+        self.context = Mock(pages=[])
         self.stopped = False
 
     async def start(self):
@@ -129,6 +133,7 @@ class FlowManualSessionTests(unittest.TestCase):
         with patch("pipeline.flow.store.get_row", return_value=account), \
              patch("pipeline.flow.store.profile_dir", return_value="/tmp/flow-profile-a"), \
              patch("pipeline.flow.browser.BrowserManager", side_effect=make_browser), \
+             patch("pipeline.flow.service.asyncio.to_thread", new=_done), \
              patch("pipeline.flow.service.threading.Thread") as thread:
             self.assertEqual(service.open_account_session("a"), {"opened": True})
             self.assertIn("a:image", service._manual_sessions)
@@ -140,9 +145,8 @@ class FlowManualSessionTests(unittest.TestCase):
             self.assertEqual(browser.kwargs["google_login_compat"], True)
             self.assertEqual(browser.kwargs["fullscreen"], True)
             self.assertGreater(browser.kwargs["remote_debugging_port"], 0)
-            query = parse_qs(urlsplit(browser.page_instance.url).query)
-            self.assertEqual(query["login_hint"], [account["email"]])
-            self.assertEqual(query["continue"], ["https://flow.google.com/project/project-id"])
+            self.assertEqual(browser.page_instance.url, FLOW_BASE_URL)
+            self.assertNotIn("accounts.google.com", browser.page_instance.url)
             self.assertTrue(browser.stopped)
 
     def test_cookie_profile_opens_flow_without_password_login(self):
@@ -161,15 +165,16 @@ class FlowManualSessionTests(unittest.TestCase):
         with patch("pipeline.flow.store.get_row", return_value=account), \
              patch("pipeline.flow.store.profile_dir", return_value="/tmp/flow-profile-a"), \
              patch("pipeline.flow.browser.BrowserManager", side_effect=make_browser), \
+             patch("pipeline.flow.service.asyncio.to_thread", new=_done), \
              patch("pipeline.flow.service.threading.Thread") as thread:
             self.assertEqual(service.open_account_session("a"), {"opened": True})
             thread.call_args.kwargs["target"]()
 
         self.assertEqual(len(browsers), 1)
-        self.assertEqual(browsers[0].page_instance.url, "https://flow.google.com/project/project-id")
+        self.assertEqual(browsers[0].page_instance.url, FLOW_BASE_URL)
         self.assertNotIn("accounts.google.com", browsers[0].page_instance.url)
 
-    def test_open_session_blocks_connect_sync_and_delete_until_closed(self):
+    def test_open_session_blocks_connect_and_delete_until_closed(self):
         account = {"id": "a", "email": "example@gmail.com", "status": "online", "projectId": "project-id"}
         service = FlowService()
         with patch("pipeline.flow.store.get_row", return_value=account), \
@@ -179,10 +184,56 @@ class FlowManualSessionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "FLOW_PROFILE_BUSY"):
                 service.connect("a")
             with self.assertRaisesRegex(RuntimeError, "FLOW_PROFILE_BUSY"):
-                asyncio.run(service.sync_credits_for_account("a"))
-            with self.assertRaisesRegex(RuntimeError, "FLOW_PROFILE_BUSY"):
                 service.delete_account("a")
             self.assertIsNotNone(thread.call_args)
+
+    def test_dead_open_session_redirects_to_google_login(self):
+        account = {"id": "a", "email": "example@gmail.com", "status": "online"}
+        service = FlowService()
+        browsers = []
+
+        def make_browser(**kwargs):
+            browser = _ManualBrowser(**kwargs)
+            goto = browser.page_instance.goto
+
+            async def redirect_home(url, **options):
+                await goto(f"{FLOW_BASE_URL}/about" if url == FLOW_BASE_URL else url, **options)
+
+            browser.page_instance.goto = redirect_home
+            browsers.append(browser)
+            return browser
+
+        with patch("pipeline.flow.store.get_row", return_value=account), \
+             patch("pipeline.flow.browser.BrowserManager", side_effect=make_browser), \
+             patch("pipeline.flow.service.asyncio.to_thread", new=_done), \
+             patch("pipeline.flow.store.profile_dir", return_value="/tmp/flow-profile-a"), \
+             patch("pipeline.flow.service.threading.Thread") as thread:
+            service.open_account_session("a")
+            thread.call_args.kwargs["target"]()
+        url = browsers[0].page_instance.url
+        self.assertTrue(url.startswith("https://accounts.google.com/ServiceLogin"))
+        self.assertIn("login_hint=example%40gmail.com", url)
+
+    def test_open_session_login_wall_saves_cookies_once_signed_in(self):
+        service = FlowService()
+        login = Mock(url="https://accounts.google.com/ServiceLogin")
+        flow = Mock(url=FLOW_BASE_URL)
+        cookie = {"name": "SID", "value": "new", "domain": ".google.com", "path": "/"}
+
+        async def cookies():
+            return [cookie]
+
+        browser = Mock()
+        browser.context = Mock(pages=[login], cookies=cookies)
+        patches = []
+        with patch("pipeline.flow.store.get_row", return_value={"id": "a", "status": "reconnect"}), \
+             patch("pipeline.flow.store.patch_row", side_effect=lambda *args: patches.append(args)):
+            self.assertFalse(asyncio.run(service._confirm_open_session(browser, "a", login)))
+            self.assertEqual(patches, [])
+            browser.context.pages = [login, flow]
+            self.assertTrue(asyncio.run(service._confirm_open_session(browser, "a", login)))
+        self.assertEqual(patches[0][2]["status"], "online")
+        self.assertEqual(patches[0][2]["cookie"][0]["value"], "new")
 
     def test_open_session_reuses_existing_and_missing_account_is_rejected(self):
         account = {"id": "a", "status": "online", "projectId": "project-id"}

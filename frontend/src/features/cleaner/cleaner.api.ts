@@ -26,6 +26,14 @@ export const cleanerApi = {
     return fetchJson(`${base}/${id}/cancel`, { method: 'POST' }, 5000)
   },
 
+  async retry(id: string, method: CleanMethod, options: AdvancedOptions, outputDir = ''): Promise<CleanJob> {
+    const fd = new FormData()
+    fd.append('method', method)
+    fd.append('options', JSON.stringify(options))
+    fd.append('output_dir', outputDir)
+    return fetchJson(`${base}/${id}/retry`, { method: 'POST', body: fd }, 60000)
+  },
+
   async remove(id: string): Promise<{ ok: boolean }> {
     return fetchJson(`${base}/${id}`, { method: 'DELETE' }, 5000)
   },

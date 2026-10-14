@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
+from contextlib import closing
 from copy import deepcopy
 import errno
 import logging
@@ -17,6 +19,7 @@ except Exception:  # ponytail: graceful if flow lib version lacks this
 import shutil
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -142,6 +145,68 @@ def _profile_copy_file(source: str, target: str) -> None:
                 if not retry_locked:
                     raise
         _log.debug("Flow skipped locked profile file: %s", source)
+
+
+def _cookie_identity(cookie: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(cookie.get("name") or ""),
+        str(cookie.get("domain") or ""),
+        str(cookie.get("path") or "/"),
+    )
+
+
+# Google ties the login to these profile files, not to the cookie DB alone:
+# deleting any of them made Google demand verification. Verified by wiping
+# everything else from a signed-in profile and still landing in Flow.
+_PROFILE_IDENTITY_ROOT = {"Default", "Local State", "Last Version"}
+_PROFILE_IDENTITY_DEFAULT = {
+    "Cookies", "Cookies-journal", "Network",
+    "Device Bound Sessions", "Device Bound Sessions-journal",
+    "Preferences", "Secure Preferences",
+    "Login Data", "Login Data-journal", "Login Data For Account", "Login Data For Account-journal",
+    "Web Data", "Web Data-journal", "Account Web Data", "Account Web Data-journal",
+    "Sync Data", "Trust Tokens", "Trust Tokens-journal",
+    "TransportSecurity", "Network Persistent State", "ServerCertificate", "ServerCertificate-journal",
+}
+
+
+def _wipe_profile_keep_login(profile: Path) -> None:
+    """Delete all browsing data (storage, caches, history, sessions) but keep the Google login."""
+    if not profile.is_dir():
+        return
+    items = [item for item in profile.iterdir() if item.name not in _PROFILE_IDENTITY_ROOT]
+    default = profile / "Default"
+    if default.is_dir():
+        items += [item for item in default.iterdir() if item.name not in _PROFILE_IDENTITY_DEFAULT]
+    for item in items:
+        if item.is_dir() and not item.is_symlink():
+            shutil.rmtree(item, ignore_errors=True)
+        else:
+            item.unlink(missing_ok=True)
+
+
+def _seed_stored_cookies(account: dict[str, Any]) -> bool:
+    """Cookie accounts, and an account profile wiped by reset, start from the stored cookies.
+
+    A Chrome-login profile that still has its cookie DB must not get the JSON
+    copy: duplicate rows (http vs https source) can shadow a fresh login.
+    """
+    if str(account.get("authMethod") or "chrome") == "cookie":
+        return True
+    profile = Path(store.profile_dir(str(account.get("id") or "")))
+    return not any((profile / relative).is_file() for relative in ("Default/Network/Cookies", "Default/Cookies"))
+
+
+def _merge_cookie_records(stored: list[dict[str, Any]], fresh: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Update stored cookies with newer values and add new names. Never drop a stored cookie."""
+    merged = {_cookie_identity(item): item for item in stored if item.get("name")}
+    for item in fresh:
+        if not item.get("name"):
+            continue
+        merged[_cookie_identity(item)] = item
+    return list(merged.values())
+
+
 _IMAGE_UI_MODELS = {"Nano Banana Pro", "Nano Banana 2.1", "Nano Banana 2", "Nano Banana 2 Lite"}
 _VIDEO_UI_MODELS = {
     "Omni 1.1 Flash", "Veo 3.1 - Lite", "Veo 3.1 - Fast",
@@ -1106,7 +1171,7 @@ async def _browser_at_login_wall(browser: Any) -> bool:
         return False
 
 
-def _session_needs_login(error: Exception) -> bool:
+def _session_needs_login(error: Exception | str) -> bool:
     """Identify failures that require the visible Google re-login flow."""
     text = str(error)
     # API 401 without a login-wall is common when Bearer is missing but cookies
@@ -1116,7 +1181,7 @@ def _session_needs_login(error: Exception) -> bool:
     if re.search(r"Could not obtain Bearer token", text, re.I) and "redirected" not in text.lower():
         return False
     return bool(re.search(
-        r"LOGIN_REQUIRED|SESSION_EXPIRED|session.*expired|cookies.*expired|redirected to login|recaptcha|accounts\.google\.com|flow\.google\.com/about|/about|not signed in|unauthenticated|authentication required",
+        r"LOGIN_REQUIRED|SESSION_EXPIRED|COOKIE_EXPIRED|session.*expired|cookies.*expired|redirected to login|recaptcha|accounts\.google\.com|flow\.google\.com/about|/about|not signed in|unauthenticated|authentication required",
         text,
         re.I,
     ))
@@ -1126,10 +1191,21 @@ def _is_automation_block_error(error: Exception | str) -> bool:
     """Only Flow's unusual-activity response may trigger account reconnect."""
     return bool(re.search(
         r"FLOW_AUTOMATION_BLOCKED|abnormal activity|unusual activity|"
-        r"suspicious activity|hoạt động bất thường|hoạt động đáng ngờ",
+        r"suspicious activity|hoạt động bất thường|hoạt động đáng ngờ|"
+        r"PUBLIC_ERROR_UNUSUAL_ACTIVITY",
         str(error or ""),
         re.I,
     ))
+
+
+def _rpc_public_error(detail: str) -> str:
+    """Map a batchexecute PUBLIC_ERROR_* body onto a stable Flow error code."""
+    raw = str(detail or "")
+    match = re.search(r"PUBLIC_ERROR_(\w+)", raw)
+    if not match:
+        return ""
+    reason = match.group(1).replace("_", " ").lower()
+    return _classify_visible_flow_error(f"{reason} {raw}")
 
 
 async def _click_settings_pill(pill, tabs) -> bool:
@@ -1223,6 +1299,7 @@ class FlowService:
         self._account_next_order: dict[str, int] = {}
         self._account_next_start: dict[str, int] = {}
         self._connecting_accounts: set[str] = set()
+        self._account_session_ready: set[str] = set()
         self._syncing_accounts: set[str] = set()  # guard concurrent credit syncs
         self._plan_sync_locks: dict[str, threading.Lock] = {}
         self._project_recovery_locks: dict[str, threading.Lock] = {}
@@ -1852,41 +1929,61 @@ class FlowService:
         if closed:
             time.sleep(1.0)
 
-    def reset_account_session(self, account_id: str) -> dict[str, Any]:
-        """Reset Flow project/session identity while preserving Google cookies."""
+    def reset_account_session(
+        self, account_id: str, *, open_ui_on_failure: bool = False, keep_running_jobs: bool = False,
+    ) -> dict[str, Any]:
+        """Reset Flow project/session identity while preserving Google cookies.
+
+        ``keep_running_jobs``: running jobs own cloned Chromes, so they finish
+        on their clone while new Chromes clone the reset profile; the shared
+        project stays bound because those jobs still poll it.
+        """
         account = store.get_row("accounts", account_id)
         if not account:
             return {}
-        if any(job.get("accountId") == account_id and job.get("status") == "processing" for job in self.jobs()):
+        busy = lambda: not keep_running_jobs and any(
+            job.get("accountId") == account_id and job.get("status") == "processing" for job in self.jobs()
+        )
+        if busy():
             raise RuntimeError("Account still has active Flow jobs")
         self._close_auto_sessions(account_id)
         with self._guard:
-            if any(self._session_key(account_id, kind) in self._manual_sessions for kind in ("image", "video")) or account_id in self._connecting_accounts or account_id in self._active_browsers:
+            if any(self._session_key(account_id, kind) in self._manual_sessions for kind in ("image", "video")) or account_id in self._connecting_accounts:
                 raise RuntimeError("FLOW_PROFILE_BUSY")
-        if any(job.get("accountId") == account_id and job.get("status") == "processing" for job in self.jobs()):
+        if busy():
             raise RuntimeError("Account still has active Flow jobs")
-        # Reset means a clean browser profile. Preserve only the account's
-        # cookie payload, exactly like adding an account by cookie; local
-        # Chrome storage, Flow project data, tokens and cached session state
-        # must not survive this operation.
+        # Wipe all browsing data but keep the files Google ties the login to,
+        # so the reconnect below stays signed in.
         cookie_payload = account.get("cookie")
-        profile = Path(store.profile_dir(account_id))
-        shutil.rmtree(profile, ignore_errors=True)
-        profile.mkdir(parents=True, exist_ok=True)
+        for kind in ("image", "video"):
+            # Session profiles are copies of the account profile; hand back
+            # their cookies, then let the next "open session" re-copy them.
+            target = self._session_profile_dir(account_id, kind)
+            if target.is_dir():
+                self._sync_runtime_cookies(account_id, target)
+                shutil.rmtree(target, ignore_errors=True)
+        from .browser import profile_lock
+        with profile_lock(store.profile_dir(account_id)):
+            _wipe_profile_keep_login(Path(store.profile_dir(account_id)))
         patch = {
             "status": "connecting", "error": None, "suspendedUntil": None, "suspendReason": None,
             "accessToken": None, "refreshToken": None, "cookie": cookie_payload,
-            "projectId": None, "imageProjectId": None, "videoProjectId": None,
-            "projectChangedAt": None, "imageProjectIdChangedAt": None, "videoProjectIdChangedAt": None,
             "updatedAt": time.time(),
         }
+        if not keep_running_jobs:
+            patch.update({
+                "projectId": None, "imageProjectId": None, "videoProjectId": None,
+                "projectChangedAt": None, "imageProjectIdChangedAt": None, "videoProjectIdChangedAt": None,
+            })
         store.patch_row("accounts", account_id, patch)
+        self._clear_session_ready(account_id)
         self._log("info", "account_session_reset", account_id=account_id,
-                  message="Đã xoá trắng profile Flow và giữ cookie Google / Reset Flow profile wiped while preserving cookie payload")
+                  message="Đã xoá dữ liệu Flow và giữ đăng nhập Google / Cleared Flow data and kept the Google login")
         # Kick-start login immediately so the account does not stay stuck in
         # 'connecting' forever waiting for the user to press Connect manually.
         try:
-            self.connect(account_id)
+            # Like Connect: reconnect without a window; open one only if that fails.
+            self.connect(account_id, headless=True, open_ui_on_failure=open_ui_on_failure)
         except RuntimeError:
             pass  # ponytail: FLOW_PROFILE_BUSY race is safe to ignore here
         return self._public_account(store.get_row("accounts", account_id) or account)
@@ -2169,31 +2266,40 @@ class FlowService:
                             "startedAt": time.monotonic(),
                         }
                     page = await browser.page()
-                    project_id = str(account.get("projectId") or "")
-                    destination = FLOW_BASE_URL
-                    if project_id:
-                        destination += f"/project/{quote(project_id, safe='')}"
-                    if cookie_auth:
-                        # Cookie accounts already carry the Google session in
-                        # the copied profile. Going through ServiceLogin here
-                        # needlessly prompts for a password and defeats the
-                        # cookie import path.
-                        url = destination
-                    else:
-                        url = ("https://accounts.google.com/ServiceLogin?service=wise"
-                               f"&continue={quote(destination, safe='')}"
-                               f"&login_hint={quote(str(account.get('email') or ''), safe='')}")
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                    last_cookie_sync = 0.0
+                    # Same as Connect: open Flow home (jobs navigate to their
+                    # own project), then save any new cookies and mark the
+                    # account online. Do not send Chrome accounts through
+                    # ServiceLogin first.
+                    await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=30_000)
+                    signed_in = await self._confirm_open_session(browser, account_id, page)
+                    if signed_in:
+                        await asyncio.to_thread(self._sync_runtime_cookies, account_id, session_profile)
+                    if not signed_in and not headless and await _browser_at_login_wall(browser):
+                        # Dead session: go straight to Google sign-in, like Connect.
+                        email = str(account.get("email") or "").strip()
+                        if urlsplit(str(page.url or "")).hostname != "accounts.google.com":
+                            await page.goto(
+                                "https://accounts.google.com/ServiceLogin?service=wise"
+                                f"&continue={quote(FLOW_BASE_URL, safe='')}&login_hint={quote(email, safe='')}",
+                                wait_until="domcontentloaded", timeout=30_000,
+                            )
+                        await self._fill_google_login_email(page, email)
+                    last_cookie_sync = time.monotonic()
                     while not page.is_closed() and browser.context.pages:
-                        if cookie_auth and time.monotonic() - last_cookie_sync >= 60:
+                        # Until the user finishes a login wall, poll quickly so
+                        # signing in here works like Connect.
+                        if time.monotonic() - last_cookie_sync >= (60 if signed_in else 2):
                             last_cookie_sync = time.monotonic()
-                            try:
-                                jar = [c for c in await browser.context.cookies() if "google" in str(c.get("domain") or "")]
-                                if jar:
-                                    store.patch_row("accounts", account_id, {"cookie": jar})
-                            except Exception:
-                                pass  # keep previously stored cookies
+                            confirmed = await self._confirm_open_session(browser, account_id, page)
+                            if confirmed:
+                                # Job Chromes are cloned from the account profile:
+                                # hand them this window's login now, not at close.
+                                await asyncio.to_thread(self._sync_runtime_cookies, account_id, session_profile)
+                            if confirmed and not signed_in:
+                                self._log("success", "account_connected", account_id=account_id,
+                                          details={"via": "open_session"})
+                                self._requeue_auth_failed_jobs(account_id)
+                            signed_in = signed_in or confirmed
                         await asyncio.sleep(1)
                 async def run_browser() -> None:
                     try:
@@ -2204,23 +2310,7 @@ class FlowService:
                                 await asyncio.wait_for(browser.stop(), timeout=8.0)
                             except Exception:
                                 pass
-                            # Manual image/video sessions use an account-kind
-                            # profile. Persist refreshed Google cookies back to
-                            # the canonical account profile before the next
-                            # connect or generation reuses it.
-                            try:
-                                await asyncio.to_thread(
-                                    self._sync_runtime_cookies,
-                                    account_id,
-                                    session_profile,
-                                )
-                            except Exception:
-                                self._log(
-                                    "warning",
-                                    "manual_session_cookie_sync_failed",
-                                    account_id=account_id,
-                                    message="Could not synchronize refreshed browser cookies",
-                                )
+                            await asyncio.to_thread(self._sync_runtime_cookies, account_id, session_profile)
                 asyncio.run(run_browser())
             except Exception as exc:
                 _log.warning("manual Flow session failed for %s: %s", account_id, exc)
@@ -2240,6 +2330,7 @@ class FlowService:
         cookies: list[dict[str, Any]] | None = None,
         allow_session_close: bool = False,
         headless: bool = False,
+        open_ui_on_failure: bool = False,
     ) -> dict[str, Any]:
         account = store.get_row("accounts", account_id)
         if not account:
@@ -2258,11 +2349,14 @@ class FlowService:
             if account_id in self._connecting_accounts:
                 return self._public_account(account)
             self._connecting_accounts.add(account_id)
-            store.patch_row("accounts", account_id, {"status": "connecting", "error": None, "updatedAt": time.time()})
+            patch = {"status": "connecting", "error": None, "updatedAt": time.time()}
+            store.patch_row("accounts", account_id, patch)
             if cookies:
                 # Keep the imported cookies so reset/reconnect can reuse them
-                # exactly like the original add-by-cookie (never sent to clients).
-                store.patch_row("accounts", account_id, {"cookie": cookies})
+                # (never sent to clients). Merge only: never drop stored cookies.
+                store.patch_row("accounts", account_id, {"cookie": _merge_cookie_records(
+                    _account_cookie_records(account.get("cookie")), _account_cookie_records(cookies),
+                )})
         if auto_browser is not None:
             try:
                 auto_browser.kill_now()
@@ -2270,7 +2364,13 @@ class FlowService:
                 pass
         self._log("info", "account_connecting", account_id=account_id)
         threading.Thread(
-            target=lambda: asyncio.run(self._login(account_id, force_interactive=force_interactive, cookies=cookies, headless=headless)),
+            target=lambda: asyncio.run(self._login(
+                account_id,
+                force_interactive=force_interactive,
+                cookies=cookies,
+                headless=headless,
+                open_ui_on_failure=open_ui_on_failure,
+            )),
             daemon=True,
             name=f"flow-login-{account_id}",
         ).start()
@@ -2298,7 +2398,7 @@ class FlowService:
         slot immediately. Other queued jobs wait at admission until the account
         is online again — they must not each soft-refresh Chrome.
         """
-        if interactive is not True and not _is_automation_block_error(reason):
+        if interactive is not True and not _is_automation_block_error(reason) and not _session_needs_login(reason):
             return
         account = store.get_row("accounts", account_id) or {}
         if not account:
@@ -2360,6 +2460,182 @@ class FlowService:
                 "Đang thử kết nối lại phiên Flow (headless) / Attempting Flow headless reconnect"
             ),
         )
+
+    def _mark_session_ready(self, account_id: str) -> None:
+        """Allow the rest of this account's queue to open Chrome."""
+        if not account_id:
+            return
+        with self._account_condition:
+            self._account_session_ready.add(account_id)
+            self._account_condition.notify_all()
+
+    def _clear_session_ready(self, account_id: str) -> None:
+        if not account_id:
+            return
+        with self._account_condition:
+            self._account_session_ready.discard(account_id)
+            self._account_condition.notify_all()
+
+    def _session_warmup_wait(self, account_id: str) -> bool:
+        """True while the first job is still proving this account is signed in.
+
+        Parallel Chromes must not start until that check succeeds; a dead
+        cookie would otherwise fail the whole batch halfway.
+        """
+        if account_id in self._account_session_ready:
+            return False
+        if account_id in self._connecting_accounts:
+            return True
+        return self._account_active.get(account_id, 0) >= 1
+
+    async def _confirm_logged_in_session(self, page, account_id: str) -> None:
+        """Fail closed if this Chrome landed on Google login instead of Flow."""
+        url = str(getattr(page, "url", "") or "")
+        host = urlsplit(url).hostname or ""
+        if host == "accounts.google.com" or "/about" in url:
+            raise RuntimeError(
+                f"FLOW_COOKIE_EXPIRED: Google session is not signed in ({url})"
+            )
+        if host in {"flow.google.com", "labs.google"}:
+            self._mark_session_ready(account_id)
+
+    async def _confirm_open_session(self, browser, account_id: str, page) -> bool:
+        """Connect the account from an open Flow window: cookies, online, project."""
+        pages = [page, *[item for item in (getattr(browser.context, "pages", None) or []) if item is not page]]
+        flow_page = next((
+            item for item in pages
+            if urlsplit(str(getattr(item, "url", "") or "")).hostname in {"flow.google.com", "labs.google"}
+            and "/about" not in str(getattr(item, "url", "") or "")
+        ), None)
+        if flow_page is None:
+            return False
+        try:
+            raw = await browser.context.cookies()
+        except Exception:
+            return False
+        if not isinstance(raw, list):
+            return False
+        fresh = _account_cookie_records([
+            cookie for cookie in raw if isinstance(cookie, dict) and "google" in str(cookie.get("domain") or "")
+        ])
+        current = store.get_row("accounts", account_id) or {}
+        merged = _merge_cookie_records(_account_cookie_records(current.get("cookie")), fresh)
+        if not merged:
+            return False
+        store.patch_row("accounts", account_id, {
+            "cookie": merged,
+            "status": "online",
+            "error": None,
+            "updatedAt": time.time(),
+        })
+        self._mark_session_ready(account_id)
+        if not (current.get("imageProjectId") or current.get("projectId")):
+            try:
+                await self._ensure_account_project(flow_page, account_id)
+            except Exception:
+                pass  # the login itself succeeded; keep the account online
+        return True
+
+    async def prepare_account_cookies(self, account_id: str) -> dict[str, Any]:
+        """Check Flow sign-in once. Merge newer cookies; never delete ones already stored."""
+        account = store.get_row("accounts", account_id)
+        if not account:
+            raise KeyError(account_id)
+        label = str(account.get("label") or account_id)
+        result = {
+            "id": account_id, "label": label, "ok": False, "code": "FLOW_PREPARE_FAILED",
+            "cookiesUpdated": 0,
+        }
+        session_open = any(
+            self._session_key(account_id, kind) in self._manual_sessions for kind in ("image", "video")
+        )
+        if session_open or account_id in self._connecting_accounts or self._account_active.get(account_id, 0) > 0:
+            # A running job already proved this account. Do not open a second
+            # Chrome or rewrite its cookies.
+            result.update(ok=True, code="SESSION_IN_USE")
+            return result
+        stored = _account_cookie_records(account.get("cookie"))
+        cookie_auth = str(account.get("authMethod") or "chrome") == "cookie"
+        seed = _seed_stored_cookies(account)
+        try:
+            return await self._probe_account_cookies(account, result, stored, cookie_auth, seed)
+        finally:
+            if result["code"] == "FLOW_COOKIE_EXPIRED":
+                # Same as pressing Connect: open Google sign-in for this account.
+                try:
+                    self.connect(account_id, headless=False)
+                    result["loginOpened"] = True
+                except RuntimeError:
+                    pass
+
+    async def _probe_account_cookies(
+        self, account: dict[str, Any], result: dict[str, Any], stored: list[dict[str, Any]],
+        cookie_auth: bool, seed: bool,
+    ) -> dict[str, Any]:
+        account_id = str(account["id"])
+        browser = None
+        try:
+            from .browser import BrowserManager, FLOW_BASE_URL
+            browser = BrowserManager(
+                headless=True,
+                profile_dir=store.profile_dir(account_id),
+                restore_last_session=cookie_auth,
+            )
+            await browser.start()
+            if stored and seed:
+                try:
+                    await browser.context.add_cookies(stored)
+                except Exception:
+                    pass
+            page = await browser.page()
+            await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=25_000)
+            await asyncio.sleep(3)
+            url = str(page.url or "")
+            host = urlsplit(url).hostname or ""
+            login_wall = host == "accounts.google.com" or "/about" in url
+            jar = []
+            try:
+                jar = [
+                    cookie for cookie in await browser.context.cookies()
+                    if "google" in str(cookie.get("domain") or "")
+                ]
+            except Exception:
+                jar = []
+            fresh = _account_cookie_records(jar)
+            if login_wall:
+                # Report the dead session honestly; stored cookies stay untouched.
+                store.patch_row("accounts", account_id, {
+                    "status": "reconnect",
+                    "error": "FLOW_COOKIE_EXPIRED",
+                    "updatedAt": time.time(),
+                })
+                self._clear_session_ready(account_id)
+                result.update(code="FLOW_COOKIE_EXPIRED")
+                return result
+            merged = _merge_cookie_records(stored, fresh)
+            store.patch_row("accounts", account_id, {
+                "cookie": merged,
+                "status": "online",
+                "error": None,
+                "updatedAt": time.time(),
+            })
+            self._mark_session_ready(account_id)
+            if not (account.get("imageProjectId") or account.get("projectId")):
+                try:
+                    await self._ensure_account_project(page, account_id)
+                except Exception:
+                    pass  # the session is valid; keep the account online
+            result.update(ok=True, code="SESSION_OK", cookiesUpdated=len(fresh))
+            return result
+        except Exception:
+            result["code"] = "FLOW_PREPARE_FAILED"
+            return result
+        finally:
+            if browser is not None:
+                try:
+                    await asyncio.wait_for(browser.stop(), timeout=8.0)
+                except Exception:
+                    pass
 
     def _account_session_blocked(self, account_id: str) -> bool:
         """True while a shared reconnect/login is in progress for this account."""
@@ -2922,7 +3198,9 @@ class FlowService:
         job = store.get_row("jobs", job_id)
         if not job or job.get("status") in {"done", "cancelled"} or job_id in self._cancelled:
             return False
-        if not job.get("allowAccountFallback", bool(job.get("randomAccount"))):
+        if not _is_automation_block_error(reason) and not job.get(
+            "allowAccountFallback", bool(job.get("randomAccount"))
+        ):
             return False
 
         kind = str(job.get("kind") or "image")
@@ -2959,6 +3237,7 @@ class FlowService:
             "error": None,
             "autoRetryCount": 0,
             "generationRejectRetryCount": 0,
+            "sessionResetRetryCount": 0,
             "triedAccountIds": next_tried,
             "updatedAt": time.time(),
         })
@@ -3077,7 +3356,25 @@ class FlowService:
 
 
 
-    async def _login(self, account_id: str, *, force_interactive: bool = False, cookies: list[dict[str, Any]] | None = None, headless: bool = False) -> None:
+    async def _fill_google_login_email(self, page, email: str) -> bool:
+        """Submit the saved email once the Google identifier page appears."""
+        if not email or urlsplit(str(page.url or "")).hostname != "accounts.google.com":
+            return False
+        try:
+            email_input = page.locator('input[type="email"], input[name="identifier"]').first
+            if not await email_input.is_visible():
+                return False
+            current = (await email_input.input_value()).strip()
+            if current and current.casefold() != email.casefold():
+                return False
+            if not current:
+                await email_input.fill(email)
+            await page.locator("#identifierNext, button:has-text('Next'), button:has-text('Tiếp theo')").first.click()
+            return True
+        except Exception:
+            return False
+
+    async def _login(self, account_id: str, *, force_interactive: bool = False, cookies: list[dict[str, Any]] | None = None, headless: bool = False, open_ui_on_failure: bool = False, force_visible: bool = False) -> None:
         """Open a visible Chrome window to authenticate and sync the Flow account.
 
         Authenticate at Flow home without selecting or creating a project.
@@ -3091,7 +3388,7 @@ class FlowService:
         fresh_cookies = bool(cookies)
         if cookies:
             cookies = _account_cookie_records(cookies)  # persistent expiry, see _account_cookie_records
-        if cookie_auth and not cookies:
+        if not cookies and (cookie_auth or _seed_stored_cookies({**account, "id": account_id})):
             cookies = _account_cookie_records(account.get("cookie"))
 
         browser = None
@@ -3100,7 +3397,7 @@ class FlowService:
         with self._guard:
             self._login_passwords.pop(account_id, None)
         password = ""
-        headless_login = cookie_auth or headless
+        headless_login = False if force_visible else (cookie_auth or headless)
         try:
             from .browser import BrowserManager, FLOW_BASE_URL
             browser = BrowserManager(
@@ -3160,19 +3457,7 @@ class FlowService:
                 except Exception:
                     return False, ""
 
-            # Điền email vào ô input và click Next tự động
-            try:
-                if not cookie_auth and urlsplit(str(page.url or "")).hostname == "accounts.google.com":
-                    email_input = page.locator('input[type="email"], input[name="identifier"]').first
-                    await email_input.wait_for(state="visible", timeout=5_000)
-                    current_val = await email_input.input_value()
-                    if not current_val.strip():
-                        await email_input.fill(existing_email)
-                    next_btn = page.locator("#identifierNext, button:has-text('Next'), button:has-text('Tiếp theo')").first
-                    await next_btn.wait_for(state="visible", timeout=3_000)
-                    await next_btn.click()
-            except Exception:
-                pass
+            email_submitted = await self._fill_google_login_email(page, existing_email)
 
             # Fast-detect: only if already authenticated and project is open
             await asyncio.sleep(2.0)
@@ -3186,14 +3471,12 @@ class FlowService:
                 ):
                     raise RuntimeError("FLOW_LOGIN_VERIFICATION_REQUIRED")
                 if "/about" in str(page.url or ""):
-                    # Trang giới thiệu Flow → click Sign In để vào Google login
-                    try:
-                        sign_in_link = page.locator('a:has-text("Sign in"), a[href*="ServiceLogin"]').first
-                        if await sign_in_link.count() > 0:
-                            await sign_in_link.click()
-                            await asyncio.sleep(2.0)
-                    except Exception:
-                        pass
+                    # Reuse Google's login hint and return to the Flow lobby.
+                    await page.goto(
+                        "https://accounts.google.com/ServiceLogin?service=wise"
+                        f"&continue={quote(start_url, safe='')}&login_hint={quote(existing_email, safe='')}",
+                        wait_until="domcontentloaded", timeout=30_000,
+                    )
                 elif "accounts.google.com" in str(page.url or ""):
                     # Đã ở trang đăng nhập Google — không cần navigate thêm
                     pass
@@ -3215,6 +3498,8 @@ class FlowService:
                     except Exception:
                         break  # Chrome closed by user
 
+                    if not email_submitted:
+                        email_submitted = await self._fill_google_login_email(page, existing_email)
                     is_auth, pid = await _is_flow_authenticated()
                     if headless_login and not is_auth and (
                         urlsplit(str(page.url or "")).hostname == "accounts.google.com"
@@ -3239,11 +3524,18 @@ class FlowService:
                     raise RuntimeError("Chrome bị đóng trước khi đăng nhập xong")
                 raise RuntimeError("Login timed out or Chrome was closed before sign-in completed")
 
+            # Connect can finish at the Flow lobby with no project in the URL.
+            # The Image/Video account dropdown only lists online accounts that
+            # already have a project, so a new connect would succeed and then
+            # vanish from "Tài khoản tạo ảnh". Bind a gallery now, but never
+            # replace IDs generation already saved.
+            project_id = await self._ensure_account_project(page, account_id, project_id)
+
             # Verify session, capture Bearer (jobs need ya29; credits alone are not enough),
             # then close Chrome before cloning the profile for queued jobs.
             from ._flow._api import FlowAPI
             _log.info("_login: fetching credits for project=%s", project_id)
-            login_api = FlowAPI(browser, project_id=existing_project_id)
+            login_api = FlowAPI(browser, project_id=project_id or existing_project_id)
             credit_info = await asyncio.wait_for(
                 login_api.get_credits(),
                 timeout=30.0,
@@ -3283,6 +3575,11 @@ class FlowService:
                 "error": None,
             }
             stored_row = store.get_row("accounts", account_id) or {}
+            if project_id:
+                if not str(stored_row.get("projectId") or "").strip():
+                    patch["projectId"] = project_id
+                if not str(stored_row.get("imageProjectId") or "").strip():
+                    patch["imageProjectId"] = project_id
             if email and not str(stored_row.get("email") or "").strip():
                 # Cookie accounts may be added without an email; adopt the one Flow reports.
                 patch["label"] = str(email).split("@", 1)[0].strip() or stored_row.get("label")
@@ -3291,13 +3588,16 @@ class FlowService:
                 patch["accessTokenAt"] = now
             if detected_plan:
                 patch["plan"] = detected_plan
-            if cookie_auth:
-                try:
-                    jar = [c for c in await browser.context.cookies() if "google" in str(c.get("domain") or "")]
-                    if jar:
-                        patch["cookie"] = jar
-                except Exception:
-                    pass  # keep the previously stored cookies
+            # Every account keeps the latest cookies: reset re-seeds the wiped profile from them.
+            try:
+                jar = [c for c in await browser.context.cookies() if "google" in str(c.get("domain") or "")]
+                if jar:
+                    patch["cookie"] = _merge_cookie_records(
+                        _account_cookie_records((store.get_row("accounts", account_id) or {}).get("cookie")),
+                        _account_cookie_records(jar),
+                    )
+            except Exception:
+                pass  # keep the previously stored cookies
             store.patch_row("accounts", account_id, patch)
             self._log(
                 "success",
@@ -3311,6 +3611,7 @@ class FlowService:
                 },
             )
             login_ok = True
+            self._mark_session_ready(account_id)
         except Exception as exc:
             login_ok = False
             detail = str(exc).replace(password, "[redacted]") if password else str(exc)
@@ -3346,13 +3647,40 @@ class FlowService:
             # and every job raises "Could not obtain Bearer token" in a loop.
             if login_ok:
                 self._requeue_auth_failed_jobs(account_id)
-        if switch_to_login:
-            self._log("warning", "cookie_expired_switch_to_login", account_id=account_id)
+        open_window = headless_login and not login_ok and (switch_to_login or open_ui_on_failure)
+        if open_window:
+            if switch_to_login:
+                self._log("warning", "cookie_expired_switch_to_login", account_id=account_id)
+            else:
+                self._log("warning", "headless_reconnect_open_ui", account_id=account_id,
+                          message="Headless reconnect failed; opening Chrome")
             with self._guard:
                 self._connecting_accounts.add(account_id)
             store.patch_row("accounts", account_id, {"status": "connecting", "error": None, "updatedAt": time.time()})
-            await self._login(account_id, force_interactive=True, headless=False)
+            await self._login(account_id, force_interactive=True, headless=False, force_visible=True)
 
+
+    async def _ensure_account_project(self, page, account_id: str, project_id: str = "") -> str:
+        """Give a signed-in account a Flow project, like Connect. Never replaces saved IDs."""
+        stored = store.get_row("accounts", account_id) or {}
+        project_id = project_id or str(stored.get("imageProjectId") or stored.get("projectId") or "").strip()
+        if not project_id:
+            try:
+                href = await page.locator('a[href*="/project/"]').first.get_attribute("href", timeout=3_000)
+                found = _PROJECT_RE.search(href or "")
+                if found:
+                    project_id = found.group(1)
+            except Exception:
+                pass
+        if not project_id:
+            project_id = await self._create_flow_project_ui(page)
+        patch = {
+            key: project_id for key in ("projectId", "imageProjectId")
+            if project_id and not str(stored.get(key) or "").strip()
+        }
+        if patch:
+            store.patch_row("accounts", account_id, {**patch, "updatedAt": time.time()})
+        return project_id
 
     async def _create_flow_project_ui(self, page, *, avoid_project_id: str = "") -> str:
         """Create a brand-new Flow project via the lobby UI. Returns the new project id or \"\"."""
@@ -3590,14 +3918,15 @@ class FlowService:
         from .browser import BrowserManager, FLOW_BASE_URL
         browser = None
         try:
+            account = store.get_row("accounts", account_id) or {}
+            seed = _seed_stored_cookies({**account, "id": account_id})
             browser = BrowserManager(
                 headless=True,
                 profile_dir=store.profile_dir(account_id),
-                restore_last_session=str((store.get_row("accounts", account_id) or {}).get("authMethod") or "chrome") == "cookie",
+                restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
             )
             await browser.start()
-            account = store.get_row("accounts", account_id) or {}
-            if str(account.get("authMethod") or "chrome") == "cookie":
+            if seed:
                 cookie_records = _account_cookie_records(account.get("cookie"))
                 if cookie_records:
                     await browser.context.add_cookies(cookie_records)
@@ -3985,6 +4314,7 @@ class FlowService:
                 )  # lowest order first, retries included
                 or self._account_active.get(account_id, 0) >= account_concurrency_limit()
                 or self._account_session_blocked(account_id)
+                or self._session_warmup_wait(account_id)
                 or self._account_suspended(account_id)
             ):
                 if self._account_suspended(account_id):
@@ -4158,7 +4488,7 @@ class FlowService:
 
             # Transient / reject → auto-retry up to _JOB_AUTO_RETRY_MAX.
             # Mandatory stops only: credits, quota, cancel, content policy.
-            for _auto_i in range(_JOB_AUTO_RETRY_MAX):
+            for _auto_i in range(_JOB_AUTO_RETRY_MAX + 1):  # + the one unusual-activity reset retry
                 finished = store.get_row("jobs", job_id) or finished
                 finished_error = str(finished.get("error") or "")
                 rejected = "FLOW_GENERATION_REJECTED" in finished_error
@@ -4183,17 +4513,25 @@ class FlowService:
                     and not finished.get("mediaIds")
                     and not finished.get("outputs")
                     # Google flags unusual activity per account/IP, not per Chrome:
-                    # every extra submit deepens the block, so retry it only once.
-                    and retry_count < (1 if blocked else _JOB_AUTO_RETRY_MAX)
+                    # every extra submit deepens the block, so reset+retry it only
+                    # once, on its own counter so earlier transient retries don't use it up.
+                    and (
+                        int(finished.get("sessionResetRetryCount") or 0) < 1 if blocked
+                        else retry_count < _JOB_AUTO_RETRY_MAX
+                    )
                     and (rejected or blocked or not _HARD_ERROR.search(finished_error))
                 )
                 if not should_auto_retry:
                     break
-                next_count = retry_count + 1
+                next_count = retry_count if blocked else retry_count + 1
                 self._log(
                     "warning", "job_auto_retry", job_id=job_id, account_id=account_id,
                     message=finished_error,
-                    details={"attempt": next_count, "max": 1 if blocked else _JOB_AUTO_RETRY_MAX, "freshChrome": True},
+                    details={
+                        "attempt": 1 if blocked else next_count,
+                        "max": 1 if blocked else _JOB_AUTO_RETRY_MAX,
+                        "freshChrome": True,
+                    },
                 )
                 if job_id in self._cancelled or not store.get_row("jobs", job_id):
                     return
@@ -4210,6 +4548,8 @@ class FlowService:
                 }
                 if rejected:
                     patch["generationRejectRetryCount"] = next_count
+                if blocked:
+                    patch["sessionResetRetryCount"] = 1
                 if blocked or re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT", finished_error, re.I):
                     self._release_media_ids(finished.get("mediaIds"))
                     patch.update({
@@ -4217,8 +4557,15 @@ class FlowService:
                         "baselineMediaIds": [], "mediaIds": [], "resumeOnly": False,
                     })
                 store.patch_row("jobs", job_id, patch)
-                # Flow's unusual-activity gate needs a short cool-down before a new Chrome submits again.
-                time.sleep(60 if blocked else 3)
+                if blocked and account_id not in self._connecting_accounts:
+                    # The retry clones a freshly reset, still signed-in profile;
+                    # admission holds it (and new jobs) until the reconnect is online.
+                    try:
+                        self.reset_account_session(account_id, keep_running_jobs=True)
+                    except RuntimeError as exc:
+                        self._log("warning", "unusual_activity_session_reset_failed",
+                                  job_id=job_id, account_id=account_id, message=str(exc))
+                time.sleep(3)
                 if job_id in self._cancelled or not store.get_row("jobs", job_id):
                     return
                 store.patch_row("jobs", job_id, {
@@ -4317,7 +4664,7 @@ class FlowService:
                     self._requeue_auth_failed_jobs(account_id)
                 if current_job.get("quotaModelFallbackApplied") and "FLOW_QUOTA_EXHAUSTED" in err_msg:
                     self.suspend_account(account_id, err_msg)
-                elif current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
+                elif _is_automation_block_error(err_msg) or current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
                     self._try_fallback_account(job_id, account_id, err_msg)
                 elif re.search(
                     r"GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
@@ -4338,7 +4685,7 @@ class FlowService:
             return self._clone_closed_profile(account_id, job_id)
 
     def _sync_runtime_cookies(self, account_id: str, runtime_profile: Path) -> None:
-        """Merge rotated cookies after Chrome closes, without exporting secrets."""
+        """Merge rotated cookies into the account profile, without exporting secrets."""
         from .browser import profile_lock
         # Chromium encrypts values using the cloned profile's existing key.
         # Wait for the account profile owner to close before writing its database.
@@ -4351,19 +4698,25 @@ class FlowService:
                 if not source.is_file() or not target.is_file():
                     continue
                 try:
-                    with sqlite3.connect(target, timeout=10) as db:
-                        db.execute("ATTACH DATABASE ? AS refreshed", (str(source),))
-                        columns = [row[1] for row in db.execute("PRAGMA main.table_info(cookies)")]
-                        incoming = [row[1] for row in db.execute("PRAGMA refreshed.table_info(cookies)")]
-                        if columns != incoming or "last_update_utc" not in columns:
-                            raise ValueError("incompatible cookie database")
-                        names = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
-                        # Native unique keys include partition/source fields on
-                        # newer Chrome. Let SQLite use that exact native key.
-                        db.execute(f"INSERT INTO main.cookies ({names}) SELECT {names} FROM refreshed.cookies WHERE 1 "
-                                   f"ON CONFLICT DO UPDATE SET " + ", ".join(
-                                       f'"{name}" = excluded."{name}"' for name in columns
-                                   ) + " WHERE excluded.last_update_utc > cookies.last_update_utc")
+                    # A live session Chrome keeps its cookie DB locked: read a snapshot.
+                    with tempfile.TemporaryDirectory() as tmp:
+                        snapshot = Path(tmp) / "Cookies"
+                        for suffix in ("", "-journal", "-wal"):
+                            if Path(f"{source}{suffix}").is_file():
+                                shutil.copy2(f"{source}{suffix}", f"{snapshot}{suffix}")
+                        with closing(sqlite3.connect(target, timeout=10)) as db, db:
+                            db.execute("ATTACH DATABASE ? AS refreshed", (str(snapshot),))
+                            columns = [row[1] for row in db.execute("PRAGMA main.table_info(cookies)")]
+                            incoming = [row[1] for row in db.execute("PRAGMA refreshed.table_info(cookies)")]
+                            if columns != incoming or "last_update_utc" not in columns:
+                                raise ValueError("incompatible cookie database")
+                            names = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+                            # Native unique keys include partition/source fields on
+                            # newer Chrome. Let SQLite use that exact native key.
+                            db.execute(f"INSERT INTO main.cookies ({names}) SELECT {names} FROM refreshed.cookies WHERE 1 "
+                                       f"ON CONFLICT DO UPDATE SET " + ", ".join(
+                                           f'"{name}" = excluded."{name}"' for name in columns
+                                       ) + " WHERE excluded.last_update_utc > cookies.last_update_utc")
                 except (sqlite3.Error, ValueError, OSError):
                     # Never include database rows or exception text (secrets).
                     self._log("warning", "cookie_sync_failed", account_id=account_id,
@@ -5206,6 +5559,16 @@ class FlowService:
                         f" controls={await duration_debug(_duration_pattern(duration_value))})"
                     )
 
+    async def _raise_if_new_flow_error(self, page, baseline_errors: set[str]) -> None:
+        for item in await self._scan_visible_errors(page, 24):
+            text = str(item.get("text") or "")
+            # The project grid is shared: a sibling job's unusual-activity
+            # tile is not this submit's error (ours arrives in its RPC reply).
+            if item.get("tile") and _is_automation_block_error(text):
+                continue
+            if text and text not in baseline_errors:
+                raise RuntimeError(_classify_visible_flow_error(text))
+
     async def _click_flow_submit(self, page) -> list[Any]:
         """Click the submit control used by the current Flow project page.
 
@@ -5284,6 +5647,7 @@ class FlowService:
         # accepted and billed the generation.
         rpc_requests: list[Any] = []
         rpc_responses: list[Any] = []
+        other_rpc: list[Any] = []
 
         def _is_generate_rpc(url: str) -> bool:
             # flow.google.com sends image generation as batchexecute rpcids=YhhmEf.
@@ -5294,15 +5658,18 @@ class FlowService:
                 rpc_requests.append(request)
 
         def _on_response(response) -> None:
-            if _is_generate_rpc(response.url):
+            url = response.url
+            if _is_generate_rpc(url):
                 rpc_responses.append(response)
+            elif "batchexecute" in url:
+                other_rpc.append(response)
 
         page.on("request", _on_request)
         page.on("response", _on_response)
         try:
             await self._click_flow_submit_and_confirm(
                 page, button, baseline_tile_count, baseline_composer_text,
-                baseline_errors, rpc_requests, rpc_responses,
+                baseline_errors, rpc_requests, rpc_responses, other_rpc,
             )
         finally:
             page.remove_listener("request", _on_request)
@@ -5336,6 +5703,7 @@ class FlowService:
     async def _click_flow_submit_and_confirm(
         self, page, button, baseline_tile_count: int, baseline_composer_text: str,
         baseline_errors: set[str], rpc_requests: list[Any], rpc_responses: list[Any],
+        other_rpc: list[Any] | None = None,
     ) -> None:
         try:
             try:
@@ -5353,19 +5721,25 @@ class FlowService:
         ack_deadline = time.monotonic() + 8
         rpc_deadline = time.monotonic() + 30
         while time.monotonic() < (rpc_deadline if rpc_requests else ack_deadline):
-            for response in rpc_responses:
+            for response in list(other_rpc or []) + list(rpc_responses):
                 try:
-                    detail = re.sub(r"\s+", " ", await response.text())[:300]
+                    detail = re.sub(r"\s+", " ", await response.text())[:2000]
                 except Exception:
                     detail = ""
-                # batchexecute answers HTTP 200 with the error inside the body.
-                public_error = re.search(r"PUBLIC_ERROR_(\w+)", detail)
-                if response.ok and not public_error:
+                classified = _rpc_public_error(detail)
+                if classified:
+                    raise RuntimeError(classified)
+            for response in rpc_responses:
+                try:
+                    detail = re.sub(r"\s+", " ", await response.text())[:2000]
+                except Exception:
+                    detail = ""
+                # An unreadable HTTP 200 is not proof of acceptance; wait for
+                # media names, a later PUBLIC_ERROR, or a visible Flow error.
+                if response.ok and detail and not _rpc_public_error(detail):
                     return
-                reason = public_error.group(1).replace("_", " ").lower() if public_error else ""
-                text = f"HTTP {response.status} {reason} {detail}".strip()
-                raise RuntimeError(_classify_visible_flow_error(text))
             try:
+                await self._raise_if_new_flow_error(page, baseline_errors)
                 body = await page.locator("body").inner_text()
                 if _flow_credit_blocked(body):
                     raise RuntimeError("FLOW_CREDITS_INSUFFICIENT: Flow rejected the submit because credits are insufficient")
@@ -5376,8 +5750,10 @@ class FlowService:
                 visible_tiles = await page.locator("flow-grid-tile-container").count()
                 progressbars = await page.locator("flow-grid-tile-container [role='progressbar'], flow-grid-tile-container [aria-valuenow], flow-pending-tile").count()
                 if visible_tiles > baseline_tile_count or progressbars:
+                    await self._raise_if_new_flow_error(page, baseline_errors)
                     return
                 if await button.is_disabled():
+                    await self._raise_if_new_flow_error(page, baseline_errors)
                     return
                 # Flow clears the composer as soon as the request is accepted;
                 # this signal often arrives before the tile/progress DOM.
@@ -5385,21 +5761,17 @@ class FlowService:
                     \"[role='textbox'], textarea, [contenteditable='true']\"
                 )].map(node => node.value || node.innerText || node.textContent || '').join(' ').trim()""")
                 if baseline_composer_text and not composer_text:
+                    await self._raise_if_new_flow_error(page, baseline_errors)
                     return
             except RuntimeError:
                 raise
             except Exception:
                 pass
             await asyncio.sleep(0.5)
+        await self._raise_if_new_flow_error(page, baseline_errors)
         if rpc_requests:
             # The RPC left the browser; Flow's grid polling owns the result now.
             return
-        # Flow rejects some submits (e.g. abnormal-activity) with a toast or
-        # error tile instead of a new generation tile; surface that cause.
-        for item in await self._scan_visible_errors(page, 24):
-            text = str(item.get("text") or "")
-            if text and text not in baseline_errors:
-                raise RuntimeError(_classify_visible_flow_error(text))
         raise RuntimeError(
             "FLOW_SUBMIT_NOT_CONFIRMED: Flow did not acknowledge the submit "
             "(no generate request was sent and no new generation tile appeared within 8 seconds)"
@@ -5772,7 +6144,7 @@ class FlowService:
                         // play_circle/keyboard_return. Require actual error
                         // language before claiming a generation rejection.
                         if (text && /(?:error|failed|failure|unsuccessful|rejected|blocked|sensitive|safety|try again|not available|abnormal activity|suspicious activity|unusual activity|lỗi|thất bại|không thành công|hoạt động bất thường|hoạt động đáng ngờ|nhạy cảm|an toàn|thử lại)/i.test(text)) {
-                            return { index, text };
+                            return { index, text, tile: true };
                         }
                     }
                     // Prompt/preview tiles contain icon names and prompt text.
@@ -5793,7 +6165,11 @@ class FlowService:
 
     async def _remember_visible_errors(self, page, job_id: str) -> None:
         """Errors already on screen at submit time belong to older jobs, not this one."""
-        texts = sorted({str(item.get("text") or "") for item in await self._scan_visible_errors(page, 24)})
+        # Duplicates kept: identical failed tiles are told apart by count.
+        texts = sorted(
+            text for item in await self._scan_visible_errors(page, 24)
+            if (text := str(item.get("text") or "").strip())
+        )
         store.patch_row("jobs", job_id, {"baselineErrorTexts": texts})
 
     async def _claim_visible_flow_error(
@@ -5802,35 +6178,35 @@ class FlowService:
         job: dict[str, Any],
         tile_limit: int,
     ) -> str:
-        """Claim one visible failed Flow tile so concurrent jobs do not share it."""
-        errors = await self._scan_visible_errors(page, tile_limit)
+        """Claim one visible failed Flow tile so concurrent jobs do not share it.
+
+        Failed tiles carry no id and identical texts (every unusual-activity
+        tile reads the same), so tiles are counted: a job owns a failure only
+        while more tiles with that text are visible than at its submit, minus
+        those other jobs (or this attempt) already claimed since then.
+        """
+        errors = await self._scan_visible_errors(page, max(tile_limit, 24))
         if not errors:
             return ""
         account = store.get_row("accounts", str(job.get("accountId") or "")) or {}
         project_id = _flow_project_id(
             account, str(job.get("kind") or "image"), legacy_for_video=True,
         )
-        current_job = store.get_row("jobs", str(job.get("id") or "")) or job
+        job_id = str(job.get("id") or "")
+        current_job = store.get_row("jobs", job_id) or job
         current_submission_at = float(current_job.get("submissionStartedAt") or 0)
-        last_rejected_submission_at = float(current_job.get("lastGenerationRejectedSubmissionAt") or 0)
-        rejection_retry_count = int(current_job.get("generationRejectRetryCount") or 0)
-        baseline_errors = {str(text) for text in current_job.get("baselineErrorTexts") or []}
+        baseline = Counter(str(text) for text in current_job.get("baselineErrorTexts") or [])
+        visible = Counter(text for item in errors if (text := str(item.get("text") or "").strip()))
         with self._guard:
-            for item in errors or []:
-                text = str(item.get("text") or "").strip()
-                if not text or text in baseline_errors:
+            for text, count in visible.items():
+                claimed = sum(
+                    1 for signature in self._claimed_error_tiles
+                    if (parts := signature.split("\x1f"))[:2] == [project_id, text]
+                    and len(parts) == 4 and float(parts[3]) >= current_submission_at
+                )
+                if count - baseline[text] - claimed <= 0:
                     continue
-                signature = f"{project_id}:{int(item.get('index') or 0)}:{text}"
-                if signature in self._claimed_error_tiles:
-                    # The same gallery position/text can fail again on later
-                    # auto-retries. Accept it only for that job's newer
-                    # submission; concurrent first attempts still cannot share
-                    # one failed tile.
-                    if not (
-                        rejection_retry_count >= 1
-                        and current_submission_at > last_rejected_submission_at
-                    ):
-                        continue
+                signature = "\x1f".join((project_id, text, job_id, repr(time.time())))
                 self._claimed_error_tiles.add(signature)
                 store.patch_row("jobs", str(job.get("id") or ""), {
                     "lastFlowErrorSignature": signature,
@@ -5875,6 +6251,7 @@ class FlowService:
         last_pct = -1
         next_project_check = 0.0
         rpc_names: list[str] = []
+        account_id = str((job or {}).get("accountId") or (store.get_row("jobs", job_id) or {}).get("accountId") or "")
         store.patch_row("jobs", job_id, {
             "stage": "generating",
             "progress": int((store.get_row("jobs", job_id) or {}).get("progress") or 0),
@@ -5883,6 +6260,13 @@ class FlowService:
         while deadline is None or time.monotonic() < deadline:
             self._check_cancel(job_id)
             if rpc_responses:
+                for response in list(rpc_responses):
+                    try:
+                        classified = _rpc_public_error(re.sub(r"\s+", " ", await response.text())[:2000])
+                    except Exception:
+                        classified = ""
+                    if classified:
+                        raise RuntimeError(classified)
                 rpc_items, names = await self._rpc_media(rpc_responses)
                 if names != rpc_names:
                     rpc_names = names
@@ -6380,6 +6764,9 @@ class FlowService:
         account = store.get_row("accounts", str(job.get("accountId"))) if job else None
         if not job or not account or job.get("status") in {"done", "cancelled"}:
             return
+        # The 15-minute hold only stops siblings already waiting on Flow.
+        # A new or retried job must actually run; failing here showed the
+        # unusual-activity message before anything was submitted.
         if generation_token and str(job.get("generationToken") or "") != generation_token:
             return
         if job.get("forceNew"):
@@ -6511,12 +6898,13 @@ class FlowService:
                 }
                 store.patch_row("jobs", job_id, reset)
                 job = {**job, **reset}
+            page = await browser.page()
             if not recovery_state:
-                page = await browser.page()
                 account = await self._ensure_account_project_page(
                     page, api=api, client=client, account=account, job_id=job_id, kind=job_kind,
                 )
                 project_id = str(client.project_id)
+            await self._confirm_logged_in_session(page, str(account["id"]))
             submission_project_id = str(job.get("submissionProjectId") or "")
             project_changed_at = _flow_project_changed_at(account, job_kind)
             submitted_at = float(job.get("submissionStartedAt") or 0)
@@ -7010,6 +7398,25 @@ class FlowService:
             needs_login = _session_needs_login(exc)
             automation_block = _is_automation_block_error(exc)
             error = str(exc)
+            if needs_login and not automation_block:
+                account_id = str(account.get("id") or "")
+                self._clear_session_ready(account_id)
+                self._ensure_shared_reconnect(account_id, job_id=job_id, reason=error)
+                store.patch_row("jobs", job_id, {
+                    "status": "queued",
+                    "stage": "queued",
+                    "progress": 0,
+                    "error": None,
+                    "updatedAt": time.time(),
+                })
+                self._log(
+                    "warning",
+                    "session_cookie_check",
+                    job_id=job_id,
+                    account_id=account_id,
+                    message="Cookie/phiên chưa đăng nhập — đang kết nối lại, các job khác chờ / Session not signed in — reconnecting, other jobs wait",
+                )
+                return
             if not needs_login and not error.startswith("FLOW_QUOTA_EXHAUSTED:"):
                 classified_error = _classify_visible_flow_error(error)
                 if classified_error.startswith("FLOW_QUOTA_EXHAUSTED:"):
@@ -7435,6 +7842,7 @@ class FlowService:
                 "generationRejectRetryCount": 0,
                 "autoRetryCount": 0,
                 "authRetryCount": 0,
+                "sessionResetRetryCount": 0,
                 "forceNew": force_new,
                 "logoDone": [],
             })

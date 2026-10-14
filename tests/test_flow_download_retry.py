@@ -60,8 +60,8 @@ class FlowDownloadRetryTest(unittest.TestCase):
                             'error': 'Locator.wait_for: Timeout 5000ms exceeded: menuitem',
                             'outputs': [str(output)], 'allowAccountFallback': True})
         with patch.object(self.service, '_verify_account_plan_before_enqueue', return_value=self.account), patch.object(
-            self.service, '_clone_runtime_profile', return_value=None
-        ), patch.object(self.service, '_run', side_effect=failed_run) as run, patch.object(
+            self.service, '_run', side_effect=failed_run
+        ) as run, patch.object(
             self.service, '_pick_eligible_account'
         ) as pick:
             self.service._run_sync('j')

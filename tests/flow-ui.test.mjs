@@ -73,8 +73,9 @@ test('video resolution selection follows the matching download quality', () => {
 
 test('retry restores only connected accounts and preserves random jobs', () => {
   const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
+  const groupsBody = source.slice(source.indexOf('  const buildRetryGroups ='), source.indexOf('  const openRetrySettings ='));
   const body = source.slice(source.indexOf('  const openRetrySettings ='), source.indexOf('  const retryJob ='));
-  const code = ts.transpileModule(body + '\nreturn openRetrySettings;', {
+  const code = ts.transpileModule(groupsBody + body + '\nreturn openRetrySettings;', {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const account = { id: 'online', label: 'Online', status: 'online', projectId: 'p' };
@@ -92,6 +93,32 @@ test('retry restores only connected accounts and preserves random jobs', () => {
     open([{ ...job, randomAccount }]);
     assert.equal(state.accountId, expected);
     assert.equal(state.groups[0].accountId, expected);
+  }
+});
+
+test('retry dialog keeps previous Open Chrome setting from the job', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
+  const groupsBody = source.slice(source.indexOf('  const buildRetryGroups ='), source.indexOf('  const openRetrySettings ='));
+  const body = source.slice(source.indexOf('  const openRetrySettings ='), source.indexOf('  const retryJob ='));
+  const code = ts.transpileModule(groupsBody + body + '\nreturn openRetrySettings;', {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const account = { id: 'online', label: 'Online', status: 'online', projectId: 'p' };
+  const base = { id: 'job', kind: 'image', mode: 'text', status: 'failed', accountId: 'online', account: 'Online', settings: { model: 'Nano Banana 2', ratio: '1:1' } };
+  for (const [jobHeadless, settingsHeadless, expected] of [
+    [false, true, false],
+    [true, false, true],
+    [undefined, false, false],
+    [undefined, true, true],
+  ]) {
+    let state;
+    const open = new Function('accounts', 'isFlowAccountConnected', 'setRetryTarget', 'settings', 'isFreshCreateJob', 'retryBusyRef', code)(
+      [account], isFlowAccountConnected, (value) => { state = value; }, { concurrency: '1', headless: settingsHeadless }, () => false, { current: false },
+    );
+    const settings = { ...base.settings };
+    if (jobHeadless !== undefined) settings.headless = jobHeadless;
+    open([{ ...base, settings }]);
+    assert.equal(state.headless, expected, `job=${jobHeadless} settings=${settingsHeadless}`);
   }
 });
 
@@ -120,13 +147,16 @@ const connecting = { label: 'Connecting', status: 'connecting', projectId: 'p' }
 
 const incomplete = { label: 'No project', status: 'online' };
 
+const imageOnly = { label: 'Image gallery', status: 'online', imageProjectId: 'img' };
+
 const online = { label: 'Connected', status: 'online', projectId: 'p', plan: 'Pro' };
 
 test('Only connected accounts appear in options or resolve for selection', () => {
-  const accounts = [offline, connecting, incomplete, online];
-  assert.deepEqual(accounts.filter(isFlowAccountConnected), [online]);
+  const accounts = [offline, connecting, incomplete, imageOnly, online];
+  assert.deepEqual(accounts.filter(isFlowAccountConnected), [imageOnly, online]);
   assert.equal(selectedFlowAccount(accounts, 'random'), online);
   assert.equal(selectedFlowAccount(accounts, online.label), online);
+  assert.equal(selectedFlowAccount(accounts, imageOnly.label), imageOnly);
   for (const account of [offline, connecting, incomplete]) assert.equal(selectedFlowAccount(accounts, account.label), undefined);
   assert.equal(selectedFlowAccount([offline, connecting, incomplete], 'random'), undefined);
 });

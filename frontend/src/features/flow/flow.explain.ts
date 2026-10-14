@@ -223,18 +223,25 @@ export function explainFlowError(message: string): FlowExplain {
       "Flow reported a media generation error. Check the error details and retry.",
     );
   }
+  if (/already reported for this account/i.test(raw)) {
+    return make(
+      "FLOW_AUTOMATION_BLOCKED",
+      "Job chưa được gửi lên Flow. Đây là lần chặn trước của tài khoản đó, không phải lần tạo mới. Chọn tài khoản khác rồi chạy lại.",
+      "This job never reached Flow. The message is that account's previous block, not a new generation. Pick another account and retry.",
+    );
+  }
   if (code === "FLOW_AUTOMATION_BLOCKED" || /FLOW_AUTOMATION_BLOCKED/i.test(raw)) {
     return make(
       "FLOW_AUTOMATION_BLOCKED",
-      "Google đang chặn tài khoản/mạng này. Job tự chạy lại 1 lần sau 60 giây; nếu vẫn lỗi: tạm dừng tài khoản này vài giờ hoặc dùng tài khoản khác.",
-      "Google is blocking this account/network. The job retries once after 60 seconds; if it persists: pause this account for a few hours or use another account.",
+      "App reset phiên, kết nối lại, rồi chạy lại job sau 3 giây. Nếu vẫn lỗi: tự chuyển sang tài khoản khác.",
+      "The app resets the session, reconnects, then retries the job after 3 seconds. If it still fails: it switches to another account.",
     );
   }
   if (code === "FLOW_GENERATION_TIMEOUT") {
     return make(
       code,
-      "Chạy lại (recovery có thể lấy media nếu Flow đã tạo xong sau đó).",
-      "Retry (recovery may pick up media if Flow finished later).",
+      "Flow không trả ảnh/video sau khi gửi. Nếu tài khoản vừa bị chặn hoạt động bất thường: tạm dừng tài khoản này, đừng chạy lại. Nếu không: chạy lại.",
+      "Flow returned no media after submit. If this account just hit unusual activity: pause it and do not retry. Otherwise retry.",
     );
   }
   if (code === "FLOW_CREDITS_INSUFFICIENT" || /FLOW_CREDITS_INSUFFICIENT|insufficient credits|not enough credits/i.test(raw)) {
@@ -321,6 +328,11 @@ export function explainFlowEvent(event: string): { titleVi: string; titleEn: str
     account_unsuspended: ["Đã gỡ cách ly tài khoản", "Account suspension cleared"],
     job_retry: ["Đưa job vào chạy lại", "Job queued for retry"],
     job_auto_retry: ["Tự chạy lại job bằng Chrome mới", "Auto-retrying job in a fresh Chrome"],
+    unusual_activity_session_reset: ["Reset phiên Flow vì hoạt động bất thường", "Resetting Flow session after unusual activity"],
+    unusual_activity_reconnected: ["Đã kết nối lại sau reset phiên", "Reconnected after session reset"],
+    unusual_activity_retry: ["Chạy lại job sau reset phiên", "Retrying job after session reset"],
+    unusual_activity_session_reset_failed: ["Reset phiên thất bại", "Session reset failed"],
+    session_cookie_check: ["Đang kiểm tra đăng nhập Flow", "Checking Flow sign-in"],
     job_failed: ["Job thất bại", "Job failed"],
     capability_settings_migrated: ["Đã chỉnh settings theo catalog tài khoản", "Settings migrated to account catalog"],
     late_worker_error_ignored: ["Bỏ qua lỗi worker muộn (job đã xong)", "Ignored late worker error (job already done)"],

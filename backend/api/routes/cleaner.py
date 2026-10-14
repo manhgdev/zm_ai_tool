@@ -91,6 +91,35 @@ def api_cleaner_cancel(job_id: str):
         raise HTTPException(404, "Job không tồn tại")
     return {"ok": True}
 
+@router.post("/api/cleaner/jobs/{job_id}/retry")
+def api_cleaner_retry(job_id: str, method: str = Form(...), options: str = Form(...), output_dir: str = Form("")):
+    source = get_job(job_id)
+    if not source:
+        raise HTTPException(404, "CLEANER_SOURCE_MISSING")
+    if source["status"] in {"queued", "processing"}:
+        raise HTTPException(409, "CLEANER_JOB_ACTIVE")
+    if method not in {"metadata", "reencode", "optimize", "logo"}:
+        raise HTTPException(400, "CLEANER_INVALID_METHOD")
+    try:
+        opts = json.loads(options)
+        if not isinstance(opts, dict):
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise HTTPException(400, "CLEANER_INVALID_OPTIONS")
+    original = Path(source["input_path"])
+    if not original.is_file():
+        raise HTTPException(410, "CLEANER_SOURCE_MISSING")
+    # Each job owns its upload so deleting an old result cannot break a rerun.
+    cached = CLEANER_TEMP_DIR / f"temp_{uuid.uuid4().hex}{original.suffix}"
+    try:
+        shutil.copyfile(original, cached)
+        job = create_job(source["filename"], method, opts, str(cached), output_dir)
+    except Exception:
+        cached.unlink(missing_ok=True)
+        raise
+    start_cleaner_job(job["id"])
+    return job
+
 @router.delete("/api/cleaner/jobs/{job_id}")
 def api_cleaner_delete(job_id: str):
     if not delete_job(job_id):

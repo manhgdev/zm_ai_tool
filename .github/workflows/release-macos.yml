@@ -6,6 +6,10 @@ on:
     tags:
       - 'v*'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -85,9 +89,8 @@ jobs:
             | awk '{print "- " $0}' \
             || echo '- Cải tiến và sửa lỗi')
           BODY=$(printf '## Thay đổi trong %s\n\n%s\n\n## Kiểm tra\n\nBản phát hành được build và xác minh bởi GitHub Actions.' "$TAG" "$NOTES")
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$PKG" --clobber
-          elif ! gh release create "$TAG" "$PKG" --notes "$BODY" --title "ZM AI TOOL $TAG"; then
-            sleep 5
-            gh release upload "$TAG" "$PKG" --clobber
+          # Create metadata separately: another platform may create the release first.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --notes "$BODY" --title "ZM AI TOOL $TAG" || gh release view "$TAG" >/dev/null
           fi
+          gh release upload "$TAG" "$PKG" --clobber

@@ -55,7 +55,6 @@ class QuotaModelRetryTest(unittest.TestCase):
                 self.assertEqual(service._account_active["a"], 0)
 
             with patch.object(service, "_verify_account_plan_before_enqueue", return_value=account), \
-                 patch.object(service, "_clone_runtime_profile", return_value=None), \
                  patch.object(service, "_run", side_effect=failed_run), \
                  patch.object(service, "retry", side_effect=retry) as retried:
                 service._run_sync("j")

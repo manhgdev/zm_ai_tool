@@ -26,11 +26,17 @@ class ArtifactAuditTests(unittest.TestCase):
             self.assertEqual(data['assets'][0]['sha256'], hashlib.sha256(b'setup').hexdigest())
             self.assertEqual([asset['name'] for asset in data['assets']], ['Setup.exe'])
 
-    def test_audit_is_required_before_publish_and_does_not_weaken_defender(self):
+    def test_explicit_audit_runs_before_publish_and_does_not_weaken_defender(self):
         workflow = (ROOT / '.github/workflows/release-windows.yml').read_text()
         script = (ROOT / 'scripts/audit-windows-release.ps1').read_text()
         launcher = (ROOT / 'build_app/launcher.py').read_text()
         self.assertLess(workflow.index('Inventory and scan'), workflow.index('Publish GitHub Release'))
+        audit_step = workflow.split('- name: Inventory and scan Windows release', 1)[1].split('- name:', 1)[0]
+        diagnostics_step = workflow.split('- name: Save audit diagnostics (including failures)', 1)[1].split('- name:', 1)[0]
+        self.assertIn('if: inputs.security_audit == true', audit_step)
+        self.assertNotIn('startsWith(github.ref', audit_step)
+        self.assertIn('if: always() && inputs.security_audit == true', diagnostics_step)
+        self.assertIn("throw 'Defender is not available", script)
         self.assertIn('Get-MpComputerStatus', script)
         self.assertIn('Get-AuthenticodeSignature', script)
         self.assertIn('Get-FileHash', script)

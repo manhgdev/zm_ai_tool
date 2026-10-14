@@ -234,6 +234,11 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
   }, [jobs, refreshCleanerJobs, realtimeStatus])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const submittingRef = useRef(false)
+  const [submitting, setSubmitting] = useState(false)
+  const runnableFiles = selectedFiles.filter(file => file.jobId
+    ? jobs.some(job => job.id === file.jobId && !ACTIVE_STATES.has(job.status))
+    : file.file instanceof File)
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -277,30 +282,35 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
   }, [addFiles])
 
   const startProcessing = async () => {
-    const pendingFiles = selectedFiles.filter((file): file is FileInfo & { file: File } => !file.jobId && file.file instanceof File)
-    if (!pendingFiles.length) return
-    
-    const files = pendingFiles.map(f => f.file)
+    if (submittingRef.current || !runnableFiles.length) return
+    submittingRef.current = true
+    setSubmitting(true)
     try {
-      const newJobs = await cleanerApi.start(files, method, options, outputDir)
-      
-      setJobs(prev => {
-        const map = new Map(prev.map(j => [j.id, j]))
-        newJobs.forEach(nj => map.set(nj.id, nj))
-        return Array.from(map.values())
-      })
-      
-      setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${t('Đã gửi', 'Submitted')} ${files.length} ${t('file xử lý', 'files for processing')} · ${t('phương pháp', 'method')}: ${methodLabel(method, t)}`])
-      setActiveTab('all')
-      // Keep uploaded files visible. The backend owns the cached upload from
-      // this point; jobId prevents a second click from uploading it again.
-      const queuedIdByFile = new Map(pendingFiles.map((file, index) => [file.file, newJobs[index]?.id]))
-      setSelectedFiles(prev => prev.map(file => {
-        const jobId = file.file ? queuedIdByFile.get(file.file) : undefined
-        return jobId ? { ...file, jobId } : file
-      }))
+      for (const file of runnableFiles) {
+        const newJobs = file.jobId
+          ? [await cleanerApi.retry(file.jobId, method, options, outputDir)]
+          : await cleanerApi.start([file.file!], method, options, outputDir)
+
+        setJobs(prev => {
+          const map = new Map(prev.map(j => [j.id, j]))
+          newJobs.forEach(nj => map.set(nj.id, nj))
+          return Array.from(map.values())
+        })
+
+        setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${t('Đã gửi', 'Submitted')} ${file.name} · ${t('phương pháp', 'method')}: ${methodLabel(method, t)}`])
+        setActiveTab('all')
+        // Keep uploaded files visible. The backend owns the cached upload from
+        // this point; jobId prevents a second click from uploading it again.
+        const jobId = newJobs[0]?.id
+        if (jobId) setSelectedFiles(prev => prev.map(item => item === file ? { ...item, jobId } : item))
+      }
     } catch (e: any) {
-      alert(`Lỗi khi tạo job: ${e.message}`)
+      toast.error(e.message?.includes('CLEANER_SOURCE_MISSING')
+        ? t('Không còn file gốc đã lưu. Hãy xóa file khỏi danh sách và chọn lại.', 'The cached original is missing. Remove the file from the list and select it again.')
+        : `${t('Không thể bắt đầu xử lý', 'Could not start processing')}: ${e.message}`)
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
     }
   }
 
@@ -452,7 +462,7 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
                   { key: 'optimize' as const, title: t('Tối ưu dung lượng', 'Optimize file size'), badge: t('Tiết kiệm', 'Smaller file'), badgeCls: 'amber',
                     desc: t('CRF nén · giảm kích thước file', 'CRF compression · smaller file') },
                   { key: 'logo' as const, title: t('Xóa logo / watermark', 'Remove logo / watermark'), badge: t('Xử lý local', 'Local processing'), badgeCls: 'blue',
-                    desc: t('Khử lớp phủ sao bán trong suốt; OCR xử lý logo chữ. Chạy trên máy.', 'Recover translucent sparkle overlays; OCR handles text logos. Runs locally.') },
+                    desc: t('Khử logo/watermark tại máy.', 'Remove logos/watermarks locally.') },
                 ]).map(m => (
                   <button type="button" key={m.key} className={`vc-method${method === m.key ? ' is-active' : ''}`} onClick={() => setMethod(m.key)}>
                     <div className="vc-check"><SvgCheck /></div>
@@ -542,7 +552,7 @@ export default function VideoCleanerPage({ onBack }: { onBack: () => void }) {
               )}
               <div className="vc-actions">
                 <button className="vc-btn-link" type="button">{t('Xem hướng dẫn chi tiết', 'View detailed guide')}</button>
-                <button className="vc-btn vc-btn-primary" type="button" disabled={!selectedFiles.some(file => !file.jobId)} onClick={startProcessing}>
+                <button className="vc-btn vc-btn-primary" type="button" disabled={submitting || !runnableFiles.length} onClick={startProcessing}>
                   {t('Bắt đầu xử lý', 'Start processing')}
                 </button>
               </div>

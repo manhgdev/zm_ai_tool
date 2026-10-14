@@ -201,9 +201,26 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(sys, 'platform', 'linux'), patch.dict(os.environ, {'DISPLAY': '', 'WAYLAND_DISPLAY': ''}):
             manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-headless-test'))
             self.assertTrue(manager.headless)
+            self.assertTrue(manager._chromeless)
         with patch.object(sys, 'platform', 'linux'), patch.dict(os.environ, {'DISPLAY': ':99'}):
             manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-visible-test'))
             self.assertFalse(manager.headless)
+            self.assertFalse(manager._chromeless)
+
+    async def test_vps_without_display_still_launches_true_headless(self):
+        context = SimpleNamespace(add_init_script=AsyncMock())
+        launch = AsyncMock(return_value=context)
+        playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch), stop=AsyncMock())
+        with patch.object(sys, 'platform', 'linux'), \
+             patch.dict(os.environ, {'DISPLAY': '', 'WAYLAND_DISPLAY': ''}, clear=False), \
+             patch('pipeline.flow.browser.network_available', return_value=True), \
+             tempfile.TemporaryDirectory() as raw, \
+             patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome')), \
+             patch('pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))):
+            manager = BrowserManager(headless=True, profile_dir=Path(raw) / 'vps')
+            await manager.start()
+            self.assertTrue(launch.call_args.kwargs['headless'])
+            await manager.stop()
 
     async def test_existing_visible_page_does_not_keep_stealing_focus(self):
         page = SimpleNamespace(
@@ -250,15 +267,27 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
              tempfile.TemporaryDirectory() as raw, patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome.exe')), patch(
             'pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))
         ):
-            for headless in (False, True):
+            for hide_ui in (False, True):
                 context.add_init_script.reset_mock()
-                manager = BrowserManager(headless=headless, profile_dir=Path(raw) / 'flow-profile')
+                manager = BrowserManager(headless=hide_ui, profile_dir=Path(raw) / 'flow-profile')
                 await manager.start()
                 self.assertTrue(launch.call_args.kwargs['chromium_sandbox'])
-                self.assertEqual(launch.call_args.kwargs['headless'], headless)
-                self.assertEqual(launch.call_args.kwargs['viewport'],
-                                 {'width': 1440, 'height': 900} if headless else None)
-                self.assertEqual(launch.call_args.kwargs['no_viewport'], not headless)
+                self.assertEqual(manager.headless, hide_ui)
+                self.assertEqual(manager._chromeless, hide_ui)
+                self.assertEqual(launch.call_args.kwargs['headless'], hide_ui)
+                if hide_ui:
+                    # True Playwright headless + headed Chrome UA (no HeadlessChrome).
+                    self.assertEqual(launch.call_args.kwargs['viewport'], {'width': 1080, 'height': 800})
+                    self.assertNotIn('no_viewport', launch.call_args.kwargs)
+                    self.assertIn('Chrome/', launch.call_args.kwargs['user_agent'])
+                    self.assertNotIn('HeadlessChrome', launch.call_args.kwargs['user_agent'])
+                    self.assertNotIn('--window-position=0,0', launch.call_args.kwargs['args'])
+                else:
+                    self.assertIsNone(launch.call_args.kwargs['viewport'])
+                    self.assertTrue(launch.call_args.kwargs['no_viewport'])
+                    self.assertNotIn('user_agent', launch.call_args.kwargs)
+                    self.assertIn('--window-size=1080,800', launch.call_args.kwargs['args'])
+                    self.assertIn('--window-position=0,0', launch.call_args.kwargs['args'])
                 self.assertIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
                 self.assertIn('--disable-extensions', launch.call_args.kwargs['args'])
                 self.assertNotIn('--new-window', launch.call_args.kwargs['args'])
@@ -330,6 +359,33 @@ class SessionTests(unittest.TestCase):
             self.assertEqual((target / "Default" / "Preferences").read_text(encoding="utf-8"), "{}")
             self.assertFalse((target / "Default" / "locked.db").exists())
             self.assertFalse((target / "Cache").exists())
+
+    def test_live_session_cookies_reach_the_account_profile(self):
+        import sqlite3
+        schema = "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, last_update_utc INTEGER, UNIQUE (host_key, name))"
+        with tempfile.TemporaryDirectory() as raw:
+            main, session = Path(raw) / "main", Path(raw) / "session"
+            for profile, value in ((main, "old"), (session, "new")):
+                (profile / "Default" / "Network").mkdir(parents=True)
+                db = sqlite3.connect(profile / "Default" / "Network" / "Cookies")
+                db.execute(schema)
+                db.execute("INSERT INTO cookies VALUES ('.google.com', 'SID', ?, ?)", (value, 2 if value == "new" else 1))
+                db.commit()
+                db.close()
+            # Chrome holds its cookie DB with an exclusive lock while the window is open.
+            live = sqlite3.connect(session / "Default" / "Network" / "Cookies")
+            live.execute("PRAGMA locking_mode=EXCLUSIVE")
+            live.execute("UPDATE cookies SET last_update_utc = 3")
+            live.commit()
+            try:
+                with patch("pipeline.flow.service.store.profile_dir", return_value=main), \
+                     patch("pipeline.flow.service.store.get_row", return_value={"id": "a"}):
+                    FlowService()._sync_runtime_cookies("a", session)
+            finally:
+                live.close()
+            db = sqlite3.connect(main / "Default" / "Network" / "Cookies")
+            self.assertEqual(db.execute("SELECT value FROM cookies").fetchall(), [("new",)])
+            db.close()
 
     def test_login_redirect_never_becomes_a_flow_project(self):
         project = '6e98f844-554a-4e93-898c-4b3096681a04'
