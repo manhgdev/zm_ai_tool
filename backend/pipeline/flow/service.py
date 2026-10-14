@@ -7751,14 +7751,21 @@ class FlowService:
         requested_account_id = str(overrides.get("accountId") or existing.get("accountId") or "").strip()
         account_id = requested_account_id
         settings = dict(existing.get("settings") or {})
-        settings.update({key: value for key, value in dict(overrides.get("settings") or {}).items() if value not in (None, "")})
+        # Keep falsey booleans (headless/removeLogo); only drop null/empty string.
+        settings.update({
+            key: value for key, value in dict(overrides.get("settings") or {}).items()
+            if value not in (None, "")
+        })
         mode = str(existing.get("mode") or "text")
         requested_mode = str(overrides.get("mode") or "").strip()
         if requested_mode in {"text", "edit", "reference", "frame"}:
             mode = requested_mode
-        # headless is sent at the top level by the UI (not inside settings{})
+        # Prefer explicit top-level headless from the dialog; else settings{}
+        # already merged above. Never invent True when the client omitted it.
         if "headless" in overrides:
             settings["headless"] = _flow_headless({"headless": overrides["headless"]})
+        elif "headless" in dict(overrides.get("settings") or {}):
+            settings["headless"] = _flow_headless(settings)
         kind = str(existing.get("kind") or "video")
         if kind == "image":
             # Popup values are canonical for this retry. Mirror them into the

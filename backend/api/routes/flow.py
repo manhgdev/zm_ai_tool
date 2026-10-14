@@ -837,7 +837,9 @@ def jobs_cancel(job_id: str):
 
 @router.post("/jobs/{job_id}/retry")
 def jobs_retry(job_id: str, body: RetryIn | None = None):
-    payload = body.model_dump() if body else {}
+    # exclude_unset: default headless=True must not wipe a saved Open Chrome
+    # choice when the client omits the field (logo-only / old callers).
+    payload = body.model_dump(exclude_unset=True) if body else {}
     try:
         job = service.retry(job_id, payload)
     except ValueError as exc:

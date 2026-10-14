@@ -51,10 +51,48 @@ jobs:
           python -m venv backend/.venv
           backend/.venv/Scripts/python.exe -m pip install --upgrade pip
           backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-app.txt pyinstaller pywebview uv==0.12.15 pythonnet
-          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-            choco install ffmpeg -y --no-progress
-            'C:\ProgramData\chocolatey\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          function Find-RealFfmpegDir {
+            $roots = @(
+              (Join-Path $PWD 'build_app/.tools/ffmpeg'),
+              'C:\ProgramData\chocolatey\lib\ffmpeg\tools'
+            )
+            foreach ($root in $roots) {
+              if (-not (Test-Path -LiteralPath $root)) { continue }
+              $hit = Get-ChildItem -LiteralPath $root -Recurse -File -Filter ffmpeg.exe -ErrorAction SilentlyContinue |
+                Where-Object { $_.Length -ge 2000000 } |
+                Select-Object -First 1
+              if ($hit) { return $hit.DirectoryName }
+            }
+            $cmd = Get-Command ffmpeg -ErrorAction SilentlyContinue
+            if ($cmd -and (Test-Path -LiteralPath $cmd.Source) -and ((Get-Item -LiteralPath $cmd.Source).Length -ge 2000000)) {
+              return (Split-Path -Parent $cmd.Source)
+            }
+            return $null
           }
+          $ffmpegDir = Find-RealFfmpegDir
+          if (-not $ffmpegDir) {
+            for ($i = 1; $i -le 3; $i++) {
+              choco install ffmpeg -y --no-progress
+              if ($LASTEXITCODE -eq 0) { break }
+              Start-Sleep -Seconds (5 * $i)
+            }
+            'C:\ProgramData\chocolatey\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            $ffmpegDir = Find-RealFfmpegDir
+          }
+          if (-not $ffmpegDir) {
+            # Chocolatey feed is often 503; fall back to Gyan essentials zip.
+            $tools = Join-Path $PWD 'build_app/.tools'
+            New-Item -ItemType Directory -Force $tools | Out-Null
+            $zip = Join-Path $tools 'ffmpeg-release-essentials.zip'
+            curl.exe -fL --retry 3 --retry-delay 2 -o $zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $dest = Join-Path $tools 'ffmpeg'
+            if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+            Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
+            $ffmpegDir = Find-RealFfmpegDir
+          }
+          if (-not $ffmpegDir) { throw 'Real ffmpeg.exe (>=2MB) was not installed' }
+          $ffmpegDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
             choco install innosetup -y --no-progress
             'C:\Program Files (x86)\Inno Setup 6' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8

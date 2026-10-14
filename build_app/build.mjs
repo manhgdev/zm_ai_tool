@@ -298,6 +298,16 @@ function resolveMediaTool(tool, { nextTo } = {}) {
     const sibling = path.join(path.dirname(nextTo), exe)
     if (existsSync(sibling)) candidates.unshift(sibling)
   }
+  // CI / local fallbacks when PATH only has a Chocolatey ShimGen stub or is empty.
+  if (isWin) {
+    for (const dir of [
+      path.join(root, 'build_app', '.tools', 'ffmpeg'),
+      'C:\\ProgramData\\chocolatey\\lib\\ffmpeg\\tools',
+    ]) {
+      const hit = findRealToolFile(dir, exe)
+      if (hit) candidates.unshift(hit)
+    }
+  }
   const resolved = []
   for (const c of candidates) {
     if (!c || !existsSync(c)) continue
@@ -308,6 +318,7 @@ function resolveMediaTool(tool, { nextTo } = {}) {
         const dirs = [
           path.resolve(path.dirname(c), '..', 'lib', tool, 'tools'),
           path.resolve(path.dirname(c), '..', 'lib', 'ffmpeg', 'tools'),
+          path.join(root, 'build_app', '.tools', 'ffmpeg'),
         ]
         let hit = ''
         for (const dir of dirs) {

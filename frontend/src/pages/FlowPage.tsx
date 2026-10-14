@@ -1620,8 +1620,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       groups,
       fresh: initialJobs.length > 0 && initialJobs.every(isFreshCreateJob),
       touched: [],
-      // Keep the last Open Chrome choice from this job (else quick settings).
-      headless: Boolean(selectedJob.settings.headless ?? settings.headless ?? true),
+      // Prefer this job's last Open Chrome choice; else quick settings.
+      headless: typeof selectedJob.settings.headless === "boolean"
+        ? selectedJob.settings.headless
+        : Boolean(settings.headless),
       removeLogo: Boolean(selectedJob.settings.removeLogo ?? settings.removeLogo),
     });
   };
@@ -1679,12 +1681,19 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       const retryBase = /omni.*flash/i.test(group.model) && group.duration.trim()
         ? { model: group.model, ratio: group.ratio, duration: group.duration, resolution: group.resolution, quality: group.quality, count: group.count, concurrency }
         : { model: group.model, ratio: group.ratio, resolution: group.resolution, quality: group.quality, count: group.count, concurrency };
-      const retrySettings = { ...retryBase, removeLogo: retryTarget.removeLogo };
+      // Persist Open Chrome on the job settings (and top-level for older backends).
+      const retrySettings = { ...retryBase, removeLogo: retryTarget.removeLogo, headless: retryTarget.headless };
       return group.jobs.map((job) => flowRequest<Record<string, unknown>>(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accountId: group.accountId, mode: group.mode, settings: retrySettings, fresh: retryTarget.fresh, headless: retryTarget.headless, manual: true }),
       }).then(updateJob));
+    });
+    // Remember the dialog choice in quick settings so the next open matches.
+    setSettings((current) => {
+      const next = { ...current, headless: retryTarget.headless };
+      try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(next)); } catch { /* ponytail: quota */ }
+      return next;
     });
     void Promise.allSettled(retryRequests)
       .then(async (results) => {
