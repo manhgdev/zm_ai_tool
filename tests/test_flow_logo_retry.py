@@ -47,6 +47,7 @@ class LogoRetryTest(unittest.TestCase):
             with patch.dict(sys.modules, {'pipeline.logo_remover': module}), patch.object(service, '_log'):
                 error = asyncio.run(service._remove_flow_logos('j', outputs))
                 self.assertIn('LaMa unavailable', error)
+                self.assertEqual(store.get_row('jobs', 'j')['progress'], 99.5)  # 1 of 2 files cleaned in the 99.1-99.9 band
                 service._fail_logo_removal('j', outputs, error)
                 job = store.get_row('jobs', 'j')
                 self.assertEqual((job['status'], job['outputs']), ('failed', outputs))

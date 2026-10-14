@@ -166,6 +166,13 @@ test("video meta shows gen resolution and labeled download quality", () => {
   );
 });
 
+test("video meta shows logo removal", () => {
+  assert.equal(
+    formatFlowJobSettingsMeta("video", { model: "Veo", ratio: "16:9", removeLogo: true }, { logoLabel: "Del Logo" }),
+    "Veo · 16:9 · Del Logo",
+  );
+});
+
 
 test("image meta includes resolution", () => {
   assert.equal(

@@ -91,11 +91,76 @@ def _inpaint_image(input_path: str, output: str, job_id: str) -> None:
     encoded.tofile(output)
 
 
-def _inpaint_video(input_path: str, output: str, job_id: str, *, flow_logo: bool = False) -> None:
+def _star_mask(width: int, height: int, shape, box: tuple[int, int, int, int] | None):
+    """Full-frame mask shaped like the sparkle, from a fitted overlay or a fixed box."""
+    import cv2
+    import numpy as np
+    from pipeline.cleaner.sparkle import _mask
+
+    mask = np.zeros((height, width), np.uint8)
+    if shape is not None:
+        x0, y0, x1, y1 = shape.box
+        mask[y0:y1, x0:x1] = (shape.mask > .05).astype(np.uint8) * 255
+    else:
+        x0, y0, x1, y1 = box
+        n = min(x1 - x0, y1 - y0)
+        sx, sy = (x0 + x1 - n) // 2, (y0 + y1 - n) // 2
+        mask[sy:sy + n, sx:sx + n] = (_mask(n, n / 2, n / 2, n * .85, n * .85, .65, 0, .65) > .05).astype(np.uint8) * 255
+    return cv2.dilate(mask, np.ones((7, 7), np.uint8))
+
+
+def _mask_filler(mask, job_id: str):
+    """Fill a fixed mask on every frame.
+
+    LaMa (~1s/frame on CPU) only re-runs when the scene around the logo changes;
+    in between, the last LaMa fill is reused plus the cheap OpenCV frame-to-frame
+    delta, so static logos cost about the same as OpenCV and do not flicker.
+    """
+    import cv2
+    import numpy as np
+    from pipeline.logo_remover import DEFAULT_LAMA_MODEL, _prepare_lama_input, _run_lama_session
+
+    h, w = mask.shape
+    ys, xs = np.where(mask > 0)
+    px = max(120, int((xs.max() - xs.min() + 1) * 2.6))
+    py = max(120, int((ys.max() - ys.min() + 1) * 2.6))
+    x0, y0 = max(0, xs.min() - px), max(0, ys.min() - py)
+    x1, y1 = min(w, xs.max() + px + 1), min(h, ys.max() + py + 1)
+    m = mask[y0:y1, x0:x1]
+    context = cv2.dilate(m, np.ones((15, 15), np.uint8)) == 0
+    alpha = (cv2.GaussianBlur(m, (5, 5), 0).astype(np.float32) / 255)[..., None]
+    state = {"lama": bool(DEFAULT_LAMA_MODEL), "key": None, "runs": 0}
+
+    def fill(frame):
+        crop = frame[y0:y1, x0:x1]
+        rebuilt = cv2.inpaint(crop, m, 5, cv2.INPAINT_TELEA).astype(np.float32)
+        if state["lama"]:
+            key = state["key"]
+            # ponytail: fast camera pans re-run LaMa every ~2 frames (~0.5s/frame on
+            # CPU); a stale fill there is visibly wrong. Upgrade: motion-warp the key.
+            if key is None or np.abs(crop[context].astype(np.int16) - key[0][context]).mean() > 6:
+                try:
+                    inp, mask_f, (oh, ow) = _prepare_lama_input(crop, m)
+                    restored = _run_lama_session(inp, mask_f, DEFAULT_LAMA_MODEL)[:oh, :ow]
+                    key = state["key"] = (crop.copy(), restored.astype(np.float32), rebuilt)
+                    state["runs"] += 1
+                except Exception as exc:  # noqa: BLE001 - OpenCV below still removes the logo
+                    state["lama"], key = False, None
+                    append_job_log(job_id, f"LaMa lỗi, dùng OpenCV / LaMa failed, using OpenCV: {exc}")
+            if key is not None:
+                rebuilt = key[1] + rebuilt - key[2]
+        frame[y0:y1, x0:x1] = np.clip(rebuilt * alpha + crop * (1 - alpha), 0, 255).astype(np.uint8)
+        return frame
+
+    fill.state = state
+    return fill
+
+
+def _inpaint_video(input_path: str, output: str, job_id: str, *, flow_logo: bool = False, on_progress=None) -> None:
     from pipeline.core.runtime_site import ensure_cv2
     from pipeline.cleaner.sparkle import find_sparkle, remove_sparkle
-    from pipeline.export.cover_mask import _inpaint_region
     cv2 = ensure_cv2()
+    import numpy as np
     cap = cv2.VideoCapture(input_path)
     encoder = None
     try:
@@ -108,33 +173,42 @@ def _inpaint_video(input_path: str, output: str, job_id: str, *, flow_logo: bool
         # A video overlay must be consistent across anchor frames before the
         # same alpha map is applied. This path supports static corner marks.
         overlay = find_sparkle(frame)
-        # ponytail: Flow sparkle stays in the lower-right corner for the
-        # current 16:9 output; use its fixed ROI when the white mark blends
-        # into a bright frame. Other layouts need a measured preset.
-        flow_box = (overlay.box if overlay else
-                    (round(width * .88), round(height * .79), round(width * .94), round(height * .88))) if flow_logo else None
+        # Any frame where the sparkle fits gives its exact shape, even if the
+        # fit is too unstable across frames for alpha recovery.
+        samples = {}
+        for position in sorted({total // 4, total // 2, 3 * total // 4, max(0, total - 2)}):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, position)
+            decoded, anchor = cap.read()
+            samples[position] = find_sparkle(anchor) if decoded else None
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ok, frame = cap.read()
+        if not ok:
+            raise RuntimeError('Cannot decode source video')
+        shape = overlay or next((s for s in samples.values() if s), None)
         if overlay:
-            for position in sorted({total // 2, max(0, total - 2)}):
-                cap.set(cv2.CAP_PROP_POS_FRAMES, position)
-                decoded, anchor = cap.read()
-                other = find_sparkle(anchor) if decoded else None
+            for position in {total // 2, max(0, total - 2)}:
+                other = samples.get(position)
                 if other is None or max(abs(a - b) for a, b in zip(overlay.box, other.box)) > 3 or abs(overlay.opacity - other.opacity) > .08:
                     overlay = None
                     break
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ok, frame = cap.read()
-            if not ok:
-                raise RuntimeError('Cannot decode source video')
-        boxes = []
-        if not overlay and flow_box:
-            boxes = [flow_box]
+        masks = []
         if overlay:
             append_job_log(job_id, f"Local alpha recovery (static video): box={overlay.box}, opacity={overlay.opacity:.3f}")
-        elif not boxes:
+        elif shape or flow_logo:
+            # ponytail: without a fit, the Flow sparkle is assumed at its fixed
+            # 16:9 lower-right spot; other layouts need a measured preset.
+            masks = [_star_mask(width, height, shape, (round(width * .88), round(height * .79), round(width * .94), round(height * .88)))]
+            append_job_log(job_id, f"Mask ngôi sao / Star mask: {'fitted ' + str(shape.box) if shape else 'fixed Flow box'}")
+        else:
             detection = _detect_logo_with_retry(input_path, job_id) or {}
-            boxes = _pixel_masks(detection, width, height)
-            if not boxes:
+            for x0, y0, x1, y1 in _pixel_masks(detection, width, height):
+                rect = np.zeros((height, width), np.uint8)
+                m = max(2, round(min(x1 - x0, y1 - y0) * 0.08))
+                rect[max(0, y0 - m):y1 + m, max(0, x0 - m):x1 + m] = 255
+                masks.append(rect)
+            if not masks:
                 raise RuntimeError('CLEANER_LOGO_NOT_DETECTED')
+        fillers = [_mask_filler(mask, job_id) for mask in masks]
         # File-backed stderr prevents pipe deadlock while feeding raw frames.
         with tempfile.TemporaryFile() as errors:
             encoder = subprocess.Popen([
@@ -151,15 +225,18 @@ def _inpaint_video(input_path: str, output: str, job_id: str, *, flow_logo: bool
             while ok:
                 if (get_job(job_id) or {}).get('status') == 'cancelled':
                     return
-                for box in boxes:
-                    frame = _inpaint_region(frame, box)
+                for fill in fillers:
+                    frame = fill(frame)
                 if overlay:
                     remove_sparkle(frame, overlay)
                 encoder.stdin.write(frame.tobytes())
                 count += 1
                 if count % max(1, round(fps)) == 0:
-                    update_job(job_id, {'progress': min(99, count * 100 / total)})
+                    (on_progress or (lambda f: update_job(job_id, {'progress': f * 100})))(min(.99, count / total))
                 ok, frame = cap.read()
+            for fill in fillers:
+                engine = f"LaMa {fill.state['runs']}/{count}" if fill.state['lama'] else 'OpenCV'
+                append_job_log(job_id, f"Xoá logo: {engine} khung / Logo removal: {engine} frames")
             encoder.stdin.close()
             encoder.wait(timeout=60)
             if encoder.returncode:

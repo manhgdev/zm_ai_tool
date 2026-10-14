@@ -1310,6 +1310,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           ratio: effectiveSettings.ratio || "16:9",
           duration: String(effectiveSettings.duration || ""),
           resolution: effectiveSettings.resolution || (createKind === "image" ? "1K" : ""),
+          quality: effectiveSettings.quality,
+          headless: effectiveSettings.headless,
+          removeLogo: effectiveSettings.removeLogo,
           outputDir: effectiveSettings.outputDir || "flow",
         },
       }));

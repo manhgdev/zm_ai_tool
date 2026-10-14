@@ -101,6 +101,25 @@ class LocalSparkleTests(unittest.TestCase):
                     cleaner._inpaint_image(str(source), str(output), 'test')
             self.assertFalse(output.exists())
 
+    def test_video_star_mask_reuses_lama_until_scene_changes(self):
+        background, marked, alpha = fixture(1280, 720)
+        mask = cleaner._star_mask(1280, 720, find_sparkle(marked), None)
+        self.assertTrue(mask[alpha > .5].all())
+        calls = []
+
+        def fake_lama(inp, mask_f, _model):
+            calls.append(1)
+            return np.zeros((inp.shape[2], inp.shape[3], 3), np.uint8)
+
+        with patch('pipeline.logo_remover.DEFAULT_LAMA_MODEL', 'model.onnx'), \
+             patch('pipeline.logo_remover._run_lama_session', side_effect=fake_lama):
+            fill = cleaner._mask_filler(mask, 'test')
+            for _ in range(5):
+                fill(marked.copy())
+            self.assertEqual(len(calls), 1)
+            fill(255 - marked)
+        self.assertEqual(len(calls), 2)
+
     def test_transparency_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             _, marked, _ = fixture()

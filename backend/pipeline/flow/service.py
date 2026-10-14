@@ -36,7 +36,7 @@ from . import store
 # Match both legacy labs.google/fx/tools/flow/project/<id> and new flow.google.com/project/<id>
 _PROJECT_RE = re.compile(r"^(?:https://(?:flow\.google\.com|labs\.google)(?::443)?)?(?:/fx/tools/flow|/flow)?/project/([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})(?:[/?#]|$)")
 _TERMINAL = {"done", "failed", "cancelled", "action_required"}
-FLOW_LOG_LIMIT = 30
+FLOW_LOG_LIMIT = 300
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 3
 _MAX_CONCURRENT_JOBS_PER_ACCOUNT = 18
 _SESSION_REFRESH_INTERVAL_S = 60.0
@@ -52,6 +52,9 @@ _JOB_AUTO_RETRY_MAX = 3
 # recreating it and charging the account twice.
 _IMAGE_GENERATION_TIMEOUT_S = 60
 _VIDEO_GENERATION_TIMEOUT_S = 120
+# Flow generation reports up to 99%; downloaded = 99.1%, logo removal reports real work up to 99.9%.
+POST_PROGRESS_START = 99.1
+POST_PROGRESS_END = 99.9
 _PLAN_SYNC_TTL_S = 300
 _PROJECT_MIGRATION_RECOVERY_WINDOW_S = 600
 _FLOW_SUBMIT_DELAY_MIN_S = 0.1
@@ -413,6 +416,15 @@ def _classify_visible_flow_error(text: str) -> str:
     ):
         return f"FLOW_QUOTA_EXHAUSTED: {raw}"
     return f"FLOW_GENERATION_REJECTED: {raw}"
+
+
+def _flow_generation_progress(pct: int) -> int:
+    """Map Flow's own 0-100 tile % onto the job's generating band (15-99).
+
+    The job is already at 15% when Flow starts counting from 0%, so a plain
+    max() hides the first part of every generation.
+    """
+    return 15 + round(min(100, max(0, int(pct))) * 84 / 100)
 
 
 def _flow_credit_blocked(text: str) -> bool:
@@ -1584,17 +1596,28 @@ class FlowService:
             self._log("warning", "logo_remove_failed", job_id=job_id, message=str(exc))
             return str(exc) or exc.__class__.__name__
         done = [str(p) for p in (store.get_row("jobs", job_id) or {}).get("logoDone") or []]
+        todo = [p for p in outputs if str(p) not in done]
         errors: list[str] = []
-        for out_path in outputs:
-            if str(out_path) in done:
-                continue
+
+        def report(index: int, fraction: float) -> None:
+            store.patch_row("jobs", job_id, {
+                "progress": round(POST_PROGRESS_START + (POST_PROGRESS_END - POST_PROGRESS_START) * (index + fraction) / len(todo), 1),
+                "updatedAt": time.time(),
+            })
+
+        if todo:
+            report(0, 0)
+        for index, out_path in enumerate(todo):
             try:
                 if Path(out_path).suffix.lower() == ".mp4":
                     from pipeline.cleaner.cleaner_ffmpeg import _inpaint_video
                     target = Path(out_path)
                     temporary = target.with_name(target.stem + ".logo_tmp.mp4")
                     try:
-                        await asyncio.to_thread(_inpaint_video, out_path, str(temporary), job_id, flow_logo=True)
+                        await asyncio.to_thread(
+                            _inpaint_video, out_path, str(temporary), job_id, flow_logo=True,
+                            on_progress=lambda f, i=index: report(i, f),
+                        )
                         self._check_cancel(job_id)
                         error = self._output_validation_error([str(temporary)])
                         if error:
@@ -1609,6 +1632,7 @@ class FlowService:
                 self._log("info", "logo_removed", job_id=job_id, message=mode_used)
                 done.append(str(out_path))
                 store.patch_row("jobs", job_id, {"logoDone": done})
+                report(index, 1)
             except Exception as exc:
                 self._log("warning", "logo_remove_failed", job_id=job_id, message=str(exc))
                 errors.append(str(exc) or exc.__class__.__name__)
@@ -5623,6 +5647,39 @@ class FlowService:
             )].map(node => node.value || node.innerText || node.textContent || '').join(' ').trim()""")
         except Exception:
             baseline_composer_text = ""
+        baseline_errors = {str(item.get("text") or "") for item in await self._scan_visible_errors(page, 24)}
+        # The generate RPC is the ground truth: DOM signals can lag or be
+        # absent (virtualized grid, composer not cleared) while Flow already
+        # accepted and billed the generation.
+        rpc_requests: list[Any] = []
+        rpc_responses: list[Any] = []
+
+        def _is_generate_rpc(url: str) -> bool:
+            return "batchAsyncGenerateVideo" in url or "batchGenerateImages" in url
+
+        def _on_request(request) -> None:
+            if _is_generate_rpc(request.url):
+                rpc_requests.append(request)
+
+        def _on_response(response) -> None:
+            if _is_generate_rpc(response.url):
+                rpc_responses.append(response)
+
+        page.on("request", _on_request)
+        page.on("response", _on_response)
+        try:
+            await self._click_flow_submit_and_confirm(
+                page, button, baseline_tile_count, baseline_composer_text,
+                baseline_errors, rpc_requests, rpc_responses,
+            )
+        finally:
+            page.remove_listener("request", _on_request)
+            page.remove_listener("response", _on_response)
+
+    async def _click_flow_submit_and_confirm(
+        self, page, button, baseline_tile_count: int, baseline_composer_text: str,
+        baseline_errors: set[str], rpc_requests: list[Any], rpc_responses: list[Any],
+    ) -> None:
         try:
             try:
                 await button.hover(timeout=2_000)
@@ -5636,18 +5693,28 @@ class FlowService:
         # Do not label the job as ``generating`` merely because Playwright's
         # click returned; otherwise a rejected/no-op submit sits at 15% until
         # the generic generation timeout hides the real cause.
-        # The submit RPC can be accepted before Flow mounts its generating
-        # tile, especially on a freshly opened Chrome profile.
-        # Keep this a short acknowledgement probe. Generation itself is polled
-        # later; waiting here only delays the real error when Flow ignored the click.
         ack_deadline = time.monotonic() + 8
-        while time.monotonic() < ack_deadline:
+        rpc_deadline = time.monotonic() + 30
+        while time.monotonic() < (rpc_deadline if rpc_requests else ack_deadline):
+            for response in rpc_responses:
+                if response.ok:
+                    return
+                try:
+                    detail = re.sub(r"\s+", " ", await response.text())[:300]
+                except Exception:
+                    detail = ""
+                text = f"HTTP {response.status} {detail}".strip()
+                raise RuntimeError(_classify_visible_flow_error(text))
             try:
                 body = await page.locator("body").inner_text()
                 if _flow_credit_blocked(body):
                     raise RuntimeError("FLOW_CREDITS_INSUFFICIENT: Flow rejected the submit because credits are insufficient")
+                if rpc_requests:
+                    # Sent but not answered yet: never fall back to a resubmit.
+                    await asyncio.sleep(0.5)
+                    continue
                 visible_tiles = await page.locator("flow-grid-tile-container").count()
-                progressbars = await page.locator("flow-grid-tile-container [role='progressbar'], flow-grid-tile-container [aria-valuenow]").count()
+                progressbars = await page.locator("flow-grid-tile-container [role='progressbar'], flow-grid-tile-container [aria-valuenow], flow-pending-tile").count()
                 if visible_tiles > baseline_tile_count or progressbars:
                     return
                 if await button.is_disabled():
@@ -5664,9 +5731,18 @@ class FlowService:
             except Exception:
                 pass
             await asyncio.sleep(0.5)
+        if rpc_requests:
+            # The RPC left the browser; Flow's grid polling owns the result now.
+            return
+        # Flow rejects some submits (e.g. abnormal-activity) with a toast or
+        # error tile instead of a new generation tile; surface that cause.
+        for item in await self._scan_visible_errors(page, 24):
+            text = str(item.get("text") or "")
+            if text and text not in baseline_errors:
+                raise RuntimeError(_classify_visible_flow_error(text))
         raise RuntimeError(
             "FLOW_SUBMIT_NOT_CONFIRMED: Flow did not acknowledge the submit "
-            "(no new generation tile/progress state appeared after clicking Submit within 8 seconds)"
+            "(no generate request was sent and no new generation tile appeared within 8 seconds)"
         )
 
     async def _ensure_flow_prompt_ready(self, page, ui, prompt: str) -> None:
@@ -5960,7 +6036,8 @@ class FlowService:
                             const text = tile.innerText || '';
                             const match = text.match(/(\\d+)\\s*%/);
                             const bar = tile.querySelector('[role="progressbar"][aria-valuenow]');
-                            const value = Number(bar?.getAttribute('aria-valuenow') || (match && match[1]) || -1);
+                            const aria = Number(bar?.getAttribute('aria-valuenow'));
+                            const value = Math.max(bar && Number.isFinite(aria) ? aria : -1, match ? Number(match[1]) : -1);
                             if (Number.isFinite(value) && value >= 0) percent = Math.max(percent, Math.min(99, value));
                             if (bar || tile.querySelector('mat-progress-spinner, mat-spinner, .generating') || match) generating = true;
                         }
@@ -5970,7 +6047,7 @@ class FlowService:
                     percent = int(tile_state.get("percent") or -1)
                     if generating and percent >= 0:
                         store.patch_row("jobs", job["id"], {
-                            "stage": "generating", "progress": max(15, min(95, percent)),
+                            "stage": "generating", "progress": _flow_generation_progress(percent),
                             "updatedAt": time.time(),
                         })
                 except Exception:
@@ -6033,7 +6110,7 @@ class FlowService:
                         // accessibility and include icon names such as
                         // play_circle/keyboard_return. Require actual error
                         // language before claiming a generation rejection.
-                        if (text && /(?:error|failed|failure|rejected|blocked|sensitive|safety|try again|not available|lỗi|thất bại|nhạy cảm|an toàn|thử lại)/i.test(text)) {
+                        if (text && /(?:error|failed|failure|unsuccessful|rejected|blocked|sensitive|safety|try again|not available|abnormal activity|suspicious activity|unusual activity|lỗi|thất bại|không thành công|hoạt động bất thường|hoạt động đáng ngờ|nhạy cảm|an toàn|thử lại)/i.test(text)) {
                             return { index, text };
                         }
                     }
@@ -6109,11 +6186,9 @@ class FlowService:
             values = await page.evaluate("""(n) =>
                 [...document.querySelectorAll('flow-grid-tile-container')].slice(0, n).map(t => {
                     const bar = t.querySelector('[role="progressbar"][aria-valuenow]');
-                    if (bar && !isNaN(parseFloat(bar.getAttribute('aria-valuenow')))) {
-                        return Math.round(parseFloat(bar.getAttribute('aria-valuenow')));
-                    }
+                    const aria = parseFloat(bar?.getAttribute('aria-valuenow'));
                     const m = ((t.innerText || '') + ' ' + (t.textContent || '')).match(/(\\d+)\\s*%/);
-                    return m ? parseInt(m[1], 10) : -1;
+                    return Math.round(Math.max(isNaN(aria) ? -1 : aria, m ? parseInt(m[1], 10) : -1));
                 })
             """, max(1, expected_count)) or []
         except Exception:
@@ -6207,7 +6282,7 @@ class FlowService:
             # recovery instead of being presented as advancing work.
             patch = {"stage": "generating", "updatedAt": time.time()}
             if pct >= 0:
-                patch["progress"] = max(current_progress, min(99, pct))
+                patch["progress"] = max(current_progress, _flow_generation_progress(pct))
                 if pct > 15:
                     patch["generationProgressObserved"] = True
                 if pct >= 99:
@@ -6474,20 +6549,25 @@ class FlowService:
                     const text = (t.innerText || '').trim().replace(/\\s+/g, ' ');
                     // Only video tiles: uploaded start frames are image tiles.
                     const thumb = t.querySelector('flow-video-tile .thumbnail');
-                    // Newer Flow builds expose video progress through the
-                    // progressbar value instead of visible text.
+                    // A finished tile mounts a playback progressbar on hover;
+                    // only a pending tile's progress means "still generating".
+                    const pending = !!t.querySelector('flow-pending-tile') || (!thumb && !!t.querySelector(
+                        '[role="progressbar"], mat-progress-spinner, mat-spinner, .loading, .generating'));
+                    // Flow exposes % via aria-valuenow or text; an indeterminate
+                    // spinner can pin aria-valuenow at 0 while the text advances.
                     const bar = t.querySelector('[role="progressbar"][aria-valuenow]');
-                    const ariaPct = Number(bar?.getAttribute('aria-valuenow') || -1);
-                    const pctMatch = text.match(/(\\d+)%/);
-                    const pct = Number.isFinite(ariaPct) && ariaPct >= 0
-                        ? Math.round(ariaPct)
-                        : (pctMatch ? parseInt(pctMatch[1], 10) : -1);
+                    const ariaPct = Number(bar?.getAttribute('aria-valuenow'));
+                    const pctMatch = (text + ' ' + (t.textContent || '')).match(/(\\d+)\\s*%/);
+                    const pct = pending ? Math.round(Math.max(
+                        bar && Number.isFinite(ariaPct) ? ariaPct : -1,
+                        pctMatch ? parseInt(pctMatch[1], 10) : -1,
+                    )) : -1;
                     return {
                         index,
                         label: t.getAttribute('aria-label') || '',
                         thumb: thumb ? (thumb.currentSrc || thumb.src || '') : '',
                         pct,
-                        busy: !!t.querySelector('[role="progressbar"], mat-progress-spinner, mat-spinner, .loading, .generating'),
+                        busy: pending,
                     };
                 })
             """) or []
@@ -6497,7 +6577,7 @@ class FlowService:
             patch = {"stage": "generating", "updatedAt": time.time()}
             if pcts:
                 # Real Flow tile % only; no time-based guessing.
-                patch["progress"] = max(current_progress, min(99, max(pcts)))
+                patch["progress"] = max(current_progress, _flow_generation_progress(max(pcts)))
                 if max(pcts) > 15:
                     patch["generationProgressObserved"] = True
             store.patch_row("jobs", job_id, patch)
@@ -7549,7 +7629,7 @@ class FlowService:
             # Images are already downloaded: redo only the logo step, no Flow account needed.
             self._cancelled.discard(job_id)
             job = store.patch_row("jobs", job_id, {
-                "status": "processing", "stage": "removing_logo", "progress": 95, "error": None, "updatedAt": time.time(),
+                "status": "processing", "stage": "removing_logo", "progress": POST_PROGRESS_START, "error": None, "updatedAt": time.time(),
             })
             self._log("info", "job_retry_logo_only", job_id=job_id, account_id=str(existing.get("accountId") or ""))
             threading.Thread(

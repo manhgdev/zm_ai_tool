@@ -23,17 +23,17 @@
 }
 
 html.dark .tts-studio {
-  --tts-ink: #f1f5f9;
-  --tts-muted: #94a3b8;
-  --tts-line: #334155;
-  --tts-bg: #0f172a;
-  --tts-card: #1e293b;
+  --tts-ink: var(--foreground);
+  --tts-muted: var(--muted-foreground);
+  --tts-line: var(--border);
+  --tts-bg: var(--background);
+  --tts-card: var(--surface);
   --tts-blue-soft: #1e3a5f;
   --tts-blue-border: #3b82f6;
   --tts-purple-soft: #2e1065;
   --tts-green-soft: #14532d;
-  --tts-border: #334155;
-  --tts-card-bg: #1e293b;
+  --tts-border: var(--border);
+  --tts-card-bg: var(--surface);
 }
 
 /* ── Sidebar ── */
@@ -182,14 +182,14 @@ html.dark .tts-studio {
 }
 
 .tts-nav.active {
-  background: var(--tts-blue-soft);
-  color: var(--tts-blue);
-  font-weight: 600;
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface));
+  color: var(--primary);
+  font-weight: 700;
 }
 
 .tts-nav.active svg {
   opacity: 1;
-  color: var(--tts-blue);
+  color: var(--primary);
 }
 
 .tts-nav .pill-new {
@@ -556,8 +556,8 @@ body.tts-dash-resizing iframe {
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  background: var(--tts-blue-soft);
-  color: var(--tts-blue);
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface));
+  color: var(--primary);
   font-size: 0.7rem;
   font-weight: 800;
   display: inline-grid;
@@ -599,9 +599,9 @@ body.tts-dash-resizing iframe {
 }
 
 .tts-tabs button.active {
-  background: var(--tts-blue-soft);
-  border-color: var(--tts-blue-border);
-  color: var(--tts-blue);
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  color: var(--primary);
   font-weight: 700;
 }
 
@@ -2370,24 +2370,24 @@ html.dark .tts-wave-box {
 .tts-log-empty { display: grid; place-items: center; min-height: 220px; color: var(--muted-foreground); font-size: .78rem; }
 
 html.dark .tts-log-page {
-  background: #111a25;
-  border-color: #2b2f33;
+  background: var(--surface);
+  border-color: var(--line);
 }
 html.dark .tts-log-page-head,
 html.dark .tts-log-row {
-  border-color: #2b2f33;
+  border-color: var(--line);
 }
 html.dark .tts-log-row {
-  background: #16212d;
+  background: var(--surface);
 }
 html.dark .tts-log-row.is-error {
-  background: #211b20;
+  background: color-mix(in srgb, #d34b58 4%, var(--surface));
 }
 html.dark .tts-log-copy,
 html.dark .tts-log-clear,
 html.dark .tts-log-row-head button {
-  background: #1a2734;
-  border-color: #363b40;
+  background: var(--background);
+  border-color: var(--line);
 }
 
 .tts-page-panel.tts-voice-page {

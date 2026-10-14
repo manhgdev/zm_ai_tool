@@ -360,8 +360,8 @@ export function formatFlowJobSettingsMeta(
     if (resolution) parts.push(resolution);
     const format = String(settings.format || "").trim().toUpperCase();
     if (format) parts.push(format);
-    if (settings.removeLogo && opts?.logoLabel) parts.push(opts.logoLabel);
   }
+  if (settings.removeLogo && opts?.logoLabel) parts.push(opts.logoLabel);
   return parts.join(" · ");
 }
 
