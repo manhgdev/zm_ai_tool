@@ -4182,7 +4182,9 @@ class FlowService:
                     )
                     and not finished.get("mediaIds")
                     and not finished.get("outputs")
-                    and retry_count < _JOB_AUTO_RETRY_MAX
+                    # Google flags unusual activity per account/IP, not per Chrome:
+                    # every extra submit deepens the block, so retry it only once.
+                    and retry_count < (1 if blocked else _JOB_AUTO_RETRY_MAX)
                     and (rejected or blocked or not _HARD_ERROR.search(finished_error))
                 )
                 if not should_auto_retry:
@@ -4191,7 +4193,7 @@ class FlowService:
                 self._log(
                     "warning", "job_auto_retry", job_id=job_id, account_id=account_id,
                     message=finished_error,
-                    details={"attempt": next_count, "max": _JOB_AUTO_RETRY_MAX, "freshChrome": True},
+                    details={"attempt": next_count, "max": 1 if blocked else _JOB_AUTO_RETRY_MAX, "freshChrome": True},
                 )
                 if job_id in self._cancelled or not store.get_row("jobs", job_id):
                     return
@@ -4216,7 +4218,7 @@ class FlowService:
                     })
                 store.patch_row("jobs", job_id, patch)
                 # Flow's unusual-activity gate needs a short cool-down before a new Chrome submits again.
-                time.sleep(10 * next_count if blocked else 3)
+                time.sleep(60 if blocked else 3)
                 if job_id in self._cancelled or not store.get_row("jobs", job_id):
                     return
                 store.patch_row("jobs", job_id, {
@@ -5204,7 +5206,7 @@ class FlowService:
                         f" controls={await duration_debug(_duration_pattern(duration_value))})"
                     )
 
-    async def _click_flow_submit(self, page) -> None:
+    async def _click_flow_submit(self, page) -> list[Any]:
         """Click the submit control used by the current Flow project page.
 
         Flow moved from an English ``Create`` button to a localized Material
@@ -5284,7 +5286,8 @@ class FlowService:
         rpc_responses: list[Any] = []
 
         def _is_generate_rpc(url: str) -> bool:
-            return "batchAsyncGenerateVideo" in url or "batchGenerateImages" in url
+            # flow.google.com sends image generation as batchexecute rpcids=YhhmEf.
+            return "batchAsyncGenerateVideo" in url or "batchGenerateImages" in url or "rpcids=YhhmEf" in url
 
         def _on_request(request) -> None:
             if _is_generate_rpc(request.url):
@@ -5303,7 +5306,32 @@ class FlowService:
             )
         finally:
             page.remove_listener("request", _on_request)
-            page.remove_listener("response", _on_response)
+        # The response listener stays attached: each job owns its Chrome page,
+        # so a late generate response still belongs to this job.
+        return rpc_responses
+
+    @staticmethod
+    async def _rpc_media(responses: list[Any]) -> tuple[list[dict[str, str]], list[str]]:
+        """Media created by this page's generate RPCs: (image items with src, all media names).
+
+        Ownership comes from the RPC itself because Flow may store a rewritten
+        prompt (e.g. a short English title), which defeats prompt matching.
+        """
+        items: list[dict[str, str]] = []
+        names: list[str] = []
+        for response in list(responses):
+            try:
+                if not response.ok:
+                    continue
+                body = await response.json()
+            except Exception:
+                continue
+            if not isinstance(body, dict):
+                continue
+            items.extend(_captured_image_items(body))
+            names.extend(_captured_video_ids(body))
+        names.extend(item["id"] for item in items)
+        return list({item["id"]: item for item in items}.values()), list(dict.fromkeys(names))
 
     async def _click_flow_submit_and_confirm(
         self, page, button, baseline_tile_count: int, baseline_composer_text: str,
@@ -5326,13 +5354,16 @@ class FlowService:
         rpc_deadline = time.monotonic() + 30
         while time.monotonic() < (rpc_deadline if rpc_requests else ack_deadline):
             for response in rpc_responses:
-                if response.ok:
-                    return
                 try:
                     detail = re.sub(r"\s+", " ", await response.text())[:300]
                 except Exception:
                     detail = ""
-                text = f"HTTP {response.status} {detail}".strip()
+                # batchexecute answers HTTP 200 with the error inside the body.
+                public_error = re.search(r"PUBLIC_ERROR_(\w+)", detail)
+                if response.ok and not public_error:
+                    return
+                reason = public_error.group(1).replace("_", " ").lower() if public_error else ""
+                text = f"HTTP {response.status} {reason} {detail}".strip()
                 raise RuntimeError(_classify_visible_flow_error(text))
             try:
                 body = await page.locator("body").inner_text()
@@ -5510,7 +5541,8 @@ class FlowService:
             # recovery may have claimed a sibling tile. Keep the prompt check
             # active for both fresh and resumed jobs.
             created_at = _media_created_timestamp(media)
-            if not _media_prompt_matches(media, str(job.get("prompt") or "")):
+            rpc_owned = str(media["name"]) in {str(name) for name in job.get("rpcMediaIds") or []}
+            if not rpc_owned and not _media_prompt_matches(media, str(job.get("prompt") or "")):
                 continue
             if not media_ids and created_at and created_at < minimum_time:
                 continue
@@ -5835,12 +5867,14 @@ class FlowService:
         timeout_s: int = _IMAGE_GENERATION_TIMEOUT_S,
         api=None,
         job: dict[str, Any] | None = None,
+        rpc_responses: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Wait for media tiles after a current Flow Angular submit."""
         deadline = time.monotonic() + timeout_s if timeout_s > 0 else None
         hard_deadline = time.monotonic() + timeout_s * _GENERATION_WAIT_CAP
         last_pct = -1
         next_project_check = 0.0
+        rpc_names: list[str] = []
         store.patch_row("jobs", job_id, {
             "stage": "generating",
             "progress": int((store.get_row("jobs", job_id) or {}).get("progress") or 0),
@@ -5848,6 +5882,16 @@ class FlowService:
         })
         while deadline is None or time.monotonic() < deadline:
             self._check_cancel(job_id)
+            if rpc_responses:
+                rpc_items, names = await self._rpc_media(rpc_responses)
+                if names != rpc_names:
+                    rpc_names = names
+                    store.patch_row("jobs", job_id, {"rpcMediaIds": names, "updatedAt": time.time()})
+                    if job is not None:
+                        job = {**job, "rpcMediaIds": names}
+                rpc_items = [item for item in rpc_items if item["id"] not in baseline_ids]
+                if kind == "image" and len(rpc_items) >= max(1, expected_count):
+                    return rpc_items[:max(1, expected_count)]
             items = await self._project_media_elements(page)
             if api is not None and job is not None and time.monotonic() >= next_project_check:
                 next_project_check = time.monotonic() + 4
@@ -6843,8 +6887,9 @@ class FlowService:
                 await self._ensure_flow_prompt_ready(page, client._ui, prompt_text)
                 await _wait_before_flow_submit()
                 media_items = []
+                rpc_responses: list[Any] = []
                 try:
-                    await self._click_flow_submit(page)
+                    rpc_responses = await self._click_flow_submit(page)
                 except RuntimeError as exc:
                     if not str(exc).startswith(("FLOW_UI_CHANGED:", "FLOW_SUBMIT_CLICK_FAILED:")):
                         raise
@@ -6884,7 +6929,7 @@ class FlowService:
                 if not media_items:
                     media_items = await self._wait_for_project_media(
                         page, baseline_ids, "image", count, job_id,
-                        api=api, job=submitted_job,
+                        api=api, job=submitted_job, rpc_responses=rpc_responses,
                     )
                 if not media_items:
                     raise RuntimeError("FLOW_EMPTY_OUTPUT: Flow returned no completed images")

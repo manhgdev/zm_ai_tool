@@ -22,10 +22,12 @@ $status = Get-MpComputerStatus
 if (-not $status.AntivirusEnabled -or -not $status.AMServiceEnabled) { throw 'Defender is not available: release is blocked, not marked clean' }
 try {
     Update-MpSignature -ErrorAction Stop
+    $status = Get-MpComputerStatus
 } catch {
+    # A failed update can leave the Defender WMI provider unloadable ("Provider load failure"),
+    # so keep the status read above; definitions are unchanged anyway.
     Write-Warning "Update-MpSignature failed (network/infra issue): $_  Continuing with existing definitions."
 }
-$status = Get-MpComputerStatus
 $started = Get-Date
 $platformDir = Join-Path $env:ProgramData 'Microsoft\Windows Defender\Platform'
 $command = Get-ChildItem -LiteralPath $platformDir -Filter MpCmdRun.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1

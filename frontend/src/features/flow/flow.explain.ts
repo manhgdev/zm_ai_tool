@@ -226,8 +226,8 @@ export function explainFlowError(message: string): FlowExplain {
   if (code === "FLOW_AUTOMATION_BLOCKED" || /FLOW_AUTOMATION_BLOCKED/i.test(raw)) {
     return make(
       "FLOW_AUTOMATION_BLOCKED",
-      "Job này tự chạy lại bằng Chrome mới (tối đa 3 lần), các job khác vẫn chạy bình thường. Nếu vẫn lỗi: chờ vài phút rồi chạy lại.",
-      "This job auto-retries in a fresh Chrome (up to 3 times); other jobs keep running. If it persists: wait a few minutes, then retry.",
+      "Google đang chặn tài khoản/mạng này. Job tự chạy lại 1 lần sau 60 giây; nếu vẫn lỗi: tạm dừng tài khoản này vài giờ hoặc dùng tài khoản khác.",
+      "Google is blocking this account/network. The job retries once after 60 seconds; if it persists: pause this account for a few hours or use another account.",
     );
   }
   if (code === "FLOW_GENERATION_TIMEOUT") {

@@ -162,6 +162,34 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await service._wait_for_project_media(page=None, baseline_ids=set(), kind="image",
                                                                    expected_count=1, job_id="j", timeout_s=3), [result])
 
+    async def test_rpc_owned_media_is_claimed_when_flow_rewrites_the_prompt(self):
+        service = FlowService()
+        response = MagicMock(ok=True)
+        response.json = AsyncMock(return_value={"media": [{
+            "name": "m1", "image": {"generatedImage": {"fifeUrl": "https://flow.test/m1.jpg"}},
+        }]})
+        items, names = await service._rpc_media([response])
+        self.assertEqual(items, [{"id": "m1", "src": "https://flow.test/m1.jpg"}])
+        api = MagicMock()
+        api.get_project_data = AsyncMock(return_value={"projectContents": {"media": [{
+            "name": "m1", "image": {"generatedImage": {"fifeUrl": "https://flow.test/m1.jpg"}},
+            "mediaMetadata": {"requestData": {"promptInputs": [{"textInput": "Morning mist over lake"}]}},
+        }]}})
+        job = {"id": "j", "prompt": "Buổi sáng yên bình bên hồ", "submissionStartedAt": 1.0, "rpcMediaIds": names}
+        with patch.object(service, "jobs", return_value=[]):
+            found = await service._find_existing_project_media(api, None, job, "image", 1)
+        self.assertEqual([item["id"] for item in found], ["m1"])
+
+    async def test_batchexecute_unusual_activity_fails_fast_as_automation_blocked(self):
+        response = MagicMock(ok=True, status=200)
+        response.text = AsyncMock(return_value=')]}\'\n[["wrb.fr","YhhmEf",null,null,null,[7,null,'
+                                  '[["type.googleapis.com/google.rpc.ErrorInfo",["PUBLIC_ERROR_UNUSUAL_ACTIVITY"]]]]]]')
+        button = MagicMock(hover=AsyncMock(), click=AsyncMock())
+        with self.assertRaisesRegex(RuntimeError, "FLOW_AUTOMATION_BLOCKED"):
+            await FlowService()._click_flow_submit_and_confirm(
+                MagicMock(), button, 0, "", set(), [object()], [response],
+            )
+
     def test_image_session_closes_when_only_video_jobs_are_queued(self):
         service = FlowService()
         browser = MagicMock()
