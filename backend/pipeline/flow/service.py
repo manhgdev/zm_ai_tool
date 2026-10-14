@@ -43,10 +43,18 @@ FLOW_LOG_LIMIT = 300
 _DEFAULT_CONCURRENT_JOBS_PER_ACCOUNT = 3
 _MAX_CONCURRENT_JOBS_PER_ACCOUNT = 18
 _SESSION_REFRESH_INTERVAL_S = 60.0
-# Transient / session / project / generation-rejected: auto-retry up to this
-# many times so the queue keeps finishing. Only mandatory stops (credits,
-# quota, cancel, content policy) require a manual hand.
+# Soft errors (timeout, reject, download blip, Chrome closed) auto-retry up to
+# this many times — finite on purpose; infinite retry is a bug. Hard stops
+# (credits, daily quota, unrecoverable login, cancel) never enter this budget.
+# Unusual activity gets one session-reset retry on its own counter.
 _JOB_AUTO_RETRY_MAX = 3
+_UNUSUAL_ACTIVITY_RESET_MAX = 1
+_SOFT_RETRY_BACKOFF_CAP_S = 30.0
+
+
+def _soft_retry_backoff_s(attempt: int) -> float:
+    """Short backoff between finite soft auto-retries."""
+    return min(_SOFT_RETRY_BACKOFF_CAP_S, 3.0 * (2 ** max(0, min(int(attempt) - 1, 3))))
 # A Flow generation can legitimately take longer than ten minutes; keep a
 # generous upper bound so a lost Flow page cannot leave a worker stuck forever.
 # Flow acknowledges an image submission before mounting the result tile. On
@@ -469,17 +477,25 @@ def _classify_visible_flow_error(text: str) -> str:
         low,
     ):
         return f"FLOW_AUTOMATION_BLOCKED: {raw}"
-    # "please wait a few seconds" is a transient server-side throttle, not bot detection.
-    if re.search(r"please wait a few seconds|vui lòng chờ vài giây", low):
-        return f"FLOW_GENERATION_REJECTED: {raw}"
+    # Transient throttle / rate limit — not daily quota and not bot detection.
     if re.search(
-        r"credit|t[ií]n d[uụ]ng|insufficient|not enough|out of\s+credits|h[eế]t t[ií]n",
+        r"please wait a few seconds|vui lòng chờ vài giây|rate.?limit|too many|"
+        r"try again (?:in|later)|thử lại sau",
+        low,
+    ):
+        return f"FLOW_GENERATION_REJECTED: {raw}"
+    # Credits only when the copy is clearly about Flow credits (not bare "not enough").
+    if _flow_credit_blocked(raw) or re.search(
+        r"(?:out of|h[eế]t)\s+(?:credits?|t[ií]n(?:\s*d[uụ]ng)?)|"
+        r"(?:not enough|insufficient)\s+credits?|"
+        r"không có đủ tín dụng|"
+        r"\bcredits?\s+(?:empty|exhausted|depleted)",
         low,
     ):
         return f"FLOW_CREDITS_EMPTY: {raw}"
     if re.search(
         r"quota|h[eế]t l[uư][oợ]t|h[eế]t h[aạ]n m[uứ]c|usage limit|generation limit|"
-        r"daily limit|monthly limit|rate.?limit|too many|limit reached|h[aạ]n m[uứ]c",
+        r"daily limit|monthly limit|h[aạ]n m[uứ]c",
         low,
     ):
         return f"FLOW_QUOTA_EXHAUSTED: {raw}"
@@ -4317,7 +4333,9 @@ class FlowService:
                 or self._session_warmup_wait(account_id)
                 or self._account_suspended(account_id)
             ):
-                if self._account_suspended(account_id):
+                # Long daily/monthly quota: fail the queue. Short rate-limit
+                # cooldowns wait here until suspendedUntil elapses.
+                if self._account_quota_suspended(account_id):
                     account_snapshot = store.get_row("accounts", account_id) or {}
                     store.patch_row("jobs", job_id, {
                         "status": "failed",
@@ -4365,8 +4383,10 @@ class FlowService:
         # credits twice; media recovery owns all post-submit timeouts. A
         # RESULT_NOT_FOUND is the exception: Flow has no pending/completed
         # media, so submit a fresh generation automatically.
+        # Hard stops only: real credits/quota/quality gates. Auth blips requeue
+        # via shared reconnect; FLOW_GENERATION_REJECTED is soft-retried above.
         _HARD_ERROR = re.compile(
-            r"LOGIN_REQUIRED|GENERATION_REJECTED|HTTP\s+401|HTTP\s+403|API auth rejected|FLOW_CREDITS_EMPTY|FLOW_CREDITS_INSUFFICIENT|FLOW_QUOTA_EXHAUSTED|FLOW_DOWNLOAD_QUALITY_UNAVAILABLE",
+            r"FLOW_CREDITS_EMPTY|FLOW_CREDITS_INSUFFICIENT|FLOW_QUOTA_EXHAUSTED|FLOW_DOWNLOAD_QUALITY_UNAVAILABLE",
             re.I,
         )
         profile_ready = False
@@ -4486,15 +4506,21 @@ class FlowService:
                 asyncio.run(self._run(job_id, generation_token=generation_token))
                 finished = store.get_row("jobs", job_id) or {}
 
-            # Transient / reject → auto-retry up to _JOB_AUTO_RETRY_MAX.
-            # Mandatory stops only: credits, quota, cancel, content policy.
-            for _auto_i in range(_JOB_AUTO_RETRY_MAX + 1):  # + the one unusual-activity reset retry
+            # Soft / reject / download → auto-retry up to _JOB_AUTO_RETRY_MAX
+            # (unusual activity: one reset). Hard stops never enter this loop.
+            # Siblings are never cancelled by another job's soft failure.
+            for _auto_i in range(_JOB_AUTO_RETRY_MAX + _UNUSUAL_ACTIVITY_RESET_MAX):
                 finished = store.get_row("jobs", job_id) or finished
                 finished_error = str(finished.get("error") or "")
                 rejected = "FLOW_GENERATION_REJECTED" in finished_error
                 # Each job owns an isolated Chrome profile, so unusual activity
                 # is retried in a fresh Chrome for this job only; siblings keep running.
                 blocked = _is_automation_block_error(finished_error)
+                download_recovery = bool(
+                    finished.get("mediaIds")
+                    and not finished.get("outputs")
+                    and re.search(r"FLOW_DOWNLOAD_FAILED", finished_error, re.I)
+                )
                 raw_retry = finished.get("autoRetryCount")
                 if raw_retry is None:
                     raw_retry = finished.get("generationRejectRetryCount")
@@ -4502,34 +4528,49 @@ class FlowService:
                     retry_count = int(raw_retry or 0)
                 except (TypeError, ValueError):
                     retry_count = 0
+                try:
+                    session_resets = int(finished.get("sessionResetRetryCount") or 0)
+                except (TypeError, ValueError):
+                    session_resets = 0
+                soft_transient = (
+                    not finished.get("submissionStartedAt")
+                    or blocked
+                    or download_recovery
+                    or re.search(
+                        r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT|FLOW_AUTOMATION_FAILED|"
+                        r"FLOW_PROJECT_NOT_FOUND|FLOW_DOWNLOAD_FAILED|ERR_ABORTED|"
+                        r"has been closed|Target closed|Connection closed",
+                        finished_error,
+                        re.I,
+                    )
+                )
+                within_budget = (
+                    session_resets < _UNUSUAL_ACTIVITY_RESET_MAX if blocked
+                    else retry_count < _JOB_AUTO_RETRY_MAX
+                )
                 should_auto_retry = (
                     finished.get("status") == "failed"
+                    and soft_transient
+                    and within_budget
                     and (
-                        not finished.get("submissionStartedAt")
-                        # ponytail: lost results retry fresh (small duplicate-charge risk, user chose completion).
-                        or blocked
-                        or re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT|FLOW_AUTOMATION_FAILED|ERR_ABORTED|has been closed|Target closed|Connection closed", finished_error, re.I)
-                    )
-                    and not finished.get("mediaIds")
-                    and not finished.get("outputs")
-                    # Google flags unusual activity per account/IP, not per Chrome:
-                    # every extra submit deepens the block, so reset+retry it only
-                    # once, on its own counter so earlier transient retries don't use it up.
-                    and (
-                        int(finished.get("sessionResetRetryCount") or 0) < 1 if blocked
-                        else retry_count < _JOB_AUTO_RETRY_MAX
+                        download_recovery
+                        or (not finished.get("mediaIds") and not finished.get("outputs"))
                     )
                     and (rejected or blocked or not _HARD_ERROR.search(finished_error))
                 )
                 if not should_auto_retry:
                     break
                 next_count = retry_count if blocked else retry_count + 1
+                next_resets = session_resets + 1 if blocked else session_resets
+                wait_s = _soft_retry_backoff_s(next_resets if blocked else next_count)
                 self._log(
                     "warning", "job_auto_retry", job_id=job_id, account_id=account_id,
                     message=finished_error,
                     details={
-                        "attempt": 1 if blocked else next_count,
-                        "max": 1 if blocked else _JOB_AUTO_RETRY_MAX,
+                        "attempt": next_resets if blocked else next_count,
+                        "max": _UNUSUAL_ACTIVITY_RESET_MAX if blocked else _JOB_AUTO_RETRY_MAX,
+                        "backoffSeconds": wait_s,
+                        "downloadOnly": download_recovery,
                         "freshChrome": True,
                     },
                 )
@@ -4549,13 +4590,16 @@ class FlowService:
                 if rejected:
                     patch["generationRejectRetryCount"] = next_count
                 if blocked:
-                    patch["sessionResetRetryCount"] = 1
+                    patch["sessionResetRetryCount"] = next_resets
                 if blocked or re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT", finished_error, re.I):
                     self._release_media_ids(finished.get("mediaIds"))
                     patch.update({
                         "submissionStartedAt": None, "submissionProjectId": None,
                         "baselineMediaIds": [], "mediaIds": [], "resumeOnly": False,
                     })
+                elif download_recovery:
+                    # Keep mediaIds: retry downloads the existing Flow result only.
+                    patch["resumeOnly"] = True
                 store.patch_row("jobs", job_id, patch)
                 if blocked and account_id not in self._connecting_accounts:
                     # The retry clones a freshly reset, still signed-in profile;
@@ -4565,7 +4609,7 @@ class FlowService:
                     except RuntimeError as exc:
                         self._log("warning", "unusual_activity_session_reset_failed",
                                   job_id=job_id, account_id=account_id, message=str(exc))
-                time.sleep(3)
+                time.sleep(wait_s)
                 if job_id in self._cancelled or not store.get_row("jobs", job_id):
                     return
                 store.patch_row("jobs", job_id, {
@@ -4666,11 +4710,7 @@ class FlowService:
                     self.suspend_account(account_id, err_msg)
                 elif _is_automation_block_error(err_msg) or current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
                     self._try_fallback_account(job_id, account_id, err_msg)
-                elif re.search(
-                    r"GENERATION_REJECTED|FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED",
-                    err_msg,
-                    re.I,
-                ):
+                elif re.search(r"FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED", err_msg, re.I):
                     self.suspend_account(account_id, err_msg)
             self._close_auto_session_if_idle(
                 account_id,
@@ -6378,12 +6418,15 @@ class FlowService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if isinstance(exc, PlaywrightTimeoutError) and attempt < 3:
+                from ._flow._download_errors import is_transient_download_error
+                if attempt < 3 and (
+                    isinstance(exc, PlaywrightTimeoutError) or is_transient_download_error(exc)
+                ):
                     self._log("warning", "download_retry", job_id=job_id,
                               account_id=str(current.get("accountId") or ""), message=str(exc),
                               details={"stage": "downloading", "attempt": attempt,
                                        "path": str(output), "quality": quality})
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(min(2.0, float(attempt)))
                     continue
                 raise RuntimeError(f"FLOW_DOWNLOAD_FAILED: {exc}") from exc
             # Persist each finished part before starting the next one.

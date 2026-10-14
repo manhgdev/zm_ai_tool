@@ -21,6 +21,10 @@ class FlowVisibleErrorClassifyTest(unittest.TestCase):
         self.assertTrue(msg.startswith("FLOW_CREDITS_EMPTY:"))
         self.assertIn("Not enough credits", msg)
 
+    def test_bare_not_enough_is_not_credits(self) -> None:
+        msg = _classify_visible_flow_error("Not enough something for this action")
+        self.assertTrue(msg.startswith("FLOW_GENERATION_REJECTED:"))
+
     def test_credit_gate_before_submit(self) -> None:
         self.assertTrue(_flow_credit_blocked("Không có đủ tín dụng để thực hiện hành động này."))
         self.assertTrue(_flow_credit_blocked("Not enough credits to perform this action"))
@@ -33,6 +37,10 @@ class FlowVisibleErrorClassifyTest(unittest.TestCase):
     def test_usage_limit_quota_copy(self) -> None:
         msg = _classify_visible_flow_error("Bạn đã đạt đến hạn mức sử dụng")
         self.assertTrue(msg.startswith("FLOW_QUOTA_EXHAUSTED:"))
+
+    def test_rate_limit_is_reject_not_quota(self) -> None:
+        msg = _classify_visible_flow_error("Too many requests — please try again later")
+        self.assertTrue(msg.startswith("FLOW_GENERATION_REJECTED:"))
 
     def test_generic(self) -> None:
         msg = _classify_visible_flow_error("Something went wrong")

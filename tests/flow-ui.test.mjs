@@ -302,10 +302,19 @@ test("technical detail preserves distinct nested codes and provider diagnostics"
 
 test("download failures explain existing media without automatic generation retry", () => {
   const result = explainFlowError("FLOW_DOWNLOAD_FAILED: Locator.wait_for timeout");
-  assert.equal(result.titleVi, "Đã tạo video, tải file thất bại");
-  assert.equal(result.titleEn, "Video generated, download failed");
+  assert.equal(result.titleVi, "Đã tạo media, tải file thất bại");
+  assert.equal(result.titleEn, "Media generated, download failed");
   assert.match(result.actionVi, /Kết quả trên Flow được giữ lại/);
   assert.match(result.actionEn, /result is preserved on Flow/);
+});
+
+test("CDN TLS disconnect explains as download failure not generic retry", () => {
+  const result = explainFlowError(
+    "Client network socket disconnected before secure TLS connection was established (ECONNRESET) Call log: - → GET https://flow-content.google/image/abc",
+  );
+  assert.equal(result.code, "FLOW_DOWNLOAD_FAILED");
+  assert.match(result.actionVi, /thử tải file lần nữa/);
+  assert.match(result.actionEn, /download the file again/);
 });
 }
 

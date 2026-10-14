@@ -39,6 +39,37 @@ class FlowDownloadRetryTest(unittest.TestCase):
         self.assertEqual(store.get_row('jobs', 'j')['outputs'], [str(output)])
         self.assertEqual(store.get_row('jobs', 'j')['mediaIds'], ['flow-thumb:original'])
 
+    def test_menu_econnreset_retries_then_succeeds(self):
+        output = Path(self.directory.name) / 'video.mp4'
+        blip = RuntimeError(
+            'Client network socket disconnected before secure TLS connection was established (ECONNRESET)'
+        )
+
+        async def download(*args):
+            if downloader.await_count < 3:
+                raise blip
+            output.write_bytes(b'video')
+
+        with patch.object(self.service, '_download_video_via_flow_menu_once', side_effect=download) as downloader, patch(
+            'pipeline.flow.service.asyncio.sleep', new_callable=AsyncMock
+        ):
+            asyncio.run(self.service._download_video_via_flow_menu(None, 0, output, '720p', job_id='j'))
+        self.assertEqual(downloader.await_count, 3)
+        self.assertEqual(output.read_bytes(), b'video')
+
+    def test_menu_econnreset_exhaustion_raises_download_failed(self):
+        output = Path(self.directory.name) / 'video.mp4'
+        blip = RuntimeError(
+            'Client network socket disconnected before secure TLS connection was established (ECONNRESET)'
+        )
+        with patch.object(self.service, '_download_video_via_flow_menu_once', new_callable=AsyncMock,
+                          side_effect=blip) as downloader, patch(
+            'pipeline.flow.service.asyncio.sleep', new_callable=AsyncMock
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'FLOW_DOWNLOAD_FAILED'):
+                asyncio.run(self.service._download_video_via_flow_menu(None, 0, output, '720p', job_id='j'))
+        self.assertEqual(downloader.await_count, 3)
+
     def test_download_exhaustion_leaves_existing_file_and_media_intact(self):
         output = Path(self.directory.name) / 'video.mp4'
         output.write_bytes(b'previous output')

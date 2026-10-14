@@ -1835,18 +1835,35 @@ class FlowAPI:
         Download a generated image or video from its fife_url.
 
         Uses Playwright browser context (carries Google auth cookies).
+        Retries transient CDN/TLS blips without regenerating media.
         """
+        from ._download_errors import is_transient_download_error
+
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        resp = await self._bm.context.request.get(fife_url)
-        if resp.status != 200:
-            raise GenerationError(f"Download failed HTTP {resp.status}")
-
-        body = await resp.body()
-        output_path.write_bytes(body)
-        log.info("Downloaded %dKB → %s", len(body) // 1024, output_path)
-        return output_path
+        last_exc: BaseException | None = None
+        for attempt in range(1, 4):
+            try:
+                resp = await self._bm.context.request.get(fife_url)
+                if resp.status != 200:
+                    raise GenerationError(f"Download failed HTTP {resp.status}")
+                body = await resp.body()
+                output_path.write_bytes(body)
+                log.info("Downloaded %dKB → %s", len(body) // 1024, output_path)
+                return output_path
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 3 and is_transient_download_error(exc):
+                    log.warning(
+                        "Transient download error (attempt %d/3): %s", attempt, exc,
+                    )
+                    await asyncio.sleep(min(2.0, float(attempt)))
+                    continue
+                raise GenerationError(f"FLOW_DOWNLOAD_FAILED: {exc}") from exc
+        raise GenerationError(f"FLOW_DOWNLOAD_FAILED: {last_exc}")
 
     async def download_image(self, img: GeneratedImage, output_dir: str | Path = ".") -> Path:
         """Download a GeneratedImage to a directory."""

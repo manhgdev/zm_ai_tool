@@ -144,7 +144,8 @@ export function explainFlowError(message: string): FlowExplain {
     };
   }
 
-  if (/ERR_INTERNET_DISCONNECTED|ERR_CONNECTION_(?:RESET|TIMED_OUT)|ERR_NETWORK_CHANGED/i.test(raw)) {
+  if (/ERR_INTERNET_DISCONNECTED|ERR_CONNECTION_(?:RESET|TIMED_OUT)|ERR_NETWORK_CHANGED/i.test(raw)
+    && !/flow-content\.google|fifeUrl|FLOW_DOWNLOAD/i.test(raw)) {
     return make(
       "FLOW_NETWORK_DISCONNECTED",
       "Không thể kết nối tới Flow. Kiểm tra mạng/VPN rồi chạy lại; không tiếp tục retry liên tục.",
@@ -152,14 +153,19 @@ export function explainFlowError(message: string): FlowExplain {
     );
   }
 
-  if (code === "FLOW_DOWNLOAD_FAILED" || code === "FLOW_DOWNLOAD_URL_MISSING") {
+  // CDN/TLS blips while fetching generated media (ECONNRESET on flow-content.google).
+  if (
+    code === "FLOW_DOWNLOAD_FAILED"
+    || code === "FLOW_DOWNLOAD_URL_MISSING"
+    || /ECONNRESET|secure TLS connection|socket disconnected before secure TLS|flow-content\.google/i.test(raw)
+  ) {
     return {
-      code,
-      titleVi: "Đã tạo video, tải file thất bại",
-      titleEn: "Video generated, download failed",
+      code: code === "FLOW_DOWNLOAD_URL_MISSING" ? code : "FLOW_DOWNLOAD_FAILED",
+      titleVi: "Đã tạo media, tải file thất bại",
+      titleEn: "Media generated, download failed",
       summaryVi: "", summaryEn: "",
-      actionVi: "Kết quả trên Flow được giữ lại. Chạy lại sẽ thử tải file lần nữa, không tạo video mới.",
-      actionEn: "The result is preserved on Flow. Retry will download the file again without generating a new video.",
+      actionVi: "Kết quả trên Flow được giữ lại. Chạy lại sẽ thử tải file lần nữa, không tạo media mới.",
+      actionEn: "The result is preserved on Flow. Retry will download the file again without generating new media.",
     };
   }
   if (code === "FLOW_RESULT_NOT_FOUND") {

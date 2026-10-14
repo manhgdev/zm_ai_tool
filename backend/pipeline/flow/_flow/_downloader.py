@@ -8,7 +8,11 @@ from typing import Optional
 import aiohttp
 import aiofiles
 
+from ._download_errors import is_transient_download_error
+
 log = logging.getLogger(__name__)
+
+__all__ = ["download_url", "download_from_page", "is_transient_download_error"]
 
 
 async def download_url(
