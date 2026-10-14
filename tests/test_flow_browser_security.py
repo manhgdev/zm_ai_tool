@@ -7,7 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-from pipeline.flow.browser import BrowserManager, _visible_window_geometry, profile_lock, chrome_executable
+from pipeline.flow.browser import (
+    BrowserManager,
+    _chrome_major_version,
+    _is_google_chrome_binary,
+    _visible_window_geometry,
+    chrome_executable,
+    profile_lock,
+)
 from pipeline.flow.service import _PROJECT_RE, FlowService
 
 
@@ -58,6 +65,84 @@ class ChromeDiscoveryTests(unittest.TestCase):
                  patch.object(Path, 'is_file', lambda path: path == binary), \
                  patch('pipeline.flow.browser.os.access', return_value=True):
                 self.assertEqual(chrome_executable(), binary)
+
+    def test_windows_policy_prefers_automation_chrome(self):
+        with tempfile.TemporaryDirectory() as raw:
+            google = Path(raw) / 'Google/Chrome/Application/chrome.exe'
+            cft = Path(raw) / 'Google/Chrome for Testing/Application/chrome.exe'
+            google.parent.mkdir(parents=True)
+            cft.parent.mkdir(parents=True)
+            google.touch()
+            cft.touch()
+            with patch('sys.platform', 'win32'), \
+                 patch.dict(os.environ, {
+                     'PROGRAMFILES': raw,
+                     'PROGRAMFILES(X86)': '',
+                     'LOCALAPPDATA': raw,
+                     'PLAYWRIGHT_BROWSERS_PATH': str(Path(raw) / 'empty-pw'),
+                 }, clear=False), \
+                 patch('pipeline.flow.browser._windows_chrome_user_data_dir_policy', return_value=r'C:\ChromeProfiles'), \
+                 patch('pipeline.flow.browser.os.access', return_value=True):
+                self.assertEqual(chrome_executable(), cft)
+
+    def test_google_chrome_binary_detection(self):
+        self.assertTrue(_is_google_chrome_binary(Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')))
+        self.assertFalse(_is_google_chrome_binary(Path(r'C:\Users\a\AppData\Local\Google\Chrome for Testing\Application\chrome.exe')))
+        self.assertFalse(_is_google_chrome_binary(Path(r'C:\Users\a\AppData\Local\ms-playwright\chromium-1\chrome-win64\chrome.exe')))
+
+    def test_chrome_major_version_never_spawns_browser(self):
+        # Spawning Chrome for --product-version opens the user's real session
+        # ("Mở trong phiên trình duyệt hiện tại") on macOS.
+        with patch('pipeline.flow.browser.subprocess.run') as run:
+            self.assertEqual(_chrome_major_version(Path('/missing/chrome')), '155.0.0.0')
+            run.assert_not_called()
+
+    def test_chrome_major_version_reads_macos_plist(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            exe = root / 'Google Chrome.app' / 'Contents' / 'MacOS' / 'Google Chrome'
+            exe.parent.mkdir(parents=True)
+            exe.touch()
+            plist = root / 'Google Chrome.app' / 'Contents' / 'Info.plist'
+            plist.write_bytes(
+                b'<?xml version="1.0" encoding="UTF-8"?>'
+                b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+                b'"http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+                b'<plist version="1.0"><dict>'
+                b'<key>CFBundleShortVersionString</key><string>144.0.7559.96</string>'
+                b'</dict></plist>'
+            )
+            with patch('sys.platform', 'darwin'), patch('pipeline.flow.browser.subprocess.run') as run:
+                self.assertEqual(_chrome_major_version(exe), '144.0.0.0')
+                run.assert_not_called()
+
+
+class WindowsChromeIsolationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refuses_branded_chrome_when_user_data_policy_set(self):
+        context = SimpleNamespace(add_init_script=AsyncMock())
+        launch = AsyncMock(return_value=context)
+        playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch), stop=AsyncMock())
+        with tempfile.TemporaryDirectory() as raw, \
+             patch('sys.platform', 'win32'), \
+             patch('pipeline.flow.browser._windows_chrome_user_data_dir_policy', return_value=r'C:\Managed\Chrome'), \
+             patch('pipeline.flow.browser.chrome_executable', return_value=Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')), \
+             patch('pipeline.flow.browser.network_available', return_value=True), \
+             patch('pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))):
+            manager = BrowserManager(headless=True, profile_dir=Path(raw) / 'flow')
+            with self.assertRaisesRegex(RuntimeError, 'FLOW_CHROME_POLICY_USER_DATA_DIR'):
+                await manager.start()
+            launch.assert_not_awaited()
+
+    async def test_refuses_system_chrome_user_data_as_profile(self):
+        chrome_home = Path(tempfile.mkdtemp()) / 'Google' / 'Chrome' / 'User Data'
+        chrome_home.mkdir(parents=True)
+        with patch('pipeline.flow.browser._default_chrome_user_data_dir', return_value=chrome_home), \
+             patch('pipeline.flow.browser._windows_chrome_user_data_dir_policy', return_value=None), \
+             patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome.exe')), \
+             patch('pipeline.flow.browser.network_available', return_value=True):
+            manager = BrowserManager(headless=True, profile_dir=chrome_home / 'Default')
+            with self.assertRaisesRegex(RuntimeError, 'FLOW_CHROME_PROFILE_FORBIDDEN'):
+                await manager.start()
 
 
 class FlowBrowserGeometryTest(unittest.TestCase):
@@ -290,6 +375,9 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                     self.assertIn('--window-position=0,0', launch.call_args.kwargs['args'])
                 self.assertIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
                 self.assertIn('--disable-extensions', launch.call_args.kwargs['args'])
+                self.assertIn('--no-first-run', launch.call_args.kwargs['args'])
+                self.assertIn('--no-default-browser-check', launch.call_args.kwargs['args'])
+                self.assertIn('--profile-directory=Default', launch.call_args.kwargs['args'])
                 self.assertNotIn('--new-window', launch.call_args.kwargs['args'])
                 self.assertNotIn('--no-sandbox', launch.call_args.kwargs['args'])
                 self.assertEqual(context.add_init_script.await_count, 1)

@@ -151,23 +151,55 @@ def _visible_window_args(*, fullscreen: bool = False) -> list[str]:
     ]
 
 
+def _chrome_major_version(executable: Path) -> str:
+    """Major Chrome version without launching a browser process.
+
+    Spawning the branded Chrome binary while the user's Chrome is already
+    open prints "Opening in existing browser session" / "Mở trong phiên
+    trình duyệt hiện tại" and steals focus to the real profile picker.
+    Read version metadata from disk only.
+    """
+    if sys.platform == "darwin":
+        # .../Google Chrome.app/Contents/MacOS/Google Chrome → Contents/Info.plist
+        try:
+            import plistlib
+            plist_path = executable.resolve().parents[1] / "Info.plist"
+            with plist_path.open("rb") as handle:
+                info = plistlib.load(handle)
+            match = re.search(
+                r"(\d+)\.",
+                str(info.get("CFBundleShortVersionString") or info.get("KSVersion") or ""),
+            )
+            if match:
+                return f"{match.group(1)}.0.0.0"
+        except Exception:
+            pass
+    if sys.platform == "win32":
+        try:
+            import winreg
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    with winreg.OpenKey(hive, r"Software\Google\Chrome\BLBeacon") as key:
+                        value, _ = winreg.QueryValueEx(key, "version")
+                except OSError:
+                    continue
+                match = re.search(r"(\d+)\.", str(value or ""))
+                if match:
+                    return f"{match.group(1)}.0.0.0"
+        except ImportError:
+            pass
+    # Never spawn the Chrome binary here: branded Chrome hands off to the
+    # user's open session ("Opening in existing browser session").
+    return "155.0.0.0"
+
+
 def _chrome_headed_user_agent(executable: Path) -> str:
     """UA of headed Chrome for the same binary (drops HeadlessChrome token).
 
     Probe headed vs true-headless only differed on that token; Flow unusual
     activity correlates with HeadlessChrome in the user-agent.
     """
-    version = "155.0.0.0"
-    try:
-        result = subprocess.run(
-            [str(executable), "--version"],
-            capture_output=True, text=True, timeout=5,
-        )
-        match = re.search(r"(\d+)\.", (result.stdout or result.stderr or ""))
-        if match:
-            version = f"{match.group(1)}.0.0.0"
-    except (OSError, subprocess.SubprocessError):
-        pass
+    version = _chrome_major_version(executable)
     if sys.platform == "darwin":
         return (
             f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -190,6 +222,72 @@ def profile_lock(path: Path):
         return _profile_locks.setdefault(key, threading.Lock())
 
 
+def _windows_chrome_user_data_dir_policy() -> str | None:
+    """Return Google Chrome's enterprise UserDataDir policy when set.
+
+    That policy overrides ``--user-data-dir``, so launching branded
+    ``chrome.exe`` would open the user's real Chrome profiles / picker.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, r"SOFTWARE\Policies\Google\Chrome") as key:
+                value, _ = winreg.QueryValueEx(key, "UserDataDir")
+        except OSError:
+            continue
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _default_chrome_user_data_dir() -> Path | None:
+    """OS default Google Chrome user-data directory (parent of Default)."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support/Google/Chrome"
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData/Local")
+        return Path(local) / "Google/Chrome/User Data"
+    return Path.home() / ".config/google-chrome"
+
+
+def _is_google_chrome_binary(path: Path) -> bool:
+    """True for branded Google Chrome installs (subject to Chrome policies)."""
+    text = os.path.normcase(str(path)).casefold()
+    if "chrome for testing" in text or "chromium" in text or "ms-playwright" in text:
+        return False
+    return "google" in text and "chrome" in text
+
+
+def _playwright_chrome_candidates() -> list[Path]:
+    """Automation Chromium builds that ignore Google Chrome UserDataDir policy."""
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+        cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or local / "ms-playwright")
+        found: list[Path] = []
+        found.extend(sorted(cache.glob("chromium-*/chrome-win64/chrome.exe"), reverse=True))
+        found.extend(sorted(cache.glob("chromium-*/chrome-win/chrome.exe"), reverse=True))
+        cft = local / "Google/Chrome for Testing/Application/chrome.exe"
+        if cft.is_file():
+            found.insert(0, cft)
+        chromium = local / "Chromium/Application/chrome.exe"
+        if chromium.is_file():
+            found.insert(0, chromium)
+        return found
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    puppeteer_cache = Path(os.environ.get("PUPPETEER_CACHE_DIR") or cache / "puppeteer")
+    playwright_cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or cache / "ms-playwright")
+    found = list(sorted(puppeteer_cache.glob("chrome/linux-*/chrome-linux64/chrome"), reverse=True))
+    found.extend(sorted(playwright_cache.glob("chromium-*/chrome-linux/chrome"), reverse=True))
+    found.extend(sorted(playwright_cache.glob("chromium-*/chrome-linux64/chrome"), reverse=True))
+    return found
+
+
 def chrome_executable() -> Path | None:
     """Locate Chrome from system installs, PATH, or known automation caches."""
     candidates: list[Path]
@@ -197,16 +295,18 @@ def chrome_executable() -> Path | None:
         candidates = [Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")]
     elif sys.platform == "win32":
         roots = [Path(os.environ.get("PROGRAMFILES", "")), Path(os.environ.get("PROGRAMFILES(X86)", "")), Path(os.environ.get("LOCALAPPDATA", ""))]
-        candidates = [root / "Google/Chrome/Application/chrome.exe" for root in roots if str(root)]
+        google = [root / "Google/Chrome/Application/chrome.exe" for root in roots if str(root)]
+        # Branded Chrome honors enterprise UserDataDir and would open the
+        # user's real profiles; prefer Chromium / Chrome for Testing then.
+        automation = _playwright_chrome_candidates()
+        if _windows_chrome_user_data_dir_policy():
+            candidates = [*automation, *google]
+        else:
+            candidates = [*google, *automation]
     else:
         candidates = [Path("/usr/bin/google-chrome"), Path("/usr/bin/google-chrome-stable"), Path("/opt/google/chrome/chrome"), Path("/usr/bin/chromium"), Path("/usr/bin/chromium-browser")]
         candidates.extend(Path(found) for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser") if (found := shutil.which(name)))
-        cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-        puppeteer_cache = Path(os.environ.get("PUPPETEER_CACHE_DIR") or cache / "puppeteer")
-        playwright_cache = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or cache / "ms-playwright")
-        candidates.extend(sorted(puppeteer_cache.glob("chrome/linux-*/chrome-linux64/chrome"), reverse=True))
-        candidates.extend(sorted(playwright_cache.glob("chromium-*/chrome-linux/chrome"), reverse=True))
-        candidates.extend(sorted(playwright_cache.glob("chromium-*/chrome-linux64/chrome"), reverse=True))
+        candidates.extend(_playwright_chrome_candidates())
     return next((path for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
 
 
@@ -239,7 +339,13 @@ class BrowserManager:
         no_display = not _display_available()
         self.headless = bool(headless) or no_display
         self._chromeless = self.headless
-        self.profile_dir = Path(profile_dir or Path.cwd() / ".flow-profile")
+        # Absolute path: relative dirs resolve against chrome.exe cwd on Windows
+        # and can fall through to the user's real Chrome User Data.
+        self.profile_dir = Path(profile_dir or Path.cwd() / ".flow-profile").expanduser()
+        try:
+            self.profile_dir = self.profile_dir.resolve()
+        except OSError:
+            self.profile_dir = self.profile_dir.absolute()
         self.slow_mo = slow_mo
         self.google_login_compat = google_login_compat
         self.fullscreen = fullscreen
@@ -286,6 +392,29 @@ class BrowserManager:
         executable = chrome_executable()
         if executable is None:
             raise RuntimeError("FLOW_CHROME_REQUIRED: Google Chrome was not found. Install Google Chrome, then connect again.")
+        policy_dir = _windows_chrome_user_data_dir_policy()
+        if policy_dir and _is_google_chrome_binary(executable):
+            # Policy wins over --user-data-dir → real Chrome profiles / picker.
+            raise RuntimeError(
+                "FLOW_CHROME_POLICY_USER_DATA_DIR: Windows Google Chrome policy "
+                "UserDataDir is set, so Flow cannot isolate its profile. Install "
+                "Chromium or Chrome for Testing, or clear the policy, then retry."
+            )
+        chrome_home = _default_chrome_user_data_dir()
+        try:
+            profile_resolved = self.profile_dir.resolve()
+        except OSError:
+            profile_resolved = self.profile_dir
+        if chrome_home is not None:
+            try:
+                chrome_home = chrome_home.resolve()
+            except OSError:
+                pass
+            if profile_resolved == chrome_home or chrome_home in profile_resolved.parents:
+                raise RuntimeError(
+                    "FLOW_CHROME_PROFILE_FORBIDDEN: Refusing to use the system "
+                    "Google Chrome User Data directory as a Flow profile"
+                )
         # All callers (jobs, login, credit sync, project recovery) pass here.
         # Workers own the cancellable wait; synchronous API calls fail promptly.
         if not await asyncio.to_thread(network_available):
@@ -304,7 +433,15 @@ class BrowserManager:
         try:
             self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
             window_args = _visible_window_args(fullscreen=self.fullscreen) if show_window else []
-            launch_args = ["--lang=en-US", "--disable-extensions"]
+            # Force Default inside Flow's user-data-dir so Windows never shows
+            # the system "Who's using Chrome?" picker for a multi-profile store.
+            launch_args = [
+                "--lang=en-US",
+                "--disable-extensions",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--profile-directory=Default",
+            ]
             # Imported Cookie headers have no expiry metadata. Restore the
             # native session so Chrome keeps these session cookies on reopen.
             if self.restore_last_session:
