@@ -27,6 +27,15 @@ def fake_logo_module(fail_names=()):
 
 
 class LogoRetryTest(unittest.TestCase):
+    def test_video_completion_requires_logo_marker_except_ultra(self):
+        service = FlowService()
+        job = {'kind': 'video', 'outputs': ['clip.mp4'], 'settings': {'removeLogo': True}}
+        with patch.object(service, '_outputs_exist', return_value=True):
+            self.assertFalse(service._outputs_ready_for_completion(job, account_plan='Pro'))
+            self.assertTrue(service._outputs_ready_for_completion(job, account_plan='Ultra'))
+            job['logoDone'] = ['clip.mp4']
+            self.assertTrue(service._outputs_ready_for_completion(job, account_plan='Pro'))
+
     def test_failure_keeps_images_and_retry_runs_only_logo(self):
         with tempfile.TemporaryDirectory() as raw, patch.object(store, 'ROOT', Path(raw)):
             a, b = Path(raw) / 'a.jpg', Path(raw) / 'b.jpg'

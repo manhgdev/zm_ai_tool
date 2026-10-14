@@ -1567,7 +1567,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       const retryBase = /omni.*flash/i.test(group.model) && group.duration.trim()
         ? { model: group.model, ratio: group.ratio, duration: group.duration, resolution: group.resolution, quality: group.quality, count: group.count, concurrency }
         : { model: group.model, ratio: group.ratio, resolution: group.resolution, quality: group.quality, count: group.count, concurrency };
-      const retrySettings = group.kind === "image" ? { ...retryBase, removeLogo: retryTarget.removeLogo } : retryBase;
+      const retrySettings = { ...retryBase, removeLogo: retryTarget.removeLogo };
       return group.jobs.map((job) => flowRequest<Record<string, unknown>>(`/api/flow/jobs/${job.id}/retry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1771,7 +1771,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         setJobs((current) => {
           const next: FlowJob[] = [];
           for (const job of current) {
-            if (String(job.settings.outputDir || "").trim() === String(outputDir || "").trim()) {
+            if (job.kind === folderJobs[0]?.kind
+              && String(job.settings.outputDir || "").trim() === String(outputDir || "").trim()) {
               // job will be filtered out — no need to track ID since poll is backend-authoritative
             } else {
               next.push(job);
@@ -3056,7 +3057,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     <span className="flow-headless-switch-track" aria-hidden="true" />
                     <span>{t("Mở Chrome khi chạy Flow", "Show Chrome while Flow runs")}</span>
                   </button>
-                  {createKind === "image" && (
+                  {(
                     <button
                       type="button"
                       className={`flow-headless-switch${settings.removeLogo ? " is-on" : ""}`}
@@ -3840,7 +3841,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <input type="checkbox" checked={!retryTarget.headless} onChange={() => setRetryTarget((current) => current ? { ...current, headless: !current.headless } : current)} />
                   {t('Mở Chrome khi chạy', 'Open Chrome')}
                 </label>
-                {retryTarget.groups.some((group) => group.kind === "image") && (
+                {retryTarget.groups.length > 0 && (
                   <label className="flow-retry-headless-cb flow-retry-headless-row" title={t("Tài khoản Ultra không có logo nên sẽ tự bỏ qua", "Ultra accounts have no logo, so they are skipped automatically")}>
                     <input type="checkbox" checked={retryTarget.removeLogo} onChange={() => setRetryTarget((current) => current ? { ...current, removeLogo: !current.removeLogo } : current)} />
                     {t("Xóa logo Flow (trừ Ultra)", "Remove Flow logo (except Ultra)")}

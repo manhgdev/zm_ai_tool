@@ -91,7 +91,7 @@ def _inpaint_image(input_path: str, output: str, job_id: str) -> None:
     encoded.tofile(output)
 
 
-def _inpaint_video(input_path: str, output: str, job_id: str) -> None:
+def _inpaint_video(input_path: str, output: str, job_id: str, *, flow_logo: bool = False) -> None:
     from pipeline.core.runtime_site import ensure_cv2
     from pipeline.cleaner.sparkle import find_sparkle, remove_sparkle
     from pipeline.export.cover_mask import _inpaint_region
@@ -108,6 +108,11 @@ def _inpaint_video(input_path: str, output: str, job_id: str) -> None:
         # A video overlay must be consistent across anchor frames before the
         # same alpha map is applied. This path supports static corner marks.
         overlay = find_sparkle(frame)
+        # ponytail: Flow sparkle stays in the lower-right corner for the
+        # current 16:9 output; use its fixed ROI when the white mark blends
+        # into a bright frame. Other layouts need a measured preset.
+        flow_box = (overlay.box if overlay else
+                    (round(width * .88), round(height * .79), round(width * .94), round(height * .88))) if flow_logo else None
         if overlay:
             for position in sorted({total // 2, max(0, total - 2)}):
                 cap.set(cv2.CAP_PROP_POS_FRAMES, position)
@@ -121,9 +126,11 @@ def _inpaint_video(input_path: str, output: str, job_id: str) -> None:
             if not ok:
                 raise RuntimeError('Cannot decode source video')
         boxes = []
+        if not overlay and flow_box:
+            boxes = [flow_box]
         if overlay:
             append_job_log(job_id, f"Local alpha recovery (static video): box={overlay.box}, opacity={overlay.opacity:.3f}")
-        else:
+        elif not boxes:
             detection = _detect_logo_with_retry(input_path, job_id) or {}
             boxes = _pixel_masks(detection, width, height)
             if not boxes:

@@ -1570,7 +1570,7 @@ class FlowService:
                 })
 
     async def _remove_flow_logos(self, job_id: str, outputs: list[str]) -> str:
-        """Remove the Flow logo from downloaded images; return "" on success or the failure text.
+        """Remove the Flow logo from downloaded media; return "" on success or the failure text.
 
         Files already cleaned (``logoDone``) are skipped, so a retry never inpaints twice.
         """
@@ -1589,8 +1589,24 @@ class FlowService:
             if str(out_path) in done:
                 continue
             try:
-                result = await asyncio.to_thread(logo_mod.remove_logo_from_file, out_path, cfg)
-                self._log("info", "logo_removed", job_id=job_id, message=result.mode_used)
+                if Path(out_path).suffix.lower() == ".mp4":
+                    from pipeline.cleaner.cleaner_ffmpeg import _inpaint_video
+                    target = Path(out_path)
+                    temporary = target.with_name(target.stem + ".logo_tmp.mp4")
+                    try:
+                        await asyncio.to_thread(_inpaint_video, out_path, str(temporary), job_id, flow_logo=True)
+                        self._check_cancel(job_id)
+                        error = self._output_validation_error([str(temporary)])
+                        if error:
+                            raise RuntimeError(error)
+                        temporary.replace(target)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                    mode_used = "static_video_alpha_recovery"
+                else:
+                    result = await asyncio.to_thread(logo_mod.remove_logo_from_file, out_path, cfg)
+                    mode_used = result.mode_used
+                self._log("info", "logo_removed", job_id=job_id, message=mode_used)
                 done.append(str(out_path))
                 store.patch_row("jobs", job_id, {"logoDone": done})
             except Exception as exc:
@@ -1649,7 +1665,7 @@ class FlowService:
         if not self._outputs_exist(outputs):
             return False
         settings = job.get("settings") or {}
-        if not (job.get("kind") == "image" and settings.get("removeLogo") and account_plan != "Ultra"):
+        if not (settings.get("removeLogo") and account_plan != "Ultra"):
             return True
         done = {str(value) for value in (job.get("logoDone") or [])}
         return bool(outputs) and all(path in done for path in outputs)
@@ -7183,7 +7199,7 @@ class FlowService:
                 if ratio_error:
                     raise RuntimeError(ratio_error)
             # Xóa logo Flow ngay sau khi tải (cả ảnh mới lẫn ảnh khôi phục); Ultra không có logo nên bỏ qua.
-            if job["kind"] == "image" and settings.get("removeLogo") and str(account.get("plan") or "") != "Ultra":
+            if settings.get("removeLogo") and str(account.get("plan") or "") != "Ultra":
                 logo_error = await self._remove_flow_logos(job_id, outputs)
                 if logo_error:
                     self._fail_logo_removal(job_id, outputs, logo_error, account_id=str(account["id"]))
