@@ -70,6 +70,14 @@ class RealtimeReconcileTest(unittest.IsolatedAsyncioTestCase):
                 await stream.aclose()
             self.assertEqual(len(bus._subscribers), 0)
 
+    def test_real_providers_return_flow_snapshot_and_fresh_client_skips_history(self):
+        bus = RealtimeBus()
+        with patch.object(events, "realtime", bus), patch.object(events._register_snapshots, "done", False, create=True):
+            events._register_snapshots()
+        self.assertEqual(set(bus.snapshot(frozenset({"flow"}))[0]["payload"]), {"jobs", "accounts", "logs"})
+        bus.publish("flow", "flow.job.updated", "old", {"id": "old", "status": "processing"})
+        self.assertTrue(bus.subscribe(asyncio.new_event_loop(), frozenset({"flow"})).queue.empty())
+
 
 if __name__ == "__main__":
     unittest.main()

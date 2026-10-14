@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-from pipeline.flow.service import FlowService, _COOLDOWN_BOT_S, _COOLDOWN_QUOTA_S
+from pipeline.flow.service import FlowService, _COOLDOWN_QUOTA_S
 
 
 class TestFlowSelectedAccount(unittest.TestCase):
@@ -358,17 +358,12 @@ class TestFlowRandomAccountAndFallback(unittest.TestCase):
             self.assertIn("acc_pro", picked_ids)
             self.assertIn("acc_ultra", picked_ids)
 
-    def test_suspend_account_severe_duration(self):
-        import time
+    def test_unusual_activity_does_not_quarantine_account(self):
         acc = dict(self.mock_accounts[1])
         with patch("pipeline.flow.store.get_row", return_value=acc), \
              patch("pipeline.flow.store.patch_row") as mock_patch:
-            now = time.time()
             self.service.suspend_account("acc_pro", "FLOW_AUTOMATION_BLOCKED: abnormal activity")
-            mock_patch.assert_called_once()
-            patched = mock_patch.call_args[0][2]
-            self.assertAlmostEqual(patched["suspendedUntil"], now + _COOLDOWN_BOT_S, delta=5)
-            self.assertIn("AUTOMATION_BLOCKED", patched["suspendReason"])
+            mock_patch.assert_not_called()
 
     def test_suspend_account_standard_duration(self):
         import time

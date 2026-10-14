@@ -1,7 +1,10 @@
 """Selected account and bounded session recovery regressions."""
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from pipeline.flow import store
 from pipeline.flow.service import FlowService
 
 
@@ -109,234 +112,55 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["id"], "a")
         patch_row.assert_not_called()
 
-    def test_automation_block_reconnects_once_then_stops(self):
+    def test_unusual_activity_retries_only_that_job_in_fresh_chrome(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            service = FlowService()
+            account = {"id": "a", "status": "online", "projectId": "p", "plan": "Pro", "credits": 100}
+            store._write("accounts", [account])
+            store._write("jobs", [
+                {"id": "j", "accountId": "a", "status": "queued", "kind": "image", "queueOrder": 0, "settings": {}},
+                {"id": "sibling", "accountId": "a", "status": "processing", "kind": "video", "queueOrder": 1, "settings": {}},
+            ])
+
+            attempts = []
+
+            async def run(job_id, **kwargs):
+                attempts.append(job_id)
+                if len(attempts) == 1:
+                    store.patch_row("jobs", job_id, {
+                        "status": "failed", "stage": "failed", "submissionStartedAt": 1.0,
+                        "error": "FLOW_AUTOMATION_BLOCKED: We noticed some unusual activity",
+                    })
+                else:
+                    store.patch_row("jobs", job_id, {"status": "done", "stage": "done"})
+
+            with patch.object(service, "_verify_account_plan_before_enqueue", return_value=account), \
+                 patch.object(service, "_run", side_effect=run) as runner, \
+                 patch("pipeline.flow.service.time.sleep"):
+                service._run_sync("j")
+            self.assertEqual(runner.call_count, 2)
+            self.assertEqual(store.get_row("jobs", "j")["status"], "done")
+            self.assertEqual(store.get_row("jobs", "sibling")["status"], "processing")
+            refreshed = store.get_row("accounts", "a")
+            self.assertEqual(refreshed["status"], "online")
+            self.assertFalse(refreshed.get("suspendedUntil"))
+            self.assertFalse(service._account_session_blocked("a"))
+
+    async def test_rising_flow_progress_extends_generation_timeout(self):
         service = FlowService()
-        account = {"id": "a", "status": "online", "automationReconnectCount": 0}
-        job = {"id": "j", "accountId": "a", "status": "failed"}
-
-        def get_row(table, row_id):
-            return account if table == "accounts" else job
-
-        def patch_row(table, row_id, data):
-            target = account if table == "accounts" else job
-            target.update(data)
-            return target
-
-        with patch("pipeline.flow.service.store.get_row", side_effect=get_row), \
-             patch("pipeline.flow.service.store.list_rows", return_value=[job]), \
-             patch("pipeline.flow.service.store.patch_row", side_effect=patch_row), \
-             patch.object(service, "reset_account_session") as reset_session, \
-             patch.object(service, "_log"):
-            self.assertTrue(service._schedule_automation_reconnect("a", "j", "FLOW_AUTOMATION_BLOCKED: unusual activity"))
-            reset_session.assert_called_once_with("a", auto_recovery=True)
-            reset_session.reset_mock()
-            self.assertFalse(service._schedule_automation_reconnect("a", "j", "FLOW_AUTOMATION_BLOCKED: unusual activity"))
-            reset_session.assert_not_called()
-        self.assertEqual(account["automationReconnectCount"], 1)
-        self.assertEqual(job["status"], "action_required")
-        self.assertTrue(job["error"].startswith("FLOW_LOGIN_REQUIRED:"))
-
-    def test_automation_block_defers_reset_until_account_is_idle(self):
-        service = FlowService()
-        account = {"id": "a", "status": "online", "automationReconnectCount": 0}
-        failed = {"id": "failed", "accountId": "a", "status": "failed"}
-        active = {"id": "active", "accountId": "a", "status": "processing"}
-        queued = {"id": "queued", "accountId": "a", "status": "queued"}
-        jobs = [failed, active, queued]
-
-        def get_row(table, row_id):
-            if table == "accounts":
-                return account
-            return next((row for row in jobs if row["id"] == row_id), None)
-
-        def patch_row(table, row_id, data):
-            target = account if table == "accounts" else next(row for row in jobs if row["id"] == row_id)
-            target.update(data)
-            return target
-
-        with patch("pipeline.flow.service.store.get_row", side_effect=get_row), \
-             patch("pipeline.flow.service.store.list_rows", side_effect=lambda table: jobs), \
-             patch("pipeline.flow.service.store.patch_row", side_effect=patch_row), \
-             patch.object(service, "reset_account_session") as reset_session, \
-             patch.object(service, "_log"):
-            self.assertTrue(service._schedule_automation_reconnect(
-                "a", "failed", "FLOW_AUTOMATION_BLOCKED: unusual activity",
-            ))
-            reset_session.assert_not_called()
-            self.assertTrue(account["automationRecoveryPending"])
-            self.assertTrue(service._account_session_blocked("a"))
-            active["status"] = "done"
-            self.assertTrue(service._maybe_start_automation_recovery("a"))
-            reset_session.assert_called_once_with("a", auto_recovery=True)
-
-    def test_unrelated_success_does_not_clear_recovery_budget(self):
-        service = FlowService()
-        account = {
-            "id": "a", "automationReconnectCount": 1,
-            "automationRecoveryJobId": "recovery",
-        }
-        unrelated = {"id": "other", "accountId": "a", "status": "done"}
-        with patch("pipeline.flow.service.store.get_row", return_value=account), \
-             patch("pipeline.flow.service.store.patch_row") as patch_row:
-            service._finish_automation_recovery_if_owned("a", unrelated)
-        patch_row.assert_not_called()
-
-    def test_recovery_success_clears_only_its_owned_budget(self):
-        service = FlowService()
-        account = {
-            "id": "a", "automationReconnectCount": 1,
-            "automationRecoveryJobId": "recovery",
-        }
-        recovery = {
-            "id": "recovery", "accountId": "a", "status": "done",
-            "automationRecoveryJobId": "recovery",
-        }
-
-        def patch_row(table, row_id, data):
-            account.update(data)
-            return account
-
-        with patch("pipeline.flow.service.store.get_row", return_value=account), \
-             patch("pipeline.flow.service.store.patch_row", side_effect=patch_row) as patch_store:
-            service._finish_automation_recovery_if_owned("a", recovery)
-        self.assertGreaterEqual(patch_store.call_count, 2)
-        self.assertEqual(patch_store.call_args_list[-1].args[2]["automationReconnectCount"], 0)
-
-    def test_parallel_cohort_keeps_budget_until_all_workers_finish(self):
-        service = FlowService()
-        account = {
-            "id": "a", "automationReconnectCount": 1,
-            "automationRecoveryJobId": "recovery",
-            "automationRecoveryActiveJobIds": ["old"],
-        }
-        recovery = {
-            "id": "recovery", "accountId": "a", "status": "done",
-            "automationRecoveryJobId": "recovery",
-        }
-
-        def patch_row(table, row_id, data):
-            account.update(data)
-            return account
-
-        with patch("pipeline.flow.service.store.get_row", return_value=account), \
-             patch("pipeline.flow.service.store.patch_row", side_effect=patch_row):
-            service._finish_automation_recovery_if_owned("a", recovery)
-            self.assertEqual(account["automationReconnectCount"], 1)
-            self.assertTrue(account["automationRecoveryOwnerDone"])
-            service._mark_automation_recovery_job_finished("a", "old")
-        self.assertEqual(account["automationReconnectCount"], 0)
-        self.assertIsNone(account["automationRecoveryJobId"])
-
-    def test_parallel_old_session_block_joins_existing_recovery_cycle(self):
-        service = FlowService()
-        account = {"id": "a", "status": "online", "automationReconnectCount": 0}
-        first = {"id": "first", "accountId": "a", "status": "failed"}
-        old = {"id": "old", "accountId": "a", "status": "processing"}
-        second = {"id": "second", "accountId": "a", "status": "processing"}
-        jobs = [first, old, second]
-
-        def get_row(table, row_id):
-            if table == "accounts":
-                return account
-            return next((row for row in jobs if row["id"] == row_id), None)
-
-        def patch_row(table, row_id, data):
-            target = account if table == "accounts" else next(row for row in jobs if row["id"] == row_id)
-            target.update(data)
-            return target
-
-        with patch("pipeline.flow.service.store.get_row", side_effect=get_row), \
-             patch("pipeline.flow.service.store.list_rows", return_value=jobs), \
-             patch("pipeline.flow.service.store.patch_row", side_effect=patch_row), \
-             patch.object(service, "reset_account_session") as reset_session, \
-             patch.object(service, "_log"):
-            self.assertTrue(service._schedule_automation_reconnect(
-                "a", "first", "FLOW_AUTOMATION_BLOCKED: first block",
-            ))
-            self.assertTrue(service._schedule_automation_reconnect(
-                "a", "second", "FLOW_AUTOMATION_BLOCKED: second block",
-            ))
-            self.assertTrue(service._account_session_blocked("a"))
-        reset_session.assert_not_called()
-        self.assertTrue(account["automationRecoveryPending"])
-        self.assertEqual(second["automationRecoveryJobId"], "first")
-
-    def test_second_block_from_post_reset_worker_holds_queue_without_reset(self):
-        service = FlowService()
-        account = {
-            "id": "a", "status": "online", "automationReconnectCount": 1,
-            "automationRecoveryJobId": None,
-            "automationRecoveryPending": False,
-        }
-        queued = {"id": "queued", "accountId": "a", "status": "queued"}
-        second = {"id": "second", "accountId": "a", "status": "failed"}
-        jobs = [queued, second]
-
-        def get_row(table, row_id):
-            if table == "accounts":
-                return account
-            return next((row for row in jobs if row["id"] == row_id), None)
-
-        def patch_row(table, row_id, data):
-            target = account if table == "accounts" else next(row for row in jobs if row["id"] == row_id)
-            target.update(data)
-            return target
-
-        with patch("pipeline.flow.service.store.get_row", side_effect=get_row), \
-             patch("pipeline.flow.service.store.list_rows", return_value=jobs), \
-             patch("pipeline.flow.service.store.patch_row", side_effect=patch_row), \
-             patch.object(service, "reset_account_session") as reset_session, \
-             patch.object(service, "_log"):
-            self.assertFalse(service._schedule_automation_reconnect(
-                "a", "second", "FLOW_AUTOMATION_BLOCKED: second block",
-            ))
-            service._mark_automation_recovery_blocked("a", "FLOW_AUTOMATION_BLOCKED: second block")
-        reset_session.assert_not_called()
-        self.assertTrue(account["automationRecoveryBlocked"])
-        self.assertEqual(queued["status"], "queued")
-
-    def test_automation_recovery_requeues_only_marked_job(self):
-        service = FlowService()
-        account = {
-            "id": "a", "status": "online", "projectId": "p",
-            "automationRecoveryJobId": "recovery",
-        }
-        jobs = [
-            {
-                "id": "recovery", "accountId": "a", "status": "action_required",
-                "error": "FLOW_LOGIN_REQUIRED: redirected to login",
-                "automationRecoveryJobId": "recovery",
-            },
-            {
-                "id": "other", "accountId": "a", "status": "action_required",
-                "error": "FLOW_LOGIN_REQUIRED: redirected to login",
-            },
-            {
-                "id": "sibling", "accountId": "a", "status": "action_required",
-                "error": "FLOW_LOGIN_REQUIRED: joining the shared Flow recovery cycle",
-                "automationRecoveryJobId": "recovery",
-            },
-        ]
-
-        def patch_row(table, row_id, data):
-            row = next(job for job in jobs if job["id"] == row_id)
-            row.update(data)
-            return row
-
-        with patch("pipeline.flow.service.store.get_row", return_value=account), \
-             patch("pipeline.flow.service.store.list_rows", return_value=jobs), \
-             patch("pipeline.flow.service.store.patch_row", side_effect=patch_row), \
-             patch("pipeline.flow.service.threading.Thread") as thread, \
-             patch.object(service, "_log"):
-            self.assertEqual(service._requeue_auth_failed_jobs("a"), 2)
-        self.assertEqual(jobs[0]["status"], "queued")
-        self.assertEqual(jobs[1]["status"], "action_required")
-        self.assertEqual(jobs[2]["status"], "queued")
-        self.assertEqual(thread.call_count, 2)
-        self.assertTrue(all(
-            call.kwargs["name"] == "flow-reauth-" + call.kwargs["args"][0]
-            for call in thread.call_args_list
-        ))
+        clock = iter(range(0, 10_000, 1))
+        result = {"id": "new", "tag": "img", "src": "https://example.test/image.png"}
+        # Base timeout is 3s; Flow keeps advancing, so the result at tick ~8 is still collected.
+        media = [[]] * 6 + [[result]]
+        with patch("pipeline.flow.service.time.monotonic", side_effect=lambda: next(clock)), \
+             patch.object(service, "_project_media_elements", AsyncMock(side_effect=media)), \
+             patch.object(service, "_claim_visible_flow_error", AsyncMock(return_value="")), \
+             patch.object(service, "_flow_tile_percent", AsyncMock(side_effect=[10, 20, 30, 40, 50, 60])), \
+             patch("pipeline.flow.service.store.get_row", return_value={"id": "j", "progress": 0}), \
+             patch("pipeline.flow.service.store.patch_row"), \
+             patch("pipeline.flow.service.asyncio.sleep", AsyncMock()):
+            self.assertEqual(await service._wait_for_project_media(page=None, baseline_ids=set(), kind="image",
+                                                                   expected_count=1, job_id="j", timeout_s=3), [result])
 
     def test_image_session_closes_when_only_video_jobs_are_queued(self):
         service = FlowService()

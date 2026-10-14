@@ -114,7 +114,8 @@ class RealtimeBus:
         subscriber = _Subscriber(loop, asyncio.Queue(maxsize=self._queue_size), topics)
         with self._lock:
             self._subscribers.add(subscriber)
-            missed = [copy.deepcopy(event) for event in self._history if int(event["id"]) > after_id and (not topics or event["topic"] in topics)]
+            # A fresh client (after_id=0) gets the snapshot; replaying old rows would overwrite it with stale states.
+            missed = [copy.deepcopy(event) for event in self._history if int(event["id"]) > after_id and (not topics or event["topic"] in topics)] if after_id else []
         for event in missed:
             self._offer(subscriber, event)
         return subscriber

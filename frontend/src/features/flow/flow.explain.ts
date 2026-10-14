@@ -226,8 +226,8 @@ export function explainFlowError(message: string): FlowExplain {
   if (code === "FLOW_AUTOMATION_BLOCKED" || /FLOW_AUTOMATION_BLOCKED/i.test(raw)) {
     return make(
       "FLOW_AUTOMATION_BLOCKED",
-      "Flow sẽ reset phiên và thử kết nối lại một lần. Nếu cần đăng nhập Google, vào Tài khoản → Kết nối lại rồi chạy lại job.",
-      "Flow will reset the session and retry once. If Google sign-in is required, open Accounts → Reconnect, then retry the job.",
+      "Job này tự chạy lại bằng Chrome mới (tối đa 3 lần), các job khác vẫn chạy bình thường. Nếu vẫn lỗi: chờ vài phút rồi chạy lại.",
+      "This job auto-retries in a fresh Chrome (up to 3 times); other jobs keep running. If it persists: wait a few minutes, then retry.",
     );
   }
   if (code === "FLOW_GENERATION_TIMEOUT") {
@@ -320,6 +320,7 @@ export function explainFlowEvent(event: string): { titleVi: string; titleEn: str
     account_suspended: ["Tài khoản đã bị tạm cách ly", "Account temporarily quarantined"],
     account_unsuspended: ["Đã gỡ cách ly tài khoản", "Account suspension cleared"],
     job_retry: ["Đưa job vào chạy lại", "Job queued for retry"],
+    job_auto_retry: ["Tự chạy lại job bằng Chrome mới", "Auto-retrying job in a fresh Chrome"],
     job_failed: ["Job thất bại", "Job failed"],
     capability_settings_migrated: ["Đã chỉnh settings theo catalog tài khoản", "Settings migrated to account catalog"],
     late_worker_error_ignored: ["Bỏ qua lỗi worker muộn (job đã xong)", "Ignored late worker error (job already done)"],

@@ -17,7 +17,7 @@ def _register_snapshots() -> None:
     if getattr(_register_snapshots, "done", False):
         return
     from pipeline.drawing import jobs as drawing_jobs
-    from pipeline.flow import service as flow_service
+    from pipeline.flow.service import service as flow
     from pipeline.automation import service as automation_service
     from pipeline.srt_export import list_jobs as list_srt_export_jobs
     from pipeline.cleaner.cleaner_jobs import list_jobs as list_cleaner_jobs
@@ -27,9 +27,9 @@ def _register_snapshots() -> None:
     from pipeline.tts.studio import list_job_progress as list_tts_job_progress
 
     realtime.register_snapshot("flow", lambda: {
-        "jobs": flow_service.service.jobs(),
-        "accounts": flow_service.service.accounts(),
-        "logs": flow_service.service.logs(),
+        "jobs": flow.jobs(),
+        "accounts": flow.accounts(),
+        "logs": flow.logs(),
     })
     realtime.register_snapshot("drawing", lambda: {"jobs": drawing_jobs.list_jobs()})
     realtime.register_snapshot("automation", lambda: {"jobs": automation_service.service.list_jobs()})
