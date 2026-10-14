@@ -366,14 +366,21 @@ export function formatFlowJobSettingsMeta(
 }
 
 export function normalizeFlowAccounts(rows: FlowAccount[]): FlowAccount[] {
-  return rows.map((a) => ({
+  return rows.map((a) => {
+    // The backend keeps image/video projects in kind-specific fields while
+    // projectId remains the legacy image project. Keep the public helper's
+    // connected-account contract compatible with both schemas.
+    const projectId = a.projectId || a.imageProjectId || a.videoProjectId || "";
+    return ({
     ...a,
+    projectId,
     used: Number(a.used || 0),
-    credits: a.creditsSyncedAt || (a.status === "online" && a.projectId && a.credits != null)
+    credits: a.creditsSyncedAt || (a.status === "online" && projectId && a.credits != null)
       ? Number(a.credits) : null,
     suspendedUntil: a.suspendedUntil ? Number(a.suspendedUntil) : null,
     suspendReason: a.suspendReason ? String(a.suspendReason) : null,
-  }));
+    });
+  });
 }
 
 export function isFlowAccountConnected(account: FlowAccount): boolean {

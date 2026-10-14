@@ -219,8 +219,8 @@ export function explainFlowError(message: string): FlowExplain {
     }
     return make(
       code,
-      "Sửa prompt / bỏ ảnh tham chiếu nhạy cảm, rồi chạy lại.",
-      "Edit the prompt / remove sensitive references, then retry.",
+      "Flow báo lỗi tạo media. Xem chi tiết lỗi rồi thử lại.",
+      "Flow reported a media generation error. Check the error details and retry.",
     );
   }
   if (code === "FLOW_AUTOMATION_BLOCKED" || /FLOW_AUTOMATION_BLOCKED/i.test(raw)) {

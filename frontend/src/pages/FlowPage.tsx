@@ -727,7 +727,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     };
   }, [hasActiveFlowJobs, realtimeStatus, tab]);
   useEffect(() => {
-    if (!hasConnectingAccounts || realtimeStatus === "connected") return;
+    // The account connect worker updates the durable store asynchronously. SSE
+    // is only an optimization and may report connected while the account
+    // transition event was missed, so keep polling until the worker settles.
+    if (!hasConnectingAccounts) return;
     let active = true;
     const refreshAccounts = () =>
       void flowRequest<{ accounts: FlowAccount[] }>("/api/flow/accounts")
@@ -735,12 +738,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         .catch(() => undefined);
     // Call immediately so the UI updates as soon as Chrome closes (no 10-s dead wait).
     refreshAccounts();
-    const timer = window.setInterval(refreshAccounts, 10000);
+    const timer = window.setInterval(refreshAccounts, 2000);
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [hasConnectingAccounts, realtimeStatus]);
+  }, [hasConnectingAccounts]);
   useEffect(() => {
     void api.getConfig()
       .then((data) => setIsDesktopApp(Boolean(data.desktop)))
@@ -1517,7 +1520,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       groups,
       fresh: initialJobs.length > 0 && initialJobs.every(isFreshCreateJob),
       touched: [],
-      headless: settings.headless,
+      // Retry/create-new dialog must start headless every time. Opening Chrome
+      // is an explicit per-run choice, so a previous global preference cannot
+      // silently enable it here.
+      headless: true,
       removeLogo: Boolean(selectedJob.settings.removeLogo ?? settings.removeLogo),
     });
   };

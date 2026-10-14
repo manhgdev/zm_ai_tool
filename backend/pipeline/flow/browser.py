@@ -14,6 +14,7 @@ import threading
 import sys
 import signal
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -358,6 +359,7 @@ class BrowserManager:
         safe and preventing unrelated Chrome accounts from being killed.
         """
         profile = str(self.profile_dir.resolve())
+        matched = False
         try:
             import psutil  # type: ignore
             # Request only pid metadata during iteration. On macOS, asking
@@ -370,6 +372,7 @@ class BrowserManager:
                     cmdline = " ".join(proc.cmdline() or [])
                     if profile not in cmdline:
                         continue
+                    matched = True
                     proc.send_signal(signal.SIGTERM)
                     try:
                         proc.wait(timeout=0.5)
@@ -378,7 +381,19 @@ class BrowserManager:
                 except (psutil.Error, OSError, PermissionError, SystemError):
                     continue
         except (ImportError, psutil.Error, OSError, PermissionError, SystemError):
-            return
+            pass
+        # macOS can deny cmdline inspection for Chrome helper processes. The
+        # profile path is unique per job, so pkill's exact command-line match
+        # is a safe fallback for those otherwise orphaned helpers.
+        if sys.platform != "win32" and not matched:
+            import subprocess
+            try:
+                pattern = f"--user-data-dir={profile}"
+                subprocess.run(["pkill", "-TERM", "-f", "--", pattern], check=False, timeout=2)
+                time.sleep(0.2)
+                subprocess.run(["pkill", "-KILL", "-f", "--", pattern], check=False, timeout=2)
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     @property
     def context(self) -> BrowserContext:
