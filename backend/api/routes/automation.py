@@ -13,8 +13,29 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from pipeline.core.output_paths import downloads_folder
-from pipeline.automation import service
 from api.i18n import current_locale
+
+
+class _LazyAutomationService:
+    """Defer automation worker import until the first automation API call."""
+
+    __slots__ = ("_obj",)
+
+    def __init__(self) -> None:
+        self._obj = None
+
+    def _get(self):
+        if self._obj is None:
+            from pipeline.automation.service import service as value
+
+            self._obj = value
+        return self._obj
+
+    def __getattr__(self, name: str):
+        return getattr(self._get(), name)
+
+
+service = _LazyAutomationService()
 
 router = APIRouter(prefix="/api/automation", tags=["automation"])
 

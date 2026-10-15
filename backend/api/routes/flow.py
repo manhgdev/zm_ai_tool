@@ -14,11 +14,33 @@ from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, SecretStr
 
-from pipeline.flow import service, series
+from pipeline.flow import series
 from pipeline.flow import store
 from pipeline.flow.series_runner import runner as series_runner
 
 router = APIRouter(prefix="/api/flow", tags=["flow"])
+
+
+class _LazyFlowService:
+    """Defer the large Flow worker module until the first Flow API call."""
+
+    __slots__ = ("_obj",)
+
+    def __init__(self) -> None:
+        self._obj = None
+
+    def _get(self):
+        if self._obj is None:
+            from pipeline.flow.service import service as value
+
+            self._obj = value
+        return self._obj
+
+    def __getattr__(self, name: str):
+        return getattr(self._get(), name)
+
+
+service = _LazyFlowService()
 
 
 class AccountIn(BaseModel):

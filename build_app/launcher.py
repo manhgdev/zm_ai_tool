@@ -16,6 +16,27 @@ from pathlib import Path
 
 APP_DISPLAY_NAME = "ZM AI TOOL"
 _SUPERVISOR_ENV = "ZM_AI_TOOL_SUPERVISOR_CHILD"
+_BOOT_T0 = time.monotonic()
+_BOOT_LAST = _BOOT_T0
+
+
+def _boot_mark(phase: str, *, log_home: Path | None = None) -> None:
+    """Append a short boot phase line to app.log (and stdout when available)."""
+    global _BOOT_LAST
+    now = time.monotonic()
+    delta = now - _BOOT_LAST
+    total = now - _BOOT_T0
+    _BOOT_LAST = now
+    line = f"[desktop] boot {phase} +{delta:.2f}s (total {total:.2f}s)"
+    print(line, flush=True)
+    target = log_home if log_home is not None else globals().get("home")
+    if not isinstance(target, Path):
+        return
+    try:
+        with (target / "app.log").open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
 
 
 def prepare_pythonnet(root: Path) -> None:
@@ -187,6 +208,7 @@ if sys.platform == "win32":
                         _bootstrap_log.write(f"[portable] migration failed: {_line}\n")
             except OSError:
                 pass
+        _boot_mark("migrate", log_home=home)
 else:
     home = app_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -386,6 +408,7 @@ def _supervise_child() -> int:
     except Exception:
         env = os.environ.copy()
     env[_SUPERVISOR_ENV] = "1"
+    _boot_mark("parent_spawn")
     proc = subprocess.Popen([sys.executable, *sys.argv[1:]], env=env)
     return int(proc.wait())
 
@@ -401,6 +424,8 @@ if __name__ == "__main__" and os.environ.get(_SUPERVISOR_ENV) != "1":
     if rc != 0:
         show_copyable_crash(rc)
     raise SystemExit(rc)
+
+_boot_mark("child_enter")
 
 try:
     from pipeline.core.accel import apply_gpu_process_env
@@ -489,6 +514,8 @@ if getattr(sys, "frozen", False):
         install_auto_install_hook()  # thiếu cv2/numpy/PIL/onnxruntime/soundfile → tự cài gói OCR khi import
     except Exception:
         traceback.print_exc()
+
+_boot_mark("runtime_site")
 
 ocr_venv = home / ".venv-ocr"
 ocr_site = (
@@ -667,11 +694,13 @@ APP_VERSION = app_version()
 # Restart/update children can inherit the previous app's version on any platform.
 os.environ["ZM_AI_TOOL_VERSION"] = APP_VERSION
 
+_boot_mark("import_app_begin")
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 from main import app  # noqa: E402
 import uvicorn  # noqa: E402
 import webview  # noqa: E402
+_boot_mark("import_app_done")
 
 web_dir = bundle / "dist"
 
@@ -860,6 +889,7 @@ def bind_desktop_events(window: object, url: str = "") -> None:
 def run_desktop() -> int:
     if not acquire_single_instance():
         return 0
+    _boot_mark("run_desktop")
     prepare_pythonnet(bundle)
     try:
         from pipeline.core.app_log import append_log, install_process_hooks
@@ -885,11 +915,11 @@ def run_desktop() -> int:
         daemon=True,
     )
     thread.start()
-    _t0 = time.monotonic()
+    _boot_mark("uvicorn_start")
     print(f"{APP_DISPLAY_NAME} v{APP_VERSION} — chờ API...", flush=True)
     try:
         if not wait_for_server(port):
-            print(f"[desktop] API không khởi được sau {time.monotonic()-_t0:.1f}s", flush=True)
+            print(f"[desktop] API không khởi được sau {time.monotonic()-_BOOT_T0:.1f}s", flush=True)
             # Giữ cửa sổ thông báo thay vì im lặng exit
             try:
                 webview.create_window(
@@ -908,7 +938,8 @@ def run_desktop() -> int:
             except Exception:
                 traceback.print_exc()
             return 1
-        print(f"[desktop] API sẵn sàng sau {time.monotonic()-_t0:.1f}s tại {base}", flush=True)
+        _boot_mark("api_ready")
+        print(f"[desktop] API sẵn sàng tại {base}", flush=True)
         # Open root so React restores the last header tab from ui-preferences /
         # localStorage instead of always landing on Text-to-Speech.
         page_url = f"{base}/?v={APP_VERSION}"
@@ -945,6 +976,7 @@ def run_desktop() -> int:
                 page_url,
                 **win_kw,
             )
+        _boot_mark("webview_window")
         try:
             from pipeline.core.desktop_window import register_restore_callback
 
@@ -962,6 +994,7 @@ def run_desktop() -> int:
         except Exception:
             traceback.print_exc()
         # webview.start() chặn đến khi user đóng cửa sổ — không thoát vì lỗi job nền
+        _boot_mark("webview_start")
         try:
             webview.start(bind_desktop_events, (window, page_url), gui="edgechromium", debug=False)
         except Exception:

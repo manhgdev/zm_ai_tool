@@ -102,27 +102,11 @@ def create_app() -> FastAPI:
         except Exception:
             pass
         try:
-            from pipeline.flow import service as flow_service
-
-            # Flow never auto-runs: jobs left over from the last session are marked stopped (user presses Run).
-            flow_service.start()
-        except Exception:
-            pass
-
-        try:
-            from pipeline.automation import service as automation_service
-
-            # Never auto-run after a restart: leftover jobs become interrupted/stopped; the user presses Run/Resume.
-            automation_service.start()
-        except Exception:
-            pass
-        try:
             from pipeline.core.memory_guard import start_monitor
 
             start_monitor()
         except Exception:
             pass
-
 
         threading.Thread(
             target=run_public_cleanup_periodically,
@@ -131,7 +115,7 @@ def create_app() -> FastAPI:
         ).start()
 
         try:
-            from pipeline.core.app_log import append_log, install_process_hooks
+            from pipeline.core.app_log import install_process_hooks
 
             install_process_hooks()
         except Exception:
@@ -155,8 +139,29 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
 
+        def _start_flow() -> None:
+            # Flow never auto-runs: leftover jobs become stopped (user presses Run).
+            try:
+                from pipeline.flow.service import service as flow_service
+
+                flow_service.start()
+            except Exception:
+                pass
+
+        def _start_automation() -> None:
+            # Never auto-run after a restart; user presses Run/Resume.
+            try:
+                from pipeline.automation.service import service as automation_service
+
+                automation_service.start()
+            except Exception:
+                pass
+
         threading.Thread(target=_warm_checks, name="warm-checks", daemon=True).start()
         threading.Thread(target=_run, name="prepare-accel", daemon=True).start()
+        # Do not block /api/health on Flow/automation module import.
+        threading.Thread(target=_start_flow, name="flow-start", daemon=True).start()
+        threading.Thread(target=_start_automation, name="automation-start", daemon=True).start()
         yield
         # Shutdown: không để ffmpeg/yt-dlp/Chrome/worker mồ côi chạy nền.
         try:

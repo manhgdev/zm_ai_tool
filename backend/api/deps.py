@@ -305,7 +305,7 @@ def validate_segment_editor_fields(body: SegmentIn, meta: dict) -> None:
 
 
 def require_meta(project_id: str) -> dict:
-    from pipeline import load_meta
+    from pipeline.core.project import load_meta
 
     meta = load_meta(project_id)
     if not meta:

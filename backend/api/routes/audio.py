@@ -36,37 +36,7 @@ from api.deps import (
 )
 from api.job_spawn import spawn
 from api.video_serve import serve_video_file
-from pipeline import (
-    DATA,
-    PUBLIC_DATA,
-    ensure_layout,
-    ffprobe_duration,
-    find_project_by_fp,
-    hardware,
-    list_voices,
-    load_meta,
-    mutate_meta,
-    out_final,
-    project_dir,
-    request_cancel,
-    run_dub,
-    run_export,
-    run_pipeline,
-    save_meta,
-    set_status,
-    tts_cache_key,
-    tts_segment,
-    video_fingerprint,
-)
-from pipeline.core.jobs import arm_job
-from pipeline.core.media import meta_baked_speed, meta_has_user_bake, video_size
-from pipeline.export.mux import (
-    export_project_audio,
-    find_cached_no_vocals,
-    read_stem_progress,
-    separate_no_vocals,
-)
-from pipeline.tts import engines_status
+from pipeline.core.project import ensure_layout, load_meta, set_status
 
 router = APIRouter()
 
@@ -76,13 +46,6 @@ _serve_video_file = serve_video_file
 _validate_overlay = validate_overlay
 _validate_segment_editor_fields = validate_segment_editor_fields
 _SEG_PRESERVE = SEG_PRESERVE
-
-from pipeline.export.mux import (
-    export_project_audio,
-    find_cached_no_vocals,
-    read_stem_progress,
-    separate_no_vocals,
-)
 
 
 @router.get("/api/projects/{project_id}/audio/no-vocals/status")

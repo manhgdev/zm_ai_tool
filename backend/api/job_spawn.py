@@ -51,7 +51,7 @@ def _mark_job_error(project_id: object, job: str, msg: str) -> None:
     if not isinstance(project_id, str) or not project_id:
         return
     try:
-        from pipeline import set_status
+        from pipeline.core.project import set_status
 
         set_status(project_id, progress=0, message=f"Lỗi: {msg}", running=False, error=msg)
     except Exception as st_e:

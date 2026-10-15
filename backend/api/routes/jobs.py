@@ -36,38 +36,11 @@ from api.deps import (
 )
 from api.job_spawn import spawn
 from api.video_serve import serve_video_file
-from pipeline import (
-    DATA,
-    PUBLIC_DATA,
-    ensure_layout,
-    ffprobe_duration,
-    find_project_by_fp,
-    hardware,
-    list_voices,
-    load_meta,
-    mutate_meta,
-    out_final,
-    project_dir,
-    request_cancel,
-    run_dub,
-    run_export,
-    run_pipeline,
-    save_meta,
-    set_status,
-    tts_cache_key,
-    tts_segment,
-    video_fingerprint,
-)
+from pipeline.core.config import PUBLIC_DATA
+from pipeline.core.jobs import request_cancel
+from pipeline.core.project import load_meta, out_final, project_dir, save_meta, set_status
 from pipeline.core.config import REPO_ROOT, export_display_path
 from pipeline.core.jobs import arm_job
-from pipeline.core.media import meta_baked_speed, meta_has_user_bake, video_size
-from pipeline.export.mux import (
-    export_project_audio,
-    find_cached_no_vocals,
-    read_stem_progress,
-    separate_no_vocals,
-)
-from pipeline.tts import engines_status
 
 router = APIRouter()
 
@@ -215,6 +188,8 @@ def api_dub(project_id: str, settings: Settings):
         running=True,
         error=None,
     )
+    from pipeline.run import run_dub
+
     _spawn(run_dub, project_id)
     return {"ok": True}
 
@@ -323,6 +298,8 @@ def api_export(project_id: str, payload: ExportPayload):
         running=True,
         error=None,
     )
+    from pipeline.run import run_export
+
     _spawn(run_export, project_id)
     return {
         "ok": True,

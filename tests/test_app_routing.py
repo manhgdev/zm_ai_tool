@@ -16,6 +16,21 @@ SPA_PATHS = (
 
 
 class DesktopRoutingTest(unittest.TestCase):
+    def test_desktop_boot_phases_are_logged(self):
+        launcher = Path(__file__).resolve().parents[1] / 'build_app' / 'launcher.py'
+        source = launcher.read_text(encoding='utf-8')
+        for phase in (
+            'parent_spawn',
+            'child_enter',
+            'runtime_site',
+            'import_app_begin',
+            'import_app_done',
+            'api_ready',
+            'webview_start',
+        ):
+            self.assertIn(f'_boot_mark("{phase}"', source)
+        self.assertIn('[desktop] boot ', source)
+
     def test_startup_opens_root_not_forced_tts(self):
         launcher = Path(__file__).resolve().parents[1] / 'build_app' / 'launcher.py'
         source = launcher.read_text(encoding='utf-8')

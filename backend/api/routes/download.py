@@ -10,9 +10,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from api.deps import Settings
-from pipeline import (
+from pipeline.core.media import ffprobe_duration
+from pipeline.core.project import (
     ensure_layout,
-    ffprobe_duration,
     find_project_by_fp,
     load_meta,
     save_meta,
