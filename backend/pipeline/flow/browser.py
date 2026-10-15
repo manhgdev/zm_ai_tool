@@ -611,7 +611,20 @@ class BrowserManager:
             except Exception:
                 pass
         owned = self._owns_chrome_process
-        if self.cdp_url and self._cdp_browser:
+        proc = self._chrome_proc
+        if owned and self._cdp_browser is not None:
+            # Ask Chrome to quit so Cookie DB / Login Data flush before kill.
+            try:
+                await asyncio.wait_for(self._cdp_browser.close(), timeout=5.0)
+            except Exception:
+                pass
+            self._cdp_browser = None
+            if proc is not None and proc.poll() is None:
+                try:
+                    await asyncio.to_thread(proc.wait, 5.0)
+                except Exception:
+                    pass
+        elif self.cdp_url and self._cdp_browser:
             self._cdp_browser = None
         elif self._ctx:
             try:

@@ -1167,7 +1167,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           `/api/flow/accounts/${target.id}/prepare`,
           { method: "POST" },
         );
-        const ok = Boolean(row.ok) || row.code === "SESSION_IN_USE";
+        const ok = Boolean(row.ok) || row.code === "SESSION_IN_USE" || row.code === "SESSION_READY";
         if (ok) {
           okCount += 1;
           sessionCheckedAccounts.add(target.id);

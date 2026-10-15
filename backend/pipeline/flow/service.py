@@ -2521,6 +2521,14 @@ class FlowService:
                 )
                 async def open_and_wait() -> None:
                     await browser.start()
+                    # Empty Cookie DB (or cookie-auth): re-inject jar like Connect.
+                    live = store.get_row("accounts", account_id) or account
+                    jar = _cookies_for_fresh_profile(live.get("cookie"))
+                    if jar and _seed_stored_cookies({**live, "id": account_id}):
+                        try:
+                            await browser.context.add_cookies(jar)
+                        except Exception:
+                            pass
                     with self._guard:
                         self._manual_sessions[session_key] = {
                             "browser": browser,
@@ -2536,7 +2544,7 @@ class FlowService:
                     await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=30_000)
                     signed_in = await self._confirm_open_session(browser, account_id, page)
                     if signed_in:
-                        await self._persist_browser_cookies(account_id, browser)
+                        # _confirm_open_session already persisted; sync clone Cookie DB.
                         await asyncio.to_thread(self._sync_runtime_cookies, account_id, session_profile)
                     if not signed_in and not headless and await _browser_at_login_wall(browser):
                         # Dead session: go straight to Google sign-in, like Connect.
@@ -2838,6 +2846,10 @@ class FlowService:
             # Chrome or rewrite its cookies.
             result.update(ok=True, code="SESSION_IN_USE")
             return result
+        # Connect / open-session already proved this process-local session.
+        if account.get("status") == "online" and account_id in self._account_session_ready:
+            result.update(ok=True, code="SESSION_READY")
+            return result
         stored = _account_cookie_records(account.get("cookie"))
         cookie_auth = str(account.get("authMethod") or "chrome") == "cookie"
         seed = _seed_stored_cookies(account)
@@ -2897,6 +2909,9 @@ class FlowService:
                 result.update(code="FLOW_COOKIE_EXPIRED")
                 return result
             merged = _merge_cookie_records(stored, fresh)
+            if not merged:
+                result.update(code="FLOW_COOKIE_SAVE_FAILED")
+                return result
             store.patch_row("accounts", account_id, {
                 "cookie": merged,
                 "status": "online",
@@ -3884,17 +3899,19 @@ class FlowService:
                 patch["accessTokenAt"] = now
             if detected_plan:
                 patch["plan"] = detected_plan
-            # Every account keeps the latest cookies: reset re-seeds the wiped profile from them.
-            try:
-                jar = [c for c in await browser.context.cookies() if "google" in str(c.get("domain") or "")]
-                if jar:
-                    patch["cookie"] = _merge_cookie_records(
-                        _account_cookie_records((store.get_row("accounts", account_id) or {}).get("cookie")),
-                        _account_cookie_records(jar),
-                    )
-            except Exception:
-                pass  # keep the previously stored cookies
+            # Persist jar before online — Mở phiên / prepare / reset all re-seed from it.
+            if not await self._persist_browser_cookies(account_id, browser):
+                raise RuntimeError(
+                    "FLOW_COOKIE_SAVE_FAILED: Could not save Google cookies after sign-in"
+                )
+            jar_count = len(_account_cookie_records((store.get_row("accounts", account_id) or {}).get("cookie")))
             store.patch_row("accounts", account_id, patch)
+            self._log(
+                "success",
+                "account_cookies_saved",
+                account_id=account_id,
+                details={"cookiesUpdated": jar_count},
+            )
             self._log(
                 "success",
                 "account_connected",
@@ -3942,6 +3959,9 @@ class FlowService:
             # Clone only after Chrome released the profile — otherwise cookies are incomplete
             # and every job raises "Could not obtain Bearer token" in a loop.
             if login_ok:
+                # Drop stale session clones so Mở phiên recopies the flushed canonical profile.
+                for kind in ("image", "video"):
+                    shutil.rmtree(self._session_profile_dir(account_id, kind), ignore_errors=True)
                 self._requeue_auth_failed_jobs(account_id)
         open_window = headless_login and not login_ok and (switch_to_login or open_ui_on_failure)
         if open_window:
@@ -8267,7 +8287,14 @@ class FlowService:
         # accounts.json jar before the context dies so reset/reconnect can
         # re-seed a clean profile (same as add-via-cookie).
         if account_id:
-            await self._persist_browser_cookies(account_id, browser)
+            if not await self._persist_browser_cookies(account_id, browser):
+                self._log(
+                    "warning",
+                    "job_cookie_save_failed",
+                    job_id=job_id,
+                    account_id=account_id,
+                    message="Could not persist Google cookies before closing job Chrome",
+                )
 
         def _may_force_kill() -> bool:
             if getattr(browser, "_owns_chrome_process", False):

@@ -300,6 +300,8 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             context.add_init_script.assert_awaited_once()
             with patch.object(manager, 'kill_now') as killer:
                 await manager.stop()
+            cdp_browser.close.assert_awaited_once()
+            fake_proc.wait.assert_called()
             killer.assert_called_once()
             self.assertFalse(manager._owns_chrome_process)
 

@@ -545,6 +545,99 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
         }):
             self.assertFalse(service._account_session_blocked("a"))
 
+    async def test_prepare_skips_probe_when_session_ready(self):
+        service = FlowService()
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            store._write("accounts", [{"id": "a", "label": "Acc", "status": "online", "projectId": "p"}])
+            service._mark_session_ready("a")
+            with patch("pipeline.flow.browser.BrowserManager") as browser_cls:
+                result = await service.prepare_account_cookies("a")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["code"], "SESSION_READY")
+            browser_cls.assert_not_called()
+
+    async def test_confirm_open_session_requires_cookie_persist(self):
+        service = FlowService()
+        page = MagicMock(url="https://flow.google.com/project/p")
+        browser = MagicMock(context=MagicMock(pages=[page]))
+        with patch.object(service, "_persist_browser_cookies", AsyncMock(return_value=False)), \
+             patch("pipeline.flow.service.store.get_row", return_value={"id": "a"}), \
+             patch("pipeline.flow.service.store.patch_row") as patch_row:
+            self.assertFalse(await service._confirm_open_session(browser, "a", page))
+            patch_row.assert_not_called()
+            self.assertNotIn("a", service._account_session_ready)
+
+    async def test_login_persist_fail_stays_reconnect_not_online(self):
+        service = FlowService()
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            store._write("accounts", [{"id": "a", "status": "connecting", "projectId": "p"}])
+            page = MagicMock()
+            page.url = "https://flow.google.com/project/p"
+            page.goto = AsyncMock()
+            page.is_closed = MagicMock(return_value=False)
+            page.evaluate = AsyncMock(return_value=True)
+            context = MagicMock(pages=[page])
+            browser = MagicMock(context=context, headless=True, _cdp_browser=None)
+            browser.start = AsyncMock()
+            browser.page = AsyncMock(return_value=page)
+            browser.stop = AsyncMock()
+            credits = MagicMock(credits=10, email="u@g.com", tier="", sku="", service_tier="")
+            api = MagicMock()
+            api.get_credits = AsyncMock(return_value=credits)
+            api._get_bearer_token = AsyncMock(return_value="")
+            with patch("pipeline.flow.browser.BrowserManager", return_value=browser), \
+                 patch("pipeline.flow.browser.free_local_port", return_value=1), \
+                 patch.object(service, "_fill_google_login_email", AsyncMock(return_value=False)), \
+                 patch.object(service, "_ensure_account_project", AsyncMock(return_value="p")), \
+                 patch.object(service, "_persist_browser_cookies", AsyncMock(return_value=False)), \
+                 patch("pipeline.flow.service.asyncio.sleep", AsyncMock()), \
+                 patch("pipeline.flow._flow._api.FlowAPI", return_value=api), \
+                 patch.object(service, "_log"):
+                await service._login("a", headless=True)
+            saved = store.get_row("accounts", "a")
+            self.assertEqual(saved["status"], "reconnect")
+            self.assertIn("FLOW_COOKIE_SAVE_FAILED", str(saved.get("error") or ""))
+            self.assertNotIn("a", service._account_session_ready)
+            browser.stop.assert_awaited()
+
+    async def test_login_ok_drops_session_clones_after_stop(self):
+        service = FlowService()
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            store._write("accounts", [{"id": "a", "status": "connecting", "projectId": "p"}])
+            for kind in ("image", "video"):
+                clone = service._session_profile_dir("a", kind)
+                clone.mkdir(parents=True)
+                (clone / "marker").write_text("stale", encoding="utf-8")
+            page = MagicMock()
+            page.url = "https://flow.google.com/project/p"
+            page.goto = AsyncMock()
+            page.is_closed = MagicMock(return_value=False)
+            page.evaluate = AsyncMock(return_value=True)
+            context = MagicMock(pages=[page])
+            browser = MagicMock(context=context, headless=True, _cdp_browser=None)
+            browser.start = AsyncMock()
+            browser.page = AsyncMock(return_value=page)
+            browser.stop = AsyncMock()
+            credits = MagicMock(credits=10, email="u@g.com", tier="", sku="", service_tier="")
+            api = MagicMock()
+            api.get_credits = AsyncMock(return_value=credits)
+            api._get_bearer_token = AsyncMock(return_value="")
+            with patch("pipeline.flow.browser.BrowserManager", return_value=browser), \
+                 patch("pipeline.flow.browser.free_local_port", return_value=1), \
+                 patch.object(service, "_fill_google_login_email", AsyncMock(return_value=False)), \
+                 patch.object(service, "_ensure_account_project", AsyncMock(return_value="p")), \
+                 patch.object(service, "_persist_browser_cookies", AsyncMock(return_value=True)), \
+                 patch("pipeline.flow.service.asyncio.sleep", AsyncMock()), \
+                 patch("pipeline.flow._flow._api.FlowAPI", return_value=api), \
+                 patch.object(service, "_log"), \
+                 patch.object(service, "_requeue_auth_failed_jobs", return_value=0):
+                await service._login("a", headless=True)
+            saved = store.get_row("accounts", "a")
+            self.assertEqual(saved["status"], "online")
+            self.assertIn("a", service._account_session_ready)
+            for kind in ("image", "video"):
+                self.assertFalse(service._session_profile_dir("a", kind).exists())
+
     async def test_page_shell_warning_does_not_fail_pending_generation(self):
         service = FlowService()
         page = MagicMock()

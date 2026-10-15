@@ -100,6 +100,15 @@ test('create account probe uses selectedAccountLabel not legacy settings.account
   assert.match(retryProbe, /row && isFlowAccountAvailable\(row\)/);
 });
 
+test('prepare probe treats SESSION_READY as success', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
+  const start = source.indexOf('const probeAccountsBeforeJobs');
+  assert.ok(start > 0);
+  const probe = source.slice(start, start + 1200);
+  assert.match(probe, /row\.code === "SESSION_READY"/);
+  assert.match(probe, /SESSION_IN_USE/);
+});
+
 test('video resolution selection follows the matching download quality', () => {
   const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
   const matches = source.match(/resolution\.toLowerCase\(\) === "360p" \|\| resolution\.toLowerCase\(\) === "720p" \? \{ quality: resolution \} : \{\}/g) || [];

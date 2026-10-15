@@ -14,6 +14,68 @@ from pipeline.flow.service import _account_cookie_records
 
 
 class FlowAccountCookieTests(unittest.TestCase):
+    def test_open_session_seeds_jar_when_cookie_db_empty(self):
+        from pipeline.flow import store
+        from pipeline.flow.service import FlowService, _seed_stored_cookies
+
+        class _Page:
+            url = ""
+
+            async def goto(self, url, **_kwargs):
+                self.url = url
+
+            def is_closed(self):
+                return True
+
+        class _Browser:
+            def __init__(self, **_kwargs):
+                self.cdp_url = "http://127.0.0.1:1"
+                self.page_instance = _Page()
+                self.context = MagicMock(pages=[])
+                self.context.add_cookies = AsyncMock()
+                self.stopped = False
+
+            async def start(self):
+                return self
+
+            async def page(self):
+                return self.page_instance
+
+            async def stop(self):
+                self.stopped = True
+
+        async def _done(*_args, **_kwargs):
+            return None
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            jar = [{"name": "SID", "value": "live", "domain": ".google.com", "path": "/", "secure": True,
+                    "expires": time.time() + 86400}]
+            store._write("accounts", [{
+                "id": "a", "status": "online", "authMethod": "chrome", "cookie": jar, "projectId": "p",
+            }])
+            account = store.get_row("accounts", "a")
+            self.assertTrue(_seed_stored_cookies({**account, "id": "a"}))
+            browsers = []
+
+            def make_browser(**kwargs):
+                browser = _Browser(**kwargs)
+                browsers.append(browser)
+                return browser
+
+            service = FlowService()
+            with patch("pipeline.flow.browser.BrowserManager", side_effect=make_browser), \
+                 patch("pipeline.flow.browser.free_local_port", return_value=9333), \
+                 patch.object(service, "_ensure_session_profile", return_value=Path(directory) / "session"), \
+                 patch.object(service, "_confirm_open_session", AsyncMock(return_value=True)), \
+                 patch.object(service, "_persist_browser_cookies", AsyncMock(return_value=True)), \
+                 patch("pipeline.flow.service.asyncio.to_thread", new=_done), \
+                 patch("pipeline.flow.service.threading.Thread") as thread:
+                service.open_account_session("a", kind="image", headless=True)
+                thread.call_args.kwargs["target"]()
+            self.assertEqual(len(browsers), 1)
+            browsers[0].context.add_cookies.assert_awaited()
+            self.assertTrue(browsers[0].stopped)
+
     def test_cookie_header_is_scoped_to_google(self):
         cookies = _labs_cookies("Cookie: SID=abc%3D; __Secure-3PSID=xyz==;")
         self.assertEqual({cookie["domain"] for cookie in cookies}, {".google.com"})
