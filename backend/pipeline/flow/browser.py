@@ -317,6 +317,29 @@ def free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _cdp_endpoint_ready(cdp_url: str) -> bool:
+    """True when Chrome's remote-debugging HTTP endpoint answers."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{cdp_url.rstrip('/')}/json/version", timeout=1.0) as resp:
+            return int(getattr(resp, "status", 200) or 200) < 400
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return False
+
+
+async def _wait_cdp_endpoint(cdp_url: str, *, timeout_s: float = 30.0) -> None:
+    """Block until a spawned Chrome exposes its CDP HTTP endpoint."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if await asyncio.to_thread(_cdp_endpoint_ready, cdp_url):
+            return
+        await asyncio.sleep(0.15)
+    raise RuntimeError(
+        f"FLOW_CDP_TIMEOUT: Chrome remote debugging did not open at {cdp_url}"
+    )
+
 
 async def _goto_tolerant(page, url: str) -> None:
     """goto() that accepts being superseded by a parallel navigation to the same page."""
@@ -361,6 +384,10 @@ class BrowserManager:
         self._window_placed = False
         self._profile_lock = profile_lock(self.profile_dir)
         self._owns_profile = False
+        # True when this manager spawned Chrome and must reap it on stop/kill.
+        # External from_cdp() attach leaves this False so user Chrome survives.
+        self._owns_chrome_process = False
+        self._chrome_proc: subprocess.Popen[Any] | None = None
         # ponytail: captured only for on-screen windows; restored in stop().
         self._prior_app: Any = None
 
@@ -374,17 +401,81 @@ class BrowserManager:
         manager._window_placed = True  # owner already placed it; re-placing makes it jump
         return manager
 
+    def _spawn_chrome_argv(self, executable: Path, port: int) -> list[str]:
+        """Minimal real-Chrome argv (no Playwright launch wrapper)."""
+        args = [
+            str(executable),
+            f"--user-data-dir={self.profile_dir}",
+            "--profile-directory=Default",
+            f"--remote-debugging-port={int(port)}",
+            "--remote-debugging-address=127.0.0.1",
+            "--lang=en-US",
+            "--disable-extensions",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-blink-features=AutomationControlled",
+        ]
+        if self.restore_last_session:
+            args.append("--restore-last-session")
+        if sys.platform.startswith("linux") and getattr(os, "geteuid", lambda: -1)() == 0:
+            args.append("--no-sandbox")
+        if self._chromeless:
+            # New headless still differs from headed, but avoids Playwright's
+            # bundled headless launch surface for cookie reconnects on VPS.
+            args.extend(["--headless=new", "--window-size=1080,800"])
+        else:
+            args.extend(_visible_window_args(fullscreen=self.fullscreen))
+        return args
+
+    async def _attach_cdp_context(self, cdp_url: str) -> None:
+        self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
+        self._cdp_browser = await self._pw.chromium.connect_over_cdp(cdp_url)
+        contexts = self._cdp_browser.contexts
+        if not contexts:
+            raise RuntimeError("FLOW_CDP_NO_CONTEXT: Existing Chrome has no browser context")
+        self._ctx = contexts[0]
+        await self._ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+
+    async def _start_spawned_chrome(self, executable: Path) -> None:
+        """Spawn branded Chrome ourselves, then attach Playwright over CDP.
+
+        Avoids Playwright ``launch_persistent_context`` (heavy automation
+        fingerprint). Connect / cookie login / manual sessions use this path.
+        """
+        port = int(self.remote_debugging_port or free_local_port())
+        self.remote_debugging_port = port
+        self.cdp_url = f"http://127.0.0.1:{port}"
+        argv = self._spawn_chrome_argv(executable, port)
+        popen_kwargs: dict[str, Any] = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if sys.platform == "win32":
+            # New process group so kill_now can signal the tree; keep the
+            # window visible for headed cookie/connect sessions.
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+        self._chrome_proc = subprocess.Popen(argv, **popen_kwargs)
+        self._owns_chrome_process = True
+        try:
+            await _wait_cdp_endpoint(self.cdp_url, timeout_s=45.0)
+            await self._attach_cdp_context(self.cdp_url)
+        except BaseException:
+            self.kill_now()
+            self._owns_chrome_process = False
+            self._chrome_proc = None
+            raise
+
     async def start(self) -> "BrowserManager":
-        if self.cdp_url:
+        if self.cdp_url and not self.remote_debugging_port:
+            # Pure attach to an already-running Chrome (from_cdp / shared session).
             if not await asyncio.to_thread(network_available):
                 raise RuntimeError('FLOW_NETWORK_UNAVAILABLE: Internet connection is unavailable')
             try:
-                self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
-                self._cdp_browser = await self._pw.chromium.connect_over_cdp(self.cdp_url)
-                contexts = self._cdp_browser.contexts
-                if not contexts:
-                    raise RuntimeError("FLOW_CDP_NO_CONTEXT: Existing Chrome has no browser context")
-                self._ctx = contexts[0]
+                await self._attach_cdp_context(self.cdp_url)
                 return self
             except BaseException:
                 await self.stop()
@@ -431,6 +522,16 @@ class BrowserManager:
                 await asyncio.sleep(0.05)
             visible_launch_owned = True
         try:
+            # Connect / manual / cookie-login pass remote_debugging_port so we
+            # spawn real Chrome + attach CDP (closer to a hand-opened browser).
+            # Job workers omit the port and keep Playwright launch_persistent.
+            if self.remote_debugging_port:
+                await asyncio.wait_for(self._start_spawned_chrome(executable), timeout=60)
+                if visible_launch_owned:
+                    _visible_launch_guard.release()
+                    visible_launch_owned = False
+                return self
+
             self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
             window_args = _visible_window_args(fullscreen=self.fullscreen) if show_window else []
             # Force Default inside Flow's user-data-dir so Windows never shows
@@ -446,12 +547,6 @@ class BrowserManager:
             # native session so Chrome keeps these session cookies on reopen.
             if self.restore_last_session:
                 launch_args.append("--restore-last-session")
-            if self.remote_debugging_port:
-                self.cdp_url = f"http://127.0.0.1:{int(self.remote_debugging_port)}"
-                launch_args.extend([
-                    f"--remote-debugging-port={int(self.remote_debugging_port)}",
-                    "--remote-debugging-address=127.0.0.1",
-                ])
             # Keep the same browser compatibility surface for every Flow
             # session, including direct image/video workers.
             launch_args.append("--disable-blink-features=AutomationControlled")
@@ -508,14 +603,14 @@ class BrowserManager:
         return self
 
     async def stop(self) -> None:
-        # CDP is an attachment to the user's already-running Chrome. Stopping
-        # Playwright must only disconnect its transport; Browser.close() would
-        # terminate the user's one visible session and invalidate the next job.
+        # External CDP attach: disconnect Playwright only — never close the
+        # user's Chrome. Spawned Chrome (connect/login) is reaped below.
         if self._owns_page and self._page:
             try:
                 await self._page.close()
             except Exception:
                 pass
+        owned = self._owns_chrome_process
         if self.cdp_url and self._cdp_browser:
             self._cdp_browser = None
         elif self._ctx:
@@ -532,6 +627,13 @@ class BrowserManager:
         self._cdp_browser = None
         self._pw = None
         self._page = None
+        if owned:
+            try:
+                await asyncio.to_thread(self.kill_now)
+            except Exception:
+                pass
+            self._owns_chrome_process = False
+            self._chrome_proc = None
         if self._owns_profile:
             self._owns_profile = False
             self._profile_lock.release()
@@ -547,6 +649,17 @@ class BrowserManager:
         The runtime profile is unique per job, making the command-line match
         safe and preventing unrelated Chrome accounts from being killed.
         """
+        proc = self._chrome_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            except OSError:
+                pass
+        self._chrome_proc = None
         profile = str(self.profile_dir.resolve())
         matched = False
         try:
@@ -554,19 +667,19 @@ class BrowserManager:
             # Request only pid metadata during iteration. On macOS, asking
             # psutil for cmdline in process_iter can raise PermissionError or
             # SystemError from KERN_PROCARGS2 for unrelated protected PIDs.
-            for proc in psutil.process_iter(["pid"]):
+            for candidate in psutil.process_iter(["pid"]):
                 try:
-                    if proc.pid == os.getpid():
+                    if candidate.pid == os.getpid():
                         continue
-                    cmdline = " ".join(proc.cmdline() or [])
+                    cmdline = " ".join(candidate.cmdline() or [])
                     if profile not in cmdline:
                         continue
                     matched = True
-                    proc.send_signal(signal.SIGTERM)
+                    candidate.send_signal(signal.SIGTERM)
                     try:
-                        proc.wait(timeout=0.5)
+                        candidate.wait(timeout=0.5)
                     except psutil.TimeoutExpired:
-                        proc.kill()
+                        candidate.kill()
                 except (psutil.Error, OSError, PermissionError, SystemError):
                     continue
         except (ImportError, psutil.Error, OSError, PermissionError, SystemError):
@@ -575,7 +688,6 @@ class BrowserManager:
         # profile path is unique per job, so pkill's exact command-line match
         # is a safe fallback for those otherwise orphaned helpers.
         if sys.platform != "win32" and not matched:
-            import subprocess
             try:
                 pattern = f"--user-data-dir={profile}"
                 subprocess.run(["pkill", "-TERM", "-f", "--", pattern], check=False, timeout=2)

@@ -2058,6 +2058,97 @@ class FlowService:
         if closed:
             time.sleep(1.0)
 
+    def _recreate_account_from_cookies(self, old_id: str) -> str | None:
+        """Create a brand-new account row (add-via-cookie path) after unusual activity.
+
+        Returns the new account id, or None when there is no jar to import.
+        Processing siblings keep ``old_id``; only the caller reassigns queued jobs.
+        """
+        old = store.get_row("accounts", old_id) or {}
+        if not old:
+            return None
+        existing = str(old.get("replacedBy") or "").strip()
+        if existing and store.get_row("accounts", existing):
+            return existing
+        jar = _account_cookie_records(old.get("cookie"))
+        if not jar:
+            self._log(
+                "warning", "account_recreate_no_cookie_jar", account_id=old_id,
+                message="No stored cookies; cannot create a replacement account",
+            )
+            return None
+        saved = self.save_account({
+            "email": str(old.get("email") or ""),
+            "label": str(old.get("label") or ""),
+            "authMethod": "cookie",
+            "plan": str(old.get("plan") or "Free"),
+            "isDefault": bool(old.get("isDefault")),
+        })
+        new_id = str(saved["id"])
+        # Persist connecting before connect() so admission blocks on status even
+        # if the login thread has not yet entered _connecting_accounts.
+        store.patch_row("accounts", new_id, {
+            "cookie": list(jar),
+            "projectId": None,
+            "imageProjectId": None,
+            "videoProjectId": None,
+            "accessToken": None,
+            "refreshToken": None,
+            "suspendedUntil": None,
+            "suspendReason": None,
+            "error": None,
+            "replacedBy": None,
+            "status": "connecting",
+            "updatedAt": time.time(),
+        })
+        store.patch_row("accounts", old_id, {
+            "replacedBy": new_id,
+            "isDefault": False,
+            "updatedAt": time.time(),
+        })
+        self._clear_session_ready(old_id)
+        self._clear_session_ready(new_id)
+        self._log(
+            "info", "account_recreated_from_cookies", account_id=old_id,
+            message=f"Created replacement account {new_id} after unusual activity",
+            details={"newAccountId": new_id},
+        )
+        try:
+            # Headed when a display exists — spawn+CDP fingerprint is closer to
+            # a hand-opened Chrome than Playwright headless launch.
+            self.connect(new_id, cookies=_cookies_for_fresh_profile(jar), headless=False)
+        except RuntimeError as exc:
+            self._log("warning", "account_recreate_connect_failed", account_id=new_id, message=str(exc))
+        return new_id
+
+    def _reassign_unusual_jobs(self, old_id: str, new_id: str, hit_job_id: str) -> None:
+        """Move the unusual job and every queued sibling onto the replacement account."""
+        now = time.time()
+        for row in store.list_rows("jobs"):
+            jid = str(row.get("id") or "")
+            if str(row.get("accountId") or "") != old_id:
+                continue
+            if jid != hit_job_id and row.get("status") != "queued":
+                continue
+            store.patch_row("jobs", jid, {"accountId": new_id, "updatedAt": now})
+
+    def _maybe_delete_superseded_account(self, account_id: str) -> None:
+        """Delete an account that was replaced after unusual activity once idle."""
+        row = store.get_row("accounts", account_id) or {}
+        if not str(row.get("replacedBy") or "").strip():
+            return
+        if any(
+            str(job.get("accountId") or "") == account_id and job.get("status") not in _TERMINAL
+            for job in store.list_rows("jobs")
+        ):
+            return
+        try:
+            self.delete_account(account_id)
+            self._log("info", "account_superseded_deleted", account_id=account_id,
+                      message="Removed superseded account after remaining jobs finished")
+        except RuntimeError as exc:
+            self._log("warning", "account_superseded_delete_failed", account_id=account_id, message=str(exc))
+
     def reset_account_session(
         self,
         account_id: str,
@@ -3327,6 +3418,9 @@ class FlowService:
             acc_id = str(acc.get("id") or "")
             if not acc_id or acc_id in exclude_set:
                 continue
+            # Replaced after unusual activity — new work goes to replacedBy only.
+            if str(acc.get("replacedBy") or "").strip():
+                continue
             if acc.get("status") != "online" or not _flow_project_id(acc, kind, legacy_for_video=True):
                 continue
             suspended_until = acc.get("suspendedUntil")
@@ -3592,15 +3686,19 @@ class FlowService:
         with self._guard:
             self._login_passwords.pop(account_id, None)
         password = ""
-        headless_login = False if force_visible else (cookie_auth or headless)
+        # Honor caller's headless flag (unusual recreate / Connect UI want a
+        # real headed window). force_visible always wins for login-wall recovery.
+        headless_login = False if force_visible else bool(headless)
         try:
-            from .browser import BrowserManager, FLOW_BASE_URL
+            from .browser import BrowserManager, FLOW_BASE_URL, free_local_port
             browser = BrowserManager(
                 headless=headless_login,
                 profile_dir=store.profile_dir(account_id),
                 google_login_compat=True,
                 fullscreen=True,
                 page_zoom=1.0,
+                # Spawn real Chrome + attach CDP (not Playwright launch_*).
+                remote_debugging_port=free_local_port(),
                 # Cookie import needs session restore so Chrome keeps injected
                 # cookies across the first navigation (add-account-via-cookie path).
                 restore_last_session=bool(cookies) or cookie_auth,
@@ -4336,6 +4434,17 @@ class FlowService:
             account = store.get_row("accounts", account_id) or {}
             if not account:
                 raise ValueError("Prompts and a valid Flow account are required")
+            # Superseded after unusual activity — never enqueue on the old row.
+            replacement_id = str(account.get("replacedBy") or "").strip()
+            if replacement_id:
+                replacement = store.get_row("accounts", replacement_id) or {}
+                if replacement:
+                    account_id = replacement_id
+                    account = replacement
+                else:
+                    raise ValueError(
+                        "FLOW_LOGIN_REQUIRED: Connect the selected Flow account before generating."
+                    )
             if account.get("status") != "online" or not _flow_project_id(account, kind, legacy_for_video=True):
                 raise ValueError("FLOW_LOGIN_REQUIRED: Connect the selected Flow account before generating.")
             if self._account_suspended(account_id):
@@ -4791,16 +4900,39 @@ class FlowService:
                     # Keep mediaIds: retry downloads the existing Flow result only.
                     patch["resumeOnly"] = True
                 store.patch_row("jobs", job_id, patch)
-                if blocked and account_id not in self._connecting_accounts:
-                    # Fresh root profile + cookie jar (like add-account-via-cookie);
-                    # processing siblings keep their clones; queued wait for online.
-                    try:
-                        self.reset_account_session(
-                            account_id, keep_running_jobs=True, fresh_cookie_profile=True,
-                        )
-                    except RuntimeError as exc:
-                        self._log("warning", "unusual_activity_session_reset_failed",
-                                  job_id=job_id, account_id=account_id, message=str(exc))
+                if blocked:
+                    # Brand-new account row (add-via-cookie). Reassign this job +
+                    # queued siblings; leave processing siblings on the old id.
+                    # Do not _run here — finally restarts _run_sync which waits
+                    # at admission until the new account is online + session-ready.
+                    new_id = str((store.get_row("accounts", account_id) or {}).get("replacedBy") or "").strip()
+                    if not new_id or not store.get_row("accounts", new_id):
+                        try:
+                            new_id = self._recreate_account_from_cookies(account_id) or ""
+                        except Exception as exc:
+                            self._log(
+                                "warning", "unusual_activity_account_recreate_failed",
+                                job_id=job_id, account_id=account_id, message=str(exc),
+                            )
+                            new_id = ""
+                    if not new_id:
+                        store.patch_row("jobs", job_id, {
+                            "status": "failed", "stage": "failed",
+                            "error": finished_error, "updatedAt": time.time(),
+                        })
+                        break
+                    self._reassign_unusual_jobs(account_id, new_id, job_id)
+                    store.patch_row("jobs", job_id, {
+                        "accountId": new_id,
+                        "status": "queued",
+                        "stage": "queued",
+                        "progress": 0,
+                        "error": finished_error,
+                        "sessionResetRetryCount": next_resets,
+                        "updatedAt": time.time(),
+                    })
+                    time.sleep(wait_s)
+                    break
                 time.sleep(wait_s)
                 if job_id in self._cancelled or not store.get_row("jobs", job_id):
                     return
@@ -4910,6 +5042,7 @@ class FlowService:
                 account_id,
                 str(current_job.get("kind") or job.get("kind") or "video"),
             )
+            self._maybe_delete_superseded_account(account_id)
 
     def _clone_runtime_profile(self, account_id: str, job_id: str, kind: str = "image") -> Path | None:
         from .browser import profile_lock
@@ -8126,18 +8259,24 @@ class FlowService:
     ) -> None:
         """Close an automatic job browser without leaving Chrome orphaned.
 
-        A CDP manager is attached to the user's manually opened Chrome and may
-        only disconnect/close its owned tab. A normal job manager owns its
-        profile, so a stuck Playwright shutdown can be force-killed safely.
+        External CDP attach (user's manual Chrome) may only disconnect.
+        Job-owned Playwright launches and Flow-spawned Chrome processes are
+        safe to force-kill via ``kill_now``.
         """
         # Chrome rotates Google cookies while the job runs. Save them to the
         # accounts.json jar before the context dies so reset/reconnect can
         # re-seed a clean profile (same as add-via-cookie).
         if account_id:
             await self._persist_browser_cookies(account_id, browser)
+
+        def _may_force_kill() -> bool:
+            if getattr(browser, "_owns_chrome_process", False):
+                return True
+            return not getattr(browser, "cdp_url", None)
+
         try:
             await asyncio.wait_for(browser.stop(), timeout=8.0)
-            if not getattr(browser, "cdp_url", None):
+            if _may_force_kill():
                 # Persistent Chromium can outlive Playwright's context close
                 # for a short time. Reap the job-owned profile process too.
                 await asyncio.to_thread(browser.kill_now)
@@ -8152,10 +8291,9 @@ class FlowService:
                 message=str(exc),
                 details={"cdpAttached": bool(getattr(browser, "cdp_url", None))},
             )
-        # Never kill a browser reached through CDP: it belongs to the user's
-        # manual account session. Automatic jobs have no cdp_url and own the
-        # temporary profile, so kill_now closes only that Chrome process.
-        if not getattr(browser, "cdp_url", None):
+        # Never kill an external CDP attach: it belongs to the user's manual
+        # account session. Owned spawn / job profiles may be force-killed.
+        if _may_force_kill():
             try:
                 await asyncio.to_thread(browser.kill_now)
                 if account_id and runtime_profile and runtime_profile.is_dir():

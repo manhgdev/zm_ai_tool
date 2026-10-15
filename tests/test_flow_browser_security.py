@@ -219,6 +219,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
         service = FlowService()
         browser = SimpleNamespace(
             cdp_url="http://127.0.0.1:9222",
+            _owns_chrome_process=False,
             stop=AsyncMock(side_effect=RuntimeError("tab close failed")),
             kill_now=Mock(),
         )
@@ -227,9 +228,25 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
         browser.stop.assert_awaited_once()
         browser.kill_now.assert_not_called()
 
+    async def test_job_browser_cleanup_kills_spawned_chrome_owned_by_flow(self):
+        service = FlowService()
+        browser = SimpleNamespace(
+            cdp_url="http://127.0.0.1:9222",
+            _owns_chrome_process=True,
+            stop=AsyncMock(side_effect=RuntimeError("tab close failed")),
+            kill_now=Mock(),
+        )
+        with patch.object(service, "_log"):
+            await service._close_job_browser(browser, "job-spawn")
+        browser.kill_now.assert_called_once()
+
     async def test_cdp_attach_uses_existing_flow_page_without_closing_remote_context(self):
-        flow_page = SimpleNamespace(url='https://flow.google.com/project/project-id', is_closed=lambda: False)
-        context = SimpleNamespace(pages=[flow_page], close=AsyncMock())
+        flow_page = SimpleNamespace(
+            url='https://flow.google.com/project/project-id',
+            is_closed=lambda: False,
+            bring_to_front=AsyncMock(),
+        )
+        context = SimpleNamespace(pages=[flow_page], close=AsyncMock(), add_init_script=AsyncMock())
         cdp_browser = SimpleNamespace(contexts=[context], close=AsyncMock())
         connect = AsyncMock(return_value=cdp_browser)
         playwright = SimpleNamespace(
@@ -246,10 +263,83 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             cdp_browser.close.assert_not_awaited()
             context.close.assert_not_awaited()
 
+    async def test_remote_debugging_port_spawns_chrome_then_attaches_cdp(self):
+        """Connect/login path: real Chrome subprocess + connect_over_cdp."""
+        context = SimpleNamespace(pages=[], add_init_script=AsyncMock(), close=AsyncMock())
+        cdp_browser = SimpleNamespace(contexts=[context], close=AsyncMock())
+        connect = AsyncMock(return_value=cdp_browser)
+        launch = AsyncMock()
+        playwright = SimpleNamespace(
+            chromium=SimpleNamespace(connect_over_cdp=connect, launch_persistent_context=launch),
+            stop=AsyncMock(),
+        )
+        fake_proc = Mock(poll=Mock(return_value=None), terminate=Mock(), kill=Mock(), wait=Mock())
+        with tempfile.TemporaryDirectory() as raw, \
+             patch('pipeline.flow.browser.network_available', return_value=True), \
+             patch('pipeline.flow.browser.chrome_executable', return_value=Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')), \
+             patch('pipeline.flow.browser._cdp_endpoint_ready', return_value=True), \
+             patch('pipeline.flow.browser.subprocess.Popen', return_value=fake_proc) as popen, \
+             patch('pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))):
+            manager = BrowserManager(
+                headless=False,
+                profile_dir=Path(raw) / 'spawn-profile',
+                remote_debugging_port=9333,
+                restore_last_session=True,
+            )
+            await manager.start()
+            launch.assert_not_awaited()
+            connect.assert_awaited_once_with('http://127.0.0.1:9333')
+            self.assertTrue(manager._owns_chrome_process)
+            self.assertEqual(manager.cdp_url, 'http://127.0.0.1:9333')
+            argv = popen.call_args.args[0]
+            self.assertEqual(argv[0], str(Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')))
+            self.assertIn('--remote-debugging-port=9333', argv)
+            self.assertIn('--restore-last-session', argv)
+            self.assertIn('--disable-blink-features=AutomationControlled', argv)
+            self.assertNotIn('--headless=new', argv)
+            context.add_init_script.assert_awaited_once()
+            with patch.object(manager, 'kill_now') as killer:
+                await manager.stop()
+            killer.assert_called_once()
+            self.assertFalse(manager._owns_chrome_process)
+
+    async def test_spawned_headless_uses_chrome_new_headless_flag(self):
+        context = SimpleNamespace(pages=[], add_init_script=AsyncMock(), close=AsyncMock())
+        cdp_browser = SimpleNamespace(contexts=[context], close=AsyncMock())
+        playwright = SimpleNamespace(
+            chromium=SimpleNamespace(
+                connect_over_cdp=AsyncMock(return_value=cdp_browser),
+                launch_persistent_context=AsyncMock(),
+            ),
+            stop=AsyncMock(),
+        )
+        fake_proc = Mock(poll=Mock(return_value=0), terminate=Mock(), kill=Mock(), wait=Mock())
+        with tempfile.TemporaryDirectory() as raw, \
+             patch('pipeline.flow.browser.network_available', return_value=True), \
+             patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome')), \
+             patch('pipeline.flow.browser._cdp_endpoint_ready', return_value=True), \
+             patch('pipeline.flow.browser.subprocess.Popen', return_value=fake_proc) as popen, \
+             patch('pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))):
+            manager = BrowserManager(headless=True, profile_dir=Path(raw), remote_debugging_port=9444)
+            await manager.start()
+            argv = popen.call_args.args[0]
+            self.assertIn('--headless=new', argv)
+            await manager.stop()
+
     async def test_cdp_job_tab_isolated_and_closed_without_closing_chrome(self):
-        flow_page = SimpleNamespace(url='https://flow.google.com/project/project-id', is_closed=lambda: False)
-        job_page = SimpleNamespace(url='', is_closed=lambda: False, close=AsyncMock())
-        context = SimpleNamespace(pages=[flow_page], new_page=AsyncMock(return_value=job_page), close=AsyncMock())
+        flow_page = SimpleNamespace(
+            url='https://flow.google.com/project/project-id',
+            is_closed=lambda: False,
+            bring_to_front=AsyncMock(),
+        )
+        job_page = SimpleNamespace(
+            url='', is_closed=lambda: False, close=AsyncMock(),
+            goto=AsyncMock(), bring_to_front=AsyncMock(),
+        )
+        context = SimpleNamespace(
+            pages=[flow_page], new_page=AsyncMock(return_value=job_page), close=AsyncMock(),
+            add_init_script=AsyncMock(),
+        )
         cdp_browser = SimpleNamespace(contexts=[context], close=AsyncMock())
         playwright = SimpleNamespace(
             chromium=SimpleNamespace(connect_over_cdp=AsyncMock(return_value=cdp_browser)),

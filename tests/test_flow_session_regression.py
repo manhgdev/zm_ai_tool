@@ -124,22 +124,23 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["id"], "a")
         patch_row.assert_not_called()
 
-    def test_unusual_activity_retries_only_that_job_in_fresh_chrome(self):
+    def test_unusual_activity_recreates_account_and_reassigns_queued(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
             service = FlowService()
-            account = {"id": "a", "status": "online", "projectId": "p", "plan": "Pro", "credits": 100}
+            jar = [{"name": "SID", "value": "tok", "domain": ".google.com", "path": "/", "secure": True}]
+            account = {"id": "a", "status": "online", "projectId": "p", "plan": "Pro", "credits": 100, "cookie": jar}
             store._write("accounts", [account])
             store._write("jobs", [
-                # An earlier transient retry must not use up the unusual-activity retry.
                 {"id": "j", "accountId": "a", "status": "queued", "kind": "image", "queueOrder": 0, "settings": {},
                  "autoRetryCount": 1},
                 {"id": "sibling", "accountId": "a", "status": "processing", "kind": "video", "queueOrder": 1, "settings": {}},
+                {"id": "q2", "accountId": "a", "status": "queued", "kind": "image", "queueOrder": 2, "settings": {}},
             ])
 
             attempts = []
 
             async def run(job_id, **kwargs):
-                attempts.append(job_id)
+                attempts.append((job_id, store.get_row("jobs", job_id)["accountId"]))
                 if len(attempts) == 1:
                     store.patch_row("jobs", job_id, {
                         "status": "failed", "stage": "failed", "submissionStartedAt": 1.0,
@@ -148,21 +149,216 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
                 else:
                     store.patch_row("jobs", job_id, {"status": "done", "stage": "done"})
 
-            with patch.object(service, "_verify_account_plan_before_enqueue", return_value=account), \
+            def fake_recreate(old_id):
+                store.put_row("accounts", {
+                    "id": "b", "status": "online", "projectId": "p2", "plan": "Pro",
+                    "authMethod": "cookie", "credits": 100,
+                })
+                store.patch_row("accounts", old_id, {"replacedBy": "b", "isDefault": False})
+                service._mark_session_ready("b")
+                return "b"
+
+            class ImmediateThread:
+                def __init__(self, target=None, args=(), kwargs=None, daemon=None, name=None):
+                    self._target = target
+                    self._args = args or ()
+
+                def start(self):
+                    if self._target:
+                        self._target(*self._args)
+
+            def verify(account_id, kind="video", settings=None):
+                return store.get_row("accounts", str(account_id)) or account
+
+            with patch.object(service, "_verify_account_plan_before_enqueue", side_effect=verify), \
                  patch.object(service, "_run", side_effect=run) as runner, \
-                 patch.object(service, "reset_account_session") as reset, \
+                 patch.object(service, "_recreate_account_from_cookies", side_effect=fake_recreate) as recreate, \
+                 patch.object(service, "_maybe_delete_superseded_account"), \
+                 patch("pipeline.flow.service.threading.Thread", ImmediateThread), \
                  patch("pipeline.flow.service.time.sleep") as sleeper:
                 service._run_sync("j")
-            self.assertEqual(runner.call_count, 2)
-            # Reset the shared profile without waiting for siblings, retry after 3s.
-            reset.assert_called_once_with("a", keep_running_jobs=True, fresh_cookie_profile=True)
+            recreate.assert_called_once_with("a")
             sleeper.assert_any_call(3)
+            self.assertEqual(runner.call_count, 2)
+            self.assertEqual(attempts[0], ("j", "a"))
+            self.assertEqual(attempts[1], ("j", "b"))
+            self.assertEqual(store.get_row("jobs", "j")["accountId"], "b")
             self.assertEqual(store.get_row("jobs", "j")["status"], "done")
+            self.assertEqual(store.get_row("jobs", "q2")["accountId"], "b")
+            self.assertEqual(store.get_row("jobs", "sibling")["accountId"], "a")
             self.assertEqual(store.get_row("jobs", "sibling")["status"], "processing")
-            refreshed = store.get_row("accounts", "a")
-            self.assertEqual(refreshed["status"], "online")
-            self.assertFalse(refreshed.get("suspendedUntil"))
-            self.assertFalse(service._account_session_blocked("a"))
+            self.assertEqual(store.get_row("accounts", "a")["replacedBy"], "b")
+
+    def test_recreate_account_from_cookies_connects_fresh_profile(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            service = FlowService()
+            jar = [
+                {"name": "SID", "value": "tok", "domain": ".google.com", "path": "/", "secure": True, "sameSite": "Lax"},
+            ]
+            store._write("accounts", [{
+                "id": "a", "label": "acc", "email": "a@gmail.com", "status": "online",
+                "plan": "Pro", "authMethod": "cookie", "cookie": jar, "projectId": "old-p",
+            }])
+            with patch.object(service, "connect") as connect:
+                new_id = service._recreate_account_from_cookies("a")
+            self.assertTrue(new_id)
+            self.assertNotEqual(new_id, "a")
+            new_row = store.get_row("accounts", new_id)
+            self.assertEqual(new_row["authMethod"], "cookie")
+            self.assertEqual(new_row["status"], "connecting")
+            self.assertIsNone(new_row.get("projectId"))
+            self.assertEqual(store.get_row("accounts", "a")["replacedBy"], new_id)
+            connect.assert_called_once()
+            self.assertEqual(connect.call_args.args[0], new_id)
+            injected = connect.call_args.kwargs.get("cookies") or []
+            self.assertEqual(injected[0]["sameSite"], "None")
+            self.assertIsNone(service._recreate_account_from_cookies("missing"))
+            store.patch_row("accounts", "a", {"cookie": []})
+            # Already replaced — reuse new_id without a second connect storm.
+            connect.reset_mock()
+            self.assertEqual(service._recreate_account_from_cookies("a"), new_id)
+            connect.assert_not_called()
+
+    def test_recreate_account_without_cookie_jar_returns_none(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            service = FlowService()
+            store._write("accounts", [{
+                "id": "a", "label": "acc", "status": "online", "plan": "Pro", "cookie": [],
+            }])
+            with patch.object(service, "connect") as connect, \
+                 patch.object(service, "save_account") as save:
+                self.assertIsNone(service._recreate_account_from_cookies("a"))
+            save.assert_not_called()
+            connect.assert_not_called()
+            self.assertIsNone((store.get_row("accounts", "a") or {}).get("replacedBy"))
+
+    def test_unusual_activity_without_jar_keeps_failed_job(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            service = FlowService()
+            store._write("accounts", [
+                {"id": "a", "status": "online", "projectId": "p", "plan": "Pro", "credits": 100, "cookie": []},
+            ])
+            store._write("jobs", [
+                {"id": "j", "accountId": "a", "status": "queued", "kind": "image", "queueOrder": 0, "settings": {},
+                 "autoRetryCount": 1},
+            ])
+
+            async def run(job_id, **kwargs):
+                store.patch_row("jobs", job_id, {
+                    "status": "failed", "stage": "failed", "submissionStartedAt": 1.0,
+                    "error": "FLOW_AUTOMATION_BLOCKED: We noticed some unusual activity",
+                })
+
+            def verify(account_id, kind="video", settings=None):
+                return store.get_row("accounts", str(account_id)) or {}
+
+            with patch.object(service, "_verify_account_plan_before_enqueue", side_effect=verify), \
+                 patch.object(service, "_run", side_effect=run), \
+                 patch.object(service, "_recreate_account_from_cookies", return_value=None) as recreate, \
+                 patch.object(service, "_maybe_delete_superseded_account"), \
+                 patch("pipeline.flow.service.time.sleep"):
+                service._run_sync("j")
+            recreate.assert_called_once_with("a")
+            job = store.get_row("jobs", "j")
+            self.assertEqual(job["status"], "failed")
+            self.assertEqual(job["accountId"], "a")
+            self.assertIn("FLOW_AUTOMATION_BLOCKED", job["error"])
+
+    def test_unusual_activity_waits_for_new_account_online_before_rerun(self):
+        """Reassigned job must not leave admission until the replacement is ready."""
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            service = FlowService()
+            jar = [{"name": "SID", "value": "tok", "domain": ".google.com", "path": "/", "secure": True}]
+            store._write("accounts", [
+                {"id": "a", "status": "online", "projectId": "p", "plan": "Pro", "credits": 100, "cookie": jar},
+            ])
+            store._write("jobs", [
+                {"id": "j", "accountId": "a", "status": "queued", "kind": "image", "queueOrder": 0, "settings": {},
+                 "autoRetryCount": 1},
+            ])
+            attempts = []
+            gate = {"ready": False}
+
+            async def run(job_id, **kwargs):
+                attempts.append(store.get_row("jobs", job_id)["accountId"])
+                if len(attempts) == 1:
+                    store.patch_row("jobs", job_id, {
+                        "status": "failed", "stage": "failed", "submissionStartedAt": 1.0,
+                        "error": "FLOW_AUTOMATION_BLOCKED: We noticed some unusual activity",
+                    })
+                else:
+                    store.patch_row("jobs", job_id, {"status": "done", "stage": "done"})
+
+            def fake_recreate(old_id):
+                store.put_row("accounts", {
+                    "id": "b", "status": "connecting", "plan": "Pro", "authMethod": "cookie", "credits": 100,
+                })
+                store.patch_row("accounts", old_id, {"replacedBy": "b"})
+                service._connecting_accounts.add("b")
+                return "b"
+
+            class ImmediateThread:
+                def __init__(self, target=None, args=(), kwargs=None, daemon=None, name=None):
+                    self._target = target
+                    self._args = args or ()
+
+                def start(self):
+                    if self._target:
+                        self._target(*self._args)
+
+            waits = {"n": 0}
+
+            def wait_side_effect(timeout=None):
+                waits["n"] += 1
+                if waits["n"] >= 2 and not gate["ready"]:
+                    gate["ready"] = True
+                    store.patch_row("accounts", "b", {"status": "online", "projectId": "p2"})
+                    service._connecting_accounts.discard("b")
+                    service._mark_session_ready("b")
+                return True
+
+            def verify(account_id, kind="video", settings=None):
+                return store.get_row("accounts", str(account_id)) or {}
+
+            with patch.object(service, "_verify_account_plan_before_enqueue", side_effect=verify), \
+                 patch.object(service, "_run", side_effect=run) as runner, \
+                 patch.object(service, "_recreate_account_from_cookies", side_effect=fake_recreate), \
+                 patch.object(service, "_maybe_delete_superseded_account"), \
+                 patch("pipeline.flow.service.threading.Thread", ImmediateThread), \
+                 patch("pipeline.flow.service.time.sleep"), \
+                 patch.object(service._account_condition, "wait", side_effect=wait_side_effect):
+                service._run_sync("j")
+            self.assertEqual(attempts, ["a", "b"])
+            self.assertGreaterEqual(waits["n"], 2)
+            self.assertEqual(runner.call_count, 2)
+            self.assertEqual(store.get_row("jobs", "j")["status"], "done")
+
+    def test_pick_skips_superseded_account(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            service = FlowService()
+            store._write("accounts", [
+                {"id": "old", "status": "online", "projectId": "p", "plan": "Pro", "credits": 100, "replacedBy": "new"},
+                {"id": "new", "status": "online", "projectId": "p2", "plan": "Pro", "credits": 100},
+            ])
+            picked = service._pick_eligible_account(kind="image")
+            self.assertEqual(picked["id"], "new")
+
+    def test_maybe_delete_superseded_account_waits_for_idle(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            service = FlowService()
+            store._write("accounts", [
+                {"id": "old", "status": "online", "replacedBy": "new", "plan": "Pro"},
+                {"id": "new", "status": "online", "plan": "Pro", "projectId": "p"},
+            ])
+            store._write("jobs", [
+                {"id": "sib", "accountId": "old", "status": "processing", "kind": "video"},
+            ])
+            with patch.object(service, "delete_account") as delete:
+                service._maybe_delete_superseded_account("old")
+                delete.assert_not_called()
+                store.patch_row("jobs", "sib", {"status": "done"})
+                service._maybe_delete_superseded_account("old")
+                delete.assert_called_once_with("old")
 
     async def test_rising_flow_progress_extends_generation_timeout(self):
         service = FlowService()
