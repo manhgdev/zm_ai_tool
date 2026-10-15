@@ -78,6 +78,55 @@ class FlowSoftRetryBudgetTest(unittest.TestCase):
         self.assertEqual(job["status"], "failed")
         self.assertEqual(int(job.get("autoRetryCount") or 0), _JOB_AUTO_RETRY_MAX)
 
+    def test_generation_timeout_soft_retry_keeps_submission_for_recover(self) -> None:
+        submission_at = 1_700_000_000.0
+        seen: list[dict] = []
+
+        async def timeout_then_recover(job_id, **kwargs):
+            job = store.get_row("jobs", job_id) or {}
+            seen.append({
+                "submissionStartedAt": job.get("submissionStartedAt"),
+                "submissionProjectId": job.get("submissionProjectId"),
+                "baselineMediaIds": list(job.get("baselineMediaIds") or []),
+                "resumeOnly": bool(job.get("resumeOnly")),
+                "error": job.get("error"),
+                "stage": job.get("stage"),
+            })
+            if len(seen) == 1:
+                store.patch_row("jobs", job_id, {
+                    "status": "failed", "stage": "failed",
+                    "error": "FLOW_GENERATION_TIMEOUT: no completed image media appeared after submit",
+                    "mediaIds": [], "outputs": [],
+                    "submissionStartedAt": submission_at,
+                    "submissionProjectId": "p",
+                    "baselineMediaIds": ["b1"],
+                })
+                return
+            self.assertTrue(job.get("resumeOnly"))
+            self.assertIsNone(job.get("error"))
+            self.assertEqual(job.get("stage"), "recovering")
+            self.assertEqual(job.get("submissionStartedAt"), submission_at)
+            self.assertEqual(job.get("submissionProjectId"), "p")
+            self.assertEqual(job.get("baselineMediaIds"), ["b1"])
+            store.patch_row("jobs", job_id, {
+                "status": "done", "stage": "done", "progress": 100,
+                "error": None, "outputs": ["/tmp/ok.png"], "mediaIds": ["m1"],
+            })
+
+        with patch.object(self.service, "_verify_account_plan_before_enqueue", return_value=self.account), \
+             patch.object(self.service, "_run", side_effect=timeout_then_recover), \
+             patch("pipeline.flow.service.time.sleep"), \
+             patch("pipeline.flow.service._network_ready_for_flow_job", return_value=True):
+            self.service._run_sync("j")
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(seen[1]["resumeOnly"])
+        self.assertIsNone(seen[1]["error"])
+        self.assertEqual(seen[1]["stage"], "recovering")
+        self.assertEqual(seen[1]["submissionStartedAt"], submission_at)
+        self.assertEqual(seen[1]["submissionProjectId"], "p")
+        self.assertEqual(seen[1]["baselineMediaIds"], ["b1"])
+        self.assertEqual(store.get_row("jobs", "j")["status"], "done")
+
     def test_credits_hard_stop_does_not_soft_retry(self) -> None:
         async def credits_fail(job_id, **kwargs):
             store.patch_row("jobs", job_id, {

@@ -316,6 +316,17 @@ test("CDN TLS disconnect explains as download failure not generic retry", () => 
   assert.match(result.actionVi, /thử tải file lần nữa/);
   assert.match(result.actionEn, /download the file again/);
 });
+
+test("generation timeout explains recover-first without unusual activity", () => {
+  const result = explainFlowError(
+    "FLOW_GENERATION_TIMEOUT: no completed image media appeared after submit",
+  );
+  assert.equal(result.code, "FLOW_GENERATION_TIMEOUT");
+  assert.match(result.actionVi, /khôi phục kết quả đã gửi trước/);
+  assert.match(result.actionEn, /recovers the existing submission first/i);
+  assert.doesNotMatch(result.actionVi, /bất thường/i);
+  assert.doesNotMatch(result.actionEn, /unusual activity/i);
+});
 }
 
 {

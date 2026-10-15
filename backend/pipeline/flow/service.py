@@ -61,7 +61,7 @@ def _soft_retry_backoff_s(attempt: int) -> float:
 # migrated accounts the project payload can lag another minute or two.
 # Keep the waiter alive long enough to observe that same submission instead of
 # recreating it and charging the account twice.
-_IMAGE_GENERATION_TIMEOUT_S = 60
+_IMAGE_GENERATION_TIMEOUT_S = 90
 _VIDEO_GENERATION_TIMEOUT_S = 120
 # While Flow's tile % keeps rising the timeout slides forward, capped at this
 # multiple of the base timeout (image 5 min, video 10 min).
@@ -191,6 +191,7 @@ def _wipe_profile_keep_login(profile: Path) -> None:
             shutil.rmtree(item, ignore_errors=True)
         else:
             item.unlink(missing_ok=True)
+
 
 
 def _seed_stored_cookies(account: dict[str, Any]) -> bool:
@@ -1302,6 +1303,43 @@ async def _open_flow_settings_panel(page, pill, tabs, ui=None) -> bool:
         return False
 
 
+async def _flow_settings_panel_open(page, ui=None) -> bool:
+    """True when Flow's mode/model/ratio quick-settings panel is on screen."""
+    if ui is not None:
+        try:
+            return bool(await ui._settings_visible(page))
+        except Exception:
+            pass
+    try:
+        count = await page.evaluate(
+            r"""() => {
+                const tabs = [...document.querySelectorAll('[role="tab"], [role="radio"]')];
+                return tabs.filter((node) => {
+                    const rect = node.getBoundingClientRect();
+                    const style = window.getComputedStyle(node);
+                    const label = `${node.getAttribute('aria-label') || ''} ${node.getAttribute('title') || ''} ${node.getAttribute('data-value') || ''} ${node.getAttribute('data-mode') || ''} ${node.textContent || ''}`;
+                    return rect.width > 0 && rect.height > 0
+                        && style.visibility !== 'hidden'
+                        && style.display !== 'none'
+                        && /(?:image|hình ảnh|video|frames|x[1-4])\b/i.test(label);
+                }).length;
+            }"""
+        )
+        return int(count or 0) > 0
+    except Exception:
+        return False
+
+
+def _redact_flow_diag_url(url: str) -> str:
+    """Strip cookie/token query params from diagnostic URLs."""
+    text = str(url or "")
+    return re.sub(
+        r"(?i)(token|access_token|auth|authorization|bearer|cookie|key|sapisid|sid)=[^&?#]*",
+        r"\1=[redacted]",
+        text,
+    )
+
+
 class FlowService:
     def __init__(self) -> None:
         # Keep a newly entered password available for the first connect. The
@@ -1345,9 +1383,13 @@ class FlowService:
         public.pop("cookie", None)
         return public
 
+
     @staticmethod
     def _session_key(account_id: str, kind: str) -> str:
         return f"{account_id}:{kind if kind in {'image', 'video'} else 'image'}"
+
+    def _account_session_keys(self, account_id: str) -> list[str]:
+        return [self._session_key(account_id, kind) for kind in ("image", "video")]
 
     async def _refresh_running_session(self, account_id: str, browser: Any, project_id: str) -> bool:
         """Refresh auth through the current Flow page without navigation."""
@@ -2004,6 +2046,7 @@ class FlowService:
             pass  # ponytail: FLOW_PROFILE_BUSY race is safe to ignore here
         return self._public_account(store.get_row("accounts", account_id) or account)
 
+
     def delete_account(self, account_id: str) -> bool:
         if any(self._session_key(account_id, kind) in self._manual_sessions for kind in ("image", "video")):
             raise RuntimeError("FLOW_PROFILE_BUSY")
@@ -2202,6 +2245,7 @@ class FlowService:
                 pass
         threading.Thread(target=_cleanup_files, daemon=True, name="flow-folder-delete-cleanup").start()
         return len(removed)
+
 
     def open_account_session(
         self,
@@ -2563,7 +2607,7 @@ class FlowService:
             "cookiesUpdated": 0,
         }
         session_open = any(
-            self._session_key(account_id, kind) in self._manual_sessions for kind in ("image", "video")
+            key in self._manual_sessions for key in self._account_session_keys(account_id)
         )
         if session_open or account_id in self._connecting_accounts or self._account_active.get(account_id, 0) > 0:
             # A running job already proved this account. Do not open a second
@@ -2685,11 +2729,10 @@ class FlowService:
         # A visible Playwright session is the user's own verified Flow session.
         # Reuse it for automation cooldowns (the cooldown was caused by the
         # isolated browser path), while retaining quota suspensions.
-        has_manual = any(self._session_key(account_id, kind) in self._manual_sessions for kind in ("image", "video"))
+        has_manual = any(key in self._manual_sessions for key in self._account_session_keys(account_id))
         has_user_session = any(
-            self._session_key(account_id, kind) in self._manual_sessions
-            and self._session_key(account_id, kind) not in self._auto_close_sessions
-            for kind in ("image", "video")
+            key in self._manual_sessions and key not in self._auto_close_sessions
+            for key in self._account_session_keys(account_id)
         )
         if has_manual and has_user_session:
             reason = str(account.get("suspendReason") or "")
@@ -2794,7 +2837,7 @@ class FlowService:
             raise RuntimeError("FLOW_LOGIN_REQUIRED: account must be connected before syncing credits")
         # Guard: skip if Chrome is already open for this account (connect in progress)
         with self._guard:
-            if any(self._session_key(account_id, kind) in self._manual_sessions for kind in ("image", "video")):
+            if any(key in self._manual_sessions for key in self._account_session_keys(account_id)):
                 raise RuntimeError("FLOW_PROFILE_BUSY")
             if account_id in self._connecting_accounts:
                 _log.info("sync_credits_for_account: skip %s — connect in progress", account_id)
@@ -4576,14 +4619,17 @@ class FlowService:
                 )
                 if job_id in self._cancelled or not store.get_row("jobs", job_id):
                     return
+                recovering_timeout = bool(
+                    re.search(r"GENERATION_TIMEOUT", finished_error, re.I)
+                    and finished.get("submissionStartedAt")
+                )
                 patch: dict[str, Any] = {
                     "status": "processing",
-                    "stage": "retrying",
+                    "stage": "recovering" if recovering_timeout else "retrying",
                     "progress": 0,
-                    # Keep the last Flow failure visible while the automatic
-                    # retry is running; otherwise the card looks healthy even
-                    # though Flow just rejected/timed out the attempt.
-                    "error": finished_error,
+                    # Keep reject/block errors visible during retry. Timeout
+                    # recovery clears the sticky failed look until budget ends.
+                    "error": None if recovering_timeout else finished_error,
                     "autoRetryCount": next_count,
                     "updatedAt": time.time(),
                 }
@@ -4591,12 +4637,16 @@ class FlowService:
                     patch["generationRejectRetryCount"] = next_count
                 if blocked:
                     patch["sessionResetRetryCount"] = next_resets
-                if blocked or re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT", finished_error, re.I):
+                if blocked or re.search(r"RESULT_NOT_FOUND|EMPTY_OUTPUT", finished_error, re.I):
                     self._release_media_ids(finished.get("mediaIds"))
                     patch.update({
                         "submissionStartedAt": None, "submissionProjectId": None,
                         "baselineMediaIds": [], "mediaIds": [], "resumeOnly": False,
                     })
+                elif recovering_timeout:
+                    # Recover the already-submitted result; do not clear and
+                    # charge a duplicate generation.
+                    patch["resumeOnly"] = True
                 elif download_recovery:
                     # Keep mediaIds: retry downloads the existing Flow result only.
                     patch["resumeOnly"] = True
@@ -4613,8 +4663,10 @@ class FlowService:
                 if job_id in self._cancelled or not store.get_row("jobs", job_id):
                     return
                 store.patch_row("jobs", job_id, {
-                    "status": "queued", "stage": "queued", "progress": 0,
-                    "error": finished_error,
+                    "status": "queued",
+                    "stage": "recovering" if recovering_timeout else "queued",
+                    "progress": 0,
+                    "error": None if recovering_timeout else finished_error,
                 })
                 profile_ready = True
                 asyncio.run(self._run(job_id, generation_token=generation_token))
@@ -5609,7 +5661,156 @@ class FlowService:
             if text and text not in baseline_errors:
                 raise RuntimeError(_classify_visible_flow_error(text))
 
-    async def _click_flow_submit(self, page) -> list[Any]:
+    # Score + click the Flow submit control in one DOM pass. Avoids Playwright
+    # locators like buttons.nth(109) that go stale when Angular re-renders.
+    _FLOW_SUBMIT_DOM_SCRIPT = """(doClick) => {
+        const visible = (el) => {
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return rect.width > 0 && rect.height > 0
+                && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const scoreOf = (btn) => {
+            const text = (btn.innerText || btn.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+            const aria = `${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`
+                .replace(/\\s+/g, ' ').trim().toLowerCase();
+            if (/bắt đầu tạo|tạo ảnh|tạo video|start creating|start generation|generate now/.test(aria)) return 100;
+            if (text === 'arrow_forward' || text.includes('arrow_forward')) return 90;
+            if (/\\b(create|generate|submit|run)\\b/.test(aria)) return 80;
+            if (/bắt đầu tạo|tạo ảnh|tạo video|\\b(create|generate|submit|run)\\b/.test(text)) return 70;
+            return 0;
+        };
+        let best = null;
+        let bestScore = 0;
+        const labels = [];
+        for (const el of document.querySelectorAll('[data-zm-flow-submit]')) {
+            el.removeAttribute('data-zm-flow-submit');
+        }
+        for (const btn of document.querySelectorAll('button, [role="button"]')) {
+            if (!visible(btn)) continue;
+            const label = ((btn.getAttribute('aria-label') || btn.innerText || '') + '').trim().slice(0, 30);
+            if (label && labels.length < 15) labels.push(label);
+            if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+            const score = scoreOf(btn);
+            if (score > bestScore) {
+                bestScore = score;
+                best = btn;
+            }
+        }
+        if (!best) return { clicked: false, score: 0, disabled: false, labels, marked: false };
+        best.setAttribute('data-zm-flow-submit', '1');
+        if (doClick) best.click();
+        return {
+            clicked: Boolean(doClick),
+            score: bestScore,
+            disabled: Boolean(best.disabled || best.getAttribute('aria-disabled') === 'true'),
+            label: ((best.getAttribute('aria-label') || best.innerText || '') + '').trim().slice(0, 40),
+            labels,
+            marked: true,
+        };
+    }"""
+
+    async def _flow_submit_dom(self, page, *, click: bool = False) -> dict[str, Any]:
+        """Resolve (and optionally click) the best Flow submit control in-page."""
+        try:
+            result = await page.evaluate(self._FLOW_SUBMIT_DOM_SCRIPT, click)
+        except Exception:
+            return {"clicked": False, "score": 0, "disabled": False, "labels": [], "marked": False}
+        return result if isinstance(result, dict) else {"clicked": False, "score": 0, "disabled": False, "labels": [], "marked": False}
+
+    async def _close_flow_settings_panel(self, page, ui=None) -> None:
+        """Dismiss quick-settings so the Create control receives the submit click."""
+        for _ in range(4):
+            if not await _flow_settings_panel_open(page, ui):
+                return
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+            await asyncio.sleep(0.35)
+            try:
+                backdrop = page.locator(".cdk-overlay-backdrop")
+                if await backdrop.count() > 0 and await backdrop.first.is_visible():
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.25)
+            except Exception:
+                pass
+
+    async def _force_click_marked_flow_submit(self, page) -> bool:
+        """Playwright force-click the button marked by ``_flow_submit_dom``."""
+        try:
+            marked = page.locator('[data-zm-flow-submit="1"]').first
+            if await marked.count() == 0:
+                ready = await self._flow_submit_dom(page, click=False)
+                if not ready.get("marked"):
+                    return False
+            await page.locator('[data-zm-flow-submit="1"]').first.click(force=True, timeout=3_000)
+            return True
+        except Exception as exc:
+            _log.warning("_force_click_marked_flow_submit: %s", exc)
+            return False
+
+    async def _submit_failure_diagnostics(
+        self,
+        page,
+        rpc_requests: list[Any],
+        rpc_responses: list[Any],
+        other_rpc: list[Any] | None = None,
+        ui=None,
+    ) -> dict[str, Any]:
+        """Redacted snapshot for FLOW_SUBMIT_NOT_CONFIRMED handoff."""
+        diag: dict[str, Any] = {}
+        try:
+            state = await self._flow_submit_dom(page, click=False)
+            diag["submit"] = {
+                "score": state.get("score"),
+                "label": state.get("label"),
+                "disabled": state.get("disabled"),
+                "labels": list(state.get("labels") or [])[:15],
+            }
+        except Exception:
+            pass
+        try:
+            diag["settingsOpen"] = await _flow_settings_panel_open(page, ui)
+        except Exception:
+            diag["settingsOpen"] = None
+        try:
+            composer = await page.evaluate(
+                """() => [...document.querySelectorAll(
+                    '[role="textbox"], textarea, [contenteditable="true"]'
+                )].map(node => node.value || node.innerText || node.textContent || '').join(' ').trim()"""
+            )
+            diag["composer"] = re.sub(r"\s+", " ", str(composer or "")).strip()[:200]
+        except Exception:
+            pass
+
+        def _urls(items: list[Any], *, with_status: bool = False) -> list[Any]:
+            out: list[Any] = []
+            for item in list(items or [])[:8]:
+                url = _redact_flow_diag_url(getattr(item, "url", "") or "")
+                if with_status:
+                    try:
+                        out.append({"url": url, "status": getattr(item, "status", None)})
+                    except Exception:
+                        out.append({"url": url, "status": None})
+                else:
+                    out.append(url)
+            return out
+
+        diag["rpcRequestUrls"] = _urls(rpc_requests)
+        diag["rpcResponses"] = _urls(rpc_responses, with_status=True)
+        diag["otherRpc"] = _urls(other_rpc or [], with_status=True)
+        try:
+            shot = Path(tempfile.gettempdir()) / f"zm-flow-submit-fail-{uuid.uuid4().hex[:10]}.png"
+            await page.screenshot(path=str(shot), full_page=False)
+            diag["screenshot"] = str(shot)
+        except Exception:
+            pass
+        return diag
+
+    async def _click_flow_submit(
+        self, page, *, ui=None, job_id: str | None = None, account_id: str | None = None,
+    ) -> list[Any]:
         """Click the submit control used by the current Flow project page.
 
         Flow moved from an English ``Create`` button to a localized Material
@@ -5618,12 +5819,11 @@ class FlowService:
         endpoint that no longer exists.  Failing at the click boundary keeps
         a UI mismatch visible instead of leaving a job at 5% for five minutes.
         """
-        buttons = page.locator("button, [role='button']")
-        candidates: list[tuple[int, int, Any]] = []
         # Submit stays disabled while an attached frame is still processing.
         deadline = time.monotonic() + 60
         escaped = False
-        while not candidates and time.monotonic() < deadline:
+        ready: dict[str, Any] = {}
+        while time.monotonic() < deadline:
             try:
                 body_text = await page.locator("body").inner_text()
                 if _flow_credit_blocked(body_text):
@@ -5635,42 +5835,25 @@ class FlowService:
                 raise
             except Exception:
                 pass
-            for index in range(await buttons.count()):
-                candidate = buttons.nth(index)
+            ready = await self._flow_submit_dom(page, click=False)
+            if int(ready.get("score") or 0) > 0:
+                break
+            if not escaped and time.monotonic() > deadline - 40:
+                escaped = True
                 try:
-                    if not await candidate.is_visible() or await candidate.is_disabled():
-                        continue
-                    score = _flow_submit_button_score(
-                        await candidate.inner_text(),
-                        await candidate.get_attribute("aria-label") or "",
-                        await candidate.get_attribute("title") or "",
-                    )
-                    if score:
-                        candidates.append((score, index, candidate))
+                    await self._close_flow_settings_panel(page, ui)
                 except Exception:
-                    continue
-            if not candidates:
-                if not escaped and time.monotonic() > deadline - 40:
-                    escaped = True
                     try:
-                        await page.keyboard.press("Escape")  # close a settings popover left over the composer
+                        await page.keyboard.press("Escape")
                     except Exception:
                         pass
-                await asyncio.sleep(1)
-        if not candidates:
-            labels: list[str] = []
-            try:
-                for index in range(min(40, await buttons.count())):
-                    node = buttons.nth(index)
-                    if await node.is_visible():
-                        labels.append(((await node.get_attribute("aria-label")) or (await node.inner_text()) or "").strip()[:30])
-            except Exception:
-                pass
+            await asyncio.sleep(1)
+        else:
+            labels = list(ready.get("labels") or [])
             raise RuntimeError(
                 "FLOW_UI_CHANGED: submit button was not found or is disabled; "
-                f"refresh the Flow project and retry (visible buttons: {[l for l in labels if l][:15]})"
+                f"refresh the Flow project and retry (visible buttons: {labels[:15]})"
             )
-        _, _, button = max(candidates, key=lambda item: (item[0], item[1]))
         try:
             baseline_tile_count = await page.locator("flow-grid-tile-container").count()
         except Exception:
@@ -5708,8 +5891,9 @@ class FlowService:
         page.on("response", _on_response)
         try:
             await self._click_flow_submit_and_confirm(
-                page, button, baseline_tile_count, baseline_composer_text,
+                page, baseline_tile_count, baseline_composer_text,
                 baseline_errors, rpc_requests, rpc_responses, other_rpc,
+                ui=ui, job_id=job_id, account_id=account_id,
             )
         finally:
             page.remove_listener("request", _on_request)
@@ -5717,6 +5901,17 @@ class FlowService:
         # so a late generate response still belongs to this job.
         return rpc_responses
 
+    @staticmethod
+    def _clear_unsent_submission(job_id: str) -> None:
+        """Drop submission markers when no generate RPC left the browser."""
+        store.patch_row("jobs", job_id, {
+            "submissionStartedAt": None,
+            "submissionProjectId": None,
+            "baselineMediaIds": [],
+            "baselineThumbs": [],
+            "resumeOnly": False,
+            "updatedAt": time.time(),
+        })
     @staticmethod
     async def _rpc_media(responses: list[Any]) -> tuple[list[dict[str, str]], list[str]]:
         """Media created by this page's generate RPCs: (image items with src, all media names).
@@ -5741,25 +5936,38 @@ class FlowService:
         return list({item["id"]: item for item in items}.values()), list(dict.fromkeys(names))
 
     async def _click_flow_submit_and_confirm(
-        self, page, button, baseline_tile_count: int, baseline_composer_text: str,
+        self, page, baseline_tile_count: int, baseline_composer_text: str,
         baseline_errors: set[str], rpc_requests: list[Any], rpc_responses: list[Any],
-        other_rpc: list[Any] | None = None,
+        other_rpc: list[Any] | None = None, *, ui=None, job_id: str | None = None,
+        account_id: str | None = None,
     ) -> None:
-        try:
+        # Re-resolve + DOM click each attempt. Holding buttons.nth(N) across
+        # awaits fails when Flow's Angular tree re-renders (nth(109) timeout).
+        last_exc: Exception | None = None
+        clicked = False
+        force_clicks = 0
+        for attempt in range(3):
             try:
-                await button.hover(timeout=2_000)
+                result = await self._flow_submit_dom(page, click=True)
+                if int(result.get("score") or 0) <= 0 or not result.get("clicked"):
+                    raise RuntimeError(
+                        "submit button was not found or is disabled "
+                        f"(attempt {attempt + 1}/3)"
+                    )
+                clicked = True
+                break
+            except Exception as exc:
+                last_exc = exc
                 await asyncio.sleep(0.4)
-            except Exception:
-                pass
-            await button.click(force=True, timeout=8_000)
-        except Exception as exc:
-            raise RuntimeError(f"FLOW_SUBMIT_CLICK_FAILED: {exc}") from exc
+        if not clicked:
+            raise RuntimeError(f"FLOW_SUBMIT_CLICK_FAILED: {last_exc}") from last_exc
         # A successful click must produce an observable Flow acknowledgement.
         # Do not label the job as ``generating`` merely because Playwright's
         # click returned; otherwise a rejected/no-op submit sits at 15% until
         # the generic generation timeout hides the real cause.
-        ack_deadline = time.monotonic() + 8
-        rpc_deadline = time.monotonic() + 30
+        clicked_at = time.monotonic()
+        ack_deadline = clicked_at + 8
+        rpc_deadline = clicked_at + 30
         while time.monotonic() < (rpc_deadline if rpc_requests else ack_deadline):
             for response in list(other_rpc or []) + list(rpc_responses):
                 try:
@@ -5787,12 +5995,20 @@ class FlowService:
                     # Sent but not answered yet: never fall back to a resubmit.
                     await asyncio.sleep(0.5)
                     continue
+                # DOM click can be a no-op under an open settings overlay.
+                # One Playwright force-click only — never after a generate RPC.
+                if force_clicks == 0 and time.monotonic() >= clicked_at + 1.75:
+                    force_clicks += 1
+                    await self._force_click_marked_flow_submit(page)
+                    await asyncio.sleep(0.4)
+                    continue
                 visible_tiles = await page.locator("flow-grid-tile-container").count()
                 progressbars = await page.locator("flow-grid-tile-container [role='progressbar'], flow-grid-tile-container [aria-valuenow], flow-pending-tile").count()
                 if visible_tiles > baseline_tile_count or progressbars:
                     await self._raise_if_new_flow_error(page, baseline_errors)
                     return
-                if await button.is_disabled():
+                submit_state = await self._flow_submit_dom(page, click=False)
+                if submit_state.get("disabled") or int(submit_state.get("score") or 0) <= 0:
                     await self._raise_if_new_flow_error(page, baseline_errors)
                     return
                 # Flow clears the composer as soon as the request is accepted;
@@ -5812,6 +6028,14 @@ class FlowService:
         if rpc_requests:
             # The RPC left the browser; Flow's grid polling owns the result now.
             return
+        diag = await self._submit_failure_diagnostics(
+            page, rpc_requests, rpc_responses, other_rpc, ui=ui,
+        )
+        self._log(
+            "warning", "submit_not_confirmed",
+            job_id=job_id or "", account_id=account_id or "",
+            details=diag,
+        )
         raise RuntimeError(
             "FLOW_SUBMIT_NOT_CONFIRMED: Flow did not acknowledge the submit "
             "(no generate request was sent and no new generation tile appeared within 8 seconds)"
@@ -5939,37 +6163,32 @@ class FlowService:
                 continue
             if media_ids and str(media['name']) not in media_ids:
                 continue
-            # A parallel first attempt must have prompt metadata before it can
-            # claim a tile, because the DOM/API may contain a sibling job's
-            # fresh result. Recovery is different: the submission identity,
-            # baseline ids, timestamp and global claims are already persisted,
-            # so accept a completed API record even when Flow omitted its
-            # prompt metadata. This is the common shape for late media that
-            # appeared after the initial waiter timed out.
-            # User rule: a result must never be assigned to the wrong job, so
-            # prompt metadata is required even in recovery. No match = not found
-            # = the job times out and is recreated by auto-retry.
-            # A persisted media id is not sufficient ownership proof: an older
-            # recovery may have claimed a sibling tile. Keep the prompt check
-            # active for both fresh and resumed jobs.
+            # Ownership order: persisted mediaIds → rpcMediaIds → prompt match
+            # → recoveryOnly/resume time+baseline claim (Flow often omits prompt
+            # metadata on late tiles). Parallel first-pass stays prompt-strict.
             created_at = _media_created_timestamp(media)
             rpc_owned = str(media["name"]) in {str(name) for name in job.get("rpcMediaIds") or []}
-            if not rpc_owned and not _media_prompt_matches(media, str(job.get("prompt") or "")):
+            id_owned = bool(media_ids and str(media["name"]) in media_ids)
+            prompt_owned = _media_prompt_matches(media, str(job.get("prompt") or ""))
+            recovery_relaxed = bool(
+                job.get("recoveryOnly")
+                or job.get("resumeOnly")
+                or (submission_time and not job.get("parallelSession"))
+            )
+            if not (id_owned or rpc_owned or prompt_owned or recovery_relaxed):
                 continue
-            if not media_ids and created_at and created_at < minimum_time:
+            if not id_owned and not rpc_owned and not prompt_owned and recovery_relaxed:
+                # Relaxed path still requires a post-submit timestamp window.
+                if created_at and created_at < minimum_time:
+                    continue
+            elif not media_ids and created_at and created_at < minimum_time:
                 continue
             records.append(media)
         if not records:
-            if not job.get("mediaIds"):
-                # DOM tiles carry no prompt, so they can never be attributed
-                # safely to one job. Wait for API metadata or recreate.
-                return []
-            # The current Angular Flow UI can show completed tiles while its
-            # project-data endpoint still returns an empty media list. DOM
-            # recovery is safe only for an already-submitted request: baseline
-            # and global claims keep concurrent jobs from taking old/duplicate
-            # outputs.
-            if not (job.get("mediaIds") or job.get("resumeOnly") or job.get("submissionStartedAt")):
+            # DOM recovery is safe only for an already-submitted request:
+            # baseline and global claims keep concurrent jobs from taking
+            # old/duplicate outputs. Fresh parallel probes must wait for API.
+            if not (job.get("mediaIds") or job.get("resumeOnly") or job.get("submissionStartedAt") or job.get("recoveryOnly")):
                 return []
             expected_tag = "img" if kind == "image" else "video"
             baseline_ids = {str(media_id) for media_id in job.get("baselineMediaIds") or []}
@@ -6258,20 +6477,47 @@ class FlowService:
 
     @staticmethod
     async def _flow_tile_percent(page, expected_count: int) -> int:
-        """Real % shown on the newest Flow tiles, or -1 when Flow shows none."""
+        """Real % on incomplete Flow tiles, or -1 when Flow shows none.
+
+        Prefer tiles that are still generating so a finished sibling cannot
+        hide this job's rising percentage and starve the wait deadline.
+        """
         try:
-            values = await page.evaluate("""(n) =>
-                [...document.querySelectorAll('flow-grid-tile-container')].slice(0, n).map(t => {
+            values = await page.evaluate("""(n) => {
+                const all = [...document.querySelectorAll('flow-grid-tile-container')];
+                const incomplete = all.filter((tile) => !tile.querySelector(
+                    '[data-media-id], img[src^="http"], video[src^="http"]'
+                ));
+                const pool = (incomplete.length ? incomplete : all).slice(0, n);
+                return pool.map((t) => {
                     const bar = t.querySelector('[role="progressbar"][aria-valuenow]');
                     const aria = parseFloat(bar?.getAttribute('aria-valuenow'));
                     const m = ((t.innerText || '') + ' ' + (t.textContent || '')).match(/(\\d+)\\s*%/);
                     return Math.round(Math.max(isNaN(aria) ? -1 : aria, m ? parseInt(m[1], 10) : -1));
-                })
-            """, max(1, expected_count)) or []
+                });
+            }""", max(1, expected_count)) or []
         except Exception:
             return -1
         values = [v for v in values if v >= 0]
         return max(values) if values else -1
+
+    @staticmethod
+    async def _flow_pending_generation(page) -> bool:
+        """True when a grid tile is visibly generating without completed media."""
+        if page is None:
+            return False
+        try:
+            return bool(await page.evaluate("""() =>
+                [...document.querySelectorAll('flow-grid-tile-container')].some((tile) => {
+                    if (tile.querySelector('[data-media-id], img[src^="http"], video[src^="http"]')) return false;
+                    return Boolean(
+                        tile.querySelector('[role="progressbar"], mat-progress-spinner, mat-spinner, .generating')
+                        || /(?:generating|đang tạo|processing|\\d+\\s*%)/i.test(tile.innerText || '')
+                    );
+                })
+            """))
+        except Exception:
+            return False
 
     async def _wait_for_project_media(
         self,
@@ -6376,6 +6622,9 @@ class FlowService:
                 raise RuntimeError(classified)
             current_progress = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
             pct = await self._flow_tile_percent(page, expected_count)
+            # Keep waiting while Flow still owns this submission (RPC names or
+            # a pending tile), even when % is mute — still capped by hard_deadline.
+            submission_alive = bool(rpc_names) or await self._flow_pending_generation(page)
             # Only expose a real Flow tile percentage. Missing progress means
             # the submission is not healthy and must be handled by timeout or
             # recovery instead of being presented as advancing work.
@@ -6391,6 +6640,8 @@ class FlowService:
                     # of treating the near-complete job as lost and charging
                     # a duplicate retry.
                     deadline = max(deadline or 0, time.monotonic() + 20)
+            elif submission_alive and deadline is not None:
+                deadline = max(deadline, min(hard_deadline, time.monotonic() + timeout_s))
             store.patch_row("jobs", job_id, patch)
             await asyncio.sleep(1)
         raise RuntimeError(
@@ -6912,15 +7163,15 @@ class FlowService:
             # Validate the persisted project before a fresh submission too.
             # A deleted Flow project must be replaced instead of surfacing a
             # raw 404 and stopping the new image/video job.
-            # A lost-result failure means the previous submission was not
-            # observable in Flow. Retrying it through the recovery poll only
-            # opens the gallery and leaves the composer untouched, which looks
-            # like a frozen 15% job. Start a real UI submission instead.
+            # A lost-result failure means Flow has nothing left to recover.
+            # GENERATION_TIMEOUT keeps resumeOnly + submissionStartedAt so the
+            # next run polls the existing submit instead of charging again.
             recovery_error = str(job.get("error") or "")
             lost_result_retry = bool(
-                re.search(r"FLOW_RESULT_NOT_FOUND|FLOW_EMPTY_OUTPUT|GENERATION_TIMEOUT|FLOW_AUTOMATION_FAILED", recovery_error, re.I)
+                re.search(r"FLOW_RESULT_NOT_FOUND|FLOW_EMPTY_OUTPUT|FLOW_AUTOMATION_FAILED", recovery_error, re.I)
                 and not job.get("mediaIds")
                 and not job.get("outputs")
+                and not job.get("resumeOnly")
             )
             recovery_state = (
                 str(job.get("stage") or "") in {"recovering", "downloading"}
@@ -7238,9 +7489,17 @@ class FlowService:
                         self._log("info", "start_frame_set", job_id=job_id, account_id=account["id"], details={"source": Path(source).name})
                     await self._remember_visible_errors(page, job_id)
                     store.patch_row("jobs", job_id, {"submissionStartedAt": time.time(), "submissionProjectId": project_id, "baselineMediaIds": sorted(baseline_ids)})
+                    await self._close_flow_settings_panel(page, client._ui)
                     await self._ensure_flow_prompt_ready(page, client._ui, job["prompt"])
                     await _wait_before_flow_submit()
-                    await self._click_flow_submit(page)
+                    try:
+                        await self._click_flow_submit(
+                            page, ui=client._ui, job_id=job_id, account_id=account["id"],
+                        )
+                    except RuntimeError as exc:
+                        if str(exc).startswith("FLOW_SUBMIT_NOT_CONFIRMED:"):
+                            self._clear_unsent_submission(job_id)
+                        raise
                     store.patch_row("jobs", job_id, {"stage": "generating", "updatedAt": time.time()})
                     self._log("success", "generation_submitted", job_id=job_id, account_id=account["id"], details={"model": model, "generationResolution": settings.get("resolution") or settings.get("videoResolution") or ""})
                     # Flow's current UI submits via batchexecute (no aisandbox RPC to
@@ -7313,6 +7572,8 @@ class FlowService:
                     "progress": 15,
                     "updatedAt": time.time(),
                 })
+                # Quick-settings left open can swallow the Create click (no RPC).
+                await self._close_flow_settings_panel(page, client._ui)
                 # Settings/mode steps above can blur or clear the composer; make
                 # sure the prompt is present or Submit stays disabled.
                 await self._ensure_flow_prompt_ready(page, client._ui, prompt_text)
@@ -7320,8 +7581,13 @@ class FlowService:
                 media_items = []
                 rpc_responses: list[Any] = []
                 try:
-                    rpc_responses = await self._click_flow_submit(page)
+                    rpc_responses = await self._click_flow_submit(
+                        page, ui=client._ui, job_id=job_id, account_id=account["id"],
+                    )
                 except RuntimeError as exc:
+                    if str(exc).startswith("FLOW_SUBMIT_NOT_CONFIRMED:"):
+                        self._clear_unsent_submission(job_id)
+                        raise
                     if not str(exc).startswith(("FLOW_UI_CHANGED:", "FLOW_SUBMIT_CLICK_FAILED:")):
                         raise
                     # A disabled composer does not prove the request failed.
@@ -7334,10 +7600,7 @@ class FlowService:
                     )
                     if len(media_items) < count:
                         # Nothing was submitted: do not leave a fake submission behind.
-                        store.patch_row("jobs", job_id, {
-                            "submissionStartedAt": None, "submissionProjectId": None,
-                            "baselineMediaIds": [], "updatedAt": time.time(),
-                        })
+                        self._clear_unsent_submission(job_id)
                         raise
                     self._log(
                         "warning", "submit_error_completed_images_recovered",
@@ -7351,22 +7614,62 @@ class FlowService:
                     job_id=job_id, account_id=account["id"],
                     details={"model": model, "ratio": settings.get("ratio"), "count": count},
                 )
+                submitted_at = time.time()
                 submitted_job = {
                     **job,
-                    "submissionStartedAt": time.time(),
+                    "submissionStartedAt": submitted_at,
                     "submissionProjectId": project_id,
                     "baselineMediaIds": sorted(baseline_ids),
                 }
+                recovered_media_ids: list[str] = []
                 if not media_items:
-                    media_items = await self._wait_for_project_media(
-                        page, baseline_ids, "image", count, job_id,
-                        api=api, job=submitted_job, rpc_responses=rpc_responses,
-                    )
+                    try:
+                        media_items = await self._wait_for_project_media(
+                            page, baseline_ids, "image", count, job_id,
+                            api=api, job=submitted_job, rpc_responses=rpc_responses,
+                        )
+                    except RuntimeError as wait_exc:
+                        if "GENERATION_TIMEOUT" not in str(wait_exc):
+                            raise
+                        # Same-run recover: do not mark failed yet; Flow may
+                        # still mount the billed result without a duplicate submit.
+                        store.patch_row("jobs", job_id, {
+                            "status": "processing",
+                            "stage": "recovering",
+                            "error": None,
+                            "resumeOnly": True,
+                            "submissionStartedAt": submitted_at,
+                            "submissionProjectId": project_id,
+                            "baselineMediaIds": sorted(baseline_ids),
+                            "updatedAt": time.time(),
+                        })
+                        recovery_job = {
+                            **submitted_job,
+                            "resumeOnly": True,
+                            "recoveryOnly": True,
+                            "rpcMediaIds": list(
+                                (store.get_row("jobs", job_id) or {}).get("rpcMediaIds") or []
+                            ),
+                        }
+                        recovered_media_ids = await self._recover_submitted_media(
+                            api, page, recovery_job, timeout_s=_IMAGE_GENERATION_TIMEOUT_S,
+                        )
+                        if not recovered_media_ids:
+                            raise
+                        media_items = await self._find_existing_project_media(
+                            api, page,
+                            {**recovery_job, "mediaIds": recovered_media_ids},
+                            "image", count,
+                        )
                 if not media_items:
                     raise RuntimeError("FLOW_EMPTY_OUTPUT: Flow returned no completed images")
-                media_ids = self._claim_media_ids(
-                    [str(item["id"]) for item in media_items], count,
-                )
+                if recovered_media_ids:
+                    # _recover_submitted_media already claimed these ids.
+                    media_ids = list(recovered_media_ids)[:count]
+                else:
+                    media_ids = self._claim_media_ids(
+                        [str(item["id"]) for item in media_items], count,
+                    )
                 if len(media_ids) < count:
                     raise RuntimeError("FLOW_RESULT_NOT_FOUND: generated images were claimed by another job")
                 media_items = [item for item in media_items if str(item["id"]) in set(media_ids)]

@@ -180,6 +180,53 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await service._wait_for_project_media(page=None, baseline_ids=set(), kind="image",
                                                                    expected_count=1, job_id="j", timeout_s=3), [result])
 
+    async def test_rpc_names_extend_generation_timeout_without_percent(self):
+        """Mute % still slides the soft deadline while RPC ownership is alive."""
+        service = FlowService()
+        clock = iter(range(0, 10_000, 1))
+        result = {"id": "new", "tag": "img", "src": "https://example.test/image.png"}
+        # Past the 3s base (no %); rpc ownership must slide the soft deadline.
+        media = [[]] * 6 + [[result]]
+        response = MagicMock(ok=True)
+        response.text = AsyncMock(return_value="")
+        with patch("pipeline.flow.service.time.monotonic", side_effect=lambda: next(clock)), \
+             patch.object(service, "_project_media_elements", AsyncMock(side_effect=media)), \
+             patch.object(service, "_claim_visible_flow_error", AsyncMock(return_value="")), \
+             patch.object(service, "_flow_tile_percent", AsyncMock(return_value=-1)), \
+             patch.object(service, "_flow_pending_generation", AsyncMock(return_value=False)), \
+             patch.object(service, "_rpc_media", AsyncMock(return_value=([], ["rpc-m1"]))), \
+             patch("pipeline.flow.service.store.get_row", return_value={"id": "j", "progress": 0}), \
+             patch("pipeline.flow.service.store.patch_row"), \
+             patch("pipeline.flow.service.asyncio.sleep", AsyncMock()):
+            self.assertEqual(
+                await service._wait_for_project_media(
+                    page=None, baseline_ids=set(), kind="image", expected_count=1,
+                    job_id="j", timeout_s=3, rpc_responses=[response],
+                ),
+                [result],
+            )
+
+    async def test_pending_tile_extends_generation_timeout_without_percent(self):
+        service = FlowService()
+        clock = iter(range(0, 10_000, 1))
+        result = {"id": "new", "tag": "img", "src": "https://example.test/image.png"}
+        media = [[]] * 6 + [[result]]
+        with patch("pipeline.flow.service.time.monotonic", side_effect=lambda: next(clock)), \
+             patch.object(service, "_project_media_elements", AsyncMock(side_effect=media)), \
+             patch.object(service, "_claim_visible_flow_error", AsyncMock(return_value="")), \
+             patch.object(service, "_flow_tile_percent", AsyncMock(return_value=-1)), \
+             patch.object(service, "_flow_pending_generation", AsyncMock(return_value=True)), \
+             patch("pipeline.flow.service.store.get_row", return_value={"id": "j", "progress": 0}), \
+             patch("pipeline.flow.service.store.patch_row"), \
+             patch("pipeline.flow.service.asyncio.sleep", AsyncMock()):
+            self.assertEqual(
+                await service._wait_for_project_media(
+                    page=None, baseline_ids=set(), kind="image", expected_count=1,
+                    job_id="j", timeout_s=3,
+                ),
+                [result],
+            )
+
     async def test_rpc_owned_media_is_claimed_when_flow_rewrites_the_prompt(self):
         service = FlowService()
         response = MagicMock(ok=True)
@@ -236,24 +283,25 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
     async def test_in_flight_generate_rpc_fails_on_unusual_activity_toast(self):
         page = MagicMock()
         page.locator.return_value.inner_text = AsyncMock(return_value="ok")
-        button = MagicMock(hover=AsyncMock(), click=AsyncMock())
         service = FlowService()
+        service._flow_submit_dom = AsyncMock(return_value={"clicked": True, "score": 90, "disabled": False})
         service._scan_visible_errors = AsyncMock(return_value=[{
             "index": 0, "text": "Chúng tôi nhận thấy có hoạt động bất thường",
         }])
         with self.assertRaisesRegex(RuntimeError, "FLOW_AUTOMATION_BLOCKED"):
             await service._click_flow_submit_and_confirm(
-                page, button, 0, "", set(), [object()], [],
+                page, 0, "", set(), [object()], [],
             )
 
     async def test_batchexecute_unusual_activity_fails_fast_as_automation_blocked(self):
         response = MagicMock(ok=True, status=200)
         response.text = AsyncMock(return_value=')]}\'\n[["wrb.fr","YhhmEf",null,null,null,[7,null,'
                                   '[["type.googleapis.com/google.rpc.ErrorInfo",["PUBLIC_ERROR_UNUSUAL_ACTIVITY"]]]]]]')
-        button = MagicMock(hover=AsyncMock(), click=AsyncMock())
+        service = FlowService()
+        service._flow_submit_dom = AsyncMock(return_value={"clicked": True, "score": 90, "disabled": False})
         with self.assertRaisesRegex(RuntimeError, "FLOW_AUTOMATION_BLOCKED"):
-            await FlowService()._click_flow_submit_and_confirm(
-                MagicMock(), button, 0, "", set(), [object()], [response],
+            await service._click_flow_submit_and_confirm(
+                MagicMock(), 0, "", set(), [object()], [response],
             )
 
     def test_image_session_closes_when_only_video_jobs_are_queued(self):

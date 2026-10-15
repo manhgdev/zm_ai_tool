@@ -41,27 +41,23 @@ class _ManualBrowser:
 
 
 class FlowManualSessionTests(unittest.TestCase):
-    def test_video_plan_verification_opens_saved_session(self):
+    def test_video_plan_verification_reuses_verified_snapshot_without_open_session(self):
+        """Admission uses credits/catalog TTL; jobs clone runtime profiles by kind."""
         service = FlowService()
         account = {
             "id": "a", "status": "online", "projectId": "p", "plan": "Ultra",
             "planStatus": "verified", "credits": 100,
             "creditsSyncedAt": time.time(),
+            "capabilityStatus": "verified",
+            "capabilityCatalog": {"version": 1},
         }
-
-        def open_video_session(account_id, **_kwargs):
-            service._manual_sessions[f"{account_id}:video"] = {"cdp_url": "http://127.0.0.1:1"}
-            return {"opened": True}
-
         with patch("pipeline.flow.service.store.get_row", return_value=account), \
-             patch.object(service, "open_account_session", side_effect=open_video_session) as open_session:
+             patch.object(service, "open_account_session") as open_session:
             result = service._verify_account_plan_before_enqueue(
                 "a", "video", {"headless": False},
             )
         self.assertEqual(result, account)
-        open_session.assert_called_once_with(
-            "a", kind="video", fullscreen=False, page_zoom=1.0, auto_close=True,
-        )
+        open_session.assert_not_called()
 
     def test_auto_session_does_not_bypass_automation_cooldown(self):
         service = FlowService()
@@ -136,11 +132,12 @@ class FlowManualSessionTests(unittest.TestCase):
              patch("pipeline.flow.service.asyncio.to_thread", new=_done), \
              patch("pipeline.flow.service.threading.Thread") as thread:
             self.assertEqual(service.open_account_session("a"), {"opened": True})
-            self.assertIn("a:image", service._manual_sessions)
+            self.assertIn("a:account", service._manual_sessions)
             target = thread.call_args.kwargs["target"]
             target()
             browser = browsers[0]
-            self.assertNotIn("a", service._manual_sessions)
+            self.assertNotIn("a:account", service._manual_sessions)
+            self.assertEqual(str(browser.kwargs["profile_dir"]), "/tmp/flow-profile-a")
             self.assertEqual(browser.kwargs["headless"], False)
             self.assertEqual(browser.kwargs["google_login_compat"], True)
             self.assertEqual(browser.kwargs["fullscreen"], True)
@@ -187,6 +184,73 @@ class FlowManualSessionTests(unittest.TestCase):
                 service.delete_account("a")
             self.assertIsNotNone(thread.call_args)
 
+    def test_closed_chrome_is_not_profile_busy(self):
+        """After Chrome exits, Reset/Connect must not stay stuck on FLOW_PROFILE_BUSY."""
+        import tempfile
+        from pathlib import Path
+        from pipeline.flow import store
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            store._write("accounts", [{"id": "a", "status": "online", "projectId": "p", "cookie": [{"name": "SID"}]}])
+            service = FlowService()
+            browser = Mock(profile_dir=str(store.profile_dir("a")))
+            service._manual_sessions["a:account"] = {
+                "browser": browser, "cdp_url": "http://127.0.0.1:1", "startedAt": time.monotonic(),
+            }
+            with patch("pipeline.flow.browser.chrome_profile_running", return_value=False), \
+                 patch.object(service, "connect") as connect, \
+                 patch.object(service, "_sync_runtime_cookies"):
+                service.reset_account_session("a")
+            self.assertNotIn("a:account", service._manual_sessions)
+            connect.assert_called_once()
+
+    def test_stuck_connecting_without_chrome_is_not_profile_busy(self):
+        """Closed Connect Chrome must free Reset; stale opening must not fake Mở phiên."""
+        import tempfile
+        from pathlib import Path
+        from pipeline.flow import store
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            store._write("accounts", [{"id": "a", "status": "connecting", "projectId": "p"}])
+            service = FlowService()
+            service._connecting_accounts.add("a")
+            service._connecting_started_at["a"] = time.monotonic() - 30
+            service._manual_sessions["a:account"] = {"opening": True, "startedAt": time.monotonic() - 30}
+            with patch("pipeline.flow.browser.chrome_profile_running", return_value=False), \
+                 patch.object(service, "connect") as connect, \
+                 patch.object(service, "_sync_runtime_cookies"):
+                service.reset_account_session("a")
+            self.assertNotIn("a", service._connecting_accounts)
+            self.assertNotIn("a:account", service._manual_sessions)
+            connect.assert_called_once()
+
+            service._manual_sessions["a:account"] = {"opening": True, "startedAt": time.monotonic() - 30}
+            with patch("pipeline.flow.browser.chrome_profile_running", return_value=False), \
+                 patch("pipeline.flow.service.threading.Thread") as thread:
+                self.assertEqual(service.open_account_session("a"), {"opened": True})
+            self.assertTrue(thread.called)
+            self.assertIn("a:account", service._manual_sessions)
+            self.assertTrue(service._manual_sessions["a:account"].get("opening"))
+
+    def test_reset_reaps_orphan_chrome_after_window_close(self):
+        """Closed UI can leave Chromium alive; Reset must kill it before busy check."""
+        import tempfile
+        from pathlib import Path
+        from pipeline.flow import store
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            store._write("accounts", [{"id": "a", "status": "online", "projectId": "p"}])
+            service = FlowService()
+            killer = Mock()
+            with patch("pipeline.flow.browser.chrome_profile_running", side_effect=[True, False, False, False]), \
+                 patch("pipeline.flow.browser.BrowserManager", return_value=Mock(kill_now=killer)) as manager, \
+                 patch.object(service, "connect") as connect, \
+                 patch.object(service, "_sync_runtime_cookies"):
+                service.reset_account_session("a")
+            manager.assert_called()
+            killer.assert_called()
+            connect.assert_called_once()
+
     def test_dead_open_session_redirects_to_google_login(self):
         account = {"id": "a", "email": "example@gmail.com", "status": "online"}
         service = FlowService()
@@ -232,8 +296,10 @@ class FlowManualSessionTests(unittest.TestCase):
             self.assertEqual(patches, [])
             browser.context.pages = [login, flow]
             self.assertTrue(asyncio.run(service._confirm_open_session(browser, "a", login)))
-        self.assertEqual(patches[0][2]["status"], "online")
-        self.assertEqual(patches[0][2]["cookie"][0]["value"], "new")
+        cookie_patch = next(args[2] for args in patches if "cookie" in args[2])
+        status_patch = next(args[2] for args in patches if args[2].get("status") == "online")
+        self.assertEqual(cookie_patch["cookie"][0]["value"], "new")
+        self.assertEqual(status_patch["status"], "online")
 
     def test_open_session_reuses_existing_and_missing_account_is_rejected(self):
         account = {"id": "a", "status": "online", "projectId": "project-id"}
@@ -241,9 +307,17 @@ class FlowManualSessionTests(unittest.TestCase):
         with patch("pipeline.flow.store.get_row", return_value=account), \
              patch("pipeline.flow.store.profile_dir", return_value="/tmp/flow-profile-a"), \
              patch("pipeline.flow.service.threading.Thread") as thread:
-            service._manual_sessions["a:image"] = object()
-            self.assertEqual(service.open_account_session("a"), {"opened": True})
+            service._manual_sessions["a:account"] = {
+                "browser": Mock(profile_dir="/tmp/flow-profile-a"),
+                "cdp_url": "http://127.0.0.1:1",
+                "startedAt": time.monotonic(),
+            }
+            with patch("pipeline.flow.browser.chrome_profile_running", return_value=True):
+                self.assertEqual(service.open_account_session("a"), {"opened": True})
             thread.assert_not_called()
+            # Kind-specific auto slots still open separately from manual account.
+            self.assertEqual(service.open_account_session("a", kind="video", auto_close=True), {"opened": True})
+            thread.assert_called_once()
         with patch("pipeline.flow.store.get_row", return_value=None):
             with self.assertRaises(KeyError):
                 FlowService().open_account_session("missing")

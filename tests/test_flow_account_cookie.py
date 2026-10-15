@@ -49,39 +49,78 @@ class FlowAccountCookieTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw, \
              patch("pipeline.flow.service.store.profile_dir", return_value=Path(raw)):
             chrome = {"id": "a", "authMethod": "chrome"}
-            self.assertTrue(_seed_stored_cookies(chrome))
-            (Path(raw) / "Default" / "Network").mkdir(parents=True)
-            (Path(raw) / "Default" / "Network" / "Cookies").write_bytes(b"")
             self.assertFalse(_seed_stored_cookies(chrome))
+            chrome_jar = {
+                "id": "a", "authMethod": "chrome",
+                "cookie": [{"name": "SID", "value": "x", "domain": ".google.com", "path": "/"}],
+            }
+            # Empty profile → seed JSON. Non-empty Cookies DB → use disk (no CookieMismatch).
+            self.assertTrue(_seed_stored_cookies(chrome_jar))
+            network = Path(raw) / "Default" / "Network"
+            network.mkdir(parents=True)
+            (network / "Cookies").write_bytes(b"")
+            self.assertTrue(_seed_stored_cookies(chrome_jar))
+            (network / "Cookies").write_bytes(b"x" * 64)
+            self.assertFalse(_seed_stored_cookies(chrome_jar))
             self.assertTrue(_seed_stored_cookies({"id": "a", "authMethod": "cookie"}))
 
-    def test_unusual_activity_reset_keeps_the_profile_and_reconnects_signed_in(self):
+    def test_unusual_activity_reset_keeps_login_files_and_reconnects(self):
         from pipeline.flow import store
         from pipeline.flow.service import FlowService
         with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
-            store._write("accounts", [{"id": "a", "status": "online", "projectId": "p", "cookie": [{"name": "SID"}]}])
+            jar = [{"name": "SID", "value": "tok", "domain": ".google.com", "path": "/"}]
+            store._write("accounts", [{"id": "a", "status": "online", "projectId": "p", "cookie": jar}])
             service = FlowService()
             main = Path(store.profile_dir("a"))
             sessions = [service._session_profile_dir("a", kind) for kind in ("image", "video")]
+            runtime = store.root() / "runtime-profiles" / "a"
+            dead_job = runtime / "old-job"
             identity = ["Default/Cookies", "Default/Device Bound Sessions", "Default/Preferences",
                         "Default/Secure Preferences", "Default/Login Data", "Local State"]
             browsing = ["Default/IndexedDB/x", "Default/Local Storage/x", "Default/Service Worker/x",
                         "Default/History", "Default/Sessions/x", "Cache/x"]
-            for profile in (main, *sessions):
+            for profile in (main, *sessions, dead_job):
                 for name in identity + browsing:
                     (profile / name).parent.mkdir(parents=True, exist_ok=True)
                     (profile / name).write_text("x")
             with patch.object(service, "connect") as connect, \
                  patch.object(service, "_sync_runtime_cookies") as sync:
                 service.reset_account_session("a")
-            self.assertEqual([name for name in identity if not (main / name).exists()], [])
-            self.assertEqual([name for name in browsing if (main / name).exists()], [])
-            # Session copies hand their cookies back before being re-copied later.
-            self.assertEqual([call.args[1] for call in sync.call_args_list], sessions)
+            # Keep Google-bound login files; drop browsing cache only.
+            for name in identity:
+                self.assertTrue((main / name).exists(), name)
+            self.assertFalse((main / "Default" / "IndexedDB").exists())
+            self.assertFalse((main / "Default" / "Service Worker").exists())
+            self.assertFalse((main / "Cache").exists())
             self.assertFalse(any(profile.exists() for profile in sessions))
+            self.assertFalse(runtime.exists())
+            self.assertEqual(
+                [call.args[1] for call in sync.call_args_list],
+                [*sessions, main],
+            )
             connect.assert_called_once_with("a", headless=True, open_ui_on_failure=False)
+            self.assertIsNone(connect.call_args.kwargs.get("cookies"))
             saved = store.get_row("accounts", "a")
-            self.assertEqual((saved["projectId"], saved["cookie"]), (None, [{"name": "SID"}]))
+            self.assertEqual(saved["projectId"], None)
+            self.assertEqual(saved["cookie"][0]["name"], "SID")
+
+    def test_reset_keeps_processing_job_runtime_clone(self):
+        from pipeline.flow import store
+        from pipeline.flow.service import FlowService
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            store._write("accounts", [{"id": "a", "status": "online", "projectId": "p", "cookie": [{"name": "SID"}]}])
+            store._write("jobs", [{"id": "live", "accountId": "a", "status": "processing", "kind": "image"}])
+            service = FlowService()
+            live = store.root() / "runtime-profiles" / "a" / "live"
+            stale = store.root() / "runtime-profiles" / "a" / "stale"
+            for path in (live, stale):
+                path.mkdir(parents=True)
+                (path / "marker").write_text("x")
+            with patch.object(service, "connect"), patch.object(service, "_sync_runtime_cookies"):
+                service.reset_account_session("a", keep_running_jobs=True)
+            self.assertTrue(live.exists())
+            self.assertFalse(stale.exists())
+            self.assertEqual(store.get_row("accounts", "a")["projectId"], "p")
 
     def test_unusual_activity_reset_keeps_running_jobs_and_their_project(self):
         from pipeline.flow import store
@@ -168,6 +207,26 @@ class FlowAccountCookiePrepareTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(await service._confirm_open_session(MagicMock(context=context), "a", page))
             saved = store.get_row("accounts", "a")
             self.assertEqual((saved["status"], saved["projectId"], saved["imageProjectId"]), ("online", "new-project", "new-project"))
+
+    async def test_persist_browser_cookies_refreshes_accounts_json_jar(self):
+        from pipeline.flow import store
+        from pipeline.flow.service import FlowService
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            store._write("accounts", [{
+                "id": "a", "status": "online",
+                "cookie": [
+                    {"name": "SID", "value": "old", "domain": ".google.com", "path": "/"},
+                    {"name": "pref", "value": "keep", "domain": ".google.com", "path": "/"},
+                ],
+            }])
+            context = MagicMock()
+            context.cookies = AsyncMock(return_value=[
+                {"name": "SID", "value": "rotated", "domain": ".google.com", "path": "/", "expires": time.time() + 86400},
+                {"name": "HSID", "value": "new", "domain": ".google.com", "path": "/", "expires": time.time() + 86400},
+            ])
+            self.assertTrue(await FlowService()._persist_browser_cookies("a", MagicMock(context=context)))
+            by_name = {item["name"]: item["value"] for item in store.get_row("accounts", "a")["cookie"]}
+            self.assertEqual(by_name, {"SID": "rotated", "pref": "keep", "HSID": "new"})
 
 
 if __name__ == "__main__":

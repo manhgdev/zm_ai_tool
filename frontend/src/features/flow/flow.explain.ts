@@ -246,8 +246,8 @@ export function explainFlowError(message: string): FlowExplain {
   if (code === "FLOW_GENERATION_TIMEOUT") {
     return make(
       code,
-      "Flow không trả ảnh/video sau khi gửi. Nếu tài khoản vừa bị chặn hoạt động bất thường: tạm dừng tài khoản này, đừng chạy lại. Nếu không: chạy lại.",
-      "Flow returned no media after submit. If this account just hit unusual activity: pause it and do not retry. Otherwise retry.",
+      "Flow chưa trả media sau khi gửi. App sẽ khôi phục kết quả đã gửi trước (không tạo mới ngay). Chạy lại cũng recover trước.",
+      "Flow has not returned media after submit yet. The app recovers the existing submission first (no immediate regenerate). Retry also recovers first.",
     );
   }
   if (code === "FLOW_CREDITS_INSUFFICIENT" || /FLOW_CREDITS_INSUFFICIENT|insufficient credits|not enough credits/i.test(raw)) {

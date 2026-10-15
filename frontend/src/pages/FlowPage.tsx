@@ -1976,8 +1976,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     if (openingAccountIds.has(account.id)) return;
     setOpeningAccountIds((current) => new Set(current).add(account.id));
     try {
-      await flowRequest<{ opened: boolean }>(`/api/flow/accounts/${account.id}/open-session?kind=${createKind}`, { method: "POST" });
-      toast.success(t(`Đã mở phiên Playwright riêng cho luồng ${createKind === "image" ? "ảnh" : "video"}.`, `A separate Playwright session is open for ${createKind} generation.`));
+      // Canonical account profile — not createKind (image/video form toggle).
+      await flowRequest<{ opened: boolean }>(`/api/flow/accounts/${account.id}/open-session`, { method: "POST" });
+      toast.success(t("Đã mở phiên Chrome của tài khoản.", "Opened this account's Chrome session."));
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       toast.error(msg.includes("FLOW_PROFILE_BUSY")
@@ -1992,14 +1993,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const resetAccountSession = (account: FlowAccount) => {
     setConfirmAction({
       message: t(
-        `Reset project Flow của ${account.label} và giữ cookie Google? Lịch sử job vẫn được giữ. Nếu Flow vẫn báo hoạt động bất thường, đó là giới hạn phía Google/Flow.`,
-        `Reset ${account.label}'s Flow project while keeping Google cookies? Job history is kept. If Flow still reports unusual activity, the block is on Google's/Flow's side.`,
+        `Xoá cache phiên của ${account.label}, giữ đăng nhập Google để kết nối lại. Lịch sử job vẫn được giữ.`,
+        `Clear ${account.label}'s session cache and keep the Google login to reconnect. Job history is kept.`,
       ),
       confirmLabel: t("Reset phiên", "Reset session"),
       run: () => flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/reset-session`, { method: "POST" })
         .then((updated) => {
           setAccounts((current) => current.map((item) => item.id === updated.id ? normalizeFlowAccounts([updated])[0] : item));
-          toast.success(t("Đã reset project Flow và giữ đăng nhập Google.", "Flow project reset; Google sign-in was kept."));
+          toast.success(t("Đã xoá cache phiên; giữ đăng nhập để kết nối lại.", "Session cache cleared; login kept for reconnect."));
         })
         .catch((error) => {
           const msg = error instanceof Error ? error.message : String(error);
@@ -2635,8 +2636,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             <aside className="flow-account-note">
               <IconGear size={18} />
               {t(
-                "Mỗi tài khoản có Chrome profile riêng. Mở phiên để đăng nhập/kiểm tra; job sẽ dùng lại đúng phiên Playwright đang mở.",
-                "Each account has its own Chrome profile. Open a session to sign in/check it; jobs reuse the exact Playwright session that remains open.",
+                "Mỗi tài khoản có Chrome profile riêng. Mở phiên để đăng nhập/kiểm tra (profile chính). Job ảnh/video tự clone profile riêng theo loại.",
+                "Each account has its own Chrome profile. Open a session to sign in/check it (main profile). Image/video jobs clone their own kind-specific profile.",
               )}
             </aside>
           </section>
