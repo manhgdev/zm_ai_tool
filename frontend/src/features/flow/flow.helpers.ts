@@ -329,6 +329,7 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
         accounts,
       ),
       outputs: Array.isArray(raw.outputs) ? raw.outputs.map(String) : [],
+      logoDone: Array.isArray(raw.logoDone) ? raw.logoDone.map(String) : [],
       output: Array.isArray(raw.outputs) ? String(raw.outputs[0] || "") : "",
       outputFolder: raw.outputFolder ? String(raw.outputFolder) : "",
       displayOutputFolder: raw.displayOutputFolder ? String(raw.displayOutputFolder) : "",
@@ -358,11 +359,27 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
   });
 }
 
+/** True when every downloaded output has finished logo removal. */
+export function flowJobLogoFullyDone(job: Pick<FlowJob, "outputs" | "logoDone">): boolean {
+  const outputs = (job.outputs || []).map(String).filter(Boolean);
+  if (!outputs.length) return false;
+  const done = new Set((job.logoDone || []).map(String));
+  return outputs.every((path) => done.has(path));
+}
+
+/** Show the Del Logo meta chip after a successful logo pass (create flag or post-clean). */
+export function flowJobShowsDelLogo(
+  job: Pick<FlowJob, "settings" | "outputs" | "logoDone" | "error">,
+): boolean {
+  if (String(job.error || "").startsWith("FLOW_LOGO_REMOVE_FAILED")) return false;
+  return Boolean(job.settings?.removeLogo) || flowJobLogoFullyDone(job);
+}
+
 /** Compact job meta line: model · ratio · duration · res · download quality. */
 export function formatFlowJobSettingsMeta(
   kind: CreateKind,
   settings: Pick<FlowJob["settings"], "model" | "ratio" | "duration" | "resolution" | "quality" | "format" | "removeLogo">,
-  opts?: { downloadLabel?: string; logoLabel?: string },
+  opts?: { downloadLabel?: string; logoLabel?: string; showDelLogo?: boolean },
 ): string {
   const parts: string[] = [];
   const model = String(settings.model || "").trim();
@@ -391,7 +408,8 @@ export function formatFlowJobSettingsMeta(
     const format = String(settings.format || "").trim().toUpperCase();
     if (format) parts.push(format);
   }
-  if (settings.removeLogo && opts?.logoLabel) parts.push(opts.logoLabel);
+  const showDel = opts?.showDelLogo ?? Boolean(settings.removeLogo);
+  if (showDel && opts?.logoLabel) parts.push(opts.logoLabel);
   return parts.join(" · ");
 }
 

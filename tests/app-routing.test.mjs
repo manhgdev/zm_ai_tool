@@ -77,8 +77,8 @@ test('Desktop root restores the last sticky tab; ?landing=1 keeps Landing', () =
     { path: '/?landing=1', page: 'LandingPage' },
   )
   assert.deepEqual(
-    renderEntry('/?v=8.6.63', { desktop: true, storedMode: 'flow' }),
-    { path: '/flow-veo?v=8.6.63', page: 'App' },
+    renderEntry('/?v=8.6.64', { desktop: true, storedMode: 'flow' }),
+    { path: '/flow-veo?v=8.6.64', page: 'App' },
   )
 })
 

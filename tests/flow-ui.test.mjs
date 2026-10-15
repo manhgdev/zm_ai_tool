@@ -11,6 +11,8 @@ import {
   flowAccountDisplayName,
   resolveFlowJobAccountName,
   normalizeFlowJobs,
+  flowJobLogoFullyDone,
+  flowJobShowsDelLogo,
 } from '../frontend/src/features/flow/flow.helpers.ts'
 import { explainFlowError, explainFlowEvent, technicalFlowDetail, formatFlowExplain, flowStageLabel } from '../frontend/src/features/flow/flow.explain.ts'
 
@@ -264,6 +266,33 @@ test("video meta shows logo removal", () => {
   );
 });
 
+test("logo-only success shows Del Logo and hides remove when logoDone covers outputs", () => {
+  const cleaned = {
+    outputs: ["/out/a.jpg"],
+    logoDone: ["/out/a.jpg"],
+    settings: { removeLogo: true },
+    error: null,
+  };
+  assert.equal(flowJobLogoFullyDone(cleaned), true);
+  assert.equal(flowJobShowsDelLogo(cleaned), true);
+  assert.equal(
+    formatFlowJobSettingsMeta("image", { model: "Nano Banana 2.1", ratio: "16:9", resolution: "1K", format: "jpg" }, {
+      logoLabel: "Del Logo",
+      showDelLogo: flowJobShowsDelLogo(cleaned),
+    }),
+    "Nano Banana 2.1 · 16:9 · 1K · JPG · Del Logo",
+  );
+  const failed = { ...cleaned, error: "FLOW_LOGO_REMOVE_FAILED: x", logoDone: [], settings: { removeLogo: true } };
+  assert.equal(flowJobShowsDelLogo(failed), false);
+  const [job] = normalizeFlowJobs([{
+    id: "j1", kind: "image", status: "done", accountId: "a",
+    outputs: ["/out/a.jpg"], logoDone: ["/out/a.jpg"],
+    settings: { model: "Nano Banana 2.1", ratio: "16:9", resolution: "1K", format: "jpg", removeLogo: true },
+  }], [{ id: "a", label: "acc" }]);
+  assert.deepEqual(job.logoDone, ["/out/a.jpg"]);
+  assert.equal(job.settings.removeLogo, true);
+});
+
 
 test("image meta includes resolution", () => {
   assert.equal(
@@ -426,7 +455,8 @@ test("queue exposes Xoá logo after Ghép and Xoá tất cả logo after collaps
   const canRemove = source.slice(source.indexOf('const canRemoveLogo ='), source.indexOf('const removeLogoOnly ='));
   assert.match(canRemove, /settings\.removeLogo/);
   assert.match(canRemove, /isLogoRemoveFailed/);
-  assert.match(canRemove, /logoDone/);
+  assert.match(canRemove, /flowJobLogoFullyDone/);
+  assert.match(source, /showDelLogo:\s*flowJobShowsDelLogo/);
 });
 }
 

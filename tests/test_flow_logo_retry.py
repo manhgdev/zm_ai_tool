@@ -71,12 +71,14 @@ class LogoRetryTest(unittest.TestCase):
             store._write('jobs', [{
                 'id': 'j', 'kind': 'image', 'status': 'done', 'accountId': 'acc',
                 'outputs': [str(a), str(b)], 'logoDone': [str(a)], 'error': None,
+                'settings': {'model': 'Nano Banana 2.1'},
             }])
             service = FlowService()
             with patch.object(service, '_log'), patch('pipeline.flow.service.threading.Thread') as thread:
                 retried = service.retry('j', {'manual': True, 'logoOnly': True})
             self.assertEqual(retried['stage'], 'removing_logo')
             self.assertEqual(retried['logoDone'], [str(a)])  # not cleared; _remove_flow_logos skips these
+            self.assertTrue(retried['settings']['removeLogo'])  # queue shows Del Logo immediately
             self.assertIsNone(retried.get('error'))
             thread.assert_called_once()
             self.assertIn('flow-logo-', thread.call_args.kwargs.get('name', '') or thread.call_args[1].get('name', ''))

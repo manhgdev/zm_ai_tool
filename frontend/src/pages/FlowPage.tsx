@@ -65,6 +65,8 @@ import {
   selectedFlowAccount as resolveSelectedFlowAccount,
   resolveFlowJobAccountName,
   flowAccountDisplayName,
+  flowJobLogoFullyDone,
+  flowJobShowsDelLogo,
   flowRequest, loadFlowSnapshot,
   saveWebOutputRoot, loadWebOutputRoot,
   writeFlowOutputToDirectory, downloadFlowOutput, deleteFlowOutputFromDirectory,
@@ -1658,11 +1660,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     if (job.status === "queued" || job.status === "processing") return false;
     const account = accounts.find((item) => item.id === job.accountId);
     if (account && account.plan === "Ultra") return false;
-    // Del Logo already ran without error → hide. Never used Del Logo, or
-    // FLOW_LOGO_REMOVE_FAILED → show so the user can clean / retry.
+    // Already cleaned successfully → hide. Failed logo pass keeps the button.
+    if (flowJobLogoFullyDone(job) && !isLogoRemoveFailed(job)) return false;
     if (job.settings.removeLogo && !isLogoRemoveFailed(job)) return false;
-    const done = new Set((job.logoDone || []).map(String));
-    if (job.outputs.every((path) => done.has(String(path)))) return false;
     return true;
   };
   const removeLogoOnly = (jobId: string) => {
@@ -3552,6 +3552,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             {formatFlowJobSettingsMeta(job.kind, job.settings, {
                               downloadLabel: t("tải", "DL"),
                               logoLabel: t("Del Logo", "Del Logo"),
+                              showDelLogo: flowJobShowsDelLogo(job),
                             })}{" "}
                             · {job.randomAccount ? "🎲 " : ""}{resolveFlowJobAccountName(job, accounts)}
                             {job.settings.headless === false && <> · {t("Mở Chrome", "Open Chrome")}</>}

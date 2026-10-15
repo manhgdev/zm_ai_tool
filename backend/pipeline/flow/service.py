@@ -1824,7 +1824,13 @@ class FlowService:
         if error:
             self._fail_logo_removal(job_id, outputs, error, account_id=str(job.get("accountId") or ""))
             return
-        store.patch_row("jobs", job_id, {"status": "done", "stage": "done", "progress": 100, "error": None, "updatedAt": time.time()})
+        current = store.get_row("jobs", job_id) or job
+        settings = dict(current.get("settings") or {})
+        settings["removeLogo"] = True
+        store.patch_row("jobs", job_id, {
+            "status": "done", "stage": "done", "progress": 100, "error": None,
+            "settings": settings, "updatedAt": time.time(),
+        })
         if job.get("seriesContext"):
             from . import series
             series.mark_job_complete(job, outputs)
@@ -8211,11 +8217,15 @@ class FlowService:
                     "FLOW_LOGO_SKIPPED_ULTRA: Ultra accounts have no Flow logo to remove"
                 )
             self._cancelled.discard(job_id)
+            # Mark Del Logo so queue meta updates; logoDone on success hides Xoá logo.
+            settings = dict(existing.get("settings") or {})
+            settings["removeLogo"] = True
             job = store.patch_row("jobs", job_id, {
                 "status": "processing",
                 "stage": "removing_logo",
                 "progress": POST_PROGRESS_START,
                 "error": None,
+                "settings": settings,
                 "updatedAt": time.time(),
             })
             self._log("info", "job_retry_logo_only", job_id=job_id, account_id=str(existing.get("accountId") or ""))
