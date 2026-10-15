@@ -199,22 +199,7 @@ def _desktop_version() -> str:
     return str(os.environ.get("ZM_AI_TOOL_VERSION") or "0.0.0").strip()
 
 
-def _latest_release(*, allow_prerelease_fallback: bool = False) -> dict[str, Any]:
-    payload = None
-    repository = _UPDATE_REPOSITORY
-    for candidate in (_UPDATE_REPOSITORY, _UPDATE_FALLBACK_REPOSITORY):
-        request = urllib.request.Request(
-            f"https://api.github.com/repos/{candidate}/releases?per_page=20",
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AI-TOOL"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            repository = candidate
-            break
-        except urllib.error.HTTPError as exc:
-            if exc.code != 404 or candidate == _UPDATE_FALLBACK_REPOSITORY:
-                raise
+def _pick_release(payload: Any, *, allow_prerelease_fallback: bool = False) -> dict[str, Any]:
     if not isinstance(payload, list):
         return {}
     published = [item for item in payload if isinstance(item, dict)
@@ -226,18 +211,47 @@ def _latest_release(*, allow_prerelease_fallback: bool = False) -> dict[str, Any
     return max(releases, key=lambda item: _version_key(str(item.get('tag_name') or '')), default={})
 
 
-def _public_download_release() -> dict[str, Any]:
-    """Read published tags and actual asset links when the REST API is unavailable.
+def _latest_release(*, allow_prerelease_fallback: bool = False) -> dict[str, Any]:
+    """Prefer the public repo; fall through to VIP on empty list, 404, or other errors."""
+    last_error: Exception | None = None
+    for candidate in (_UPDATE_REPOSITORY, _UPDATE_FALLBACK_REPOSITORY):
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{candidate}/releases?per_page=20",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "ZM-AI-TOOL"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            if candidate == _UPDATE_FALLBACK_REPOSITORY:
+                if last_error is not None:
+                    raise last_error from exc
+                raise
+            last_error = exc
+            continue
+        picked = _pick_release(payload, allow_prerelease_fallback=allow_prerelease_fallback)
+        if not picked:
+            continue
+        return {**picked, "_repository": candidate}
+    return {}
 
-    This metadata is only for browser downloads; updater execution still requires
-    GitHub API checksums from _latest_release().
-    """
+
+def _public_download_release() -> dict[str, Any]:
+    """Browser-download metadata when the REST API is unavailable (updater still needs API checksums)."""
+    last_error: Exception | None = None
     for repository in (_UPDATE_REPOSITORY, _UPDATE_FALLBACK_REPOSITORY):
         try:
-            return _public_download_release_from(repository)
-        except urllib.error.HTTPError as exc:
-            if exc.code != 404 or repository == _UPDATE_FALLBACK_REPOSITORY:
+            release = _public_download_release_from(repository)
+        except Exception as exc:
+            if repository == _UPDATE_FALLBACK_REPOSITORY:
+                if last_error is not None:
+                    raise last_error from exc
                 raise
+            last_error = exc
+            continue
+        if release.get("assets"):
+            return release
+    return {}
 
 def _public_download_release_from(repository: str) -> dict[str, Any]:
     base = f"https://github.com/{repository}"

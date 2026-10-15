@@ -1,6 +1,7 @@
 import { Component, type ReactNode, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './app/App'
+import { appModePath, loadAppMode } from './app/appMode'
 import LandingPage from './pages/LandingPage'
 import './index.css'
 
@@ -44,14 +45,43 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
   }
 }
 
-if (window.location.pathname.replace(/\/+$/, '') === '/landing') {
-  window.history.replaceState(null, '', '/' + window.location.search + window.location.hash)
+/** Packaged desktop window — browser marketing site has no pywebview. */
+export function isDesktopShell(): boolean {
+  return typeof window !== 'undefined' && 'pywebview' in window
 }
+
+/**
+ * Decide Landing vs App for `/`.
+ * Desktop cold-start restores the last sticky tab; `?landing=1` keeps marketing Landing in-app.
+ */
+export function resolveRootEntry(): 'landing' | 'app' {
+  const bare = window.location.pathname.replace(/\/+$/, '') || '/'
+  if (bare === '/landing') {
+    const params = new URLSearchParams(window.location.search)
+    params.set('landing', '1')
+    const query = params.toString()
+    window.history.replaceState(null, '', `/${query ? `?${query}` : ''}${window.location.hash}`)
+  }
+
+  const path = window.location.pathname.replace(/\/+$/, '') || '/'
+  const params = new URLSearchParams(window.location.search)
+  const wantLanding = params.has('landing')
+
+  if (path === '/' && isDesktopShell() && !wantLanding) {
+    const dest = `${appModePath(loadAppMode())}${window.location.search}${window.location.hash}`
+    window.history.replaceState(null, '', dest)
+    return 'app'
+  }
+
+  return path === '/' ? 'landing' : 'app'
+}
+
+const entry = resolveRootEntry()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      {window.location.pathname === '/' ? <LandingPage /> : <App />}
+      {entry === 'landing' ? <LandingPage /> : <App />}
     </ErrorBoundary>
   </StrictMode>,
 )

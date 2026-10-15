@@ -375,6 +375,25 @@ test("logo-removal failure badge is short and only gated on FLOW_LOGO_REMOVE_FAI
   // Success path must stay generic "Hoàn thành" / "Completed".
   assert.doesNotMatch(body, /Hoàn thành.*logo|logo.*Hoàn thành/i);
 });
+
+test("queue exposes Xoá logo after Ghép and Xoá tất cả logo after collapse", () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
+  const tools = source.slice(
+    source.indexOf('className="flow-queue-tools"'),
+    source.indexOf('className="flow-queue-kind-tabs"'),
+  );
+  assert.match(tools, /Thu gọn tất cả[\s\S]*Xoá tất cả logo/);
+  const folder = source.slice(
+    source.indexOf('className="flow-queue-folder-actions"'),
+    source.indexOf('className="flow-queue-folder-summary"'),
+  );
+  assert.match(folder, /Ghép[\s\S]*Xoá logo[\s\S]*Tạo mới[\s\S]*Hủy[\s\S]*Xóa/);
+  assert.match(source, /logoOnly:\s*true/);
+  const canRemove = source.slice(source.indexOf('const canRemoveLogo ='), source.indexOf('const removeLogoOnly ='));
+  assert.match(canRemove, /settings\.removeLogo/);
+  assert.match(canRemove, /isLogoRemoveFailed/);
+  assert.match(canRemove, /logoDone/);
+});
 }
 
 {

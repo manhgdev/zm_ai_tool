@@ -109,6 +109,10 @@ def _account_cookie_records(value: Any) -> list[dict[str, Any]]:
             has_expiry = False
         if not has_expiry:
             cookie["expires"] = persistent
+        # Google SSO (__Secure-*) needs SameSite=None + Secure; missing sameSite
+        # makes Playwright/Chrome drop the cookie and show the cookie-settings wall.
+        if cookie.get("secure") and not cookie.get("sameSite"):
+            cookie["sameSite"] = "None"
         if cookie.get("domain") or cookie.get("url"):
             result.append(cookie)
     return result
@@ -193,6 +197,18 @@ def _wipe_profile_keep_login(profile: Path) -> None:
             item.unlink(missing_ok=True)
 
 
+def _strip_profile_cookie_db(profile: Path) -> None:
+    """Drop Chromium cookie DBs so reconnect re-seeds from the accounts.json jar.
+
+    Login Data / Preferences stay; only the cookie files are removed so the
+    next connect behaves like add-account-via-cookie with the latest jar.
+    """
+    for relative in (
+        "Default/Cookies", "Default/Cookies-journal", "Default/Cookies-wal",
+        "Default/Network/Cookies", "Default/Network/Cookies-journal", "Default/Network/Cookies-wal",
+    ):
+        (profile / relative).unlink(missing_ok=True)
+
 
 def _seed_stored_cookies(account: dict[str, Any]) -> bool:
     """Cookie accounts, and an account profile wiped by reset, start from the stored cookies.
@@ -202,8 +218,14 @@ def _seed_stored_cookies(account: dict[str, Any]) -> bool:
     """
     if str(account.get("authMethod") or "chrome") == "cookie":
         return True
+    if not _account_cookie_records(account.get("cookie")):
+        return False
     profile = Path(store.profile_dir(str(account.get("id") or "")))
-    return not any((profile / relative).is_file() for relative in ("Default/Network/Cookies", "Default/Cookies"))
+    return not any(
+        path.is_file() and path.stat().st_size > 0
+        for relative in ("Default/Network/Cookies", "Default/Cookies")
+        for path in (profile / relative,)
+    )
 
 
 def _merge_cookie_records(stored: list[dict[str, Any]], fresh: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2013,13 +2035,21 @@ class FlowService:
             time.sleep(1.0)
 
     def reset_account_session(
-        self, account_id: str, *, open_ui_on_failure: bool = False, keep_running_jobs: bool = False,
+        self,
+        account_id: str,
+        *,
+        open_ui_on_failure: bool = False,
+        keep_running_jobs: bool = False,
+        fresh_cookie_profile: bool = False,
     ) -> dict[str, Any]:
-        """Reset Flow project/session identity while preserving Google cookies.
+        """Reset session and reconnect from the stored cookie jar when possible.
 
-        ``keep_running_jobs``: running jobs own cloned Chromes, so they finish
-        on their clone while new Chromes clone the reset profile; the shared
-        project stays bound because those jobs still poll it.
+        Wipe browsing cache but keep Google identity files (Login Data, etc.).
+        With a jar: strip the cookie DB and ``connect(..., cookies=jar)``.
+        Never delete the whole profile — that triggers Google's cookie-settings wall.
+
+        ``keep_running_jobs``: processing jobs keep their runtime clones and
+        shared project ids while the root profile is refreshed for new work.
         """
         account = store.get_row("accounts", account_id)
         if not account:
@@ -2035,19 +2065,44 @@ class FlowService:
                 raise RuntimeError("FLOW_PROFILE_BUSY")
         if busy():
             raise RuntimeError("Account still has active Flow jobs")
-        # Wipe all browsing data but keep the files Google ties the login to,
-        # so the reconnect below stays signed in.
-        cookie_payload = account.get("cookie")
+        # Sync rotated cookies from session/job profiles into the account
+        # profile DB, then prefer the accounts.json jar for reconnect.
+        runtime_root = store.root() / "runtime-profiles" / account_id
         for kind in ("image", "video"):
-            # Session profiles are copies of the account profile; hand back
-            # their cookies, then let the next "open session" re-copy them.
             target = self._session_profile_dir(account_id, kind)
             if target.is_dir():
                 self._sync_runtime_cookies(account_id, target)
                 shutil.rmtree(target, ignore_errors=True)
+        if runtime_root.is_dir():
+            live_ids = {
+                str(job.get("id") or "")
+                for job in self.jobs()
+                if job.get("accountId") == account_id and job.get("status") == "processing"
+            } if keep_running_jobs else set()
+            for child in list(runtime_root.iterdir()):
+                if not child.is_dir():
+                    continue
+                self._sync_runtime_cookies(account_id, child)
+                if child.name not in live_ids:
+                    shutil.rmtree(child, ignore_errors=True)
+            if not keep_running_jobs or not any(runtime_root.iterdir()):
+                shutil.rmtree(runtime_root, ignore_errors=True)
+        profile = Path(store.profile_dir(account_id))
+        cookie_payload = (store.get_row("accounts", account_id) or account).get("cookie")
+        jar = _account_cookie_records(cookie_payload)
+        # Never rmtree the whole profile: Google binds login to Login Data /
+        # Device Bound Sessions, not cookies alone. Wipe browsing cache, strip
+        # cookie DB, then re-inject the jar (avoids the cookie-settings wall).
+        if (fresh_cookie_profile or bool(jar)) and not jar:
+            self._log(
+                "warning", "account_session_reset_no_cookie_jar", account_id=account_id,
+                message="No stored cookies; keeping Google login files",
+            )
         from .browser import profile_lock
-        with profile_lock(store.profile_dir(account_id)):
-            _wipe_profile_keep_login(Path(store.profile_dir(account_id)))
+        with profile_lock(profile):
+            _wipe_profile_keep_login(profile)
+            if jar:
+                _strip_profile_cookie_db(profile)
         patch = {
             "status": "connecting", "error": None, "suspendedUntil": None, "suspendReason": None,
             "accessToken": None, "refreshToken": None, "cookie": cookie_payload,
@@ -2060,13 +2115,22 @@ class FlowService:
             })
         store.patch_row("accounts", account_id, patch)
         self._clear_session_ready(account_id)
-        self._log("info", "account_session_reset", account_id=account_id,
-                  message="Đã xoá dữ liệu Flow và giữ đăng nhập Google / Cleared Flow data and kept the Google login")
-        # Kick-start login immediately so the account does not stay stuck in
-        # 'connecting' forever waiting for the user to press Connect manually.
+        self._log(
+            "info", "account_session_reset", account_id=account_id,
+            message=(
+                "Đã xoá cache phiên và kết nối lại bằng cookie / Cleared session cache and reconnecting with cookies"
+                if jar else
+                "Đã xoá dữ liệu Flow và giữ đăng nhập Google / Cleared Flow data and kept the Google login"
+            ),
+        )
         try:
-            # Like Connect: reconnect without a window; open one only if that fails.
-            self.connect(account_id, headless=True, open_ui_on_failure=open_ui_on_failure)
+            # Same as add-account-via-cookie when jar exists; otherwise plain reconnect.
+            connect_kwargs: dict[str, Any] = {
+                "headless": True, "open_ui_on_failure": open_ui_on_failure,
+            }
+            if jar:
+                connect_kwargs["cookies"] = jar
+            self.connect(account_id, **connect_kwargs)
         except RuntimeError:
             pass  # ponytail: FLOW_PROFILE_BUSY race is safe to ignore here
         return self._public_account(store.get_row("accounts", account_id) or account)
@@ -2358,6 +2422,7 @@ class FlowService:
                     await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=30_000)
                     signed_in = await self._confirm_open_session(browser, account_id, page)
                     if signed_in:
+                        await self._persist_browser_cookies(account_id, browser)
                         await asyncio.to_thread(self._sync_runtime_cookies, account_id, session_profile)
                     if not signed_in and not headless and await _browser_at_login_wall(browser):
                         # Dead session: go straight to Google sign-in, like Connect.
@@ -2379,6 +2444,7 @@ class FlowService:
                             if confirmed:
                                 # Job Chromes are cloned from the account profile:
                                 # hand them this window's login now, not at close.
+                                await self._persist_browser_cookies(account_id, browser)
                                 await asyncio.to_thread(self._sync_runtime_cookies, account_id, session_profile)
                             if confirmed and not signed_in:
                                 self._log("success", "account_connected", account_id=account_id,
@@ -2391,6 +2457,7 @@ class FlowService:
                         await open_and_wait()
                     finally:
                         if browser is not None:
+                            await self._persist_browser_cookies(account_id, browser)
                             try:
                                 await asyncio.wait_for(browser.stop(), timeout=8.0)
                             except Exception:
@@ -2594,21 +2661,10 @@ class FlowService:
         ), None)
         if flow_page is None:
             return False
-        try:
-            raw = await browser.context.cookies()
-        except Exception:
+        if not await self._persist_browser_cookies(account_id, browser):
             return False
-        if not isinstance(raw, list):
-            return False
-        fresh = _account_cookie_records([
-            cookie for cookie in raw if isinstance(cookie, dict) and "google" in str(cookie.get("domain") or "")
-        ])
         current = store.get_row("accounts", account_id) or {}
-        merged = _merge_cookie_records(_account_cookie_records(current.get("cookie")), fresh)
-        if not merged:
-            return False
         store.patch_row("accounts", account_id, {
-            "cookie": merged,
             "status": "online",
             "error": None,
             "updatedAt": time.time(),
@@ -2619,6 +2675,35 @@ class FlowService:
                 await self._ensure_account_project(flow_page, account_id)
             except Exception:
                 pass  # the login itself succeeded; keep the account online
+        return True
+
+    async def _persist_browser_cookies(self, account_id: str, browser: Any) -> bool:
+        """Merge live browser cookies into accounts.json. Never drop stored names.
+
+        Keep every cookie that has a domain (not only *.google.com) so reset
+        can re-inject a complete jar without hitting Google's cookie-settings wall.
+        """
+        try:
+            context = getattr(browser, "context", None)
+            if context is None:
+                return False
+            raw = await context.cookies()
+        except Exception:
+            return False
+        if not isinstance(raw, list):
+            return False
+        fresh = _account_cookie_records([
+            cookie for cookie in raw
+            if isinstance(cookie, dict) and (cookie.get("domain") or cookie.get("url"))
+        ])
+        if not fresh:
+            return False
+        current = store.get_row("accounts", account_id) or {}
+        merged = _merge_cookie_records(_account_cookie_records(current.get("cookie")), fresh)
+        store.patch_row("accounts", account_id, {
+            "cookie": merged,
+            "updatedAt": time.time(),
+        })
         return True
 
     async def prepare_account_cookies(self, account_id: str) -> dict[str, Any]:
@@ -3490,6 +3575,9 @@ class FlowService:
                 google_login_compat=True,
                 fullscreen=True,
                 page_zoom=1.0,
+                # Cookie import needs session restore so Chrome keeps injected
+                # cookies across the first navigation (add-account-via-cookie path).
+                restore_last_session=bool(cookies) or cookie_auth,
             )
             # Linux without a display normalizes visible requests to headless.
             headless_login = browser.headless
@@ -4678,10 +4766,12 @@ class FlowService:
                     patch["resumeOnly"] = True
                 store.patch_row("jobs", job_id, patch)
                 if blocked and account_id not in self._connecting_accounts:
-                    # The retry clones a freshly reset, still signed-in profile;
-                    # admission holds it (and new jobs) until the reconnect is online.
+                    # Fresh root profile + cookie jar (like add-account-via-cookie);
+                    # processing siblings keep their clones; queued wait for online.
                     try:
-                        self.reset_account_session(account_id, keep_running_jobs=True)
+                        self.reset_account_session(
+                            account_id, keep_running_jobs=True, fresh_cookie_profile=True,
+                        )
                     except RuntimeError as exc:
                         self._log("warning", "unusual_activity_session_reset_failed",
                                   job_id=job_id, account_id=account_id, message=str(exc))
@@ -8014,6 +8104,11 @@ class FlowService:
         only disconnect/close its owned tab. A normal job manager owns its
         profile, so a stuck Playwright shutdown can be force-killed safely.
         """
+        # Chrome rotates Google cookies while the job runs. Save them to the
+        # accounts.json jar before the context dies so reset/reconnect can
+        # re-seed a clean profile (same as add-via-cookie).
+        if account_id:
+            await self._persist_browser_cookies(account_id, browser)
         try:
             await asyncio.wait_for(browser.stop(), timeout=8.0)
             if not getattr(browser, "cdp_url", None):
@@ -8078,11 +8173,30 @@ class FlowService:
         if not existing:
             return None
         overrides = overrides or {}
-        if str(existing.get("error") or "").startswith("FLOW_LOGO_REMOVE_FAILED") and self._outputs_exist(existing.get("outputs")):
-            # Images are already downloaded: redo only the logo step, no Flow account needed.
+        logo_failed = str(existing.get("error") or "").startswith("FLOW_LOGO_REMOVE_FAILED")
+        explicit_logo_only = bool(overrides.get("logoOnly"))
+        outputs_on_disk = self._outputs_exist(existing.get("outputs"))
+        # Explicit logoOnly from UI must never fall through into full _run_sync.
+        if explicit_logo_only and not outputs_on_disk:
+            raise ValueError(
+                "FLOW_LOGO_NO_OUTPUTS: Downloaded files are missing; cannot remove logo only"
+            )
+        logo_only = explicit_logo_only or (logo_failed and outputs_on_disk)
+        if logo_only and outputs_on_disk:
+            # Downloaded media already exists: only the logo step (no Flow submit).
+            # Keep logoDone so already-cleaned files are skipped.
+            account = store.get_row("accounts", str(existing.get("accountId") or "")) or {}
+            if str(account.get("plan") or "") == "Ultra":
+                raise ValueError(
+                    "FLOW_LOGO_SKIPPED_ULTRA: Ultra accounts have no Flow logo to remove"
+                )
             self._cancelled.discard(job_id)
             job = store.patch_row("jobs", job_id, {
-                "status": "processing", "stage": "removing_logo", "progress": POST_PROGRESS_START, "error": None, "updatedAt": time.time(),
+                "status": "processing",
+                "stage": "removing_logo",
+                "progress": POST_PROGRESS_START,
+                "error": None,
+                "updatedAt": time.time(),
             })
             self._log("info", "job_retry_logo_only", job_id=job_id, account_id=str(existing.get("accountId") or ""))
             threading.Thread(

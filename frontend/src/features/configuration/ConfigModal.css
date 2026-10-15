@@ -56,8 +56,13 @@
   background: transparent;
   font-size: 1.4rem;
   line-height: 1;
-  color: var(--muted-foreground);
+  color: #dc2626;
   padding: 0 4px;
+  font-weight: 700;
+}
+
+.cfg-close:hover {
+  color: #b91c1c;
 }
 
 .cfg-head-actions {
@@ -185,6 +190,62 @@
   border-color: var(--primary);
   background: var(--primary);
   color: var(--primary-foreground);
+}
+
+.cfg-update-actions button.cfg-update-cancel {
+  border-color: color-mix(in srgb, #dc2626 45%, var(--line));
+  background: color-mix(in srgb, #dc2626 12%, var(--surface));
+  color: #dc2626;
+}
+
+.cfg-update-pill {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(360px, 90vw);
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, .18);
+  backdrop-filter: blur(6px);
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cfg-update-pill:hover {
+  background: var(--card);
+}
+
+.cfg-update-pill-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: cfg-update-spin 1s linear infinite;
+}
+
+.cfg-update-pill-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: .75rem;
+}
+
+.cfg-update-pill-pct {
+  flex-shrink: 0;
+  font-size: .75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
 }
 
 .cfg-update-progress-label {

@@ -75,6 +75,65 @@ class LandingDownloadTests(unittest.TestCase):
         with patch("urllib.request.urlopen", return_value=Response([preview, stable, draft])):
             self.assertEqual(system._latest_release(allow_prerelease_fallback=True)["tag_name"], "v8.6.22")
 
+    def test_empty_primary_release_list_falls_back_to_vip(self):
+        class Response:
+            def __init__(self, payload): self.payload = payload
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self): return json.dumps(self.payload).encode()
+
+        vip_name = "ZM_AI_TOOL_v8.6.23-windows-x64-Setup.exe"
+        vip = {
+            "tag_name": "v8.6.23",
+            "prerelease": False,
+            "assets": [{
+                "name": vip_name,
+                "browser_download_url": (
+                    f"https://github.com/{system._UPDATE_FALLBACK_REPOSITORY}"
+                    f"/releases/download/v8.6.23/{vip_name}"
+                ),
+            }],
+        }
+        responses = [Response([]), Response([vip])]
+        with patch("urllib.request.urlopen", side_effect=responses):
+            release = system._latest_release(allow_prerelease_fallback=True)
+        self.assertEqual(release["tag_name"], "v8.6.23")
+        self.assertEqual(release["_repository"], system._UPDATE_FALLBACK_REPOSITORY)
+
+        with patch.object(system, "_latest_release", return_value=release):
+            result = system.api_desktop_downloads()
+        self.assertEqual(result["version"], "8.6.23")
+        self.assertIn("windows", result["downloads"])
+        self.assertIn(system._UPDATE_FALLBACK_REPOSITORY, result["downloads"]["windows"]["url"])
+
+    def test_empty_primary_public_feed_falls_back_to_vip(self):
+        class Response:
+            def __init__(self, text): self.text = text
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self): return self.text.encode()
+
+        primary = f"https://github.com/{system._UPDATE_REPOSITORY}"
+        vip = f"https://github.com/{system._UPDATE_FALLBACK_REPOSITORY}"
+        empty_feed = '<feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+        vip_feed = (
+            f'<feed xmlns="http://www.w3.org/2005/Atom">'
+            f'<entry><link href="{vip}/releases/tag/v8.6.23"/></entry></feed>'
+        )
+        vip_assets = (
+            f'<a href="/{system._UPDATE_FALLBACK_REPOSITORY}/releases/download/v8.6.23/'
+            f'ZM_AI_TOOL_v8.6.23-windows-x64-Setup.exe">Download</a>'
+        )
+        error = urllib.error.HTTPError("https://api.github.com", 403, "rate limit exceeded", {}, None)
+        with patch.object(system, "_latest_release", side_effect=error), patch(
+            "urllib.request.urlopen",
+            side_effect=[Response(empty_feed), Response(vip_feed), Response(vip_assets)],
+        ):
+            result = system.api_desktop_downloads()
+        self.assertEqual(result["version"], "8.6.23")
+        self.assertIn("windows", result["downloads"])
+        self.assertIn(system._UPDATE_FALLBACK_REPOSITORY, result["downloads"]["windows"]["url"])
+
     def test_public_links_are_host_independent_and_prefer_installers(self):
         release = release_with(
             "windows-x64-Portable.zip", "windows-x64-Setup.exe",

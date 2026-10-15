@@ -63,6 +63,53 @@ class LogoRetryTest(unittest.TestCase):
             self.assertEqual(calls2, ['b.jpg'])  # a.jpg was already cleaned, never inpainted twice
             self.assertEqual(store.get_row('jobs', 'j')['status'], 'done')
 
+    def test_logo_only_keeps_logo_done_markers(self):
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, 'ROOT', Path(raw)):
+            a, b = Path(raw) / 'a.jpg', Path(raw) / 'b.jpg'
+            a.write_bytes(b'x'), b.write_bytes(b'x')
+            store._write('accounts', [{'id': 'acc', 'status': 'online', 'plan': 'Pro'}])
+            store._write('jobs', [{
+                'id': 'j', 'kind': 'image', 'status': 'done', 'accountId': 'acc',
+                'outputs': [str(a), str(b)], 'logoDone': [str(a)], 'error': None,
+            }])
+            service = FlowService()
+            with patch.object(service, '_log'), patch('pipeline.flow.service.threading.Thread') as thread:
+                retried = service.retry('j', {'manual': True, 'logoOnly': True})
+            self.assertEqual(retried['stage'], 'removing_logo')
+            self.assertEqual(retried['logoDone'], [str(a)])  # not cleared; _remove_flow_logos skips these
+            self.assertIsNone(retried.get('error'))
+            thread.assert_called_once()
+            self.assertIn('flow-logo-', thread.call_args.kwargs.get('name', '') or thread.call_args[1].get('name', ''))
+
+    def test_logo_only_missing_files_never_starts_full_flow(self):
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, 'ROOT', Path(raw)):
+            missing = Path(raw) / 'gone.jpg'
+            store._write('accounts', [{'id': 'acc', 'status': 'online', 'plan': 'Pro'}])
+            store._write('jobs', [{
+                'id': 'j', 'kind': 'image', 'status': 'done', 'accountId': 'acc',
+                'outputs': [str(missing)], 'error': None,
+            }])
+            service = FlowService()
+            with patch.object(service, '_log'), patch('pipeline.flow.service.threading.Thread') as thread:
+                with self.assertRaisesRegex(ValueError, 'FLOW_LOGO_NO_OUTPUTS'):
+                    service.retry('j', {'manual': True, 'logoOnly': True})
+                thread.assert_not_called()
+            job = store.get_row('jobs', 'j')
+            self.assertEqual(job['status'], 'done')
+
+    def test_logo_only_skips_ultra_accounts(self):
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, 'ROOT', Path(raw)):
+            out = Path(raw) / 'shot.jpg'
+            out.write_bytes(b'x')
+            store._write('accounts', [{'id': 'acc', 'status': 'online', 'plan': 'Ultra'}])
+            store._write('jobs', [{
+                'id': 'j', 'kind': 'image', 'status': 'done', 'accountId': 'acc',
+                'outputs': [str(out)],
+            }])
+            service = FlowService()
+            with self.assertRaisesRegex(ValueError, 'FLOW_LOGO_SKIPPED_ULTRA'):
+                service.retry('j', {'manual': True, 'logoOnly': True})
+
 
 if __name__ == '__main__':
     unittest.main()

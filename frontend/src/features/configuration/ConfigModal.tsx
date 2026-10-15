@@ -110,6 +110,7 @@ export default function ConfigModal({
   const [restarting, setRestarting] = useState(false)
   const [updateChecking, setUpdateChecking] = useState(false)
   const [updateDialog, setUpdateDialog] = useState<UpdateDialog | null>(null)
+  const [updateMinimized, setUpdateMinimized] = useState(false)
   const autoSetupLock = useRef(false)
   const autoAttempted = useRef<Set<string>>(new Set())
   const restartRequested = useRef(false)
@@ -406,6 +407,12 @@ export default function ConfigModal({
     void poll()
     return () => { cancelled = true; window.clearTimeout(timer) }
   }, [applyUpdate, updateDialog?.kind])
+
+  useEffect(() => {
+    if (updateDialog?.kind !== 'downloading' && updateDialog?.kind !== 'cancelling') {
+      setUpdateMinimized(false)
+    }
+  }, [updateDialog?.kind])
 
   const loadChecks = useCallback((refresh = false, deep = false) => {
     setChecksLoading(true)
@@ -1933,7 +1940,23 @@ export default function ConfigModal({
           cancelLabel={t('Để sau', 'Later')}
           onConfirm={() => void runDriverAction()} onCancel={() => setDriverConfirm(null)} />
       </div>
-      {updateDialog ? (
+      {updateDialog && updateMinimized && (updateDialog.kind === 'downloading' || updateDialog.kind === 'cancelling') ? (
+        <button
+          type="button"
+          className="cfg-update-pill"
+          onClick={() => setUpdateMinimized(false)}
+          title={t('Mở lại tiến độ cập nhật', 'Restore update progress')}
+        >
+          <span className="cfg-update-pill-dot" aria-hidden />
+          <span className="cfg-update-pill-text">
+            {updateDialog.kind === 'cancelling'
+              ? t('Đang hủy cập nhật…', 'Cancelling update…')
+              : t('Đang tải cập nhật…', 'Downloading update…')}
+          </span>
+          <span className="cfg-update-pill-pct">{updateProgress}%</span>
+        </button>
+      ) : null}
+      {updateDialog && !updateMinimized ? (
         <div
           className="cfg-update-layer"
           role="presentation"
@@ -1951,7 +1974,15 @@ export default function ConfigModal({
               <span />
             </div>
             {(updateDialog.kind === 'downloading' || updateDialog.kind === 'cancelling') && (
-              <button type="button" className="cfg-update-close" aria-label={t('Hủy cập nhật', 'Cancel update')} onClick={() => void cancelUpdate()}>×</button>
+              <button
+                type="button"
+                className="cfg-update-close"
+                aria-label={t('Chạy nền', 'Run in background')}
+                title={t('Chạy nền', 'Run in background')}
+                onClick={() => setUpdateMinimized(true)}
+              >
+                ×
+              </button>
             )}
             <div className="cfg-update-copy">
               <h3>{updateDialog.title}</h3>
@@ -1977,7 +2008,12 @@ export default function ConfigModal({
             ) : null}
             <div className="cfg-update-actions">
               {updateDialog.kind === 'available' ? <button type="button" className="primary" onClick={() => void downloadUpdate()}>{t('Cập nhật', 'Update')}</button> : null}
-              {updateDialog.kind === 'downloading' ? <button type="button" onClick={() => void cancelUpdate()}>{t('Hủy cập nhật', 'Cancel update')}</button> : null}
+              {updateDialog.kind === 'downloading' ? (
+                <>
+                  <button type="button" onClick={() => setUpdateMinimized(true)}>{t('Chạy nền', 'Run in background')}</button>
+                  <button type="button" className="cfg-update-cancel" onClick={() => void cancelUpdate()}>{t('Huỷ', 'Cancel')}</button>
+                </>
+              ) : null}
               {updateDialog.kind !== 'downloading' && updateDialog.kind !== 'cancelling' && updateDialog.kind !== 'applying' ? <button type="button" onClick={() => setUpdateDialog(null)}>{t('Đóng', 'Close')}</button> : null}
             </div>
           </section>

@@ -155,7 +155,7 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
                 service._run_sync("j")
             self.assertEqual(runner.call_count, 2)
             # Reset the shared profile without waiting for siblings, retry after 3s.
-            reset.assert_called_once_with("a", keep_running_jobs=True)
+            reset.assert_called_once_with("a", keep_running_jobs=True, fresh_cookie_profile=True)
             sleeper.assert_any_call(3)
             self.assertEqual(store.get_row("jobs", "j")["status"], "done")
             self.assertEqual(store.get_row("jobs", "sibling")["status"], "processing")

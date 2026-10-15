@@ -1635,25 +1635,62 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       removeLogo: Boolean(selectedJob.settings.removeLogo ?? settings.removeLogo),
     });
   };
+  const isLogoRemoveFailed = (job: FlowJob) =>
+    String(job.error || "").startsWith("FLOW_LOGO_REMOVE_FAILED");
+  const canRemoveLogo = (job: FlowJob) => {
+    if (!job.outputs?.length) return false;
+    if (job.status === "queued" || job.status === "processing") return false;
+    const account = accounts.find((item) => item.id === job.accountId);
+    if (account && account.plan === "Ultra") return false;
+    // Del Logo already ran without error → hide. Never used Del Logo, or
+    // FLOW_LOGO_REMOVE_FAILED → show so the user can clean / retry.
+    if (job.settings.removeLogo && !isLogoRemoveFailed(job)) return false;
+    const done = new Set((job.logoDone || []).map(String));
+    if (job.outputs.every((path) => done.has(String(path)))) return false;
+    return true;
+  };
+  const removeLogoOnly = (jobId: string) => {
+    const job = jobs.find((item) => item.id === jobId);
+    if (!job || !canRemoveLogo(job)) return;
+    void flowRequest<Record<string, unknown>>(`/api/flow/jobs/${jobId}/retry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ manual: true, logoOnly: true }),
+    })
+      .then((raw) => {
+        updateJob(raw);
+        toast.success(t("Đang xoá logo trên file đã tải.", "Removing logo from downloaded files."));
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        setApiError(msg);
+        toast.error(msg);
+      });
+  };
+  const removeLogoForJobs = (targets: FlowJob[]) => {
+    const eligible = targets.filter(canRemoveLogo);
+    if (!eligible.length) {
+      toast.info(t("Không có job nào có file để xoá logo.", "No jobs have files to remove logos from."));
+      return;
+    }
+    void Promise.allSettled(eligible.map((job) =>
+      flowRequest<Record<string, unknown>>(`/api/flow/jobs/${job.id}/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manual: true, logoOnly: true }),
+      }).then(updateJob),
+    )).then((results) => {
+      const ok = results.filter((item) => item.status === "fulfilled").length;
+      const failed = results.length - ok;
+      if (ok) toast.success(t(`Đang xoá logo cho ${ok} job.`, `Removing logos for ${ok} jobs.`));
+      if (failed) toast.error(t(`${failed} job không xoá logo được.`, `${failed} jobs could not remove logos.`));
+    });
+  };
   const retryJob = (id: string) => {
     const job = jobs.find((item) => item.id === id);
     if (!job) return;
-    if (String(job.error || "").startsWith("FLOW_LOGO_REMOVE_FAILED")) {
-      // Images are already downloaded: backend redoes only logo removal (no account/model needed).
-      void flowRequest<Record<string, unknown>>(`/api/flow/jobs/${id}/retry`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manual: true }),
-      })
-        .then((raw) => {
-          updateJob(raw);
-          toast.success(t("Đang chạy lại bước xoá logo.", "Retrying logo removal only."));
-        })
-        .catch((error) => {
-          const msg = error instanceof Error ? error.message : String(error);
-          setApiError(msg);
-          toast.error(msg);
-        });
+    if (isLogoRemoveFailed(job)) {
+      removeLogoOnly(id);
       return;
     }
     openRetrySettings([job]);
@@ -2460,7 +2497,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 </footer>
               </form>
             )}
-            <div className="flow-account-grid">
+            {!editingAccount && <div className="flow-account-grid">
               {sortedAccounts.map((account) => (
                 <article
                   key={account.id}
@@ -2643,7 +2680,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   </footer>
                 </article>
               ))}
-            </div>
+            </div>}
             <aside className="flow-account-note">
               <IconGear size={18} />
               {t(
@@ -3349,6 +3386,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 <button className="flow-text-button" type="button" disabled={!queueGroups.length} onClick={toggleAllFoldersCollapsed}>
                   {allFoldersCollapsed ? t("Mở rộng tất cả", "Expand all") : t("Thu gọn tất cả", "Collapse all")}
                 </button>
+                <button
+                  className="flow-text-button"
+                  type="button"
+                  disabled={actionBusy || retryBusy || !jobs.some(canRemoveLogo)}
+                  onClick={() => removeLogoForJobs(jobs)}
+                >
+                  {t("Xoá tất cả logo", "Remove all logos")}
+                </button>
                 <button className="flow-text-button" type="button" disabled={actionBusy || retryBusy || jobs.some((job) => job.status === "queued" || job.status === "processing") || !jobs.some(canRetryJob)} onClick={retryAllJobs}>{jobs.filter(canRetryJob).every(isFreshCreateJob) && jobs.some(canRetryJob) ? t("Tạo mới tất cả", "Create all new") : t("Chạy lại tất cả", "Retry all")}</button>
                 <button className="flow-text-button" type="button" disabled={!jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={cancelAllJobs}>{t("Hủy tất cả", "Cancel all")}</button>
                 <button className="flow-text-button is-danger" type="button" disabled={!jobs.length} onClick={deleteAllJobs}>{t("Xóa tất cả", "Delete all")}</button>
@@ -3411,6 +3456,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </div>
                         <div className="flow-queue-folder-actions">
                           <button className="flow-text-button" type="button" onClick={() => openSrtImageWithFlowFolder(queueFolderLabel(group.kind, group.outputDir, group.outputFolder, group.displayOutputFolder))}>{t("Ghép", "Merge")}</button>
+                          <button
+                            className="flow-text-button"
+                            type="button"
+                            disabled={actionBusy || retryBusy || !group.jobs.some(canRemoveLogo)}
+                            onClick={() => removeLogoForJobs(group.jobs)}
+                          >
+                            {t("Xoá logo", "Remove logo")}
+                          </button>
                           {(folderHasRetryErrors || folderDoneOnly) && (
                             <button className="flow-text-button is-retry" type="button" disabled={actionBusy || retryBusy || group.jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={() => retryFolderJobs(group.outputDir, group.kind, group.jobs)}>
                               {folderHasRetryErrors ? t("Chạy lại", "Retry") : t("Tạo mới", "Create new")}
@@ -3506,7 +3559,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                                   {t("Hủy", "Cancel")}
                                 </button>
                               )}
-                            {canRetryJob(job) && (
+                            {canRetryJob(job) && !isLogoRemoveFailed(job) && (
                                 <button type="button" disabled={actionBusy || retryBusy} onClick={() => retryJob(job.id)}>
                                   {retryActionLabel(job)}
                                 </button>
@@ -3518,6 +3571,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             >
                               {t("Xóa", "Delete")}
                             </button>
+                            {canRemoveLogo(job) && (
+                              <button
+                                type="button"
+                                disabled={actionBusy || retryBusy}
+                                onClick={() => removeLogoOnly(job.id)}
+                              >
+                                {t("Xoá logo", "Remove logo")}
+                              </button>
+                            )}
                           </div>
                           {job.outputs?.length ? (
                             <div className="flow-queue-outputs">
@@ -3741,13 +3803,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                               {t("Hủy", "Cancel")}
                             </button>
                           ) : (
-                            <button
-                              type="button"
-                              onClick={() => retryJob(job.id)}
-                              disabled={actionBusy || retryBusy || !canRetryJob(job)}
-                            >
-                              {retryActionLabel(job)}
-                            </button>
+                            !isLogoRemoveFailed(job) && (
+                              <button
+                                type="button"
+                                onClick={() => retryJob(job.id)}
+                                disabled={actionBusy || retryBusy || !canRetryJob(job)}
+                              >
+                                {retryActionLabel(job)}
+                              </button>
+                            )
                           )}
                           <button
                             type="button"
@@ -3756,6 +3820,15 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           >
                             {t("Xóa", "Delete")}
                           </button>
+                          {canRemoveLogo(job) && (
+                            <button
+                              type="button"
+                              disabled={actionBusy || retryBusy}
+                              onClick={() => removeLogoOnly(job.id)}
+                            >
+                              {t("Xoá logo", "Remove logo")}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

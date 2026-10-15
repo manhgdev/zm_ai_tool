@@ -76,6 +76,7 @@ class RetryIn(BaseModel):
     fresh: bool = False
     headless: bool = True
     manual: bool = False
+    logoOnly: bool = False
 
 
 class OutputFolderIn(BaseModel):

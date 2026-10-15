@@ -28,6 +28,7 @@ export type FlowJob = {
   outputFolder?: string;
   displayOutputFolder?: string;
   outputs?: string[];
+  logoDone?: string[];
   accountId?: string;
   randomAccount?: boolean;
   error?: string | null;

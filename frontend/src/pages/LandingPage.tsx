@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { appModePath, loadAppMode } from '../app/appMode'
 import { localize } from '../app/i18n'
+import { api } from '../features/project/project.api'
 import { IconArrowRight, IconBatch, IconCheck, IconDownload, IconFilm, IconGlobe, IconLayers, IconLogo, IconMic, IconPlay } from '../shared/components/Icons'
 import './LandingPage.css'
 
 type DownloadKey = 'windows' | 'macos-arm64' | 'macos-x64'
 type DesktopDownloads = { version: string; downloads: Partial<Record<DownloadKey, { url: string; name: string }>> }
+type DesktopCta = 'loading' | 'update' | 'workspace' | 'marketing'
 
 export default function LandingPage() {
   const [locale, setLocale] = useState<'vi' | 'en'>('vi')
@@ -16,6 +19,13 @@ export default function LandingPage() {
   const [release, setRelease] = useState<DesktopDownloads | null>(null)
   const [downloadState, setDownloadState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [retry, setRetry] = useState(0)
+  const [desktopCta, setDesktopCta] = useState<DesktopCta>('loading')
+  const [latestVersion, setLatestVersion] = useState('')
+  const [workspaceHref] = useState(() => appModePath(loadAppMode()))
+  const [updatePhase, setUpdatePhase] = useState<'idle' | 'downloading' | 'cancelling' | 'applying' | 'error'>('idle')
+  const [updateProgress, setUpdateProgress] = useState(0)
+  const [updateMessage, setUpdateMessage] = useState('')
+  const updateCancelRef = useRef(false)
   const t = (vi: string, en: string) => localize(locale, vi, en)
 
   useEffect(() => {
@@ -43,6 +53,97 @@ export default function LandingPage() {
       .finally(() => window.clearTimeout(timeout))
     return () => { active = false; window.clearTimeout(timeout); controller.abort() }
   }, [retry])
+
+  useEffect(() => {
+    let active = true
+    void (async () => {
+      try {
+        const config = await api.getConfig()
+        if (!active) return
+        if (!config.desktop) {
+          setDesktopCta('marketing')
+          return
+        }
+        try {
+          const update = await api.checkAppUpdate()
+          if (!active) return
+          if (update.updateAvailable) {
+            setLatestVersion(update.latestVersion || '')
+            setDesktopCta('update')
+          } else {
+            setDesktopCta('workspace')
+          }
+        } catch {
+          if (active) setDesktopCta('workspace')
+        }
+      } catch {
+        if (active) setDesktopCta('marketing')
+      }
+    })()
+    return () => { active = false }
+  }, [])
+
+  const startUpdate = useCallback(async () => {
+    const text = (vi: string, en: string) => localize(locale, vi, en)
+    updateCancelRef.current = false
+    setUpdatePhase('downloading')
+    setUpdateProgress(0)
+    setUpdateMessage(text('Đang tải cập nhật…', 'Downloading update…'))
+    try {
+      const started = await api.installAppUpdate()
+      if (started.busy || started.ok === false) {
+        setUpdatePhase('error')
+        setUpdateMessage(started.message || text('Không bắt đầu được cập nhật.', 'Could not start the update.'))
+        return
+      }
+      for (;;) {
+        if (updateCancelRef.current) return
+        const state = await api.getAppUpdateStatus()
+        setUpdateProgress(Math.max(0, Math.min(100, Math.round(Number(state.progress) || 0))))
+        setUpdateMessage(state.message || text('Đang tải cập nhật…', 'Downloading update…'))
+        if (state.phase === 'error') {
+          setUpdatePhase('error')
+          setUpdateMessage(state.error || state.message || text('Cập nhật thất bại.', 'Update failed.'))
+          return
+        }
+        if (state.phase === 'cancelling') {
+          setUpdatePhase('cancelling')
+          await new Promise((resolve) => window.setTimeout(resolve, 300))
+          continue
+        }
+        if (state.phase === 'cancelled') {
+          setUpdatePhase('idle')
+          setUpdateMessage('')
+          return
+        }
+        if (state.phase === 'ready') {
+          setUpdatePhase('applying')
+          setUpdateMessage(text('Đang cài cập nhật…', 'Installing update…'))
+          await api.applyAppUpdate()
+          return
+        }
+        if (state.phase === 'applying' || state.phase === 'complete') {
+          setUpdatePhase('applying')
+          return
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 800))
+      }
+    } catch (error) {
+      setUpdatePhase('error')
+      setUpdateMessage(error instanceof Error ? error.message : text('Cập nhật thất bại.', 'Update failed.'))
+    }
+  }, [locale])
+
+  const cancelUpdate = useCallback(async () => {
+    updateCancelRef.current = true
+    setUpdatePhase('cancelling')
+    setUpdateMessage(localize(locale, 'Đang hủy cập nhật…', 'Cancelling update…'))
+    try {
+      await api.cancelAppUpdate()
+    } catch {
+      /* status poll / idle clears the banner */
+    }
+  }, [locale])
 
   const previews = [
     { title: t('Live Preview Editor', 'Live Preview Editor'), image: '/previews/live-previews.png', icon: IconLayers },
@@ -103,22 +204,94 @@ export default function LandingPage() {
       : <button type="button" className={className} disabled><IconDownload size={18} />{downloadState === 'loading' ? t('Đang lấy bản tải…', 'Loading downloads…') : downloadState === 'error' ? t('Chưa lấy được bản tải', 'Downloads unavailable') : t('Chưa có bản tải', 'Not yet available')}</button>
   }
 
+  const inApp = desktopCta === 'update' || desktopCta === 'workspace'
+  const updating = updatePhase === 'downloading' || updatePhase === 'cancelling' || updatePhase === 'applying'
+  const primaryCta = () => {
+    if (desktopCta === 'update') {
+      return (
+        <button
+          type="button"
+          className="lp-button lp-button-primary lp-nav-download"
+          disabled={updating}
+          onClick={() => void startUpdate()}
+        >
+          {updating
+            ? t('Đang cập nhật…', 'Updating…')
+            : latestVersion
+              ? t(`Cập nhật v${latestVersion}`, `Update to v${latestVersion}`)
+              : t('Cập nhật', 'Update')}
+          <IconArrowRight size={16} />
+        </button>
+      )
+    }
+    // HTML/marketing + in-app (no update): nav primary is Open workspace only — no Download.
+    return (
+      <a className="lp-button lp-button-primary lp-nav-download" href={workspaceHref}>
+        {t('Mở workspace', 'Open workspace')}
+        <IconArrowRight size={16} />
+      </a>
+    )
+  }
+
+  const heroPrimary = () => {
+    if (desktopCta === 'update') {
+      return (
+        <button type="button" className="lp-button lp-button-primary" disabled={updating} onClick={() => void startUpdate()}>
+          {updating
+            ? t('Đang cập nhật…', 'Updating…')
+            : latestVersion
+              ? t(`Cập nhật v${latestVersion}`, `Update to v${latestVersion}`)
+              : t('Cập nhật', 'Update')}
+          <IconArrowRight size={17} />
+        </button>
+      )
+    }
+    if (desktopCta === 'workspace' || desktopCta === 'loading') {
+      return (
+        <a className="lp-button lp-button-primary" href={workspaceHref}>
+          {t('Mở workspace', 'Open workspace')}
+          <IconArrowRight size={17} />
+        </a>
+      )
+    }
+    return downloadLink('windows', t('Tải cho Windows', 'Download for Windows'))
+  }
+
   return <div className="landing" data-theme={theme} lang={locale}>
     <a className="lp-skip" href="#main">{t('Đến nội dung chính', 'Skip to content')}</a>
     <header className="lp-nav">
       <div className="lp-container lp-nav-inner">
-        <a className="lp-brand" href="/"><IconLogo size={34} /><span>ZM AI TOOL</span></a>
+        <a className="lp-brand" href={inApp ? '/?landing=1' : '/'}><IconLogo size={34} /><span>ZM AI TOOL</span></a>
         <nav className="lp-nav-links" aria-label={t('Điều hướng chính', 'Main navigation')}>
           <a href="#product">{t('Công cụ AI', 'AI tools')}</a><a href="#workflow">{t('Quy trình', 'Workflow')}</a><a href="#guide">{t('Hướng dẫn', 'Guide')}</a><a href="#faq">{t('Hỏi đáp', 'FAQ')}</a>
         </nav>
         <div className="lp-nav-actions">
           <button className="lp-icon-button" type="button" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label={theme === 'light' ? t('Chuyển sang giao diện tối', 'Switch to dark theme') : t('Chuyển sang giao diện sáng', 'Switch to light theme')}><span aria-hidden="true">{theme === 'light' ? '☾' : '☼'}</span></button>
           <button className="lp-locale" type="button" onClick={() => setLocale(locale === 'vi' ? 'en' : 'vi')} aria-label={t('Switch to English', 'Chuyển sang tiếng Việt')}>{locale === 'vi' ? 'EN' : 'VI'}</button>
-          <a className="lp-workspace-link" href="/video-clone">{t('Mở workspace', 'Open workspace')}<IconArrowRight size={16} /></a>
-          <a className="lp-button lp-button-primary lp-nav-download" href="#download"><IconDownload size={16} />{t('Tải về', 'Download')}</a>
+          {primaryCta()}
         </div>
       </div>
     </header>
+
+    {updatePhase !== 'idle' ? (
+      <div className="lp-update-banner" role="status">
+        <div className="lp-container lp-update-banner-inner">
+          <span className="lp-update-banner-text">{updateMessage || t('Đang cập nhật…', 'Updating…')}</span>
+          {updating && updatePhase !== 'applying' ? (
+            <>
+              <strong className="lp-update-banner-pct">{updateProgress}%</strong>
+              {updatePhase === 'downloading' ? (
+                <button type="button" className="lp-update-banner-cancel" onClick={() => void cancelUpdate()}>{t('Huỷ', 'Cancel')}</button>
+              ) : null}
+            </>
+          ) : null}
+          {updatePhase === 'error' ? (
+            <button type="button" className="lp-update-banner-cancel" onClick={() => setUpdatePhase('idle')}>{t('Đóng', 'Close')}</button>
+          ) : null}
+        </div>
+        {updating ? <div className="lp-update-banner-bar"><span style={{ width: `${Math.max(updateProgress, 4)}%` }} /></div> : null}
+      </div>
+    ) : null}
 
     <main id="main">
       <section className="lp-hero">
@@ -132,12 +305,20 @@ export default function LandingPage() {
           <div className="lp-hero-pitch">
           <p className="lp-hero-intro">{t('Dịch & lồng tiếng video. Tạo giọng đọc. Dựng cảnh với Flow.', 'Translate & dub videos. Generate voices. Create scenes with Flow.')} <strong>{t('Từ ý tưởng đến timeline — trong một ứng dụng.', 'From your idea to the timeline — in one app.')}</strong></p>
           <div className="lp-hero-actions">
-            {downloadLink('windows', t('Tải cho Windows', 'Download for Windows'))}
-            {downloadLink(macArch, t('Tải cho macOS', 'Download for macOS'), 'lp-button lp-button-secondary')}
+            {heroPrimary()}
+            {!inApp ? downloadLink(macArch, t('Tải cho macOS', 'Download for macOS'), 'lp-button lp-button-secondary') : (
+              desktopCta === 'update' ? (
+                <a className="lp-button lp-button-secondary" href={workspaceHref}>{t('Mở workspace', 'Open workspace')}<IconArrowRight size={17} /></a>
+              ) : null
+            )}
             <a className="lp-text-link" href="#guide"><IconPlay size={16} />{t('Xem hướng dẫn', 'View guide')}</a>
           </div>
-          <div className="lp-hero-meta"><span><IconCheck size={15} />{t('Chỉnh trực tiếp trên timeline', 'Edit directly on the timeline')}</span><a href="#download">macOS: {macArch === 'macos-arm64' ? 'Apple Silicon' : 'Intel'} · {t('Chọn bản khác', 'Choose another version')}<IconArrowRight size={13} /></a></div>
-          {downloadState === 'error' && <p className="lp-download-error" role="status">{t('Chưa kết nối được nguồn tải.', 'Could not connect to the download source.')} <button type="button" onClick={() => setRetry(value => value + 1)}>{t('Thử lại', 'Retry')}</button></p>}
+          {!inApp ? (
+            <div className="lp-hero-meta"><span><IconCheck size={15} />{t('Chỉnh trực tiếp trên timeline', 'Edit directly on the timeline')}</span><a href="#download">macOS: {macArch === 'macos-arm64' ? 'Apple Silicon' : 'Intel'} · {t('Chọn bản khác', 'Choose another version')}<IconArrowRight size={13} /></a></div>
+          ) : (
+            <div className="lp-hero-meta"><span><IconCheck size={15} />{t('Bạn đang dùng bản ứng dụng đã cài.', 'You are using the installed app.')}</span></div>
+          )}
+          {downloadState === 'error' && !inApp && <p className="lp-download-error" role="status">{t('Chưa kết nối được nguồn tải.', 'Could not connect to the download source.')} <button type="button" onClick={() => setRetry(value => value + 1)}>{t('Thử lại', 'Retry')}</button></p>}
           </div>
           </div>
           <div className="lp-preview-stage">
@@ -180,7 +361,7 @@ export default function LandingPage() {
       <section className="lp-workflow-section" id="workflow"><div className="lp-container lp-section">
         <div className="lp-section-heading"><div className="lp-eyebrow">{t('TỪ Ý TƯỞNG ĐẾN THÀNH PHẨM', 'FROM IDEA TO FINISHED VIDEO')}</div><h2>{t('Đừng để ý tưởng mắc kẹt', 'Do not let your idea get stuck')}<br /><span>{t('giữa quá nhiều công cụ.', 'between too many tools.')}</span></h2><p>{t('Đưa nội dung vào. Để AI hỗ trợ. Tự tay hoàn thiện. Một luồng làm việc, từ đầu đến cuối.', 'Bring in your content. Let AI help. Make it yours. One workflow, from start to finish.')}</p></div>
         <div className="lp-workflow">{workflow.map(([title, text], index) => <article key={title}><span className="lp-step-number">0{index + 1}</span><h3>{title}</h3><p>{text}</p></article>)}</div>
-        <a className="lp-button lp-button-secondary" href="/video-clone">{t('Khám phá workspace', 'Explore the workspace')}<IconArrowRight size={17} /></a>
+        <a className="lp-button lp-button-secondary" href={workspaceHref}>{t('Khám phá workspace', 'Explore the workspace')}<IconArrowRight size={17} /></a>
       </div></section>
 
       <section className="lp-section lp-container lp-guide-section" id="guide">
@@ -189,22 +370,45 @@ export default function LandingPage() {
           <summary className="lp-guide-header"><span className="lp-step-number">0{index + 1}</span><h3>{guide.title}</h3><span className="lp-guide-toggle" aria-hidden="true">+</span></summary>
           <p className="lp-guide-intro">{guide.intro}</p>
           <ol>{guide.steps.map(step => <li key={step}>{step}</li>)}</ol>
-          {index === 0 && <a className="lp-text-link" href="#download">{t('Đến phần tải về', 'Go to downloads')}<IconArrowRight size={16} /></a>}
+          {index === 0 && !inApp ? <a className="lp-text-link" href="#download">{t('Đến phần tải về', 'Go to downloads')}<IconArrowRight size={16} /></a> : null}
         </details>)}</div>
       </section>
 
       <section className="lp-section lp-container" id="download">
-        <div className="lp-download-heading"><div><div className="lp-eyebrow">{t('ĐẾN LƯỢT BẠN SÁNG TẠO', 'YOUR TURN TO CREATE')}</div><h2>{t('Video tiếp theo.', 'Your next video.')}<br /><span>{t('Bắt đầu ngay tại đây.', 'Starts right here.')}</span></h2></div><p>{t('Cài ZM AI TOOL, mở project đầu tiên và đưa ý tưởng của bạn lên timeline.', 'Install ZM AI TOOL, open your first project and bring your idea to the timeline.')}<span className="lp-release-version">{downloadState === 'ready' && release?.version ? t('Phiên bản mới nhất', 'Latest version') + ' · v' + release.version : t('Windows & macOS', 'Windows & macOS')}</span></p></div>
-        <div className="lp-download-grid">
-          <article className="lp-download-card"><div className="lp-os-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="27" height="27" fill="currentColor"><path d="M2 4.5 11 3v8H2zm10-1.7L22 1v10H12zM2 12h9v8l-9-1.5zm10 0h10v10l-10-1.8z" /></svg></div><h3>Windows</h3><p>{t('Bộ cài cho máy tính Windows 64-bit.', 'Installer for 64-bit Windows computers.')}</p><span className="lp-os-detail">x64 · {t('Bộ cài Setup', 'Setup installer')}</span>{downloadLink('windows', t('Tải cho Windows', 'Download for Windows'))}</article>
-          <article className="lp-download-card"><div className="lp-os-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="29" height="29" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="3" width="18" height="13" rx="2" /><path d="M9 21h6m-3-5v5" /></svg></div><h3>macOS</h3><p>{t('Chọn đúng bộ xử lý của máy Mac.', 'Choose the processor in your Mac.')}</p><label className="lp-mac-choice"><span>{t('Bộ xử lý', 'Processor')}</span><select value={macArch} onChange={event => setMacArch(event.target.value as typeof macArch)}><option value="macos-arm64">Apple Silicon (M1+)</option><option value="macos-x64">Intel (x64)</option></select></label>{downloadLink(macArch, t('Tải cho macOS', 'Download for macOS'))}</article>
-        </div>
-        <div className="lp-download-note" role="status">{downloadState === 'loading' ? t('Đang kiểm tra các bộ cài mới nhất…', 'Checking the latest installers…') : downloadState === 'error' ? <>{t('Không lấy được danh sách bộ cài.', 'Could not load installers.')} <button type="button" onClick={() => setRetry(value => value + 1)}>{t('Thử lại', 'Retry')}</button></> : t('Nhấn nút để tải trực tiếp bộ cài đã phát hành. Bản chưa phát hành sẽ được hiển thị khi có sẵn.', 'Click to download a published installer directly. Unreleased versions will appear when available.')}</div>
+        <div className="lp-download-heading"><div><div className="lp-eyebrow">{t('ĐẾN LƯỢT BẠN SÁNG TẠO', 'YOUR TURN TO CREATE')}</div><h2>{t('Video tiếp theo.', 'Your next video.')}<br /><span>{t('Bắt đầu ngay tại đây.', 'Starts right here.')}</span></h2></div><p>{inApp
+          ? t('Bạn đang ở trong ứng dụng. Mở workspace hoặc cập nhật khi có bản mới.', 'You are inside the app. Open the workspace or update when a newer build is available.')
+          : t('Cài ZM AI TOOL, mở project đầu tiên và đưa ý tưởng của bạn lên timeline.', 'Install ZM AI TOOL, open your first project and bring your idea to the timeline.')}<span className="lp-release-version">{downloadState === 'ready' && release?.version ? t('Phiên bản mới nhất', 'Latest version') + ' · v' + release.version : t('Windows & macOS', 'Windows & macOS')}</span></p></div>
+        {inApp ? (
+          <div className="lp-download-grid lp-download-grid-inapp">
+            <article className="lp-download-card lp-download-card-inapp">
+              <h3>{desktopCta === 'update' ? t('Có bản mới', 'Update available') : t('Sẵn sàng làm việc', 'Ready to work')}</h3>
+              <p>{desktopCta === 'update'
+                ? t('Tải và cài bản mới; ứng dụng sẽ tự mở lại sau khi cập nhật.', 'Download and install the new build; the app will reopen after updating.')
+                : t('Quay lại tab làm việc lần trước của bạn.', 'Return to your last workspace tab.')}</p>
+              {desktopCta === 'update' ? (
+                <button type="button" className="lp-button lp-button-primary" disabled={updating} onClick={() => void startUpdate()}>
+                  {updating ? t('Đang cập nhật…', 'Updating…') : t('Cập nhật', 'Update')}
+                  <IconArrowRight size={17} />
+                </button>
+              ) : (
+                <a className="lp-button lp-button-primary" href={workspaceHref}>{t('Mở workspace', 'Open workspace')}<IconArrowRight size={17} /></a>
+              )}
+            </article>
+          </div>
+        ) : (
+          <div className="lp-download-grid">
+            <article className="lp-download-card"><div className="lp-os-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="27" height="27" fill="currentColor"><path d="M2 4.5 11 3v8H2zm10-1.7L22 1v10H12zM2 12h9v8l-9-1.5zm10 0h10v10l-10-1.8z" /></svg></div><h3>Windows</h3><p>{t('Bộ cài cho máy tính Windows 64-bit.', 'Installer for 64-bit Windows computers.')}</p><span className="lp-os-detail">x64 · {t('Bộ cài Setup', 'Setup installer')}</span>{downloadLink('windows', t('Tải cho Windows', 'Download for Windows'))}</article>
+            <article className="lp-download-card"><div className="lp-os-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="29" height="29" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="3" width="18" height="13" rx="2" /><path d="M9 21h6m-3-5v5" /></svg></div><h3>macOS</h3><p>{t('Chọn đúng bộ xử lý của máy Mac.', 'Choose the processor in your Mac.')}</p><label className="lp-mac-choice"><span>{t('Bộ xử lý', 'Processor')}</span><select value={macArch} onChange={event => setMacArch(event.target.value as typeof macArch)}><option value="macos-arm64">Apple Silicon (M1+)</option><option value="macos-x64">Intel (x64)</option></select></label>{downloadLink(macArch, t('Tải cho macOS', 'Download for macOS'))}</article>
+          </div>
+        )}
+        {!inApp ? (
+          <div className="lp-download-note" role="status">{downloadState === 'loading' ? t('Đang kiểm tra các bộ cài mới nhất…', 'Checking the latest installers…') : downloadState === 'error' ? <>{t('Không lấy được danh sách bộ cài.', 'Could not load installers.')} <button type="button" onClick={() => setRetry(value => value + 1)}>{t('Thử lại', 'Retry')}</button></> : t('Nhấn nút để tải trực tiếp bộ cài đã phát hành. Bản chưa phát hành sẽ được hiển thị khi có sẵn.', 'Click to download a published installer directly. Unreleased versions will appear when available.')}</div>
+        ) : null}
       </section>
 
       <section className="lp-section lp-container lp-faq" id="faq"><div><div className="lp-eyebrow">{t('MỘT VÀI ĐIỀU BẠN CẦN BIẾT', 'A FEW THINGS TO KNOW')}</div><h2>{t('Bạn hỏi.', 'Your questions.')}<br /><span>{t('Chúng tôi trả lời.', 'Answered.')}</span></h2></div><div>{faqs.map(([question, answer]) => <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}</div></section>
     </main>
 
-    <footer className="lp-footer"><div className="lp-container"><div><a className="lp-brand" href="/"><IconLogo size={30} /><span>ZM AI TOOL</span></a><p>{t('Một workspace cho mọi nhịp sáng tạo.', 'One workspace for every creative moment.')}</p></div><nav aria-label={t('Liên kết cuối trang', 'Footer links')}><a href="#product">{t('Công cụ AI', 'AI tools')}</a><a href="#guide">{t('Hướng dẫn', 'Guide')}</a><a href="#download">{t('Tải về', 'Download')}</a><a href="#faq">{t('Hỏi đáp', 'FAQ')}</a><a href="/video-clone">{t('Mở workspace', 'Open workspace')}</a></nav><span>© {new Date().getFullYear()} ZM AI TOOL</span></div></footer>
+    <footer className="lp-footer"><div className="lp-container"><div><a className="lp-brand" href={inApp ? '/?landing=1' : '/'}><IconLogo size={30} /><span>ZM AI TOOL</span></a><p>{t('Một workspace cho mọi nhịp sáng tạo.', 'One workspace for every creative moment.')}</p></div><nav aria-label={t('Liên kết cuối trang', 'Footer links')}><a href="#product">{t('Công cụ AI', 'AI tools')}</a><a href="#guide">{t('Hướng dẫn', 'Guide')}</a>{!inApp ? <a href="#download">{t('Tải về', 'Download')}</a> : null}<a href="#faq">{t('Hỏi đáp', 'FAQ')}</a><a href={workspaceHref}>{t('Mở workspace', 'Open workspace')}</a></nav><span>© {new Date().getFullYear()} ZM AI TOOL</span></div></footer>
   </div>
 }

@@ -35,6 +35,22 @@
 .lp-button:not(:disabled):hover { transform: translateY(-2px); box-shadow: 0 8px 20px #5552d82b; }
 .lp-button:disabled { opacity: .55; cursor: not-allowed; box-shadow: none; }
 .lp-nav-download { min-height: 39px; padding: 8px 15px; font-size: 13px; }
+.lp-update-banner {
+  position: sticky; top: 76px; z-index: 40; border-bottom: 1px solid var(--lp-line);
+  background: color-mix(in srgb, var(--lp-accent) 12%, var(--lp-surface));
+}
+.lp-update-banner-inner { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 8px 0; }
+.lp-update-banner-text { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--lp-ink); }
+.lp-update-banner-pct { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--lp-muted); }
+.lp-update-banner-cancel {
+  border: 1px solid color-mix(in srgb, #dc2626 40%, var(--lp-line));
+  border-radius: 8px; background: color-mix(in srgb, #dc2626 10%, var(--lp-surface));
+  color: #dc2626; font-size: 12px; font-weight: 700; padding: 6px 10px;
+}
+.lp-update-banner-bar { height: 3px; background: var(--lp-line); }
+.lp-update-banner-bar > span { display: block; height: 100%; background: var(--lp-accent); transition: width .2s ease; }
+.lp-download-grid-inapp { grid-template-columns: minmax(0, 1fr); max-width: 520px; }
+.lp-download-card-inapp { display: grid; gap: 14px; }
 .lp-hero {
   position: relative; isolation: isolate; padding: 76px 0 30px; color: var(--lp-ink);
   background: radial-gradient(ellipse at 80% 60%, #e7edf670, transparent 60%), var(--lp-bg);
