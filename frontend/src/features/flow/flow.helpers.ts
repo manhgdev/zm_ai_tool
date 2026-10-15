@@ -278,12 +278,39 @@ export function writeFlowRoutePanel(panel: FlowRoutePanel) {
   }
 }
 
+/** Short account name for queue/history — no @gmail.com suffix. */
+export function flowAccountDisplayName(
+  account: Pick<FlowAccount, "email" | "label" | "id"> | null | undefined,
+  fallback = "",
+): string {
+  if (!account) return fallback;
+  const label = String(account.label || "").trim();
+  if (label) return label.replace(/@gmail\.com$/i, "");
+  const email = String(account.email || "").trim();
+  if (email) return email.replace(/@gmail\.com$/i, "");
+  return String(account.id || fallback).trim() || fallback;
+}
+
+export function resolveFlowJobAccountName(
+  job: Pick<FlowJob, "accountId" | "account">,
+  accounts: FlowAccount[],
+): string {
+  const accountId = String(job.accountId || "");
+  const resolved = flowAccountDisplayName(accounts.find((item) => item.id === accountId));
+  if (resolved) return resolved;
+  const cached = String(job.account || "").trim().replace(/@gmail\.com$/i, "");
+  // Keep a previously resolved human name; only fall back to the id as last resort.
+  if (cached && cached !== accountId) return cached;
+  return cached || accountId;
+}
+
 // ── Normalization ─────────────────────────────────────────────────────────────
 export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts: FlowAccount[]): FlowJob[] {
   return rows.map((raw) => {
     const s = raw.settings && typeof raw.settings === "object" ? raw.settings as Record<string, unknown> : {};
     const savedModel = String(s.model || (raw.kind === "image" ? "Nano Banana 2.1" : "Veo 3.1 - Fast"));
     const savedMode = String(raw.mode || "");
+    const accountId = String(raw.accountId || "");
     return {
       id: String(raw.id),
       index: Number(raw.inputIndex || 0),
@@ -295,9 +322,12 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       status: ["processing", "queued", "done", "cancelled"].includes(raw.status as string) ? raw.status as FlowJob["status"] : "failed",
       stage: String(raw.stage || ""),
       progress: Number(raw.progress || 0),
-      accountId: String(raw.accountId || ""),
+      accountId,
       randomAccount: Boolean(raw.randomAccount),
-      account: accounts.find((a) => a.id === raw.accountId)?.label || String(raw.accountId || ""),
+      account: resolveFlowJobAccountName(
+        { accountId, account: String(raw.account || "") },
+        accounts,
+      ),
       outputs: Array.isArray(raw.outputs) ? raw.outputs.map(String) : [],
       output: Array.isArray(raw.outputs) ? String(raw.outputs[0] || "") : "",
       outputFolder: raw.outputFolder ? String(raw.outputFolder) : "",

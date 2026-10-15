@@ -4,7 +4,14 @@ import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { isFlowAccountConnected, selectedFlowAccount, formatFlowJobSettingsMeta } from '../frontend/src/features/flow/flow.helpers.ts'
+import {
+  isFlowAccountConnected,
+  selectedFlowAccount,
+  formatFlowJobSettingsMeta,
+  flowAccountDisplayName,
+  resolveFlowJobAccountName,
+  normalizeFlowJobs,
+} from '../frontend/src/features/flow/flow.helpers.ts'
 import { explainFlowError, explainFlowEvent, technicalFlowDetail, formatFlowExplain, flowStageLabel } from '../frontend/src/features/flow/flow.explain.ts'
 
 test('prompt height defaults to flex and only saves a native manual resize', () => {
@@ -113,8 +120,8 @@ test('retry restores only connected accounts and preserves random jobs', () => {
     [[offline, account], true, 'random'],
   ]) {
     let state;
-    const open = new Function('accounts', 'isFlowAccountConnected', 'setRetryTarget', 'settings', 'isFreshCreateJob', 'retryBusyRef', code)(
-      accounts, isFlowAccountConnected, (value) => { state = value; }, { concurrency: '1', headless: true }, () => false, { current: false },
+    const open = new Function('accounts', 'isFlowAccountConnected', 'flowAccountDisplayName', 'setRetryTarget', 'settings', 'isFreshCreateJob', 'retryBusyRef', code)(
+      accounts, isFlowAccountConnected, flowAccountDisplayName, (value) => { state = value; }, { concurrency: '1', headless: true }, () => false, { current: false },
     );
     open([{ ...job, randomAccount }]);
     assert.equal(state.accountId, expected);
@@ -138,8 +145,8 @@ test('retry dialog keeps previous Open Chrome setting from the job', () => {
     [undefined, true, true],
   ]) {
     let state;
-    const open = new Function('accounts', 'isFlowAccountConnected', 'setRetryTarget', 'settings', 'isFreshCreateJob', 'retryBusyRef', code)(
-      [account], isFlowAccountConnected, (value) => { state = value; }, { concurrency: '1', headless: settingsHeadless }, () => false, { current: false },
+    const open = new Function('accounts', 'isFlowAccountConnected', 'flowAccountDisplayName', 'setRetryTarget', 'settings', 'isFreshCreateJob', 'retryBusyRef', code)(
+      [account], isFlowAccountConnected, flowAccountDisplayName, (value) => { state = value; }, { concurrency: '1', headless: settingsHeadless }, () => false, { current: false },
     );
     const settings = { ...base.settings };
     if (jobHeadless !== undefined) settings.headless = jobHeadless;
@@ -186,6 +193,33 @@ test('Only connected accounts appear in options or resolve for selection', () =>
   assert.equal(selectedFlowAccount(accounts, imageOnly.label), imageOnly);
   for (const account of [offline, connecting, incomplete]) assert.equal(selectedFlowAccount(accounts, account.label), undefined);
   assert.equal(selectedFlowAccount([offline, connecting, incomplete], 'random'), undefined);
+});
+
+test('queue account name hides @gmail.com and prefers label over raw id', () => {
+  const account = { id: '8c586f3806ea', label: 'nguyenmanhict', email: 'nguyenmanhict@gmail.com' };
+  assert.equal(flowAccountDisplayName(account), 'nguyenmanhict');
+  assert.equal(flowAccountDisplayName({ id: 'x', email: 'user@gmail.com' }), 'user');
+  assert.equal(flowAccountDisplayName({ id: 'x', email: 'user@company.com' }), 'user@company.com');
+  assert.equal(flowAccountDisplayName({ id: 'x', label: 'short' }), 'short');
+  assert.equal(
+    resolveFlowJobAccountName({ accountId: '8c586f3806ea', account: '8c586f3806ea' }, [account]),
+    'nguyenmanhict',
+  );
+  // Accounts not loaded yet: keep a human cached name, otherwise show id.
+  assert.equal(
+    resolveFlowJobAccountName({ accountId: '8c586f3806ea', account: 'nguyenmanhict' }, []),
+    'nguyenmanhict',
+  );
+  assert.equal(
+    resolveFlowJobAccountName({ accountId: '8c586f3806ea', account: '8c586f3806ea' }, []),
+    '8c586f3806ea',
+  );
+  const [job] = normalizeFlowJobs(
+    [{ id: 'j1', kind: 'image', accountId: '8c586f3806ea', randomAccount: true, status: 'queued', settings: {} }],
+    [account],
+  );
+  assert.equal(job.account, 'nguyenmanhict');
+  assert.equal(job.randomAccount, true);
 });
 
 

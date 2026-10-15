@@ -41,6 +41,18 @@ class FlowAccountCookieTests(unittest.TestCase):
         self.assertEqual(by_name["__Secure-1PSID"]["sameSite"], "None")
         self.assertNotIn("sameSite", by_name["plain"])
 
+    def test_cookies_for_fresh_profile_forces_samesite_none_on_secure_google(self):
+        from pipeline.flow.service import _cookies_for_fresh_profile
+        out = _cookies_for_fresh_profile([
+            {"name": "__Secure-1PSID", "value": "x", "domain": ".google.com", "path": "/", "secure": True, "sameSite": "Lax"},
+            {"name": "SID", "value": "y", "domain": ".google.com", "path": "/", "secure": True, "sameSite": "Lax"},
+            {"name": "_ga", "value": "z", "domain": ".flow.google.com", "path": "/", "secure": False, "sameSite": "Lax"},
+        ])
+        by_name = {item["name"]: item for item in out}
+        self.assertEqual(by_name["__Secure-1PSID"]["sameSite"], "None")
+        self.assertEqual(by_name["SID"]["sameSite"], "None")
+        self.assertEqual(by_name["_ga"]["sameSite"], "Lax")
+
     def test_merge_updates_new_cookies_and_keeps_stored_ones(self):
         from pipeline.flow.service import _merge_cookie_records
         merged = _merge_cookie_records(
@@ -73,45 +85,47 @@ class FlowAccountCookieTests(unittest.TestCase):
             self.assertFalse(_seed_stored_cookies(chrome_jar))
             self.assertTrue(_seed_stored_cookies({"id": "a", "authMethod": "cookie"}))
 
-    def test_reset_with_jar_keeps_login_files_strips_cookies_and_reconnects(self):
+    def test_reset_with_jar_rmtrees_profile_and_connects_f12_cookies(self):
         from pipeline.flow import store
         from pipeline.flow.service import FlowService, _seed_stored_cookies
         with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
-            jar = [{"name": "SID", "value": "tok", "domain": ".google.com", "path": "/"}]
+            jar = [
+                {"name": "SID", "value": "tok", "domain": ".google.com", "path": "/", "secure": True, "sameSite": "Lax"},
+                {"name": "__Secure-1PSID", "value": "x", "domain": ".google.com", "path": "/", "secure": True, "sameSite": "Lax"},
+            ]
             store._write("accounts", [{"id": "a", "status": "online", "projectId": "p", "cookie": jar}])
             service = FlowService()
             main = Path(store.profile_dir("a"))
             sessions = [service._session_profile_dir("a", kind) for kind in ("image", "video")]
             runtime = store.root() / "runtime-profiles" / "a"
             dead_job = runtime / "old-job"
-            identity = ["Default/Login Data", "Default/Device Bound Sessions", "Local State"]
-            cookie_db = ["Default/Cookies", "Default/Network/Cookies"]
-            browsing = ["Default/IndexedDB/x", "Cache/x"]
+            old_files = ["Default/Login Data", "Default/Cookies", "Local State", "Default/IndexedDB/x", "Cache/x"]
             for profile in (main, *sessions, dead_job):
-                for name in identity + cookie_db + browsing:
+                for name in old_files:
                     (profile / name).parent.mkdir(parents=True, exist_ok=True)
                     (profile / name).write_text("x")
             with patch.object(service, "connect") as connect, \
                  patch.object(service, "_sync_runtime_cookies") as sync:
                 service.reset_account_session("a")
-            # Keep Google identity files; strip cookie DB; drop browsing cache.
-            for name in identity:
-                self.assertTrue((main / name).exists(), name)
-            for name in cookie_db:
-                self.assertFalse((main / name).exists(), name)
-            self.assertFalse((main / "Default" / "IndexedDB").exists())
-            self.assertFalse((main / "Cache").exists())
+            # Brand-new empty profile; identity files gone.
+            self.assertTrue(main.is_dir())
+            self.assertFalse((main / "Default" / "Login Data").exists())
+            self.assertFalse((main / "Default" / "Cookies").exists())
+            self.assertFalse((main / "Local State").exists())
             self.assertFalse(any(profile.exists() for profile in sessions))
             self.assertFalse(runtime.exists())
             synced = [call.args[1] for call in sync.call_args_list]
             self.assertEqual(synced[:2], sessions)
             self.assertIn(dead_job, synced)
             connect.assert_called_once()
-            self.assertEqual(connect.call_args.kwargs.get("headless"), True)
-            self.assertEqual(connect.call_args.kwargs.get("cookies")[0]["name"], "SID")
+            injected = connect.call_args.kwargs.get("cookies") or []
+            by_name = {item["name"]: item for item in injected}
+            self.assertEqual(by_name["SID"]["sameSite"], "None")
+            self.assertEqual(by_name["__Secure-1PSID"]["sameSite"], "None")
             saved = store.get_row("accounts", "a")
             self.assertEqual(saved["projectId"], None)
-            self.assertEqual(saved["cookie"][0]["name"], "SID")
+            # Stored jar keeps Playwright Lax; only inject path forces None.
+            self.assertEqual(saved["cookie"][0]["sameSite"], "Lax")
             self.assertTrue(_seed_stored_cookies({**saved, "id": "a", "authMethod": "chrome"}))
 
     def test_reset_without_jar_keeps_login_files(self):

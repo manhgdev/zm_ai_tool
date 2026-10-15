@@ -63,6 +63,8 @@ import {
   isFlowAccountConnected,
   sortFlowAccounts,
   selectedFlowAccount as resolveSelectedFlowAccount,
+  resolveFlowJobAccountName,
+  flowAccountDisplayName,
   flowRequest, loadFlowSnapshot,
   saveWebOutputRoot, loadWebOutputRoot,
   writeFlowOutputToDirectory, downloadFlowOutput, deleteFlowOutputFromDirectory,
@@ -563,6 +565,20 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     try {
       localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
     } catch { }
+  }, [accounts]);
+  // Jobs may arrive over SSE before accounts are loaded (shows raw id). Re-bind Gmail/label.
+  useEffect(() => {
+    if (!accounts.length) return;
+    setJobs((current) => {
+      let changed = false;
+      const next = current.map((job) => {
+        const account = resolveFlowJobAccountName(job, accounts);
+        if (account === job.account) return job;
+        changed = true;
+        return { ...job, account };
+      });
+      return changed ? next : current;
+    });
   }, [accounts]);
   useEffect(() => {
     try {
@@ -1404,7 +1420,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         stage: "",
         progress: 0,
         accountId: selectedAccountLabel === "random" ? "random" : account.id,
-        account: selectedAccountLabel === "random" ? t("🎲 Ngẫu nhiên", "🎲 Random") : account.label,
+        account: selectedAccountLabel === "random" ? t("🎲 Ngẫu nhiên", "🎲 Random") : flowAccountDisplayName(account),
         outputs: [],
         output: "",
         outputFolder: effectiveSettings.outputDir || "",
@@ -1606,7 +1622,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const onlineAccounts = accounts.filter(isFlowAccountConnected);
     const resolvedAccountId = selectedJob.randomAccount ? "random" : (
       (onlineAccounts.some((account) => account.id === selectedJob.accountId) ? selectedJob.accountId : "")
-      || onlineAccounts.find((account) => account.label === selectedJob.account)?.id
+      || onlineAccounts.find((account) => flowAccountDisplayName(account) === selectedJob.account || account.label === selectedJob.account)?.id
       || onlineAccounts[0]?.id
       || "random");
     const groups = buildRetryGroups(initialJobs, resolvedAccountId);
@@ -3537,7 +3553,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                               downloadLabel: t("tải", "DL"),
                               logoLabel: t("Del Logo", "Del Logo"),
                             })}{" "}
-                            · {job.randomAccount ? "🎲 " : ""}{job.account}
+                            · {job.randomAccount ? "🎲 " : ""}{resolveFlowJobAccountName(job, accounts)}
                             {job.settings.headless === false && <> · {t("Mở Chrome", "Open Chrome")}</>}
                           </span>
                           <div className="flow-job-progress">
@@ -3758,7 +3774,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       <td title={job.settings.model}>
                         {job.settings.model}
                       </td>
-                      <td title={job.account}>{job.randomAccount ? `🎲 ${job.account}` : job.account}</td>
+                      <td title={resolveFlowJobAccountName(job, accounts)}>{job.randomAccount ? `🎲 ${resolveFlowJobAccountName(job, accounts)}` : resolveFlowJobAccountName(job, accounts)}</td>
                       <td>
                         <mark className={`flow-status-${job.status}`}>
                           {jobStatusText(job)}

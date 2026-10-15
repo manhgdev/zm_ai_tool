@@ -118,6 +118,24 @@ def _account_cookie_records(value: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _cookies_for_fresh_profile(value: Any) -> list[dict[str, Any]]:
+    """Normalize jar for inject into an empty Chrome profile (F12 Cookie header style).
+
+    Playwright persists Secure Google cookies as SameSite=Lax; re-adding those into
+    a wiped profile hits Google's cookie-settings wall. F12 import has no sameSite
+    and becomes None via ``_account_cookie_records`` — force that for secure Google
+    domains at inject time only (stored jar metadata stays unchanged).
+    """
+    out: list[dict[str, Any]] = []
+    for item in _account_cookie_records(value):
+        cookie = dict(item)
+        domain = str(cookie.get("domain") or "").lower()
+        if cookie.get("secure") and "google" in domain:
+            cookie["sameSite"] = "None"
+        out.append(cookie)
+    return out
+
+
 def _profile_copy_ignore(_directory: str, names: list[str]) -> list[str]:
     """Exclude Chromium caches that are always live while Chrome is open."""
     return sorted(_PROFILE_COPY_IGNORES.intersection(names))
@@ -2044,9 +2062,9 @@ class FlowService:
     ) -> dict[str, Any]:
         """Reset session and reconnect from the stored cookie jar when possible.
 
-        Wipe browsing cache but keep Google identity files (Login Data, etc.).
-        With a jar: strip the cookie DB and ``connect(..., cookies=jar)``.
-        Never delete the whole profile — that triggers Google's cookie-settings wall.
+        With a jar: ``rmtree`` the root profile and ``connect`` with F12-normalized
+        cookies (secure Google → SameSite=None). Without a jar: wipe browsing data
+        but keep Google login files so Chrome-auth accounts are not stranded.
 
         ``keep_running_jobs``: processing jobs keep their runtime clones and
         shared project ids while the root profile is refreshed for new work.
@@ -2090,9 +2108,6 @@ class FlowService:
         profile = Path(store.profile_dir(account_id))
         cookie_payload = (store.get_row("accounts", account_id) or account).get("cookie")
         jar = _account_cookie_records(cookie_payload)
-        # Never rmtree the whole profile: Google binds login to Login Data /
-        # Device Bound Sessions, not cookies alone. Wipe browsing cache, strip
-        # cookie DB, then re-inject the jar (avoids the cookie-settings wall).
         if (fresh_cookie_profile or bool(jar)) and not jar:
             self._log(
                 "warning", "account_session_reset_no_cookie_jar", account_id=account_id,
@@ -2100,9 +2115,12 @@ class FlowService:
             )
         from .browser import profile_lock
         with profile_lock(profile):
-            _wipe_profile_keep_login(profile)
             if jar:
-                _strip_profile_cookie_db(profile)
+                # Empty profile + F12-style cookies (SameSite=None) — same as add-via-cookie.
+                shutil.rmtree(profile, ignore_errors=True)
+                profile.mkdir(parents=True, exist_ok=True)
+            else:
+                _wipe_profile_keep_login(profile)
         patch = {
             "status": "connecting", "error": None, "suspendedUntil": None, "suspendReason": None,
             "accessToken": None, "refreshToken": None, "cookie": cookie_payload,
@@ -2118,18 +2136,17 @@ class FlowService:
         self._log(
             "info", "account_session_reset", account_id=account_id,
             message=(
-                "Đã xoá cache phiên và kết nối lại bằng cookie / Cleared session cache and reconnecting with cookies"
+                "Đã làm mới profile và kết nối lại bằng cookie / Refreshed profile and reconnecting with cookies"
                 if jar else
                 "Đã xoá dữ liệu Flow và giữ đăng nhập Google / Cleared Flow data and kept the Google login"
             ),
         )
         try:
-            # Same as add-account-via-cookie when jar exists; otherwise plain reconnect.
             connect_kwargs: dict[str, Any] = {
                 "headless": True, "open_ui_on_failure": open_ui_on_failure,
             }
             if jar:
-                connect_kwargs["cookies"] = jar
+                connect_kwargs["cookies"] = _cookies_for_fresh_profile(jar)
             self.connect(account_id, **connect_kwargs)
         except RuntimeError:
             pass  # ponytail: FLOW_PROFILE_BUSY race is safe to ignore here
@@ -3559,6 +3576,9 @@ class FlowService:
             cookies = _account_cookie_records(cookies)  # persistent expiry, see _account_cookie_records
         if not cookies and (cookie_auth or _seed_stored_cookies({**account, "id": account_id})):
             cookies = _account_cookie_records(account.get("cookie"))
+        # Fresh / empty profiles need F12-style SameSite=None; safe to apply whenever injecting.
+        if cookies:
+            cookies = _cookies_for_fresh_profile(cookies)
 
         browser = None
         login_ok = False
