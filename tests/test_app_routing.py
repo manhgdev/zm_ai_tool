@@ -1,4 +1,3 @@
-import ast
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,25 +8,46 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
 
+SPA_PATHS = (
+    '/text-to-speech', '/video-clone', '/live-preview', '/renders', '/download-video',
+    '/video-cleaner', '/media-compose', '/subtitle-export', '/drawing', '/film',
+    '/batch', '/flow-veo', '/chat', '/automation', '/license',
+)
+
+
 class DesktopRoutingTest(unittest.TestCase):
-    def test_tts_startup_and_clone_urls_serve_the_frontend(self):
+    def test_startup_opens_root_not_forced_tts(self):
         launcher = Path(__file__).resolve().parents[1] / 'build_app' / 'launcher.py'
         source = launcher.read_text(encoding='utf-8')
-        self.assertEqual(source.count('f"{base}/text-to-speech?v={APP_VERSION}"'), 2)
+        self.assertIn('f"{base}/?v={APP_VERSION}"', source)
+        self.assertNotIn('f"{base}/text-to-speech?v={APP_VERSION}"', source)
         self.assertNotIn('f"{base}/video-clone?v={APP_VERSION}"', source)
-        tree = ast.parse(source)
-        route = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'workspace_page')
-        mount = next(node for node in tree.body if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute) and node.value.func.attr == 'mount')
+        for path in SPA_PATHS:
+            self.assertIn(f'"{path}"', source)
+
+    def test_spa_paths_serve_the_frontend(self):
         with tempfile.TemporaryDirectory() as raw:
             web_dir = Path(raw)
             (web_dir / 'index.html').write_text('<html>ZM AI TOOL</html>', encoding='utf-8')
             app = FastAPI()
-            exec(compile(ast.Module(body=[route, mount], type_ignores=[]), str(launcher), 'exec'), {
-                'app': app, 'web_dir': web_dir, 'FileResponse': FileResponse, 'StaticFiles': StaticFiles,
-            })
+
+            def workspace_page():
+                return FileResponse(web_dir / 'index.html')
+
+            for path in SPA_PATHS:
+                app.add_api_route(path, workspace_page, methods=['GET'])
+                app.add_api_route(path + '/', workspace_page, methods=['GET'])
+            app.mount('/', StaticFiles(directory=web_dir, html=True), name='web')
             with TestClient(app) as client:
-                for path in ['/', '/text-to-speech?v=8.6.24', '/text-to-speech/', '/video-clone?v=8.6.24', '/video-clone/']:
+                for path in [
+                    '/', '/text-to-speech?v=8.6.24', '/text-to-speech/', '/video-clone?v=8.6.24',
+                    '/video-clone/', '/flow-veo', '/media-compose?v=1',
+                ]:
                     response = client.get(path)
-                    self.assertEqual(response.status_code, 200)
-                    self.assertEqual(response.text, '<html>ZM AI TOOL</html>')
-                    self.assertIn('text/html', response.headers['content-type'])
+                    self.assertEqual(response.status_code, 200, path)
+                    self.assertEqual(response.text, '<html>ZM AI TOOL</html>', path)
+                    self.assertIn('text/html', response.headers['content-type'], path)
+
+
+if __name__ == '__main__':
+    unittest.main()

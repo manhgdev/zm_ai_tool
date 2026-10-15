@@ -67,17 +67,23 @@
 }
 
 .cfg-update {
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--primary) 70%, var(--line));
   border-radius: 7px;
-  background: var(--surface);
-  color: var(--foreground);
-  padding: 5px 8px;
-  font-size: .7rem;
+  background: var(--primary);
+  color: var(--primary-foreground, #fff);
+  padding: 6px 12px;
+  font-size: .72rem;
   font-weight: 700;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--primary) 35%, transparent);
+}
+
+.cfg-update:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 
 .cfg-update:disabled {
   opacity: .55;
+  filter: none;
 }
 
 .cfg-update-layer {
@@ -985,10 +991,12 @@
 
 .cfg-log-pre {
   margin: 0;
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 280px;
+  height: min(52vh, 480px);
   max-height: min(52vh, 480px);
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: scroll;
   padding: 10px 12px;
   border-radius: 8px;
   border: 1px solid var(--line);
@@ -1000,7 +1008,14 @@
   white-space: pre-wrap;
   word-break: break-word;
   user-select: text;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #64748b #0f172a;
 }
+.cfg-log-pre::-webkit-scrollbar { width: 10px; }
+.cfg-log-pre::-webkit-scrollbar-track { background: #0f172a; }
+.cfg-log-pre::-webkit-scrollbar-thumb { background: #64748b; border-radius: 6px; border: 2px solid #0f172a; }
+.cfg-log-pre::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
 .cfg-log-actions {
   display: flex;
@@ -1132,21 +1147,6 @@
   .cfg-subfolder-grid { grid-template-columns: 1fr; }
 }
 
-/* Match the compact language control used in the main header. */
-.cfg-head-actions select.locale-select {
-  width: 48px;
-  min-width: 48px;
-  max-width: 48px;
-  height: 28px;
-  padding: 0 19px 0 7px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--ink);
-  font: 700 .72rem/1 inherit;
-  cursor: pointer;
-}
-
 /* Cleanup uses compact rows instead of the form label column layout. */
 .cfg-cleanup-all,
 .cfg-cleanup-item {
@@ -1205,14 +1205,6 @@
   .cfg-cleanup-list { grid-template-columns: 1fr; }
   .cfg-cleanup-item { grid-template-columns: 22px minmax(0, 1fr); }
   .cfg-cleanup-item small { grid-column: 2; }
-}
-
-.cfg-head-actions select.locale-select,
-.cfg-head-actions select.locale-select option {
-  font-family: var(--font), system-ui, sans-serif !important;
-  font-size: .72rem !important;
-  font-weight: 700 !important;
-  letter-spacing: 0 !important;
 }
 
 .cfg-cleanup-item .cfg-cleanup-path {

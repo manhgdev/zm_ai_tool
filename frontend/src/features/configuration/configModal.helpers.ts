@@ -1,19 +1,75 @@
+import { localize, type AppLocale } from '@/app/i18n'
 import type { CloudProviderId, SystemChecks } from '@/features/project/project.types'
 
 export const PROVIDERS: CloudProviderId[] = ['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral']
 
 export type InstallKind = 'ai_runtime' | 'ai_runtime_ocr' | 'ai_runtime_vieneu' | 'whisper' | 'ocr' | 'diarization' | 'vieneu' | 'demucs' | 'moss_tts_nano_runtime' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
 
+/** Progress/chrome names for every install kind — never fall through to an unrelated package. */
+const INSTALL_PROGRESS_NAMES: Record<string, [string, string]> = {
+  ai_runtime: ['gói AI', 'AI packages'],
+  ai_runtime_ocr: ['gói AI', 'AI packages'],
+  ai_runtime_vieneu: ['VieNeu Local', 'VieNeu Local'],
+  whisper: ['Whisper', 'Whisper'],
+  whisper_runtime: ['Whisper', 'Whisper'],
+  ocr: ['OCR', 'OCR'],
+  ocr_runtime: ['OCR', 'OCR'],
+  diarization: ['Sherpa-ONNX', 'Sherpa-ONNX'],
+  diarization_runtime: ['Sherpa-ONNX', 'Sherpa-ONNX'],
+  vieneu: ['VieNeu Local', 'VieNeu Local'],
+  vieneu_runtime: ['VieNeu Local', 'VieNeu Local'],
+  demucs: ['Demucs', 'Demucs'],
+  demucs_runtime: ['Demucs', 'Demucs'],
+  moss_tts_nano_runtime: ['MOSS-TTS-Nano', 'MOSS-TTS-Nano'],
+  ocr_cuda: ['GPU OCR', 'OCR GPU'],
+  demucs_cuda: ['Demucs', 'Demucs'],
+  nvm: ['NVM + Node.js LTS', 'NVM + Node.js LTS'],
+  cpu_runtime: ['runtime CPU', 'CPU runtime'],
+  nvidia_driver: ['driver đồ họa', 'graphics driver'],
+  rollback: ['runtime trước', 'previous runtime'],
+}
+
+/** Backend job kinds → frontend InstallKind (status poll uses *_runtime suffixes). */
+const INSTALL_KIND_FROM_STATUS: Record<string, string> = {
+  whisper_runtime: 'whisper',
+  ocr_runtime: 'ocr',
+  diarization_runtime: 'diarization',
+  demucs_runtime: 'demucs',
+  vieneu_runtime: 'vieneu',
+}
+
+export function normalizeInstallKind(kind: string): string {
+  return INSTALL_KIND_FROM_STATUS[kind] || kind
+}
+
+/** Driver/rollback must stay exclusive — other packages cannot queue beside them. */
+export function isExclusiveInstallKind(kind: string | null | undefined): boolean {
+  return kind === 'nvidia_driver' || kind === 'cpu_runtime' || kind === 'rollback'
+}
+
+export function packageInstallBusy(
+  install: string,
+  active: string | null,
+  queue: readonly string[],
+): boolean {
+  if (!install) return false
+  if (active === install || queue.includes(install)) return true
+  if (install.startsWith('ai_runtime') && (active === 'ai_runtime' || queue.includes('ai_runtime'))) return true
+  if (install === 'whisper' && (active === 'whisper' || queue.includes('whisper'))) return true
+  return false
+}
+
 export const INSTALL_LABELS: Record<InstallKind, string> = {
-  ai_runtime: 'gói AI', ai_runtime_ocr: 'gói AI', ai_runtime_vieneu: 'gói AI',
+  ai_runtime: 'gói AI', ai_runtime_ocr: 'gói AI', ai_runtime_vieneu: 'VieNeu Local',
   whisper: 'Whisper', ocr: 'OCR', diarization: 'Sherpa-ONNX', vieneu: 'VieNeu Local', demucs: 'Demucs',
   moss_tts_nano_runtime: 'MOSS-TTS-Nano', ocr_cuda: 'OCR CUDA', demucs_cuda: 'Demucs', nvm: 'NVM + Node.js LTS',
 }
 
 export const INSTALL_ORDER: InstallKind[] = ['whisper', 'ocr', 'diarization', 'vieneu', 'moss_tts_nano_runtime', 'demucs', 'ocr_cuda', 'demucs_cuda']
 
-export function installLabel(kind: string): string {
-  return INSTALL_LABELS[kind as InstallKind] || kind
+export function installLabel(kind: string, locale: AppLocale = 'vi'): string {
+  const row = INSTALL_PROGRESS_NAMES[kind]
+  return row ? localize(locale, row[0], row[1]) : INSTALL_LABELS[kind as InstallKind] || kind
 }
 
 export function nextAutoInstall(checks: SystemChecks): InstallKind | null {

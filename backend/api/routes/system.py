@@ -114,6 +114,7 @@ _install_state: dict[str, Any] = {
     "retryAfterSeconds": None,
 }
 _install_lock = threading.Lock()
+_install_cancel = threading.Event()
 _checks_warm_lock = threading.Lock()
 _checks_warming = False
 
@@ -929,12 +930,25 @@ def _append_install_log(text: str) -> None:
             pass
 
 
+def _raise_if_install_cancelled() -> None:
+    if not _install_cancel.is_set():
+        return
+    from pipeline.core.runtime_download import RuntimeInstallError
+
+    raise RuntimeInstallError(
+        'INSTALL_CANCELLED',
+        'Installation cancelled by user',
+        retryable=True,
+    )
+
+
 def _set_install_progress(
     progress: int | float,
     message: str = "",
     fields: dict[str, Any] | None = None,
 ) -> None:
     """Publish monotonic, backend-owned install progress to polling clients."""
+    _raise_if_install_cancelled()
     try:
         value = max(0, min(99, round(float(progress))))
     except (TypeError, ValueError):
@@ -999,6 +1013,7 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                 "message": _install_state["message"],
                 "progress": _install_state["progress"],
             }
+        _install_cancel.clear()
         _install_state.update(
             running=True,
             kind=kind,
@@ -1024,15 +1039,20 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
             diagnostics="",
             operationId="", driverCheck=None, rebootRequired=False, resumeKind="", eula=[],
             computeMode=None,
+            cancelRequested=False,
         )
     _reset_install_log(kind)
 
     def work() -> None:
         import pipeline.core.system_check as _sc
+        from pipeline.core.runtime_download import RuntimeInstallError
+
         _sc._install_log_fn = _append_install_log
         _sc._install_progress_fn = _set_install_progress
         try:
+            _raise_if_install_cancelled()
             result = fn()
+            _raise_if_install_cancelled()
             changed = "Đã cài" in str(result.get("message", ""))
             desktop = os.environ.get("ZM_AI_TOOL_DESKTOP")
             if changed and needs_restart and desktop == "1":
@@ -1047,38 +1067,60 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                         _install_state[key] = result[key]
                 _install_state["updatedAt"] = time.time()
         except Exception as e:
-            from pipeline.core.runtime_install import RuntimeInstallError
-
+            cancelled = isinstance(e, RuntimeInstallError) and e.code == 'INSTALL_CANCELLED'
             with _install_lock:
-                _install_state["error"] = str(e)
-                if isinstance(e, RuntimeInstallError):
-                    _install_state["errorCode"] = e.code
-                    _install_state["retryable"] = e.retryable
-                    _install_state["diagnostics"] = e.diagnostics
-                    if e.driver_check:
-                        _install_state["driverCheck"] = e.driver_check
-                elif kind in ("ai_runtime", "vieneu_runtime", "whisper_runtime", "diarization_runtime", "ocr_runtime", "demucs_runtime", "ocr_cuda", "demucs_cuda", "nvidia_driver", "cpu_runtime"):
-                    _install_state["errorCode"] = "DRIVER_UPDATE_FAILED" if kind == 'nvidia_driver' else "RUNTIME_PROBE_FAILED"
+                if cancelled:
+                    _install_state["error"] = ""
+                    _install_state["errorCode"] = "INSTALL_CANCELLED"
                     _install_state["retryable"] = True
-                    _install_state["diagnostics"] = repr(e)
-                _install_state["message"] = "Cài đặt thất bại / Installation failed"
+                    _install_state["diagnostics"] = ""
+                    _install_state["message"] = "Đã hủy cài đặt / Installation cancelled"
+                    _install_state["result"] = {"ok": False, "cancelled": True, "message": "Installation cancelled"}
+                    _install_state["cancelRequested"] = True
+                else:
+                    _install_state["error"] = str(e)
+                    if isinstance(e, RuntimeInstallError):
+                        _install_state["errorCode"] = e.code
+                        _install_state["retryable"] = e.retryable
+                        _install_state["diagnostics"] = e.diagnostics
+                        if e.driver_check:
+                            _install_state["driverCheck"] = e.driver_check
+                    elif kind in (
+                        "ai_runtime", "vieneu_runtime", "whisper_runtime", "diarization_runtime",
+                        "ocr_runtime", "demucs_runtime", "ocr_cuda", "demucs_cuda",
+                        "moss_tts_nano_runtime", "nvm", "nvidia_driver", "cpu_runtime",
+                    ):
+                        _install_state["errorCode"] = "DRIVER_UPDATE_FAILED" if kind == 'nvidia_driver' else "RUNTIME_PROBE_FAILED"
+                        _install_state["retryable"] = True
+                        _install_state["diagnostics"] = repr(e)
+                    _install_state["message"] = "Cài đặt thất bại / Installation failed"
                 _install_state["updatedAt"] = time.time()
-            detail = ""
-            if isinstance(e, RuntimeInstallError) and e.diagnostics:
-                from pipeline.core.runtime_download import redact
-                detail = "\n--- diagnostics ---\n" + redact(str(e.diagnostics))[-6000:] + "\n"
-            _append_install_log(
-                "\n=== Cài đặt thất bại / Installation failed ===\n"
-                + str(e)
-                + "\n"
-                + traceback.format_exc()
-                + detail
-            )
+            if not cancelled:
+                detail = ""
+                if isinstance(e, RuntimeInstallError) and e.diagnostics:
+                    from pipeline.core.runtime_download import redact
+                    detail = "\n--- diagnostics ---\n" + redact(str(e.diagnostics))[-6000:] + "\n"
+                failure_block = (
+                    "\n=== Cài đặt thất bại / Installation failed ===\n"
+                    + str(e)
+                    + "\n"
+                    + traceback.format_exc()
+                    + detail
+                )
+                _append_install_log(failure_block)
+                try:
+                    from pipeline.core.app_log import append_log
+                    append_log(f"[install:{kind}] failed\n{failure_block}")
+                except Exception:
+                    pass
+            else:
+                _append_install_log("\n=== Đã hủy cài đặt / Installation cancelled ===\n")
         finally:
             _sc._install_log_fn = None
             _sc._install_progress_fn = None
             with _install_lock:
                 _install_state["running"] = False
+            _install_cancel.clear()
 
         _start_checks_warm()
 
@@ -1090,6 +1132,22 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
         "message": "Đang chuẩn bị cài đặt… / Preparing installation…",
         "progress": 1,
     }
+
+
+@router.post("/api/system/install/cancel")
+def api_install_cancel():
+    """Request cooperative cancel of the active package install (not driver update)."""
+    with _install_lock:
+        if not _install_state.get("running"):
+            return {"ok": True, "cancelled": False}
+        kind = str(_install_state.get("kind") or "")
+        if kind in ("nvidia_driver", "cpu_runtime"):
+            raise HTTPException(409, "DRIVER_INSTALL_BUSY")
+        _install_state["cancelRequested"] = True
+        _install_state["message"] = "Đang hủy cài đặt… / Cancelling installation…"
+        _install_state["updatedAt"] = time.time()
+    _install_cancel.set()
+    return {"ok": True, "cancelling": True}
 
 # Aliases matching original routes_all names
 _spawn = spawn
@@ -1805,9 +1863,12 @@ def api_install_status():
     for key in (
         "stage", "runtimeProfile", "currentPackage", "runtimePack", "downloadedBytes", "totalBytes",
         "requiredDiskBytes", "errorCode", "retryable", "diagnostics", "speedBytesPerSecond", "etaSeconds", "cacheHit", "downloadItems", "freeDiskBytes", "diskDrive", "retryAttempt", "retryAfterSeconds",
-        "operationId", "driverCheck", "rebootRequired", "resumeKind", "eula",
+        "operationId", "driverCheck", "rebootRequired", "resumeKind", "eula", "cancelRequested",
     ):
         out[key] = st.get(key)
+    if st.get("errorCode") == "INSTALL_CANCELLED":
+        out["cancelled"] = True
+        out["ok"] = False
     from pipeline.core import nvidia_driver as driver
     out['driverRepairAvailable'] = (sys.platform == 'win32' and os.environ.get('ZM_AI_TOOL_DESKTOP') == '1'
         and not st.get('running') and (
@@ -1816,11 +1877,15 @@ def api_install_status():
             and st.get('errorCode') and driver.snapshot().get('phase') in (None, *driver.TERMINAL)))
     persisted_install_log = _read_install_log()
     if st.get("log") or persisted_install_log:
-        # Trả 30 dòng cuối để tránh payload quá lớn.
+        # Trả 300 dòng cuối để UI kéo xem được traceback cài package.
         out["log"] = "\n".join((st.get("log") or persisted_install_log).splitlines()[-300:])
     if st.get("error"):
         out["error"] = st["error"]
         out["ok"] = False
+        # Guarantee the popup/Log tab always carry the failure text.
+        err = str(st["error"])
+        if err and err not in (out.get("log") or ""):
+            out["log"] = ((out.get("log") or "").rstrip() + "\n" + err).lstrip()
         return out
     if st.get("result") and not st.get("running"):
         result = st["result"] if isinstance(st["result"], dict) else {}

@@ -230,6 +230,31 @@ class _FlowNetworkInterrupted(Exception):
     """Close the failed browser once, then resume the same generation identity."""
 
 
+# Chrome/page load blips when the TCP probe still thinks the host is online.
+_FLOW_INFRA_INTERRUPT = re.compile(
+    r"FLOW_NETWORK_UNAVAILABLE|ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|"
+    r"ERR_CONNECTION_(?:RESET|TIMED_OUT|CLOSED|REFUSED)|ERR_NAME_NOT_RESOLVED|"
+    r"net::ERR_|Page\.goto|Navigation timeout|Timeout \d+ms exceeded|"
+    r"NS_ERROR_NET|Could not connect|ECONNRESET|ENETUNREACH|EHOSTUNREACH",
+    re.I,
+)
+_FLOW_INFRA_HARD_STOP = re.compile(
+    r"FLOW_CREDITS_EMPTY|FLOW_CREDITS_INSUFFICIENT|FLOW_QUOTA_EXHAUSTED|"
+    r"FLOW_DOWNLOAD_QUALITY_UNAVAILABLE|FLOW_AUTOMATION_BLOCKED",
+    re.I,
+)
+
+
+def _is_flow_infra_interrupt(error: Exception | str) -> bool:
+    """True for network/Chrome-load failures that should wait_network, not fail."""
+    text = str(error or "")
+    if not text or _FLOW_INFRA_HARD_STOP.search(text):
+        return False
+    if _is_automation_block_error(text):
+        return False
+    return bool(_FLOW_INFRA_INTERRUPT.search(text))
+
+
 def _network_ready_for_flow_job(service: "FlowService", job_id: str, *, force: bool = False) -> float:
     """Gate external Flow work while preserving a cancellable queued job."""
     def cancelled() -> bool:
@@ -4579,6 +4604,7 @@ class FlowService:
                     not finished.get("submissionStartedAt")
                     or blocked
                     or download_recovery
+                    or _is_flow_infra_interrupt(finished_error)
                     or re.search(
                         r"RESULT_NOT_FOUND|EMPTY_OUTPUT|GENERATION_TIMEOUT|FLOW_AUTOMATION_FAILED|"
                         r"FLOW_PROJECT_NOT_FOUND|FLOW_DOWNLOAD_FAILED|ERR_ABORTED|"
@@ -7735,7 +7761,11 @@ class FlowService:
                 )
                 return
             self._check_cancel(job_id)
-            if not await asyncio.to_thread(network_available, force=True):
+            # Probe can stay true during Wi-Fi flaps / Flow CDN lag while
+            # Chrome still fails Page.goto or net::ERR_*. Wait and resume the
+            # same job identity instead of marking failed or reconnecting.
+            offline = not await asyncio.to_thread(network_available, force=True)
+            if offline or _is_flow_infra_interrupt(exc):
                 store.patch_row('jobs', job_id, {
                     'status': 'processing', 'stage': 'waiting_network',
                     'networkError': str(exc), 'updatedAt': time.time(),

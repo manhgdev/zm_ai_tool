@@ -65,6 +65,7 @@ const errors: Record<string, [string, string]> = {
   DISK_FULL: ['Không đủ dung lượng để cài song song runtime mới.', 'Not enough disk space for a parallel runtime installation.'],
   ACTIVATION_FAILED: ['Không chuyển được runtime. Xem log chi tiết.', 'Could not switch runtimes. See the diagnostic log.'],
   RUNTIME_BUSY: ['Đang có tác vụ cài hoặc khôi phục runtime.', 'Another runtime installation or rollback is running.'],
+  INSTALL_CANCELLED: ['Đã hủy cài đặt.', 'Installation cancelled.'],
 }
 
 export function runtimeStatusText(status: InstallStatus, locale: Locale): string {
@@ -85,5 +86,8 @@ export function runtimeStatusText(status: InstallStatus, locale: Locale): string
 
 export function runtimeErrorText(status: InstallStatus, locale: Locale): string {
   const label = errors[status.errorCode || '']
-  return label ? `${localize(locale, ...label)} [${status.errorCode}]` : localize(locale, 'Cài đặt thất bại. Xem log chi tiết.', 'Installation failed. See the diagnostic log.')
+  if (label) return `${localize(locale, ...label)} [${status.errorCode}]`
+  const raw = String(status.error || '').trim()
+  if (raw) return raw.length > 1200 ? `${raw.slice(0, 1200)}…` : raw
+  return localize(locale, 'Cài đặt thất bại. Xem log chi tiết.', 'Installation failed. See the diagnostic log.')
 }

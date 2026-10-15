@@ -14,6 +14,7 @@ import {
   IconVideo,
   IconWand,
 } from '@/shared/components/Icons'
+import { LocaleSwitch } from '@/shared/components/LocaleSwitch'
 import './Header.css'
 import { translate, type AppLocale } from '@/app/i18n'
 
@@ -371,10 +372,11 @@ export default function Header({
         })}
       </nav>
       <div className="hw" title={hardwareDisplay}>
-        <select className="locale-select" value={locale} onChange={(event) => onLocaleChange(event.target.value as AppLocale)} aria-label={t('header.interfaceLanguage')}>
-          <option value="vi">VI</option>
-          <option value="en">EN</option>
-        </select>
+        <LocaleSwitch
+          locale={locale}
+          onChange={onLocaleChange}
+          ariaLabel={t('header.interfaceLanguage')}
+        />
         {licenseStatus && (
           <button
             type="button"

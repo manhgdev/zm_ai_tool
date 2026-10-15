@@ -1,0 +1,44 @@
+.locale-switch {
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface, var(--card, #fff));
+  box-sizing: border-box;
+}
+
+.locale-switch-btn {
+  min-width: 32px;
+  height: 100%;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted-foreground, #64748b);
+  font: 700 .75rem/1 var(--font), system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.locale-switch-btn:hover {
+  color: var(--foreground, var(--ink, #0f172a));
+}
+
+.locale-switch-btn.is-active {
+  background: var(--primary);
+  color: var(--primary-foreground, #fff);
+}
+
+html.platform-macos .locale-switch {
+  height: 24px;
+}
+
+html.platform-macos .locale-switch-btn {
+  min-width: 28px;
+  padding: 0 7px;
+  font-size: 12px;
+}

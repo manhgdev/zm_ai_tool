@@ -116,6 +116,41 @@ class FlowNetworkTests(unittest.TestCase):
         self.assertEqual(store.get_row('jobs', 'j')['stage'], 'waiting_network')
         self.assertEqual(store.get_row('accounts', 'a')['status'], 'online')
 
+    def test_probe_true_net_err_still_waits_network(self):
+        """TCP probe can stay true while Chrome cannot reach Flow."""
+        browser = Mock(
+            start=AsyncMock(side_effect=RuntimeError(
+                'Page.goto: net::ERR_INTERNET_DISCONNECTED at https://flow.google.com/project/p'
+            )),
+            stop=AsyncMock(),
+        )
+        with patch('pipeline.flow.browser.BrowserManager', return_value=browser), patch(
+            'pipeline.flow.service.network_available', return_value=True
+        ), patch.object(self.service, '_ensure_shared_reconnect') as reconnect:
+            with self.assertRaises(_FlowNetworkInterrupted):
+                asyncio.run(self.service._run_once('j'))
+        reconnect.assert_not_called()
+        self.assertEqual(store.get_row('jobs', 'j')['stage'], 'waiting_network')
+        self.assertEqual(store.get_row('jobs', 'j')['submissionStartedAt'], 123)
+        self.assertEqual(store.get_row('jobs', 'j')['mediaIds'], ['original'])
+        self.assertEqual(store.get_row('accounts', 'a')['status'], 'online')
+
+    def test_probe_true_goto_timeout_still_waits_network(self):
+        browser = Mock(
+            start=AsyncMock(side_effect=RuntimeError(
+                'Page.goto: Timeout 30000ms exceeded.\nCall log:\n  - navigating to "https://flow.google.com/"'
+            )),
+            stop=AsyncMock(),
+        )
+        with patch('pipeline.flow.browser.BrowserManager', return_value=browser), patch(
+            'pipeline.flow.service.network_available', return_value=True
+        ), patch.object(self.service, '_ensure_shared_reconnect') as reconnect:
+            with self.assertRaises(_FlowNetworkInterrupted):
+                asyncio.run(self.service._run_once('j'))
+        reconnect.assert_not_called()
+        self.assertEqual(store.get_row('jobs', 'j')['stage'], 'waiting_network')
+        self.assertEqual(store.get_row('accounts', 'a')['status'], 'online')
+
     def test_browser_never_launches_when_offline(self):
         from pipeline.flow.browser import BrowserManager
         with patch('pipeline.flow.browser.chrome_executable', return_value='/unused/chrome'), patch(

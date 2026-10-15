@@ -134,6 +134,12 @@ def install(progress: Callable | None = None) -> dict:
         if sys.platform != "darwin":
             torch_cmd += ["--index-url", "https://download.pytorch.org/whl/cpu"]
         _run(torch_cmd)
+        if os.name == "nt":
+            # libtorchaudio.pyd needs VCOMP140.DLL; ship it beside the extension
+            # like the main Windows runtime (msvc-runtime + _ensure_openmp).
+            _run([str(python), "-m", "pip", "install", "msvc-runtime==14.44.35112"])
+            from pipeline.core.runtime_install import _ensure_openmp
+            _ensure_openmp(python.parent.parent)
         _run([str(python), "-m", "pip", "install", "numpy<3", "soundfile<1",
               "sentencepiece>=0.2,<1", "onnxruntime>=1.20,<2", "huggingface_hub<2"])
         report(35, "MOSS-TTS-Nano: tải mã nguồn chính thức / downloading official source")

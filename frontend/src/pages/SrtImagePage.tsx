@@ -6,6 +6,7 @@ import { localize, useLocale } from '../app/i18n'
 import { BackTitle } from '../shared/components/BackTitle'
 import { ConfirmDialog } from '../shared/components/ConfirmDialog'
 import { copyText } from '../shared/lib/clipboard'
+import { useStickToBottomScroll } from '../shared/hooks/useStickToBottomScroll'
 import { randomId } from '../shared/lib/randomId'
 import { useRemountState } from '../shared/lib/useRemountState'
 import { useRealtimeEvents } from '../realtime/RealtimeProvider'
@@ -661,11 +662,7 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
   const logText = visibleLogs.length
     ? visibleLogs.join('\n')
     : `[${new Date().toLocaleTimeString(locale === 'en' ? 'en-US' : 'vi-VN')}] ${job?.error || statusText}`
-  const logRef = useRef<HTMLPreElement>(null)
-  useEffect(() => {
-    const node = logRef.current
-    if (node) node.scrollTop = node.scrollHeight
-  }, [logText])
+  const { ref: logRef, onScroll: onLogScroll, onWheel: onLogWheel, onPointerDown: onLogPointerDown, onPointerUp: onLogPointerUp } = useStickToBottomScroll(logText)
 
   function openSettings() {
     if (tab === 'settings') return
@@ -961,7 +958,17 @@ export default function SrtImagePage({ onBack, initialMediaFolder = '', initialC
                   <button type="button" onClick={() => { setLogStart(job?.logs?.length || 0); toast.success(t('Đã xóa log.', 'Logs cleared.')) }}>Xóa</button>
                 </div>
               </header>
-              <pre ref={logRef}>{logText}</pre>
+              <div
+                ref={logRef}
+                className="siv-log-scroll"
+                onScroll={onLogScroll}
+                onWheel={onLogWheel}
+                onPointerDown={onLogPointerDown}
+                onPointerUp={onLogPointerUp}
+                onPointerCancel={onLogPointerUp}
+              >
+                <pre>{logText}</pre>
+              </div>
             </div>
             <footer className="siv-actions">
               <button className="primary" disabled={busy || !mediaFolder} onClick={() => start(false)}>

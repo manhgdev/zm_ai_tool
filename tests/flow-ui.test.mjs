@@ -33,7 +33,7 @@ test('retry locks duplicate confirmation until every request settles', async () 
   const body = source.slice(source.indexOf('  const confirmRetryJob ='), source.indexOf('  const deleteWebFlowOutputs ='));
   const code = ts.transpileModule(body + '\nreturn confirmRetryJob;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const jobs = [{ id: 'a', status: 'failed' }, { id: 'b', status: 'failed' }];
-  const target = { jobs, concurrency: '1', groups: [{ jobs, accountId: 'random' }], accountId: 'random', model: 'Nano Banana 2', duration: '' };
+  const target = { jobs, concurrency: '1', groups: [{ jobs, accountId: 'random' }], accountId: 'random', model: 'Nano Banana 2', duration: '', fresh: false, headless: true, removeLogo: false };
   const lock = { current: false };
   const busy = [];
   const pending = [];
@@ -43,18 +43,29 @@ test('retry locks duplicate confirmation until every request settles', async () 
     posts++;
     return new Promise((resolve, reject) => pending.push({ resolve, reject }));
   };
-  const confirm = new Function('retryTarget', 'retryBusyRef', 'setRetryBusy', 'setRetryTarget', 'accounts', 'isFlowAccountConnected', 'toast', 't', 'flowRequest', 'updateJob', 'normalizeFlowJobs', 'setJobs', 'setApiError', code)(
-    target, lock, (value) => busy.push(value), () => {}, [], isFlowAccountConnected,
-    { error() {}, success() {} }, (vi) => vi, request, () => {}, () => [], () => {}, () => {},
+  const available = (account) => isFlowAccountConnected(account);
+  const confirm = new Function(
+    'retryTarget', 'retryBusyRef', 'setRetryBusy', 'setRetryTarget', 'accounts',
+    'isFlowAccountConnected', 'isFlowAccountAvailable', 'probeAccountsBeforeJobs',
+    'toast', 't', 'flowRequest', 'updateJob', 'normalizeFlowJobs', 'setJobs', 'setApiError', 'setSettings', 'SETTINGS_KEY',
+    code,
+  )(
+    target, lock, (value) => busy.push(value), () => {}, [],
+    isFlowAccountConnected, available, async () => true,
+    { error() {}, success() {} }, (vi) => vi, request, () => {}, () => [], () => {}, () => {}, () => {}, 'settings',
   );
-  confirm();
-  confirm();
+  const first = confirm();
+  const second = confirm();
+  // Probe is awaited before retry POSTs; wait one tick for prepare to finish.
+  await new Promise(setImmediate);
   assert.equal(posts, 2);
   assert.equal(lock.current, true);
   pending[0].reject(new Error('test failure'));
   await new Promise(setImmediate);
   assert.equal(lock.current, true);
   pending[1].resolve({});
+  await Promise.allSettled([first, second]);
+  // finally{} that clears retryBusyRef runs after allSettled of the POSTs.
   await new Promise(setImmediate);
   assert.equal(lock.current, false);
   assert.deepEqual(busy, [true, false]);
@@ -63,6 +74,21 @@ test('retry locks duplicate confirmation until every request settles', async () 
     const button = source.slice(source.lastIndexOf('<button', pos), source.indexOf('</button>', pos));
     assert.match(button, /disabled=\{[^}]*retryBusy/);
   }
+});
+
+test('create account probe uses selectedAccountLabel not legacy settings.account', () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
+  const start = source.indexOf('const probeTargets = selectedAccountLabel === "random"');
+  assert.ok(start > 0, 'create path must probe from selectedAccountLabel');
+  const snippet = source.slice(start, start + 420);
+  assert.match(snippet, /isFlowAccountAvailable/);
+  assert.doesNotMatch(
+    source.slice(source.indexOf('if (effectiveSettings !== settings)'), source.indexOf('const cookiesReady = await probeAccountsBeforeJobs')),
+    /settings\.account === "random"/,
+  );
+  // Retry: specific accounts must be available/connected before prepare.
+  const retryProbe = source.slice(source.indexOf('const probeTargets = Array.from(new Map('), source.indexOf('if (!(await probeAccountsBeforeJobs(probeTargets))'));
+  assert.match(retryProbe, /row && isFlowAccountAvailable\(row\)/);
 });
 
 test('video resolution selection follows the matching download quality', () => {
@@ -124,9 +150,10 @@ test('retry dialog keeps previous Open Chrome setting from the job', () => {
 
 test('global retry account choice updates every group and new groups inherit it', () => {
   const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
-  const select = source.slice(source.indexOf('value={retryTarget.accountId}'));
-  const handler = select.match(/onChange=\{([^\n]+)\}\n/)[1];
-  let state = { accountId: 'offline', groups: [{ accountId: 'offline', kind: 'image' }, { accountId: 'other', kind: 'video' }] };
+  const select = source.slice(source.indexOf('label={t("Tài khoản", "Account")}'));
+  const handler = select.match(/onChange=\{([^\n]+)\}/)?.[1];
+  assert.ok(handler, 'retry account FlowSelect onChange handler');
+  let state = { accountId: 'offline', groups: [{ accountId: 'offline', kind: 'image' }, { accountId: 'other', kind: 'video' }], touched: [] };
   const change = new Function('setRetryTarget', 'return ' + handler)((update) => { state = update(state); });
   for (const accountId of ['random', 'online']) {
     change(accountId);
@@ -137,7 +164,7 @@ test('global retry account choice updates every group and new groups inherit it'
   const includeDone = source.slice(source.indexOf('checked={retryTarget.includeDone}'), source.indexOf('checked={!retryTarget.headless}'));
   assert.match(includeDone, /accountId: current\.accountId/);
   assert.doesNotMatch(includeDone, /accountId: first\.accountId/);
-  assert.match(select, /Apply account to all groups|onChange/);
+  assert.match(select, /onChange/);
 });
 
 {
@@ -308,6 +335,17 @@ test("download failures explain existing media without automatic generation retr
   assert.match(result.actionEn, /result is preserved on Flow/);
 });
 
+test("network/Chrome load errors explain wait-and-resume not manual hammer retry", () => {
+  const result = explainFlowError(
+    "FLOW_WORKER_FAILED: Page.goto: net::ERR_INTERNET_DISCONNECTED at https://flow.google.com/project/example",
+  );
+  assert.equal(result.code, "FLOW_NETWORK_DISCONNECTED");
+  assert.match(result.actionVi, /chờ mạng|tự chạy tiếp|Huỷ/i);
+  assert.match(result.actionEn, /waits for the network|resumes automatically|Cancel/i);
+  assert.doesNotMatch(result.actionVi, /không tiếp tục retry liên tục/);
+  assert.doesNotMatch(result.actionEn, /do not keep retrying continuously/);
+});
+
 test("CDN TLS disconnect explains as download failure not generic retry", () => {
   const result = explainFlowError(
     "Client network socket disconnected before secure TLS connection was established (ECONNRESET) Call log: - → GET https://flow-content.google/image/abc",
@@ -326,6 +364,16 @@ test("generation timeout explains recover-first without unusual activity", () =>
   assert.match(result.actionEn, /recovers the existing submission first/i);
   assert.doesNotMatch(result.actionVi, /bất thường/i);
   assert.doesNotMatch(result.actionEn, /unusual activity/i);
+});
+
+test("logo-removal failure badge is short and only gated on FLOW_LOGO_REMOVE_FAILED", () => {
+  const source = readFileSync(new URL('../frontend/src/pages/FlowPage.tsx', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('const jobStatusText ='), source.indexOf('const jobErrorText ='));
+  assert.match(body, /FLOW_LOGO_REMOVE_FAILED/);
+  assert.match(body, /Lỗi xoá logo/);
+  assert.match(body, /Logo failed/);
+  // Success path must stay generic "Hoàn thành" / "Completed".
+  assert.doesNotMatch(body, /Hoàn thành.*logo|logo.*Hoàn thành/i);
 });
 }
 

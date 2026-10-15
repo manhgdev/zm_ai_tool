@@ -25,7 +25,7 @@ from .probe import (
     _run_ver,
     _runtime_modules_batch_ok,
     _runtime_mod_ok,
-    _runtime_venv_fast,
+    _runtime_modules_fs_missing,
     _required_ai_runtime_modules,
     _torch_cuda_ready_cached,
     _which,
@@ -279,8 +279,11 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
         )
         torch_cuda_ok = True
         if getattr(sys, "frozen", False):
-            runtime_ok, runtime_detail = _runtime_venv_fast()
-            runtime_missing = [] if runtime_ok else list(_required_ai_runtime_modules())
+            # Per-feature filesystem check — Whisper-only must not look like OCR failed.
+            runtime_missing = _runtime_modules_fs_missing()
+            runtime_detail = (
+                "đã cài" if not runtime_missing else f"thiếu: {', '.join(runtime_missing)}"
+            )
         else:
             runtime_missing = [
                 mid for mid in _required_ai_runtime_modules() if not _mod_ok_fast(mid)[0]
@@ -326,14 +329,14 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
     _whisper_missing = [m for m in _whisper_mods if m in runtime_missing]
     items.append(
         _item(
-            id="ai_runtime",   # cùng install id → bấm Cài chạy cả 3 nhóm
+            id="ai_runtime",
             name="Whisper (ASR)",
             ok=not _whisper_missing,
             required=False,
             detail="đã cài" if not _whisper_missing else f"thiếu: {', '.join(_whisper_missing)}",
             hint="Bộ nhận dạng giọng nói Faster-Whisper · soundfile · soxr.",
             install="whisper",
-            installLabel="Cài gói AI",
+            installLabel="Cài Whisper",
         )
     )
 
@@ -393,7 +396,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
             detail="đã cài" if not _ocr_missing else f"thiếu: {', '.join(_ocr_missing)}",
             hint="RapidOCR · Pillow · OpenCV — đọc phụ đề từ video.",
             install="ocr",
-            installLabel="Cài gói AI",
+            installLabel="Cài OCR",
         )
     )
 
@@ -417,7 +420,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
                 "Có NVIDIA: dùng GPU khi PyTorch CUDA đã cài."
             ),
             install="vieneu",
-            installLabel="Cài gói AI",
+            installLabel="Cài VieNeu",
         )
     )
 

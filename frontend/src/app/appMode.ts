@@ -36,19 +36,26 @@ export function appModePath(mode: AppMode): string {
   return APP_MODE_PATHS[mode]
 }
 
+/** Modes that should not stick across app restarts (editor / gate screens). */
+const EPHEMERAL_MODES: ReadonlySet<AppMode> = new Set(['live-preview', 'license'])
+
 /** Validate raw storage — invalid/corrupt/missing → Clone Video. */
 export function parseAppMode(raw: string | null | undefined): AppMode {
   if (typeof raw === 'string' && (APP_MODES as readonly string[]).includes(raw)) {
-    return raw as AppMode
+    const mode = raw as AppMode
+    return EPHEMERAL_MODES.has(mode) ? 'clone' : mode
   }
   return 'clone'
 }
 
 export function loadAppMode(): AppMode {
-  // URL được ưu tiên để link trực tiếp (đặc biệt /download-video) luôn đúng.
+  // Direct deep links win. Desktop starts at `/` so storage restores the last tab.
   if (typeof window !== 'undefined') {
-    const fromPath = appModeFromPath(window.location.pathname)
-    if (fromPath) return fromPath
+    const path = window.location.pathname.replace(/\/+$/, '') || '/'
+    if (path !== '/') {
+      const fromPath = appModeFromPath(path)
+      if (fromPath) return EPHEMERAL_MODES.has(fromPath) ? 'clone' : fromPath
+    }
   }
   try {
     return parseAppMode(localStorage.getItem(APP_MODE_LS))
@@ -58,6 +65,7 @@ export function loadAppMode(): AppMode {
 }
 
 export function persistAppMode(mode: AppMode): void {
+  if (EPHEMERAL_MODES.has(mode)) return
   try {
     localStorage.setItem(APP_MODE_LS, mode)
   } catch {
@@ -65,7 +73,7 @@ export function persistAppMode(mode: AppMode): void {
   }
 }
 
-/** ponytail: self-check — invalid/missing → clone; all tabs restore */
+/** ponytail: self-check — invalid/missing → clone; sticky tabs restore */
 export function __checkParseAppMode(): void {
   if (parseAppMode(null) !== 'clone') throw new Error('null → clone')
   if (parseAppMode(undefined) !== 'clone') throw new Error('undefined → clone')
@@ -73,7 +81,10 @@ export function __checkParseAppMode(): void {
   if (parseAppMode('bogus') !== 'clone') throw new Error('bogus → clone')
   if (parseAppMode('TTS') !== 'clone') throw new Error('wrong case → clone')
   if (parseAppMode('{"mode":"tts"}') !== 'clone') throw new Error('json junk → clone')
+  if (parseAppMode('live-preview') !== 'clone') throw new Error('live-preview → clone')
+  if (parseAppMode('license') !== 'clone') throw new Error('license → clone')
   for (const m of APP_MODES) {
+    if (EPHEMERAL_MODES.has(m)) continue
     if (parseAppMode(m) !== m) throw new Error(`keep ${m}`)
   }
 }

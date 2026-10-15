@@ -144,12 +144,12 @@ export function explainFlowError(message: string): FlowExplain {
     };
   }
 
-  if (/ERR_INTERNET_DISCONNECTED|ERR_CONNECTION_(?:RESET|TIMED_OUT)|ERR_NETWORK_CHANGED/i.test(raw)
+  if (/ERR_INTERNET_DISCONNECTED|ERR_CONNECTION_(?:RESET|TIMED_OUT)|ERR_NETWORK_CHANGED|FLOW_NETWORK_UNAVAILABLE|Page\.goto|Navigation timeout|net::ERR_/i.test(raw)
     && !/flow-content\.google|fifeUrl|FLOW_DOWNLOAD/i.test(raw)) {
     return make(
       "FLOW_NETWORK_DISCONNECTED",
-      "Không thể kết nối tới Flow. Kiểm tra mạng/VPN rồi chạy lại; không tiếp tục retry liên tục.",
-      "Flow could not be reached. Check the network/VPN and retry; do not keep retrying continuously.",
+      "Mạng/Chrome chưa vào được Flow. App đang chờ mạng rồi tự chạy tiếp (có thể Huỷ). Kiểm tra Wi‑Fi/VPN nếu chờ lâu.",
+      "Network/Chrome could not reach Flow. The app waits for the network and resumes automatically (you can Cancel). Check Wi‑Fi/VPN if it waits too long.",
     );
   }
 

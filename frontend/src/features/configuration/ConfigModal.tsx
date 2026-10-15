@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppConfig, CloudProviderId, SystemChecks } from '@/features/project/project.types'
-import { api, type InstallStatus } from '@/features/project/project.api'
+import { api, InstallCancelledError, type InstallStatus } from '@/features/project/project.api'
 import ProgressPopup from '@/shared/components/ProgressPopup'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import LicensePage from '@/features/license/LicensePage'
@@ -10,6 +10,7 @@ import { localize, useLocale } from '@/app/i18n'
 import { copyText } from '@/shared/lib/clipboard'
 import { toast } from 'sonner'
 import { IconEye, IconEyeOff } from '@/shared/components/Icons'
+import { LocaleSwitch } from '@/shared/components/LocaleSwitch'
 import './ConfigModal.css'
 import { setupLabel, setupDetail } from './setupLabels'
 import { runtimeStatusText, runtimeErrorText } from './runtimeStatus'
@@ -17,7 +18,8 @@ import { runtimeStatusText, runtimeErrorText } from './runtimeStatus'
 import {
   type InstallKind, type Section, type CloudTab, type UpdateDialog, type CloudDraft,
   PROVIDERS, PROVIDER_PRESET_MODELS,
-  nextAutoInstall, emptyCloud, providerKeyPlaceholder,
+  nextAutoInstall, emptyCloud, providerKeyPlaceholder, installLabel, normalizeInstallKind,
+  isExclusiveInstallKind, packageInstallBusy,
 } from './configModal.helpers'
 
 interface ElKeySlot {
@@ -58,10 +60,8 @@ export default function ConfigModal({
   const { locale, setLocale } = useLocale()
   const localeRef = useRef(locale)
   localeRef.current = locale
-  const installLabel = (kind: string) => ['ai_runtime_vieneu', 'vieneu_runtime', 'vieneu'].includes(kind) ? 'VieNeu Local' : kind === 'whisper' ? 'Whisper' : kind === 'ocr' ? 'OCR' : kind === 'diarization' ? 'Sherpa-ONNX' : kind === 'demucs' ? 'Demucs' : kind.startsWith('ai_runtime')
-    ? localize(locale, 'gói AI', 'AI packages')
-    : kind === 'ocr_cuda' ? 'OCR GPU' : kind === 'demucs_cuda' ? 'Demucs' : 'NVM + Node.js LTS'
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
+  const packageName = (kind: string) => installLabel(kind, locale)
   const [section, setSection] = useState<Section>(initialSection)
   const [draft, setDraft] = useState<CloudDraft>(emptyCloud)
   /** Mỗi ô 1 key; savedIndex tham chiếu key cũ trên server, value là key mới người dùng nhập */
@@ -91,6 +91,7 @@ export default function ConfigModal({
   const [checksLoading, setChecksLoading] = useState(false)
   const [checksErr, setChecksErr] = useState('')
   const [installing, setInstalling] = useState<string | null>(null)
+  const [installQueue, setInstallQueue] = useState<InstallKind[]>([])
   const [installProgressMinimized, setInstallProgressMinimized] = useState(false)
   const [installPopupError, setInstallPopupError] = useState('')
   const [driverStatus, setDriverStatus] = useState<InstallStatus>({ running: false })
@@ -113,6 +114,13 @@ export default function ConfigModal({
   const autoAttempted = useRef<Set<string>>(new Set())
   const restartRequested = useRef(false)
   const observedInstallError = useRef('')
+  const installActiveRef = useRef<InstallKind | null>(null)
+  const installQueueRef = useRef<InstallKind[]>([])
+  const installCancelRef = useRef(false)
+  const pendingRestartRef = useRef(false)
+  pendingRestartRef.current = pendingRestart
+  const installBusy = Boolean(installing || installQueue.length)
+  const exclusiveInstall = isExclusiveInstallKind(installing)
   const [outputRoot, setOutputRoot] = useState('')
   const savedOutputRoot = useRef<string | null>(null)
   const [outputRootDefault, setOutputRootDefault] = useState('')
@@ -545,16 +553,23 @@ export default function ConfigModal({
         if (cancelled) return
         errCount = 0  // reset on success
         setDriverStatus(st)
-        if (st.log) setInstallLog(st.log)
+        if (st.log || st.error || st.diagnostics) {
+          setInstallLog((previous) => {
+            let next = st.log || previous
+            for (const chunk of [st.diagnostics, st.error]) {
+              const text = String(chunk || '').trim()
+              if (text && !next.includes(text)) next = next ? `${next}\n${text}` : text
+            }
+            return next
+          })
+        }
         setInstallStatusReady(true)
         if (st.running && st.kind) {
-          setInstalling(st.kind)
+          setInstalling(normalizeInstallKind(st.kind))
           setInstallProgress(Number(st.progress) || 1)
           setInstallMessage(runtimeStatusText(st, locale))
-          if (st.log) setInstallLog(st.log)
-          if (st.diagnostics) setInstallLog((previous) => previous.includes(st.diagnostics!) ? previous : `${previous}${previous ? '\n' : ''}${st.diagnostics}`)
         } else {
-          setInstalling(null)
+          if (!installActiveRef.current && !installQueueRef.current.length) setInstalling(null)
           if ((st.kind === 'nvidia_driver' || st.kind === 'cpu_runtime') && !st.error) {
             setInstallPopupError('')
             setInstallMessage(runtimeStatusText(st, locale))
@@ -569,9 +584,9 @@ export default function ConfigModal({
           }
           if (st.error && st.error !== observedInstallError.current) {
             observedInstallError.current = st.error
-            setInstallPopupError(runtimeErrorText(st, locale))
-            setChecksErr(runtimeErrorText(st, locale))
-            if (st.diagnostics) setInstallLog((previous) => previous.includes(st.diagnostics!) ? previous : `${previous}${previous ? '\n' : ''}${st.diagnostics}`)
+            const message = runtimeErrorText(st, locale)
+            setInstallPopupError(message)
+            setChecksErr(message)
           }
         }
       } catch {
@@ -619,12 +634,46 @@ export default function ConfigModal({
 
   const cur = draft[tab]
   const canClose = !forceSetup || !!checks?.ok
-  const showPackageLog = forceSetup || !checks?.ok
-  const visibleLog = showPackageLog
-    ? [installLog, installPopupError || checksErr].filter(Boolean).join('\n')
-    : diagnosticLog
+  // Package failures live in install.log — always prefer that on the Log tab.
+  const packageLogText = [installLog, installPopupError || checksErr].filter(Boolean).join('\n')
+  const showPackageLog = Boolean(packageLogText) || forceSetup || !checks?.ok
+  const visibleLog = showPackageLog ? packageLogText : diagnosticLog
 
-  const installAction = useCallback(async (kind: InstallKind) => {
+  const mergeInstallLog = useCallback((...chunks: Array<string | undefined | null>) => {
+    setInstallLog((previous) => {
+      let next = previous
+      for (const chunk of chunks) {
+        const text = String(chunk || '').trim()
+        if (!text) continue
+        if (!next) next = text
+        else if (!next.includes(text)) next = `${next}\n${text}`
+      }
+      return next
+    })
+  }, [])
+
+  const restartApp = useCallback(async () => {
+    if (restartRequested.current) return
+    restartRequested.current = true
+    setPendingRestart(false)
+    pendingRestartRef.current = false
+    setRestarting(true)
+    setChecksErr('')
+    try {
+      await api.restartApp()
+    } catch (e) {
+      restartRequested.current = false
+      setPendingRestart(true)
+      pendingRestartRef.current = true
+      setChecksErr(e instanceof Error ? e.message : localize(localeRef.current, 'Không khởi động lại được app', 'Could not restart the app'))
+      autoSetupLock.current = false
+    } finally {
+      setRestarting(false)
+    }
+  }, [])
+
+  const runInstallJob = useCallback(async (kind: InstallKind) => {
+    installActiveRef.current = kind
     setInstalling(kind)
     setInstallProgressMinimized(false)
     observedInstallError.current = ''
@@ -632,74 +681,122 @@ export default function ConfigModal({
     setInstallLog('')
     setInstallProgress(1)
     setMsg('')
-    setInstallMessage(localize(locale, 'Đang chuẩn bị cài đặt…', 'Preparing installation…'))
+    setInstallMessage(localize(localeRef.current, 'Đang chuẩn bị cài đặt…', 'Preparing installation…'))
     setChecksErr('')
     let lastInstallError = ''
     const onStatus = (status: InstallStatus) => {
       setDriverStatus(status)
-      if (status.log) setInstallLog(status.log)
-      if (status.error && !status.diagnostics) setInstallLog((previous) => previous.includes(status.error!) ? previous : previous + '\n' + status.error)
+      if (status.log || status.error || status.diagnostics) {
+        mergeInstallLog(status.log, status.diagnostics, status.error)
+      }
       if (typeof status.progress === 'number') setInstallProgress(status.progress)
       setInstallMessage(runtimeStatusText(status, localeRef.current))
       if (status.error) lastInstallError = runtimeErrorText(status, localeRef.current)
-      if (status.diagnostics) {
-        setInstallLog((previous) => previous.includes(status.diagnostics!)
-          ? previous
-          : `${previous}${previous ? '\n' : ''}${status.diagnostics}`)
-      }
     }
     try {
-      const result = kind === 'moss_tts_nano_runtime'
-        ? await api.installResource('moss_tts_nano', onStatus)
+      const result =
+        kind === 'moss_tts_nano_runtime' ? await api.installResource('moss_tts_nano', onStatus)
         : kind === 'whisper' || kind === 'ocr' || kind === 'diarization' || kind === 'demucs'
-        ? await api.installResource(kind, onStatus)
-        : kind === 'ai_runtime_vieneu'
-        ? await api.installResource('vieneu', onStatus)
-        : kind === 'ai_runtime'
-        ? await api.installAiRuntime(onStatus)
-        : kind === 'ocr_cuda'
-          ? await api.installOcrCuda(onStatus)
-          : kind === 'demucs_cuda'
-            ? await api.installDemucsCuda(onStatus)
-            : await api.installNvm(onStatus)
+          ? await api.installResource(kind, onStatus)
+        : kind === 'vieneu' || kind === 'ai_runtime_vieneu'
+          ? await api.installResource('vieneu', onStatus)
+        : kind === 'ai_runtime' || kind === 'ai_runtime_ocr'
+          ? await api.installAiRuntime(onStatus)
+        : kind === 'ocr_cuda' ? await api.installOcrCuda(onStatus)
+        : kind === 'demucs_cuda' ? await api.installDemucsCuda(onStatus)
+        : kind === 'nvm' ? await api.installNvm(onStatus)
+        : (() => { throw new Error(`Unknown install kind: ${kind}`) })()
+      if (installCancelRef.current) throw new InstallCancelledError()
       const doneMsg = localize(localeRef.current, 'Cài đặt hoàn tất.', 'Installation complete.')
       setInstallProgress(100)
       setInstallMessage(doneMsg)
-      setInstallLog((prev) => prev ? `${prev}\n\n✓ ${doneMsg}` : `✓ ${doneMsg}`)
+      setInstallLog((prev) => {
+        const line = `✓ ${installLabel(kind, localeRef.current)} · ${doneMsg}`
+        return prev ? `${prev}\n\n${line}` : line
+      })
       setMsg(doneMsg)
-      if (result.needsRestart) setPendingRestart(true)
+      if (result.needsRestart) {
+        setPendingRestart(true)
+        pendingRestartRef.current = true
+      }
       loadChecks(true, false)
       autoSetupLock.current = false
-      // Giữ popup hiện tối thiểu 1.5s để user thấy kết quả
-      await new Promise((r) => window.setTimeout(r, 1500))
+      await new Promise((r) => window.setTimeout(r, 800))
+      return true
     } catch (e) {
-      if (e instanceof Error && !lastInstallError) setInstallLog((previous) => previous.includes(e.message) ? previous : previous + '\n' + e.message)
-      const message = lastInstallError || runtimeErrorText({ running: false }, localeRef.current)
+      if (e instanceof InstallCancelledError || installCancelRef.current) {
+        const cancelledMsg = localize(localeRef.current, 'Đã hủy cài đặt.', 'Installation cancelled.')
+        setInstallMessage(cancelledMsg)
+        setMsg(cancelledMsg)
+        setInstallPopupError('')
+        setChecksErr('')
+        observedInstallError.current = ''
+        autoSetupLock.current = false
+        return false
+      }
+      const raw = e instanceof Error ? e.message : String(e)
+      mergeInstallLog(raw)
+      const message = lastInstallError || runtimeErrorText({ running: false, error: raw }, localeRef.current)
       setChecksErr(message)
       setInstallPopupError(message)
       observedInstallError.current = message
-      // ponytail: giữ lock=true khi fail — tránh auto-retry vô tận.
-      // User phải bấm nút thủ công để thử lại.
+      // ponytail: dừng hàng đợi khi fail — tránh auto-retry vô tận.
+      installQueueRef.current = []
+      setInstallQueue([])
+      return false
     } finally {
+      installActiveRef.current = null
       setInstalling(null)
     }
-  }, [loadChecks, locale])
+  }, [loadChecks, mergeInstallLog])
 
+  const drainInstallQueue = useCallback(async () => {
+    while (!installCancelRef.current) {
+      const next = installQueueRef.current[0]
+      if (!next) break
+      installQueueRef.current = installQueueRef.current.slice(1)
+      setInstallQueue(installQueueRef.current)
+      const ok = await runInstallJob(next)
+      if (!ok) break
+    }
+    if (installCancelRef.current) {
+      installQueueRef.current = []
+      setInstallQueue([])
+      installCancelRef.current = false
+    }
+  }, [runInstallJob])
 
-  const restartApp = useCallback(async () => {
-    if (restartRequested.current) return
-    restartRequested.current = true
-    setPendingRestart(false)
-    setRestarting(true)
-    setChecksErr('')
+  const installAction = useCallback(async (kind: InstallKind) => {
+    if (installCancelRef.current) installCancelRef.current = false
+    if (packageInstallBusy(kind, installActiveRef.current, installQueueRef.current)) return
+    if (isExclusiveInstallKind(installActiveRef.current) || (isExclusiveInstallKind(kind) && installActiveRef.current)) {
+      return
+    }
+    if (installActiveRef.current) {
+      installQueueRef.current = [...installQueueRef.current, kind]
+      setInstallQueue(installQueueRef.current)
+      setInstallProgressMinimized(false)
+      setInstallMessage(localize(
+        localeRef.current,
+        `Đã xếp hàng ${installLabel(kind, localeRef.current)} (còn ${installQueueRef.current.length})`,
+        `Queued ${installLabel(kind, localeRef.current)} (${installQueueRef.current.length} waiting)`,
+      ))
+      return
+    }
+    const ok = await runInstallJob(kind)
+    if (!ok) return
+    await drainInstallQueue()
+  }, [drainInstallQueue, runInstallJob])
+
+  const cancelInstall = useCallback(async () => {
+    installCancelRef.current = true
+    installQueueRef.current = []
+    setInstallQueue([])
+    setInstallMessage(localize(localeRef.current, 'Đang hủy cài đặt…', 'Cancelling installation…'))
     try {
-      await api.restartApp()
-    } catch (e) {
-      restartRequested.current = false
-      setChecksErr(e instanceof Error ? e.message : 'Không khởi động lại được app')
-      autoSetupLock.current = false
-    } finally {
-      setRestarting(false)
+      await api.cancelInstall()
+    } catch {
+      /* pollInstall sẽ nhận INSTALL_CANCELLED khi worker dừng */
     }
   }, [])
 
@@ -718,7 +815,7 @@ export default function ConfigModal({
 
   useEffect(() => {
     if (!open || section !== 'setup') return
-    if (checksLoading || installing || restarting || !checks || !installStatusReady || driverWaiting || driverStatus.error || driverStatus.kind === 'nvidia_driver' || driverStatus.kind === 'cpu_runtime') return
+    if (checksLoading || installBusy || restarting || !checks || !installStatusReady || driverWaiting || driverStatus.error || driverStatus.kind === 'nvidia_driver' || driverStatus.kind === 'cpu_runtime') return
     if (autoSetupLock.current) return
     const shouldAuto = forceSetup || !checks.ok
     if (!shouldAuto) return
@@ -747,7 +844,7 @@ export default function ConfigModal({
     section,
     checks,
     checksLoading,
-    installing,
+    installBusy,
     restarting,
     pendingRestart,
     driverStatus,
@@ -758,9 +855,10 @@ export default function ConfigModal({
   ])
 
   useEffect(() => {
-    if (!forceSetup || !pendingRestart || installing || restarting) return
+    // Auto-relaunch after the last queued package finishes when runtime needs a restart.
+    if (!pendingRestart || installing || installQueue.length || restarting) return
     void restartApp()
-  }, [forceSetup, pendingRestart, installing, restarting, restartApp])
+  }, [pendingRestart, installing, installQueue.length, restarting, restartApp])
 
   function tryClose() {
     if (!canClose) return
@@ -975,7 +1073,7 @@ export default function ConfigModal({
             <h2>{t('Cấu hình', 'Settings')}</h2>
             <p>
               {installing
-                ? t(`Đang cài ${installLabel(installing)}…`, `Installing ${installLabel(installing)}…`)
+                ? t(`Đang cài ${packageName(installing)}…`, `Installing ${packageName(installing)}…`)
                 : forceSetup && !checks?.ok
                   ? t('Cài đủ thành phần bắt buộc để bắt đầu', 'Install the required components to get started')
                   : t('Thiết lập hệ thống · Cloud AI · ElevenLabs', 'System settings · Cloud AI · ElevenLabs')}
@@ -983,13 +1081,11 @@ export default function ConfigModal({
             {section === 'setup' && <p>{t('Chỉ FFmpeg và FFprobe là package bắt buộc. Các gói AI cài khi cần dùng tính năng tương ứng.', 'Only FFmpeg and FFprobe are required packages. Install AI packages when you need the corresponding feature.')}</p>}
           </div>
           <div className="cfg-head-actions">
-            <label>
-              <select className="locale-select" aria-label={t('Ngôn ngữ giao diện', 'Interface language')}
-                value={locale} onChange={(event) => setLocale(event.target.value === 'en' ? 'en' : 'vi')}>
-                <option value="vi">VI</option>
-                <option value="en">EN</option>
-              </select>
-            </label>
+            <LocaleSwitch
+              locale={locale}
+              onChange={setLocale}
+              ariaLabel={t('Ngôn ngữ giao diện', 'Interface language')}
+            />
             <button type="button" className="cfg-update" disabled={updateChecking} onClick={() => void checkForUpdate()}>
               {updateChecking ? t('Đang kiểm tra…', 'Checking…') : t('Kiểm tra cập nhật', 'Check for updates')}
             </button>
@@ -1083,7 +1179,7 @@ export default function ConfigModal({
               <div className="cfg-setup-info">
                 <strong>
                   {installing
-                    ? t(`Đang cài ${installLabel(installing)}…`, `Installing ${installLabel(installing)}…`)
+                    ? t(`Đang cài ${packageName(installing)}…`, `Installing ${packageName(installing)}…`)
                     : checksLoading ? t('Đang kiểm tra…', 'Checking…') : checks?.ok ? t('Đã sẵn sàng', 'Ready') : t('Cần cài thành phần bắt buộc', 'Required components need installation')}
                 </strong>
                 {checks ? (
@@ -1120,14 +1216,18 @@ export default function ConfigModal({
                         className="cfg-check-install cfg-check-install-sm"
                         title={actionLabel}
                         aria-label={actionLabel}
-                        disabled={!!installing}
+                        disabled={exclusiveInstall || packageInstallBusy(a.id, installing, installQueue)}
                         onClick={() => {
                           autoSetupLock.current = false
                           autoAttempted.current.clear()
                           void installAction(a.id as 'ocr_cuda' | 'demucs_cuda')
                         }}
                       >
-                        {installing === a.id ? t('Đang cài…', 'Installing…') : t('Cài đặt', 'Install')}
+                        {installing === a.id
+                          ? t('Đang cài…', 'Installing…')
+                          : installQueue.includes(a.id as InstallKind)
+                            ? t('Đã xếp hàng', 'Queued')
+                            : t('Cài đặt', 'Install')}
                       </button>
                     )
                   })
@@ -1135,7 +1235,7 @@ export default function ConfigModal({
                 <button
                   type="button"
                   className="cfg-secondary cfg-setup-refresh"
-                  disabled={checksLoading || !!installing}
+                  disabled={checksLoading || exclusiveInstall}
                   onClick={() => { autoAttempted.current.clear(); loadChecks(true, false) }}
                 >
                   {checksLoading ? '…' : t('Kiểm tra lại', 'Check again')}
@@ -1146,7 +1246,7 @@ export default function ConfigModal({
               <div className="cfg-msg cfg-msg-err">
                 <p>{checksErr}</p>
                 {installPopupError ? (
-                  <button type="button" className="cfg-secondary" disabled={!!installing} onClick={() => void rollbackAiRuntime()}>
+                  <button type="button" className="cfg-secondary" disabled={installBusy} onClick={() => void rollbackAiRuntime()}>
                     {t('Khôi phục runtime trước', 'Restore previous runtime')}
                   </button>
                 ) : null}
@@ -1154,10 +1254,14 @@ export default function ConfigModal({
             ) : null}
             {pendingRestart ? (
               <p className="cfg-msg cfg-msg-restart">
-                {t('Đã cài xong. Khởi động lại ứng dụng để áp dụng.', 'Installation complete. Restart the application to apply changes.')}
+                {restarting
+                  ? t('Đang khởi động lại ứng dụng…', 'Restarting the application…')
+                  : installBusy
+                    ? t('Sẽ tự khởi động lại sau khi cài xong hàng đợi.', 'Will restart automatically after the install queue finishes.')
+                    : t('Đã cài xong. Đang khởi động lại ứng dụng…', 'Installation complete. Restarting the application…')}
               </p>
             ) : null}
-            {msg && !installing && !installPopupError && section === 'setup' ? <p className="cfg-msg">{msg}</p> : null}
+            {msg && !installBusy && !installPopupError && section === 'setup' ? <p className="cfg-msg">{msg}</p> : null}
             <ul className="cfg-check-list">
               {(checks?.items || []).filter((it) => it.id !== 'device' && it.id !== 'httpx').map((it) => (
                 <li
@@ -1185,18 +1289,24 @@ export default function ConfigModal({
                         <button
                           type="button"
                           className="cfg-check-install"
-                          disabled={!!installing}
+                          disabled={exclusiveInstall || packageInstallBusy(it.install, installing, installQueue)}
                           onClick={() => {
                             autoSetupLock.current = false
                             autoAttempted.current.clear()
-                            const kind = it.id === 'ai_runtime_vieneu' ? 'ai_runtime_vieneu' : it.install.startsWith('ai_runtime')
-                              ? 'ai_runtime'
-                              : it.install as 'moss_tts_nano_runtime' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
+                            const kind = (
+                              it.id === 'ai_runtime_vieneu' ? 'ai_runtime_vieneu'
+                              : it.install.startsWith('ai_runtime') ? 'ai_runtime'
+                              : it.install
+                            ) as InstallKind
                             void installAction(kind)
                           }}
                         >
-                          {installing === it.install || (it.install.startsWith('ai_runtime') && installing === 'ai_runtime')
-                            ? t('Đang cài…', 'Installing…')
+                          {packageInstallBusy(it.install, installing, installQueue)
+                            ? (installing === it.install
+                              || (it.install.startsWith('ai_runtime') && installing === 'ai_runtime')
+                              || (it.install === 'whisper' && installing === 'whisper')
+                                ? t('Đang cài…', 'Installing…')
+                                : t('Đã xếp hàng', 'Queued'))
                             : t('Cài đặt', 'Install')}
 
                         </button>
@@ -1638,7 +1748,7 @@ export default function ConfigModal({
             </div>
             <p className="cfg-hint">
               {showPackageLog
-                ? t('Trong lần cài đầu, chỉ hiển thị log tải và cài package AI.', 'During first setup, only AI package download and installation logs are shown.')
+                ? t('Log tải/cài package AI và traceback khi cài thất bại (install.log).', 'AI package download/install log and failure traceback (install.log).')
                 : t('Chỉ giữ lỗi có ích từ toàn bộ source; log khởi động và warm model được bỏ qua.', 'Only actionable errors from the whole source are kept; startup and model-warm noise is omitted.')}
             </p>
           </div>
@@ -1656,20 +1766,20 @@ export default function ConfigModal({
               ) : (
                 <span className="cfg-foot-note">Ứng dụng đang tự chuẩn bị các thành phần cần thiết</span>
               )}
-              {pendingRestart ? (
+              {pendingRestart && !restarting ? (
                 <button
                   type="button"
                   className="cfg-secondary cfg-restart-btn"
-                  disabled={restarting || !!installing}
+                  disabled={installBusy}
                   onClick={() => void restartApp()}
                 >
-                  {restarting ? 'Đang khởi động lại…' : 'Khởi động lại'}
+                  {t('Khởi động lại ngay', 'Restart now')}
                 </button>
               ) : null}
               <button
                 type="button"
                 className="cfg-primary"
-                disabled={checksLoading || !!installing}
+                disabled={checksLoading || exclusiveInstall || restarting}
                 onClick={() => {
                   if (checks?.ok) onSetupReady?.()
                   else loadChecks(true, false)
@@ -1703,7 +1813,7 @@ export default function ConfigModal({
         <ProgressPopup
           wide={gpuChoice || driverStatus.kind === 'cpu_runtime' || driverStatus.kind === 'nvidia_driver'}
           collapseLog={gpuChoice || driverStatus.kind === 'cpu_runtime' || driverStatus.kind === 'nvidia_driver'}
-          active={Boolean(installing || installPopupError || driverWaiting)}
+          active={Boolean(installBusy || installPopupError || driverWaiting)}
           minimized={installProgressMinimized}
           running={Boolean(installing)}
           title={
@@ -1719,41 +1829,31 @@ export default function ConfigModal({
               ? t('Cài đặt thất bại', 'Installation failed')
               : installing === 'rollback'
                 ? t('Khôi phục runtime trước', 'Restoring previous runtime')
-              : installing === 'ai_runtime'
-                ? t('Đang cài gói AI', 'Installing AI packages')
-              : installing === 'whisper'
-                ? t('Đang cài Whisper', 'Installing Whisper')
-              : installing === 'ocr'
-                ? t('Đang cài OCR', 'Installing OCR')
-              : installing === 'diarization'
-                ? t('Đang cài Sherpa-ONNX', 'Installing Sherpa-ONNX')
-              : installing === 'vieneu'
-                ? t('Đang cài VieNeu Local', 'Installing VieNeu Local')
-              : installing === 'demucs'
-                ? t('Đang cài Demucs', 'Installing Demucs')
-                : installing === 'cpu_runtime'
-                  ? t('Đang cài runtime CPU', 'Installing the CPU runtime')
-                : installing === 'nvidia_driver'
-                  ? t('Đang cập nhật driver đồ họa', 'Updating the graphics driver')
-                : installing === 'ocr_cuda'
-                  ? t('Đang cài GPU OCR', 'Installing OCR GPU')
-                  : installing === 'demucs_cuda'
-                    ? t('Đang cài Demucs', 'Installing Demucs')
-                    : t('Đang cài NVM + Node.js LTS', 'Installing NVM + Node.js LTS')
+              : installing === 'nvidia_driver'
+                ? t('Đang cập nhật driver đồ họa', 'Updating the graphics driver')
+              : installing
+                ? (installQueue.length
+                  ? t(
+                    `Đang cài ${packageName(installing)} · còn ${installQueue.length}`,
+                    `Installing ${packageName(installing)} · ${installQueue.length} queued`,
+                  )
+                  : t(`Đang cài ${packageName(installing)}`, `Installing ${packageName(installing)}`))
+                : t('Cài đặt', 'Install')
           }
           message={
             driverWaiting
               ? runtimeStatusText(driverStatus, locale)
               : installing
               ? installMessage || t(
-                `Đang cài ${installLabel(installing)}. Vui lòng không tắt ứng dụng.`,
-                `Installing ${installLabel(installing)}. Please keep the app open.`,
+                `Đang cài ${packageName(installing)}. Vui lòng không tắt ứng dụng.`,
+                `Installing ${packageName(installing)}. Please keep the app open.`,
               )
               : installPopupError || undefined
           }
           progress={installProgress}
           error={installPopupError || null}
           log={installLog || undefined}
+          onCancel={installing && !exclusiveInstall && !driverWaiting ? () => void cancelInstall() : undefined}
           details={<>
             {gpuChoice && !installing && driverStatus.kind !== 'cpu_runtime' && <p className="mb-3 text-sm text-muted-foreground">
               {driverStatus.errorCode === 'DRIVER_TOO_OLD'

@@ -1124,11 +1124,24 @@ body.siv-resizing * { cursor: col-resize !important; }
   color: var(--ink);
   cursor: pointer;
 }
+.siv-log-scroll {
+  flex: 1;
+  min-height: 0;
+  height: 140px;
+  margin: 10px 0 0;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #64748b transparent;
+}
+.siv-log-scroll::-webkit-scrollbar { width: 10px; }
+.siv-log-scroll::-webkit-scrollbar-thumb { background: #64748b; border-radius: 6px; }
+.siv-log > .siv-log-scroll > pre,
 .siv-log > pre {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  margin: 10px 0 0;
+  margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
   font:

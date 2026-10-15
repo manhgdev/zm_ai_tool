@@ -48,9 +48,11 @@ export type InstallStatus = {
   freeDiskBytes?: number | null
   downloadItems?: Array<{ package: string; received: number; total: number | null; cache: boolean; attempt: number; activity: string }>
   requiredDiskBytes?: number
-  errorCode?: 'HARDWARE_UNSUPPORTED' | 'DRIVER_TOO_OLD' | 'DOWNLOAD_FAILED' | 'CHECKSUM_MISMATCH' | 'DISK_FULL' | 'EXTRACT_FAILED' | 'RUNTIME_PROBE_FAILED' | 'ACTIVATION_FAILED' | string
+  errorCode?: 'HARDWARE_UNSUPPORTED' | 'DRIVER_TOO_OLD' | 'DOWNLOAD_FAILED' | 'CHECKSUM_MISMATCH' | 'DISK_FULL' | 'EXTRACT_FAILED' | 'RUNTIME_PROBE_FAILED' | 'ACTIVATION_FAILED' | 'INSTALL_CANCELLED' | string
   retryable?: boolean
   diagnostics?: string
+  cancelRequested?: boolean
+  cancelled?: boolean
 }
 
 export type AiResourceId = 'whisper' | 'ocr' | 'diarization' | 'demucs' | 'vieneu' | 'moss_tts_nano'
@@ -120,6 +122,17 @@ export async function prepareVoiceResources(voice: string, lang = 'auto'): Promi
   else if (voice.startsWith('vn:') || ['vieneu', 'zmai', 'clone'].includes(selected?.engine || '')) await prepareAiResources(['vieneu'])
 }
 
+export class InstallCancelledError extends Error {
+  constructor(message = 'INSTALL_CANCELLED') {
+    super(message)
+    this.name = 'InstallCancelledError'
+  }
+}
+
+function isInstallCancelled(status: InstallStatus): boolean {
+  return status.errorCode === 'INSTALL_CANCELLED' || Boolean(status.cancelled)
+}
+
 async function pollInstall(
   url: string,
   onStatus?: (status: InstallStatus) => void,
@@ -128,9 +141,11 @@ async function pollInstall(
   message: string
   detail: string
   needsRestart?: boolean
+  cancelled?: boolean
 }> {
   const kick = await fetchJson<InstallStatus & { ok: boolean }>(url, { method: 'POST' }, 60_000)
   onStatus?.({ ...kick, running: kick.running !== false })
+  if (isInstallCancelled(kick)) throw new InstallCancelledError(kick.message || 'INSTALL_CANCELLED')
   if (kick.error || kick.ok === false) throw new Error(kick.error || kick.message || 'INSTALL_FAILED')
   if (kick.running === false) {
     return {
@@ -144,8 +159,10 @@ async function pollInstall(
   for (;;) {
     const st = await fetchJson<InstallStatus>(`${base}/system/install/status`, undefined, 30_000)
     onStatus?.(st)
+    if (isInstallCancelled(st)) throw new InstallCancelledError(st.message || 'INSTALL_CANCELLED')
     if (st.error) throw new Error(st.error)
     if (!st.running) {
+      if (isInstallCancelled(st)) throw new InstallCancelledError(st.message || 'INSTALL_CANCELLED')
       return {
         ok: st.ok ?? true,
         message: st.message || 'Xong',
@@ -240,6 +257,13 @@ export const api = {
 
   installStatus: () =>
     fetchJson<InstallStatus>(`${base}/system/install/status`, undefined, 30_000),
+
+  cancelInstall: () =>
+    fetchJson<{ ok: boolean; cancelling?: boolean; cancelled?: boolean }>(
+      `${base}/system/install/cancel`,
+      { method: 'POST' },
+      15_000,
+    ),
 
   updateNvidiaDriver: async (action: 'update' | 'accept_eula' | 'resume' | 'reboot' | 'cpu') => {
     const headers = { 'X-ZM-Driver-Request': '1', 'Content-Type': 'application/json' }

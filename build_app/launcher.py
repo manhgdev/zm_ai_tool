@@ -676,10 +676,18 @@ import webview  # noqa: E402
 web_dir = bundle / "dist"
 
 
-@app.get("/text-to-speech", include_in_schema=False)
-@app.get("/video-clone", include_in_schema=False)
 def workspace_page():
     return FileResponse(web_dir / "index.html")
+
+
+# SPA routes — every header tab must serve index.html (not a static 404).
+for _spa_path in (
+    "/text-to-speech", "/video-clone", "/live-preview", "/renders", "/download-video",
+    "/video-cleaner", "/media-compose", "/subtitle-export", "/drawing", "/film",
+    "/batch", "/flow-veo", "/chat", "/automation", "/license",
+):
+    app.add_api_route(_spa_path, workspace_page, methods=["GET"], include_in_schema=False)
+    app.add_api_route(_spa_path + "/", workspace_page, methods=["GET"], include_in_schema=False)
 
 
 app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
@@ -901,7 +909,9 @@ def run_desktop() -> int:
                 traceback.print_exc()
             return 1
         print(f"[desktop] API sẵn sàng sau {time.monotonic()-_t0:.1f}s tại {base}", flush=True)
-        page_url = f"{base}/text-to-speech?v={APP_VERSION}"
+        # Open root so React restores the last header tab from ui-preferences /
+        # localStorage instead of always landing on Text-to-Speech.
+        page_url = f"{base}/?v={APP_VERSION}"
         win_w, win_h = 1440, 900
         x, y = centered_xy(win_w, win_h)
         icon = None

@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { cn } from '@/shared/lib/cn'
 
 import { localize, useLocale } from '@/app/i18n'
 import { copyText } from '@/shared/lib/clipboard'
+import { useStickToBottomScroll } from '@/shared/hooks/useStickToBottomScroll'
+import './ProgressPopup.css'
 
 export type ProgressPopupProps = {
   /** Job đang chạy hoặc vừa lỗi cần hiện UI */
@@ -103,7 +105,7 @@ export default function ProgressPopup({
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const [elapsed, setElapsed] = useState(0)
   const [copied, setCopied] = useState(false)
-  const logRef = useRef<HTMLPreElement>(null)
+  const { ref: logRef, onScroll: onLogScroll, onWheel: onLogWheel, onPointerDown: onLogPointerDown, onPointerUp: onLogPointerUp } = useStickToBottomScroll(log)
 
   useEffect(() => {
     if (!active || !running) {
@@ -116,13 +118,6 @@ export default function ProgressPopup({
     }, 1000)
     return () => window.clearInterval(id)
   }, [active, running])
-
-  // Auto-scroll log terminal to bottom on new output
-  useEffect(() => {
-    if (logRef.current && log) {
-      logRef.current.scrollTop = logRef.current.scrollHeight
-    }
-  }, [log])
 
   if (!active) return null
 
@@ -236,12 +231,26 @@ export default function ProgressPopup({
             />
           </div>
           {details}
-          {log && collapseLog ? <details className="text-xs"><summary>{t('Chi tiết lỗi', 'Error details')}</summary><pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{log}</pre></details> : log && (
-            <pre
+          {log && collapseLog ? (
+            <details className="text-xs">
+              <summary>{t('Chi tiết lỗi', 'Error details')}</summary>
+              <div className={cn('progress-popup-log', wide && 'progress-popup-log-wide')}>
+                <pre>{log}</pre>
+              </div>
+            </details>
+          ) : log ? (
+            <div
               ref={logRef}
-              className="mt-1 max-h-40 cursor-text select-text overflow-y-auto rounded bg-black/85 p-2 text-[10px] leading-relaxed text-green-400 font-mono whitespace-pre-wrap break-all"
-            >{log}</pre>
-          )}
+              onScroll={onLogScroll}
+              onWheel={onLogWheel}
+              onPointerDown={onLogPointerDown}
+              onPointerUp={onLogPointerUp}
+              onPointerCancel={onLogPointerUp}
+              className={cn('progress-popup-log', wide && 'progress-popup-log-wide')}
+            >
+              <pre>{log}</pre>
+            </div>
+          ) : null}
         </div>
 
         <div className={cn('flex items-center justify-end gap-2 border-t border-border px-4 py-3', actions && 'flex-wrap')}>

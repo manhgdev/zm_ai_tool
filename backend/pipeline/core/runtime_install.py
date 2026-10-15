@@ -500,7 +500,13 @@ def _install_packages(uv: str, python: Path, profile: str, demucs: bool, emit, *
     if torch:
         groups.append({'name': 'Torch', 'packages': sorted(torch), 'requires': ['Core / ONNX'] if core_packages else []})
     if sdk:
-        groups.append({'name': 'Whisper / OCR / VieNeu', 'packages': sorted(sdk), 'requires': ['Core / ONNX', 'Torch'] if core_packages and torch else []})
+        sdk_label = (
+            'Whisper' if sdk == {'faster-whisper'} else
+            'OCR' if sdk == {'rapidocr-onnxruntime'} else
+            'VieNeu' if sdk == {'vieneu'} else
+            'Whisper / OCR / VieNeu'
+        )
+        groups.append({'name': sdk_label, 'packages': sorted(sdk), 'requires': ['Core / ONNX', 'Torch'] if core_packages and torch else []})
     if sherpa:
         groups.append({'name': 'Sherpa CUDA', 'packages': sorted(sherpa), 'requires': ['Core / ONNX', 'Torch']})
     pip_base = [str(python), '-I', '-m', 'pip', '--isolated', 'install',

@@ -216,40 +216,6 @@
   color: var(--warning, #d97706);
 }
 
-.locale-select {
-  height: 28px;
-  min-width: 44px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--ink);
-  font: 700 .72rem/1 inherit;
-  cursor: pointer;
-}
-
-/* Header is intentionally denser than content forms on macOS. */
-html.platform-macos select.locale-select:not([multiple]) {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 48px !important;
-  min-width: 48px !important;
-  max-width: 48px !important;
-  min-height: 24px !important;
-  height: 24px !important;
-  padding: 0 19px 0 7px !important;
-  border-radius: 6px !important;
-  background-image:
-    linear-gradient(45deg, transparent 50%, currentColor 50%),
-    linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position:
-    calc(100% - 12px) 50%,
-    calc(100% - 8px) 50%;
-  background-size: 4px 4px, 4px 4px;
-  background-repeat: no-repeat;
-  font-size: 12px !important;
-  line-height: 1 !important;
-}
-
 .theme-toggle {
   display: inline-flex;
   align-items: center;

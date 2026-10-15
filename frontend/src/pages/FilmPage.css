@@ -489,14 +489,24 @@ html.dark .rv-page {
 .rv-mode-tag { color: var(--rv); font-size: .75rem; font-weight: 700; }
 .rv-job-log {
   margin: 8px 0 0;
-  max-height: 320px;
-  overflow: auto;
+  height: 280px;
+  max-height: min(40vh, 320px);
+  overflow-x: hidden;
+  overflow-y: scroll;
   padding: 10px 12px;
   border-radius: 10px;
   background: var(--rv-log);
   color: var(--rv-muted);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rv-muted) transparent;
+}
+.rv-job-log pre {
+  margin: 0;
   font: 12.5px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .rv-parts-panel {
   margin: 10px 0 8px;

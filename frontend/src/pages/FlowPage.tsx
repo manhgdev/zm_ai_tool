@@ -989,6 +989,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             ? t("Đã hủy", "Cancelled")
             : t("Lỗi", "Failed");
   const jobStatusText = (job: FlowJob) => {
+    // Downloaded OK; only the del-logo step failed — keep generic "Lỗi" for other failures.
+    if (String(job.error || "").startsWith("FLOW_LOGO_REMOVE_FAILED")) {
+      return t("Lỗi xoá logo", "Logo failed");
+    }
     if (job.status === "cancelled" && job.stage === "stopped") return t("Đã dừng", "Stopped");
     if (job.status !== "processing") return statusText(job.status);
     if (job.stage === "retrying") return t("Đang thử tạo lại", "Retrying generation");
@@ -1321,9 +1325,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         setSettings(effectiveSettings);
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(effectiveSettings));
       }
-      const probeTargets = settings.account === "random"
+      // Use the image/video picker (selectedAccountLabel), not legacy settings.account —
+      // otherwise a specific pick still probes every online account when account stayed "random".
+      const probeTargets = selectedAccountLabel === "random"
         ? accounts.filter(isFlowAccountAvailable).map((item) => ({ id: item.id, label: item.label }))
-        : [{ id: account.id, label: account.label }];
+        : (account && isFlowAccountAvailable(account)
+          ? [{ id: account.id, label: account.label }]
+          : []);
       const cookiesReady = await probeAccountsBeforeJobs(probeTargets);
       if (!cookiesReady) return;
       // A model without duration controls must omit the field entirely.
@@ -1669,7 +1677,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           return accounts.filter(isFlowAccountAvailable).map((item) => [item.id, { id: item.id, label: item.label }] as const);
         }
         const row = accounts.find((item) => item.id === group.accountId);
-        return row ? [[row.id, { id: row.id, label: row.label }] as const] : [];
+        // Disconnected / unavailable accounts are skipped — user reconnects by hand.
+        return row && isFlowAccountAvailable(row)
+          ? [[row.id, { id: row.id, label: row.label }] as const]
+          : [];
       }),
     ).values());
     if (!(await probeAccountsBeforeJobs(probeTargets))) {

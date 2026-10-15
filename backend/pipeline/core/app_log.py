@@ -241,6 +241,27 @@ def install_process_hooks() -> None:
         except Exception:
             pass
 
+        # GC of closed Proactor pipes after the loop shuts down is harmless;
+        # without this hook Windows dumps duplicated "Exception ignored in" noise.
+        _prev_unraisable = getattr(sys, "unraisablehook", None)
+
+        def _quiet_closed_pipe(unraisable: Any) -> None:
+            exc = getattr(unraisable, "exc_value", None)
+            msg = str(exc or "")
+            if isinstance(exc, (ValueError, RuntimeError)) and (
+                "closed pipe" in msg or "Event loop is closed" in msg
+            ):
+                return
+            if callable(_prev_unraisable):
+                _prev_unraisable(unraisable)
+            else:
+                sys.__unraisablehook__(unraisable)
+
+        try:
+            sys.unraisablehook = _quiet_closed_pipe  # type: ignore[assignment]
+        except Exception:
+            pass
+
     try:
         threading.excepthook = _thread_hook  # type: ignore[attr-defined]
     except Exception:

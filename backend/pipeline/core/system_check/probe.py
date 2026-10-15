@@ -145,6 +145,21 @@ _RUNTIME_FAST_DIST = (
     "vieneu",
     "torch",
 )
+# Module → dist-info prefix for frozen fast checks (per-feature, not all-or-nothing).
+_RUNTIME_MODULE_DIST = (
+    ("faster_whisper", "faster-whisper"),
+    ("av", "av"),
+    ("rapidocr_onnxruntime", "rapidocr-onnxruntime"),
+    ("PIL", "pillow"),
+    ("cv2", "opencv"),
+    ("torch", "torch"),
+    ("torchaudio", "torchaudio"),
+    ("transformers", "transformers"),
+    ("vieneu", "vieneu"),
+    ("soundfile", "soundfile"),
+    ("sherpa_onnx", "sherpa-onnx"),
+    ("cffi", "cffi"),
+)
 _TORCH_CUDA_CACHE: tuple[float, bool] | None = None
 _TORCH_CUDA_TTL = 120.0
 _OCR_CUDA_CACHE: tuple[float, tuple[bool, str]] | None = None
@@ -321,13 +336,28 @@ def _site_has_dist(sp: Path, prefix: str) -> bool:
     pre = prefix.lower().replace("_", "-")
     for entry in sp.iterdir():
         name = entry.name.lower().replace("_", "-")
-        if name.startswith(pre):
+        # Boundary after the name so torch ≠ torchaudio and demucs ≠ demucs-mlx.
+        if name == pre or name.startswith(pre + "-") or name.startswith(pre + "."):
             return True
     return False
 
 
+def _runtime_modules_fs_missing() -> list[str]:
+    """Per-module site-packages presence for frozen fast checks.
+
+    Unlike ``_runtime_venv_fast``, a Whisper-only install must not report OCR /
+    VieNeu modules as missing simply because the full stack is incomplete.
+    """
+    from ..runtime_active import active_runtime_dir, runtime_python
+
+    if not runtime_python().is_file():
+        return list(_required_ai_runtime_modules())
+    sp = _venv_site_packages(active_runtime_dir())
+    return [mod for mod, dist in _RUNTIME_MODULE_DIST if not _site_has_dist(sp, dist)]
+
+
 def _runtime_venv_fast() -> tuple[bool, str]:
-    """Filesystem-only — no torch/whisper import subprocess."""
+    """Filesystem-only full-stack hint — no torch/whisper import subprocess."""
     from ..runtime_active import active_runtime_dir, runtime_python
 
     venv = active_runtime_dir()

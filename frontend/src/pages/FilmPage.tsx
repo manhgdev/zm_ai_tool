@@ -8,6 +8,7 @@ import { AudioSlider, CaptionModePicker, ReviewLangFields, ReviewLeftPanel, Revi
 import { DEFAULT_REVIEW_SETTINGS, STYLE_TO_PIPE, modeLabel, resolveBuildMode, type ReviewSettings } from '@/features/studio/reviewSettings'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
+import { useStickToBottomScroll } from '@/shared/hooks/useStickToBottomScroll'
 import { copyText } from '@/shared/lib/clipboard'
 import { useRemountState } from '@/shared/lib/useRemountState'
 import './FilmPage.css'
@@ -193,12 +194,20 @@ function deviceBadge(hw: HardwareInfo) {
 }
 
 function AutoLog({ className, text }: { className?: string; text: string }) {
-  const ref = useRef<HTMLPreElement>(null)
-  useEffect(() => {
-    const node = ref.current
-    if (node) node.scrollTop = node.scrollHeight
-  }, [text])
-  return <pre ref={ref} className={className}>{text}</pre>
+  const { ref, onScroll, onWheel, onPointerDown, onPointerUp } = useStickToBottomScroll(text)
+  return (
+    <div
+      ref={ref}
+      onScroll={onScroll}
+      onWheel={onWheel}
+      onPointerDown={onPointerDown}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      className={className}
+    >
+      <pre>{text}</pre>
+    </div>
+  )
 }
 
 export default function FilmPage({ onBack, onOpenEditor }: Props) {

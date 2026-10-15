@@ -52,8 +52,6 @@ def _report_install(progress: int | float, message: str, **fields: Any) -> None:
     except TypeError:
         # Backward-compatible for tests/dev callbacks using the old 2-arg API.
         _install_progress_fn(progress, message)
-    except Exception:
-        pass
 
 
 def _runtime_subprocess_env() -> dict[str, str]:
