@@ -1,4 +1,4 @@
-"""flow-py — Unofficial Python API & CLI for Google Flow AI (labs.google/fx).
+"""flow-py — Unofficial Python API & CLI for Google Flow AI (flow.google.com).
 
 Quick start::
 

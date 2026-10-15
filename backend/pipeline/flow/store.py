@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -107,13 +108,98 @@ def patch_row(name: str, row_id: str, patch: dict[str, Any]) -> dict[str, Any] |
                 if name == "jobs" and row.get("status") == "cancelled" and patch.get("status") == "processing":
                     # ponytail: late worker write after cancel; a retry re-queues via status=queued first.
                     patch = {k: v for k, v in patch.items() if k not in {"status", "stage", "progress"}}
-                row.update(patch)
+                if name == "jobs":
+                    # Keep lifecycle timestamps at the persistence boundary so
+                    # every worker path reports the same history data.
+                    now = time.time()
+                    effective_status = patch.get("status", row.get("status"))
+                    lifecycle_patch = dict(patch)
+                    lifecycle_patch.setdefault("updatedAt", now)
+                    if effective_status == "processing" and not row.get("startedAt"):
+                        lifecycle_patch["startedAt"] = now
+                    if effective_status in {"queued", "processing"}:
+                        lifecycle_patch["finishedAt"] = None
+                    if effective_status in {"done", "failed", "cancelled", "action_required"}:
+                        finished_at = row.get("finishedAt") or now
+                        lifecycle_patch.setdefault("finishedAt", finished_at)
+                        started = row.get("startedAt") or row.get("createdAt") or finished_at
+                        try:
+                            lifecycle_patch.setdefault("elapsedSeconds", max(0.0, float(finished_at) - float(started)))
+                        except (TypeError, ValueError):
+                            lifecycle_patch.setdefault("elapsedSeconds", 0.0)
+                    elif row.get("startedAt") or lifecycle_patch.get("startedAt"):
+                        try:
+                            lifecycle_patch["elapsedSeconds"] = max(0.0, now - float(lifecycle_patch.get("startedAt") or row["startedAt"]))
+                        except (TypeError, ValueError):
+                            pass
+                    if effective_status == "done" and row.get("fallbackNotice"):
+                        lifecycle_patch["fallbackNotice"] = None
+                    if effective_status == "done" and row.get("recoveryNotice"):
+                        lifecycle_patch["recoveryNotice"] = None
+                    row.update(lifecycle_patch)
+                else:
+                    row.update(patch)
                 _write(name, rows)
                 result = dict(row)
                 break
     if result is not None:
         _publish_row(name, "updated", result)
     return result
+
+
+def patch_rows(name: str, patches: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Patch many rows with one read/write transaction.
+
+    Job lifecycle timestamps mirror ``patch_row`` so a bulk retry has the same
+    history semantics while avoiding one JSON rewrite per job.
+    """
+    if not patches:
+        return []
+    changed: list[dict[str, Any]] = []
+    with _LOCK:
+        rows = _read(name)
+        for row in rows:
+            row_id = str(row.get("id") or "")
+            patch = patches.get(row_id)
+            if patch is None:
+                continue
+            if name == "jobs" and row.get("status") == "cancelled" and patch.get("status") == "processing":
+                patch = {k: v for k, v in patch.items() if k not in {"status", "stage", "progress"}}
+            if name == "jobs":
+                now = time.time()
+                effective_status = patch.get("status", row.get("status"))
+                lifecycle_patch = dict(patch)
+                lifecycle_patch.setdefault("updatedAt", now)
+                if effective_status == "processing" and not row.get("startedAt"):
+                    lifecycle_patch["startedAt"] = now
+                if effective_status in {"queued", "processing"}:
+                    lifecycle_patch["finishedAt"] = None
+                if effective_status in {"done", "failed", "cancelled", "action_required"}:
+                    finished_at = row.get("finishedAt") or now
+                    lifecycle_patch.setdefault("finishedAt", finished_at)
+                    started = row.get("startedAt") or row.get("createdAt") or finished_at
+                    try:
+                        lifecycle_patch.setdefault("elapsedSeconds", max(0.0, float(finished_at) - float(started)))
+                    except (TypeError, ValueError):
+                        lifecycle_patch.setdefault("elapsedSeconds", 0.0)
+                elif row.get("startedAt") or lifecycle_patch.get("startedAt"):
+                    try:
+                        lifecycle_patch["elapsedSeconds"] = max(0.0, now - float(lifecycle_patch.get("startedAt") or row["startedAt"]))
+                    except (TypeError, ValueError):
+                        pass
+                if effective_status == "done" and row.get("fallbackNotice"):
+                    lifecycle_patch["fallbackNotice"] = None
+                if effective_status == "done" and row.get("recoveryNotice"):
+                    lifecycle_patch["recoveryNotice"] = None
+                row.update(lifecycle_patch)
+            else:
+                row.update(patch)
+            changed.append(dict(row))
+        if changed:
+            _write(name, rows)
+    for row in changed:
+        _publish_row(name, "updated", row)
+    return changed
 
 
 def delete_row(name: str, row_id: str) -> bool:
@@ -134,7 +220,13 @@ def cancel_active_jobs(ids: set[str], updated_at: float) -> int:
         changed = 0
         for row in rows:
             if row.get('id') in ids and row.get('status') not in {'done', 'failed', 'cancelled', 'action_required'}:
-                row.update(status='cancelled', stage='cancelled', progress=0, updatedAt=updated_at)
+                started = row.get('startedAt') or row.get('createdAt') or updated_at
+                try:
+                    elapsed = max(0.0, float(updated_at) - float(started))
+                except (TypeError, ValueError):
+                    elapsed = 0.0
+                row.update(status='cancelled', stage='cancelled', progress=0,
+                           finishedAt=updated_at, elapsedSeconds=elapsed, updatedAt=updated_at)
                 changed += 1
                 changed_rows.append(dict(row))
         if changed:

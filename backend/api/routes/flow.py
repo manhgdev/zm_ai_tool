@@ -101,6 +101,10 @@ class RetryIn(BaseModel):
     logoOnly: bool = False
 
 
+class BatchRetryIn(BaseModel):
+    items: list[dict[str, Any]] = Field(min_length=1, max_length=5000)
+
+
 class OutputFolderIn(BaseModel):
     outputDir: str = Field(min_length=1, max_length=1000)
     kind: str = Field(default="", pattern="^(|image|video)$")
@@ -285,10 +289,16 @@ async def accounts_prepare(account_id: str):
 
 
 @router.post("/accounts/{account_id}/connect")
-def accounts_connect(account_id: str):
+def accounts_connect(account_id: str, payload: dict[str, Any] | None = Body(default=None)):
     try:
-        # Try the saved session with no window. Open Chrome only if that fails.
-        return service.connect(account_id, headless=True, open_ui_on_failure=True)
+        # Try the saved session first. A user-triggered request may fall back
+        # to visible Chrome after that attempt reaches a login wall.
+        manual = bool((payload or {}).get("manual"))
+        return service.connect(
+            account_id,
+            headless=True,
+            open_ui_on_failure=manual,
+        )
     except KeyError as exc:
         raise HTTPException(404, "Flow account not found") from exc
     except RuntimeError as exc:
@@ -332,9 +342,11 @@ async def accounts_sync_one(account_id: str):
 
 @router.post("/accounts/{account_id}/reset-session")
 def accounts_reset_session(account_id: str):
-    """Clear local Chrome/session/project identity while keeping account settings."""
+    """Clear Flow browsing state while preserving the Google login."""
     try:
-        account = service.reset_account_session(account_id, open_ui_on_failure=True)
+        account = service.reset_account_session(
+            account_id, open_ui_on_failure=True,
+        )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     if not account:
@@ -346,6 +358,19 @@ def accounts_reset_session(account_id: str):
 def accounts_clear_suspension(account_id: str):
     """Clear suspended cooldown state for an account."""
     acc = service.clear_account_suspension(account_id)
+    if not acc:
+        raise HTTPException(404, "Flow account not found")
+    return acc
+
+
+@router.post("/accounts/{account_id}/clear-model-suspension")
+def accounts_clear_model_suspension(account_id: str, payload: dict[str, Any] = Body(...)):
+    """Clear one model cooldown without changing the account session state."""
+    kind = str(payload.get("kind") or "image").strip().lower()
+    model = str(payload.get("model") or "").strip()
+    if kind not in {"image", "video"} or not model:
+        raise HTTPException(400, "Flow model suspension is invalid")
+    acc = service.clear_model_suspension(account_id, kind, model)
     if not acc:
         raise HTTPException(404, "Flow account not found")
     return acc
@@ -870,6 +895,14 @@ def jobs_retry(job_id: str, body: RetryIn | None = None):
     if not job:
         raise HTTPException(404, "Flow job not found")
     return job
+
+
+@router.post("/jobs/batch-retry")
+def jobs_batch_retry(body: BatchRetryIn):
+    try:
+        return service.retry_many(body.items)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/jobs/{job_id}")

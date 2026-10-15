@@ -19,6 +19,11 @@ export type FlowJob = {
   prompt: string;
   inputType: PromptInputType;
   createdAt: number;
+  /** Monotonic enqueue position used to keep the queue in submission order. */
+  queueOrder?: number;
+  startedAt?: number | null;
+  finishedAt?: number | null;
+  elapsedSeconds?: number;
   updatedAt?: number;
   status: JobStatus;
   stage?: string;
@@ -34,6 +39,8 @@ export type FlowJob = {
   error?: string | null;
   quotaModelFallbackApplied?: boolean;
   modelFallback?: FlowModelFallback;
+  fallbackNotice?: { vi: string; en: string } | string | null;
+  recoveryNotice?: { vi: string; en: string } | string | null;
   seriesContext?: { seriesTitle?: string; episodeIndex?: number; sceneIndex?: number; artifact?: string };
   settings: {
     model: string;
@@ -102,6 +109,8 @@ export type FlowAccount = {
   capabilityError?: string;
   suspendedUntil?: number | null;
   suspendReason?: string | null;
+  suspensionScope?: "account" | "video" | string | null;
+  modelSuspensions?: Record<string, { until: number; reason?: string }>;
 };
 
 export type FlowLog = {

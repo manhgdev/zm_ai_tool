@@ -500,14 +500,14 @@ class FlowAPI:
     async def get_recaptcha_token(self) -> str:
         """Generate a fresh reCAPTCHA Enterprise token from the project page.
 
-        In CDP mode we stay on the existing labs.google page (which already has
+        In CDP mode we stay on the existing flow.google.com page (which already has
         the reCAPTCHA script loaded) instead of navigating — navigation would
         lose the page state and force a new load cycle.
         """
         page = await self._bm.page()
 
         # In CDP mode, only navigate if we're not already on a flow.google.com page
-        is_on_flow = "flow.google.com" in page.url or "labs.google" in page.url
+        is_on_flow = "flow.google.com" in page.url
         if not is_on_flow:
             await self._ensure_project_page()
             page = await self._bm.page()
@@ -588,7 +588,7 @@ class FlowAPI:
         page = await self._bm.page()
 
         proj_url = f"{FLOW_BASE}/project/{self.project_id}" if self.project_id else FLOW_BASE
-        if "flow.google.com" not in page.url and "labs.google" not in page.url:
+        if "flow.google.com" not in page.url:
             log.info("Navigating to Flow project page for Bearer token extraction")
             await page.goto(proj_url, wait_until="domcontentloaded", timeout=20000)
             await asyncio.sleep(1.5)
@@ -881,7 +881,7 @@ class FlowAPI:
 
     async def _trpc_get(self, proc: str, inp: dict) -> dict:
         from urllib.parse import quote
-        # tRPC was used on labs.google/fx/api/trpc; on flow.google.com it returns SPA index.html
+        # tRPC was used on the legacy host; on flow.google.com it returns SPA index.html
         url  = f"{FLOW_BASE}/api/trpc/{proc}?input={quote(json.dumps({'json': inp}))}"
         try:
             resp = await self._bm.context.request.get(url)
@@ -964,7 +964,7 @@ class FlowAPI:
             if "accounts.google.com" in page.url or "/about" in page.url:
                 raise AuthError("HTTP 401: Google session cookies expired — redirected to login")
 
-            if "flow.google.com" not in page.url and "labs.google" not in page.url:
+            if "flow.google.com" not in page.url:
                 target = f"{FLOW_BASE}/project/{self.project_id}" if self.project_id else FLOW_BASE
                 await page.goto(target, wait_until="domcontentloaded", timeout=20_000)
                 await asyncio.sleep(1.5)

@@ -37,6 +37,9 @@ const STAGE_LABELS: Record<string, [string, string]> = {
   resubmitting: ["Đang gửi lại", "Resubmitting"],
   generating: ["Flow đang tạo", "Generating"],
   recovering: ["Đang tìm kết quả đã gửi", "Recovering submitted result"],
+  recovering_session: ["Đang khôi phục phiên", "Recovering session"],
+  waiting_session_reset: ["Đang chờ khôi phục phiên", "Waiting for session recovery"],
+  reconciling: ["Đang đối soát kết quả", "Reconciling result"],
   downloading: ["Đang tải file", "Downloading"],
   removing_logo: ["Đang xoá logo", "Removing logo"],
   retrying: ["Đang thử lại", "Retrying"],
@@ -57,6 +60,10 @@ export function flowStageLabel(stage: string, t: LocaleFn): string {
 
 function codeOf(message: string): string {
   const text = String(message || "").trim();
+  // Prefer the leaf login code when nested FLOW_LOGIN_REQUIRED: … wraps it.
+  if (/FLOW_LOGIN_VERIFICATION_REQUIRED/i.test(text)) return "FLOW_LOGIN_VERIFICATION_REQUIRED";
+  if (/FLOW_LOGIN_PASSWORD_REQUIRED/i.test(text)) return "FLOW_LOGIN_PASSWORD_REQUIRED";
+  if (/FLOW_COOKIE_EXPIRED/i.test(text)) return "FLOW_COOKIE_EXPIRED";
   const flow = text.match(/^(FLOW_[A-Z0-9_]+)/);
   if (flow) return flow[1];
   if (/batchGenerateImages/i.test(text)) return "FLOW_IMAGE_RPC_TIMEOUT";
@@ -65,7 +72,7 @@ function codeOf(message: string): string {
     return "FLOW_DURATION_CONTROL_TIMEOUT";
   }
   if (/Timeout \d+ms exceeded/i.test(text)) return "FLOW_UI_TIMEOUT";
-  if (/LOGIN_REQUIRED|SESSION_EXPIRED|recaptcha|not signed in/i.test(text)) {
+  if (/LOGIN_REQUIRED|SESSION_EXPIRED|recaptcha|not signed in|flow account was not found|account not found/i.test(text)) {
     return "FLOW_SESSION_EXPIRED";
   }
   return text ? "FLOW_ERROR" : "";
@@ -75,8 +82,8 @@ function codeOf(message: string): string {
 export function explainFlowError(message: string): FlowExplain {
   const raw = String(message || "").trim();
   const code = codeOf(raw);
-  // Strip the leading CODE: prefix to get the human-readable detail.
-  const detail = raw.replace(/^FLOW_[A-Z0-9_]+:\s*/i, "").trim() || raw;
+  // Strip repeated CODE: prefixes (nested FLOW_LOGIN_REQUIRED: …) for display.
+  const detail = raw.replace(/^(?:FLOW_[A-Z0-9_]+:\s*)+/i, "").trim() || raw;
 
   /** Helper: build result with raw detail as title, no summary, custom action. */
   const make = (
@@ -96,13 +103,29 @@ export function explainFlowError(message: string): FlowExplain {
   if (code === "FLOW_COOKIE_EXPIRED") {
     return {
       code,
-      titleVi: "Cookie đã hết hạn",
-      titleEn: "Cookie has expired",
-      summaryVi: "Phiên Google của Cookie không còn đăng nhập. Tài khoản được chuyển sang đăng nhập bằng Chrome.",
-      summaryEn: "The Cookie's Google session is no longer signed in. The account was switched to Chrome sign-in.",
-      actionVi: "Đăng nhập Google trong cửa sổ Chrome vừa mở. Nếu chưa mở, bấm Kết nối lại.",
-      actionEn: "Sign in to Google in the Chrome window that opened. If it did not open, select Reconnect.",
+      titleVi: "Chrome đang yêu cầu đăng nhập Google",
+      titleEn: "Chrome requires Google sign-in",
+      summaryVi: "Phiên Chrome này chưa vào được Flow. Tài khoản và cookie đã lưu vẫn được giữ.",
+      summaryEn: "This Chrome session could not access Flow. The account and saved cookies are kept.",
+      actionVi: "Trong Tài khoản, bấm Kết nối hoặc Mở phiên để kiểm tra và hoàn tất đăng nhập Google nếu được yêu cầu.",
+      actionEn: "In Accounts, select Connect or Open session to check and complete Google sign-in if requested.",
     };
+  }
+
+  if (code === "FLOW_SESSION_EXPIRED") {
+    return make(
+      code,
+      "Phiên Flow đã đăng xuất; hệ thống đang thử đăng nhập lại bằng cookie đã lưu.",
+      "The Flow session signed out; the app is signing in again with the saved cookie.",
+    );
+  }
+
+  if (code === "FLOW_ACCOUNT_NOT_FOUND") {
+    return make(
+      code,
+      "Tài khoản Flow đã bị xóa khỏi danh sách; chọn lại tài khoản còn tồn tại.",
+      "The Flow account row was deleted; choose an account that still exists.",
+    );
   }
 
   if (code === "FLOW_LOGO_REMOVE_FAILED") {
@@ -137,10 +160,10 @@ export function explainFlowError(message: string): FlowExplain {
       summaryVi: "", summaryEn: "",
       actionVi: code === "FLOW_LOGIN_PASSWORD_REQUIRED"
         ? "Sửa tài khoản, nhập lại Password rồi bấm Lưu và kết nối. Mật khẩu không được lưu sau khi khởi động lại."
-        : "Mở phiên và hoàn tất đăng nhập Google bằng Chrome trên máy backend (VPS cần desktop/VNC); chỉ nhập mật khẩu nếu Google yêu cầu.",
+        : "Trong tab Accounts, bấm Kết nối để mở Chrome trên máy backend (VPS cần desktop/VNC) và hoàn tất đăng nhập Google bằng Chrome; chỉ nhập mật khẩu nếu Google yêu cầu.",
       actionEn: code === "FLOW_LOGIN_PASSWORD_REQUIRED"
         ? "Edit the account, enter the password, then select Save and connect. Passwords do not survive a restart."
-        : "Open the session and complete Google sign-in in Chrome on the backend host (a VPS needs desktop/VNC); enter a password only if Google requests it.",
+        : "In Accounts, select Connect to open Chrome on the backend host (a VPS needs desktop/VNC) and complete Google sign-in; enter a password only if Google requests it.",
     };
   }
 
@@ -369,6 +392,29 @@ export function isFlowLimitError(raw: string | null | undefined): boolean {
     return true;
   }
   return /insufficient credits|not enough credits|out of credits|hết tín dụng|hết lượt|hết hạn mức|usage limit|generation limit|daily limit|monthly limit|quota|rate.?limit|too many requests/i.test(text);
+}
+
+/**
+ * Pro image quota is an automatic model fallback. Keep this separate from
+ * the generic limit classifier so image fallback errors stay inline.
+ */
+export function isProImageQuotaError(
+  kind: string | null | undefined,
+  model: string | null | undefined,
+  raw: string | null | undefined,
+): boolean {
+  return String(kind || "").trim().toLowerCase() === "image"
+    && String(model || "").trim().toLowerCase() === "nano banana pro"
+    && isAutomaticImageQuotaError(kind, raw);
+}
+
+/** Image quota is handled by model/account fallback; do not interrupt with a popup. */
+export function isAutomaticImageQuotaError(
+  kind: string | null | undefined,
+  raw: string | null | undefined,
+): boolean {
+  return String(kind || "").trim().toLowerCase() === "image"
+    && explainFlowError(String(raw || "")).code === "FLOW_QUOTA_EXHAUSTED";
 }
 
 /** Title + body for the Flow limit alert popup (VI/EN via ``t``). */

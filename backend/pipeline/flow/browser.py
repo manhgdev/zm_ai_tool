@@ -193,33 +193,24 @@ def _chrome_major_version(executable: Path) -> str:
     return "155.0.0.0"
 
 
-def _chrome_headed_user_agent(executable: Path) -> str:
-    """UA of headed Chrome for the same binary (drops HeadlessChrome token).
-
-    Probe headed vs true-headless only differed on that token; Flow unusual
-    activity correlates with HeadlessChrome in the user-agent.
-    """
-    version = _chrome_major_version(executable)
-    if sys.platform == "darwin":
-        return (
-            f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
-        )
-    if sys.platform == "win32":
-        return (
-            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
-        )
-    return (
-        f"Mozilla/5.0 (X11; Linux x86_64) "
-        f"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
-    )
-
-
 def profile_lock(path: Path):
     key = os.path.normcase(str(path.resolve()))
     with _profile_guard:
         return _profile_locks.setdefault(key, threading.Lock())
+
+
+def chrome_profile_running(profile_dir: Path) -> bool:
+    """Check the exact owned profile, including Chrome left after a window closes."""
+    import psutil
+
+    argument = f"--user-data-dir={Path(profile_dir).resolve()}"
+    for process in psutil.process_iter(["pid"]):
+        try:
+            if argument in (process.cmdline() or []):
+                return True
+        except (psutil.Error, OSError, SystemError):
+            continue
+    return False
 
 
 def _windows_chrome_user_data_dir_policy() -> str | None:
@@ -356,9 +347,8 @@ class BrowserManager:
 
     def __init__(self, *, headless: bool = True, profile_dir: Path | None = None, slow_mo: int = 0, google_login_compat: bool = False, fullscreen: bool = False, page_zoom: float = 1.0, cdp_url: str | None = None, remote_debugging_port: int | None = None, restore_last_session: bool = False) -> None:
         self.cdp_url = cdp_url  # flow-py checks this optional upstream attribute.
-        # ``headless`` / ``_chromeless``: Playwright true headless when the user
-        # asks for no UI (or Linux has no display). Headed Chrome UA is applied
-        # so HeadlessChrome does not appear in navigator.userAgent.
+        # ``headless`` / ``_chromeless``: keep the user's selected mode. Linux
+        # without a display necessarily falls back to true headless Chrome.
         no_display = not _display_available()
         self.headless = bool(headless) or no_display
         self._chromeless = self.headless
@@ -413,15 +403,12 @@ class BrowserManager:
             "--disable-extensions",
             "--no-first-run",
             "--no-default-browser-check",
-            "--disable-blink-features=AutomationControlled",
         ]
         if self.restore_last_session:
             args.append("--restore-last-session")
         if sys.platform.startswith("linux") and getattr(os, "geteuid", lambda: -1)() == 0:
             args.append("--no-sandbox")
         if self._chromeless:
-            # New headless still differs from headed, but avoids Playwright's
-            # bundled headless launch surface for cookie reconnects on VPS.
             args.extend(["--headless=new", "--window-size=1080,800"])
         else:
             args.extend(_visible_window_args(fullscreen=self.fullscreen))
@@ -434,9 +421,6 @@ class BrowserManager:
         if not contexts:
             raise RuntimeError("FLOW_CDP_NO_CONTEXT: Existing Chrome has no browser context")
         self._ctx = contexts[0]
-        await self._ctx.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
 
     async def _start_spawned_chrome(self, executable: Path) -> None:
         """Spawn branded Chrome ourselves, then attach Playwright over CDP.
@@ -522,9 +506,7 @@ class BrowserManager:
                 await asyncio.sleep(0.05)
             visible_launch_owned = True
         try:
-            # Connect / manual / cookie-login pass remote_debugging_port so we
-            # spawn real Chrome + attach CDP (closer to a hand-opened browser).
-            # Job workers omit the port and keep Playwright launch_persistent.
+            # Connect, manual sessions and workers use native Chrome + CDP.
             if self.remote_debugging_port:
                 await asyncio.wait_for(self._start_spawned_chrome(executable), timeout=60)
                 if visible_launch_owned:
@@ -547,15 +529,16 @@ class BrowserManager:
             # native session so Chrome keeps these session cookies on reopen.
             if self.restore_last_session:
                 launch_args.append("--restore-last-session")
-            # Keep the same browser compatibility surface for every Flow
-            # session, including direct image/video workers.
-            launch_args.append("--disable-blink-features=AutomationControlled")
-            launch_args.extend(["--disable-infobars", *window_args])
+            launch_args.extend(window_args)
             # Linux root cannot use Chromium's sandbox. Keep it enabled for all
             # non-root sessions; do not retry arbitrary failures unsandboxed.
             sandbox = not (sys.platform.startswith("linux") and getattr(os, "geteuid", lambda: -1)() == 0)
             launch_kwargs: dict[str, Any] = {
                 "executable_path": str(executable),
+                # Login and CDP reopen the same profile. Playwright's mock
+                # keychain/basic password store cannot decrypt native Chrome
+                # cookies (or vice versa), so keep the platform store in both.
+                "ignore_default_args": ["--use-mock-keychain", "--password-store=basic"],
                 "headless": self._chromeless,
                 "slow_mo": self.slow_mo,
                 "accept_downloads": True,
@@ -565,9 +548,9 @@ class BrowserManager:
                 "args": launch_args,
             }
             if self._chromeless:
-                # Match headed window size; drop HeadlessChrome from the UA.
+                # Keep a stable viewport for request/layout calculations. The
+                # installed Chrome's native headless UA is left untouched.
                 launch_kwargs["viewport"] = {"width": 1080, "height": 800}
-                launch_kwargs["user_agent"] = _chrome_headed_user_agent(executable)
             else:
                 launch_kwargs["viewport"] = None
                 launch_kwargs["no_viewport"] = True
@@ -577,13 +560,6 @@ class BrowserManager:
                     **launch_kwargs,
                 ),
                 timeout=60,
-            )
-            # Keep headless and visible Flow sessions consistent. Chromium's
-            # automation flag can survive the launch argument and is exposed
-            # as navigator.webdriver on pages opened after context startup.
-            # Flow treats that signal as unusual activity during generation.
-            await self._ctx.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
             if window_args and visible_launch_owned:
                 _visible_launch_guard.release()
@@ -684,8 +660,7 @@ class BrowserManager:
                 try:
                     if candidate.pid == os.getpid():
                         continue
-                    cmdline = " ".join(candidate.cmdline() or [])
-                    if profile not in cmdline:
+                    if f"--user-data-dir={profile}" not in (candidate.cmdline() or []):
                         continue
                     matched = True
                     candidate.send_signal(signal.SIGTERM)
@@ -702,7 +677,7 @@ class BrowserManager:
         # is a safe fallback for those otherwise orphaned helpers.
         if sys.platform != "win32" and not matched:
             try:
-                pattern = f"--user-data-dir={profile}"
+                pattern = rf"--user-data-dir={re.escape(profile)}(\s|$)"
                 subprocess.run(["pkill", "-TERM", "-f", "--", pattern], check=False, timeout=2)
                 time.sleep(0.2)
                 subprocess.run(["pkill", "-KILL", "-f", "--", pattern], check=False, timeout=2)
@@ -748,7 +723,7 @@ class BrowserManager:
                     await _goto_tolerant(self._page, FLOW_BASE_URL)
                 return await self._finish_page(self._page)
             for candidate in pages:
-                if "flow.google.com" in candidate.url or "labs.google" in candidate.url:
+                if "flow.google.com" in candidate.url:
                     self._page = candidate
                     for extra in list(self.context.pages):
                         if extra is candidate or extra.url not in {"", "about:blank"}:
@@ -761,7 +736,7 @@ class BrowserManager:
         # Prefer an existing Flow tab. Chrome profiles often start with a
         # blank tab beside it; close those blanks instead of exposing them.
         self._page = next((candidate for candidate in pages
-                           if "flow.google.com" in candidate.url or "labs.google" in candidate.url), None)
+                           if "flow.google.com" in candidate.url), None)
         if self._page is None:
             self._page = pages[0] if pages else await self.context.new_page()
         for extra in list(self.context.pages):

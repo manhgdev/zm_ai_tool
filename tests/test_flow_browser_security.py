@@ -19,6 +19,24 @@ from pipeline.flow.service import _PROJECT_RE, FlowService
 
 
 class ChromeDiscoveryTests(unittest.TestCase):
+    def test_profile_process_checks_and_kills_do_not_match_sibling_profiles(self):
+        from pipeline.flow.browser import chrome_profile_running
+
+        with tempfile.TemporaryDirectory() as raw:
+            profile = (Path(raw) / "account").resolve()
+            owned = Mock(pid=101, cmdline=Mock(return_value=["chrome", f"--user-data-dir={profile}"]))
+            siblings = [Mock(pid=102, cmdline=Mock(return_value=["chrome", f"--user-data-dir={profile}-image"])),
+                        Mock(pid=103, cmdline=Mock(return_value=["chrome", f"--user-data-dir={profile}-other"]))]
+            with patch("psutil.process_iter", return_value=siblings):
+                self.assertFalse(chrome_profile_running(profile))
+            with patch("psutil.process_iter", return_value=[owned, *siblings]):
+                self.assertTrue(chrome_profile_running(profile))
+                BrowserManager(profile_dir=profile).kill_now()
+            owned.send_signal.assert_called_once()
+            for sibling in siblings:
+                sibling.send_signal.assert_not_called()
+                sibling.kill.assert_not_called()
+
     def test_linux_system_and_path_binaries(self):
         for binary in ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
                        '/opt/google/chrome/chrome', '/usr/bin/chromium-browser',
@@ -295,9 +313,10 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(argv[0], str(Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')))
             self.assertIn('--remote-debugging-port=9333', argv)
             self.assertIn('--restore-last-session', argv)
-            self.assertIn('--disable-blink-features=AutomationControlled', argv)
+            self.assertNotIn('--disable-blink-features=AutomationControlled', argv)
             self.assertNotIn('--headless=new', argv)
-            context.add_init_script.assert_awaited_once()
+            self.assertFalse(any(arg.startswith('--user-agent=') for arg in argv))
+            context.add_init_script.assert_not_awaited()
             with patch.object(manager, 'kill_now') as killer:
                 await manager.stop()
             cdp_browser.close.assert_awaited_once()
@@ -305,7 +324,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             killer.assert_called_once()
             self.assertFalse(manager._owns_chrome_process)
 
-    async def test_spawned_headless_uses_chrome_new_headless_flag(self):
+    async def test_spawned_headless_uses_native_chrome_ua(self):
         context = SimpleNamespace(pages=[], add_init_script=AsyncMock(), close=AsyncMock())
         cdp_browser = SimpleNamespace(contexts=[context], close=AsyncMock())
         playwright = SimpleNamespace(
@@ -326,6 +345,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             await manager.start()
             argv = popen.call_args.args[0]
             self.assertIn('--headless=new', argv)
+            self.assertFalse(any(arg.startswith('--user-agent=') for arg in argv))
             await manager.stop()
 
     async def test_cdp_job_tab_isolated_and_closed_without_closing_chrome(self):
@@ -453,11 +473,10 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(manager._chromeless, hide_ui)
                 self.assertEqual(launch.call_args.kwargs['headless'], hide_ui)
                 if hide_ui:
-                    # True Playwright headless + headed Chrome UA (no HeadlessChrome).
+                    # True Playwright headless with the installed Chrome's native UA.
                     self.assertEqual(launch.call_args.kwargs['viewport'], {'width': 1080, 'height': 800})
                     self.assertNotIn('no_viewport', launch.call_args.kwargs)
-                    self.assertIn('Chrome/', launch.call_args.kwargs['user_agent'])
-                    self.assertNotIn('HeadlessChrome', launch.call_args.kwargs['user_agent'])
+                    self.assertNotIn('user_agent', launch.call_args.kwargs)
                     self.assertNotIn('--window-position=0,0', launch.call_args.kwargs['args'])
                 else:
                     self.assertIsNone(launch.call_args.kwargs['viewport'])
@@ -465,15 +484,16 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn('user_agent', launch.call_args.kwargs)
                     self.assertIn('--window-size=1080,800', launch.call_args.kwargs['args'])
                     self.assertIn('--window-position=0,0', launch.call_args.kwargs['args'])
-                self.assertIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
+                self.assertNotIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
+                self.assertNotIn('--disable-infobars', launch.call_args.kwargs['args'])
                 self.assertIn('--disable-extensions', launch.call_args.kwargs['args'])
                 self.assertIn('--no-first-run', launch.call_args.kwargs['args'])
                 self.assertIn('--no-default-browser-check', launch.call_args.kwargs['args'])
                 self.assertIn('--profile-directory=Default', launch.call_args.kwargs['args'])
                 self.assertNotIn('--new-window', launch.call_args.kwargs['args'])
                 self.assertNotIn('--no-sandbox', launch.call_args.kwargs['args'])
-                self.assertEqual(context.add_init_script.await_count, 1)
-                self.assertNotIn('ignore_default_args', launch.call_args.kwargs)
+                self.assertEqual(context.add_init_script.await_count, 0)
+                self.assertEqual(launch.call_args.kwargs['ignore_default_args'], ['--use-mock-keychain', '--password-store=basic'])
                 await manager.stop()
 
             manager = BrowserManager(headless=True, profile_dir=Path(raw) / 'cookie-profile', restore_last_session=True)
@@ -487,7 +507,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 google_login_compat=True,
             )
             await manager.start()
-            self.assertIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
+            self.assertNotIn('--disable-blink-features=AutomationControlled', launch.call_args.kwargs['args'])
             await manager.stop()
 
     async def test_blocked_launch_stops_driver_without_disabling_sandbox(self):
@@ -509,7 +529,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
 class SessionTests(unittest.TestCase):
     def test_session_profile_copy_skips_files_locked_by_live_chrome(self):
         import importlib
-        flow_service = importlib.import_module("pipeline.flow.service")
+        flow_profiles = importlib.import_module("pipeline.flow.profiles")
 
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -522,7 +542,7 @@ class SessionTests(unittest.TestCase):
 
             locked = OSError(13, "The process cannot access the file")
             locked.winerror = 32
-            real_copy2 = flow_service.shutil.copy2
+            real_copy2 = flow_profiles.shutil.copy2
 
             def copy2(src, dst):
                 if Path(src).name == "locked.db":
@@ -532,7 +552,7 @@ class SessionTests(unittest.TestCase):
             service = FlowService()
             with patch("pipeline.flow.service.store.profile_dir", return_value=source), \
                  patch("pipeline.flow.service.store.root", return_value=root / "data"), \
-                 patch("pipeline.flow.service.shutil.copy2", side_effect=copy2):
+                 patch("pipeline.flow.profiles.shutil.copy2", side_effect=copy2):
                 target = service._ensure_session_profile("account", "image")
 
             self.assertEqual(target, root / "data" / "profiles" / "account-image")
@@ -540,36 +560,28 @@ class SessionTests(unittest.TestCase):
             self.assertFalse((target / "Default" / "locked.db").exists())
             self.assertFalse((target / "Cache").exists())
 
-    def test_live_session_cookies_reach_the_account_profile(self):
-        import sqlite3
-        schema = "CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, last_update_utc INTEGER, UNIQUE (host_key, name))"
-        with tempfile.TemporaryDirectory() as raw:
-            main, session = Path(raw) / "main", Path(raw) / "session"
-            for profile, value in ((main, "old"), (session, "new")):
-                (profile / "Default" / "Network").mkdir(parents=True)
-                db = sqlite3.connect(profile / "Default" / "Network" / "Cookies")
-                db.execute(schema)
-                db.execute("INSERT INTO cookies VALUES ('.google.com', 'SID', ?, ?)", (value, 2 if value == "new" else 1))
-                db.commit()
-                db.close()
-            # Chrome holds its cookie DB with an exclusive lock while the window is open.
-            live = sqlite3.connect(session / "Default" / "Network" / "Cookies")
-            live.execute("PRAGMA locking_mode=EXCLUSIVE")
-            live.execute("UPDATE cookies SET last_update_utc = 3")
-            live.commit()
-            try:
-                with patch("pipeline.flow.service.store.profile_dir", return_value=main), \
-                     patch("pipeline.flow.service.store.get_row", return_value={"id": "a"}):
-                    FlowService()._sync_runtime_cookies("a", session)
-            finally:
-                live.close()
-            db = sqlite3.connect(main / "Default" / "Network" / "Cookies")
-            self.assertEqual(db.execute("SELECT value FROM cookies").fetchall(), [("new",)])
-            db.close()
+    def test_job_cleanup_never_copies_encrypted_cookie_databases_back(self):
+        import asyncio
+        from pipeline.flow import store
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            canonical = store.profile_dir("a") / "Default" / "Cookies"
+            canonical.parent.mkdir(parents=True)
+            canonical.write_bytes(b"verified-native-cookie-db")
+            runtime = Path(raw) / "runtime"
+            (runtime / "Default").mkdir(parents=True)
+            (runtime / "Default" / "Cookies").write_bytes(b"stale-encrypted-cookie-db")
+            store._write("accounts", [{"id": "a"}])
+            browser = Mock(context=Mock(pages=[]), cdp_url=None)
+            browser.stop = AsyncMock()
+            asyncio.run(FlowService()._close_job_browser(browser, "j", account_id="a", runtime_profile=runtime))
+            self.assertEqual(canonical.read_bytes(), b"verified-native-cookie-db")
+            browser.stop.assert_awaited_once()
+            browser.kill_now.assert_called_once()
 
     def test_login_redirect_never_becomes_a_flow_project(self):
         project = '6e98f844-554a-4e93-898c-4b3096681a04'
-        for url in [f'https://flow.google.com/project/{project}', f'/project/{project}?x=1', f'https://labs.google/fx/tools/flow/project/{project}']:
+        for url in [f'https://flow.google.com/project/{project}', f'/project/{project}?x=1']:
             self.assertEqual(_PROJECT_RE.search(url).group(1), project)
         for url in [f'https://accounts.google.com/ServiceLogin?continue=https://flow.google.com/project/{project}&followup=https:', f'https://evil.test/project/{project}', f'https://flow.google.com/project/{project}&followup=https:']:
             self.assertIsNone(_PROJECT_RE.search(url))

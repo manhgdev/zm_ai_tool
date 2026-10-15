@@ -1623,6 +1623,27 @@
   background: #eef0f4;
   color: #667085;
 }
+.flow-job-fallback-notice,
+.flow-job-recovery-notice {
+  display: block;
+  margin-top: 4px;
+}
+.flow-job-fallback-notice {
+  color: #c93646;
+}
+.flow-job-recovery-notice {
+  color: var(--muted-foreground);
+}
+.flow-job-copy-log {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
 @media (max-width: 1180px) {
   .flow-create-grid {
     grid-template-columns: 1fr;
@@ -2092,12 +2113,16 @@
   color: #5242d8;
 }
 .flow-account-grid h3 {
+  min-width: 0;
   margin: 0;
   font-size: 0.92rem;
+  overflow-wrap: anywhere;
 }
 .flow-account-grid h3 small {
+  display: inline-block;
   margin-left: 6px;
   vertical-align: middle;
+  white-space: nowrap;
 }
 .flow-account-grid p {
   margin: 0;
@@ -2175,6 +2200,47 @@
   font-size: 0.7rem;
   font-weight: 700;
   white-space: nowrap;
+}
+.flow-suspension-action {
+  min-width: max-content !important;
+  min-height: 22px !important;
+  width: max-content !important;
+  height: 22px !important;
+  padding: 0 6px !important;
+  border: 1px solid color-mix(in srgb, #c2410c 35%, var(--line));
+  border-radius: 4px;
+  background: var(--background);
+  color: #c2410c;
+  cursor: pointer;
+  font-size: 0.68rem !important;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: visible !important;
+}
+.flow-suspension-action:hover {
+  background: color-mix(in srgb, #c2410c 8%, var(--background));
+}
+.flow-suspension-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.flow-suspension-details {
+  margin-top: 4px;
+}
+.flow-suspension-details summary {
+  cursor: pointer;
+  color: #c2410c;
+  font-size: 0.72rem;
+}
+.flow-suspension-details pre {
+  max-height: 150px;
+  margin: 6px 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.68rem;
 }
 /* Compact icon-only sync button in card footer */
 .flow-account-sync-footer-btn {

@@ -133,10 +133,10 @@ def login():
         click.echo("🌐 Opening browser — sign in to Google, then come back...")
         await page.goto(FLOW_BASE, wait_until="domcontentloaded")
 
-        # Wait for labs.google to be loaded and authenticated
+        # Wait for flow.google.com to be loaded and authenticated
         while True:
             url = page.url
-            if "labs.google" in url:
+            if "flow.google.com" in url:
                 # Check if logged in
                 logged_in = await page.evaluate("""
                     () => window.__NEXT_DATA__?.props?.pageProps?.session?.user?.email || null
@@ -192,7 +192,7 @@ def projects(project: Optional[str], cdp: bool):
 def use_project(project_id: str):
     """Set the active project."""
     from .._storage import add_project
-    url = f"https://labs.google/fx/tools/flow/project/{project_id}"
+    url = f"https://flow.google.com/project/{project_id}"
     set_active_project(project_id, url)
     add_project(project_id, "imported", url)
     click.echo(f"Active project: {project_id}")

@@ -29,6 +29,8 @@ import {
   formatFlowExplain,
   technicalFlowDetail,
   isFlowLimitError,
+  isProImageQuotaError,
+  isAutomaticImageQuotaError,
 } from "@/features/flow/flow.explain";
 import {
   type FlowTab, type FlowRoutePanel, type RailItem, type JobStatus,
@@ -62,6 +64,8 @@ import {
   normalizeFlowAccounts,
   isFlowAccountConnected,
   sortFlowAccounts,
+  sortFlowJobs,
+  sortFlowQueueJobs,
   selectedFlowAccount as resolveSelectedFlowAccount,
   resolveFlowJobAccountName,
   flowAccountDisplayName,
@@ -103,7 +107,28 @@ function flowOutputFolderParts(value: string) {
 
 function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts: FlowAccount[]) {
   // raw.settings is normalized by the shared helper before queue rendering.
-  return normalizeFlowJobRows(rows, accounts);
+  return sortFlowJobs(normalizeFlowJobRows(rows, accounts));
+}
+
+function formatFlowTimestamp(seconds: number | null | undefined): string {
+  if (!seconds || !Number.isFinite(seconds)) return "—";
+  const parts = new Intl.DateTimeFormat(undefined, {
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(new Date(seconds * 1000));
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || "00";
+  return `${value("day")}/${value("month")}/${value("year")} ${value("hour")}:${value("minute")}:${value("second")}`;
+}
+
+function formatFlowElapsed(job: Pick<FlowJob, "elapsedSeconds" | "startedAt" | "finishedAt" | "status">, nowMs: number): string {
+  const started = Number(job.startedAt || 0);
+  if (!started) return "00:00:00";
+  const end = job.finishedAt || (job.status === "done" || job.status === "failed" || job.status === "cancelled" || job.status === "action_required" ? started : nowMs / 1000);
+  const seconds = Math.max(0, Math.floor(Number(job.elapsedSeconds || (end - started))));
+  const h = Math.floor(seconds / 3600).toString().padStart(2, "0");
+  const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, "0");
+  const s = (seconds % 60).toString().padStart(2, "0");
+  return `${h}:${m}:${s}`;
 }
 
 function selectedFlowAccount(accounts: FlowAccount[], accountLabel: string) {
@@ -115,12 +140,14 @@ function isFlowAccountAvailable(account: FlowAccount): boolean {
   const suspendedUntil = Number(account.suspendedUntil || 0);
   const reason = String(account.suspendReason || "");
   if (/FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit/i.test(reason)) return true;
+  if (String(account.suspensionScope || "account") === "video" && /FLOW_QUOTA_EXHAUSTED|quota|hạn mức|usage limit|generation limit|daily limit|monthly limit/i.test(reason)) return true;
   return !(suspendedUntil > Date.now() / 1000);
 }
 
 function isFlowAccountSuspendedForKind(account: FlowAccount, kind: CreateKind): boolean {
   if (!(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000)) return false;
   const reason = String(account.suspendReason || "");
+  if (kind === "image" && String(account.suspensionScope || "account") === "video") return false;
   return !(kind === "image" && /FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit/i.test(reason));
 }
 
@@ -133,6 +160,12 @@ function formatRemainingCooldown(untilSec: number, t: (vi: string, en: string) =
     return `${hours}h ${minutes}m`;
   }
   return `${minutes}m`;
+}
+
+function activeFlowModelSuspensions(account: FlowAccount): Array<[string, { until: number; reason?: string }]> {
+  const now = Date.now() / 1000;
+  const entries = Object.entries(account.modelSuspensions || {}).filter(([, entry]) => Number(entry?.until || 0) > now);
+  return entries as Array<[string, { until: number; reason?: string }]>;
 }
 
 function accountCapabilityModels(account: FlowAccount | undefined, kind: CreateKind): FlowModelCapability[] {
@@ -302,6 +335,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   const [importName, setImportName] = useState("");
   const [promptInputType, setPromptInputType] = useState<PromptInputType>("prompt");
   const [jobs, setJobs] = useRemountState<FlowJob[]>("flow.jobs", []);
+  const [historyNow, setHistoryNow] = useState(() => Date.now());
   const [logs, setLogs] = useState<FlowLog[]>([]);
   const prompt = createKind === "video" ? videoPrompt : imagePrompt;
   const setPrompt = (val: string | ((prev: string) => string)) => {
@@ -420,6 +454,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setLimitNotice(flowLimitPopupCopy(raw, t));
   }, [t]);
   const [queueKind, setQueueKind] = useState<CreateKind | "all">("all");
+  useEffect(() => {
+    if (!jobs.some((job) => job.status === "processing")) return;
+    const timer = window.setInterval(() => setHistoryNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [jobs]);
   // ponytail: sessionStorage is enough; restore once content is tall enough to scroll.
   const queueListRef = useCallback((node: HTMLDivElement | null) => {
     if (!node) return;
@@ -491,11 +530,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       }
     });
     return [...grouped.values()]
-      .sort((left, right) => right.maxCreatedAt - left.maxCreatedAt)
       .map((group) => ({
         ...group,
-        jobs: [...group.jobs].sort((a, b) => a.index - b.index || a.createdAt - b.createdAt),
-      }));
+        jobs: sortFlowQueueJobs(group.jobs),
+      }))
+      .sort((left, right) => {
+        const leftFirst = left.jobs[0];
+        const rightFirst = right.jobs[0];
+        if (!leftFirst || !rightFirst) return leftFirst ? -1 : rightFirst ? 1 : 0;
+        return sortFlowQueueJobs([leftFirst, rightFirst])[0] === leftFirst ? -1 : 1;
+      });
   }, [isDesktopApp, jobs]);
   const queueKindGroups = useMemo(() => (
     (["video", "image"] as const)
@@ -540,7 +584,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   }, [settings]);
   useEffect(() => {
     const events = [...jobs.map((job) => job.modelFallback), ...accounts.map((account) => account.lastModelFallback)]
-      .filter((event) => event?.id && event.fromModel === "Nano Banana Pro" && event.toModel === "Nano Banana 2");
+      .filter((event) => event?.id && event.fromModel === "Nano Banana Pro" && event.toModel === "Nano Banana 2.1");
     try {
       const key = "zm-flow-veo:model-fallback-seen:v1";
       const seen = new Set<string>(JSON.parse(localStorage.getItem(key) || "[]"));
@@ -680,7 +724,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       // worker thread may still emit patch events while winding down.
       if (deletingIdsRef.current.has(event.entityId)) return;
       const job = normalizeFlowJobs([row], accounts)[0];
-      if (job) setJobs((current) => [...current.filter((item) => item.id !== job.id), job].sort((a, b) => b.createdAt - a.createdAt));
+      if (job) setJobs((current) => sortFlowJobs([...current.filter((item) => item.id !== job.id), job]));
     }
   }, [accounts]);
   const realtimeStatus = useRealtimeEvents("flow", onFlowRealtime);
@@ -703,6 +747,19 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       if (job.status !== "failed" || !job.error) continue;
       if (notifiedLimitJobsRef.current.has(job.id)) continue;
       if (!isFlowLimitError(job.error)) continue;
+      // Image quota is handled inline by the automatic model/account fallback;
+      // do not interrupt the queue with the generic quota dialog.
+      // The first failed SSE/poll row can arrive before the backend writes
+      // modelFallback/fallbackNotice. Use the persisted current model as the
+      // source of truth so that race cannot flash the quota popup, including
+      // after the retry has already switched the job to 2.1.
+      const automaticImageQuota = isAutomaticImageQuotaError(job.kind, job.error);
+      const pendingProFallback = isProImageQuotaError(job.kind, job.settings?.model, job.error)
+        || (job.kind === "image"
+          && !String(job.settings?.model || "").trim()
+          && job.modelFallback?.fromModel === "Nano Banana Pro"
+          && job.modelFallback?.toModel === "Nano Banana 2.1");
+      if (automaticImageQuota || pendingProFallback) continue;
       notifiedLimitJobsRef.current.add(job.id);
       showLimitNotice(job.error);
       break;
@@ -1005,7 +1062,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           ? t("Hoàn thành", "Completed")
           : status === "cancelled"
             ? t("Đã hủy", "Cancelled")
-            : t("Lỗi", "Failed");
+            : status === "action_required"
+              ? t("Cần thao tác", "Action required")
+              : t("Lỗi", "Failed");
   const jobStatusText = (job: FlowJob) => {
     // Downloaded OK; only the del-logo step failed — keep generic "Lỗi" for other failures.
     if (String(job.error || "").startsWith("FLOW_LOGO_REMOVE_FAILED")) {
@@ -1016,6 +1075,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     if (job.stage === "retrying") return t("Đang thử tạo lại", "Retrying generation");
     if (job.stage === "waiting_network") return t("Đang chờ mạng", "Waiting for network");
     if (job.stage === "recovering") return t("Đang tìm kết quả đã gửi", "Recovering submitted result");
+    if (job.stage === "recovering_session" || job.stage === "waiting_session_reset") return t("Đang khôi phục phiên", "Recovering session");
+    if (job.stage === "reconciling") return t("Đang đối soát kết quả", "Reconciling result");
     if (job.stage === "resubmitting" || job.stage === "submitting") return t("Đang gửi yêu cầu", "Submitting request");
     if (job.stage === "downloading") return t("Đang tải kết quả", "Downloading result");
     if (job.stage === "removing_logo") return t("Đang xoá logo", "Removing logo");
@@ -1101,6 +1162,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
   });
   const [retryBusy, setRetryBusy] = useState(false);
   const retryBusyRef = useRef(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const runAction = async (action: () => void | Promise<unknown>) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -1124,8 +1186,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         ));
       actionLock.current = false;
       setActionBusy(false);
-      // One command to backend — it handles everything
-      flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
+      // One command to backend — it handles everything.
+      void flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" })
+        .then(() => flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs"))
+        .then((data) => setJobs(normalizeFlowJobs(data.jobs, accounts)))
+        .catch(() => {});
       toast.success(t("Đã hủy các job đang chờ/chạy.", "Queued and running jobs cancelled."));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -1160,18 +1225,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       status: "checking",
       message: t("Đang kiểm tra tài khoản…", "Checking account…"),
     })));
-    let okCount = 0;
-    for (const target of pending) {
+    const probeOne = async (target: { id: string; label: string }) => {
       try {
         const row = await flowRequest<{ ok?: boolean; code?: string; loginOpened?: boolean }>(
           `/api/flow/accounts/${target.id}/prepare`,
           { method: "POST" },
         );
         const ok = Boolean(row.ok) || row.code === "SESSION_IN_USE" || row.code === "SESSION_READY";
-        if (ok) {
-          okCount += 1;
-          sessionCheckedAccounts.add(target.id);
-        }
+        if (ok) sessionCheckedAccounts.add(target.id);
         setAccountProbe((current) => (current || []).map((item) => (
           item.id === target.id
             ? {
@@ -1183,6 +1244,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             }
             : item
         )));
+        return ok;
       } catch (error) {
         setAccountProbe((current) => (current || []).map((item) => (
           item.id === target.id
@@ -1193,8 +1255,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             }
             : item
         )));
+        return false;
       }
-    }
+    };
+    // Parallel prepare — sequential Chrome probes made random multi-account create feel hung.
+    const results = await Promise.all(pending.map((target) => probeOne(target)));
+    const okCount = results.filter(Boolean).length;
     try {
       const snapshot = await flowRequest<{ accounts?: FlowAccount[] }>("/api/flow/accounts");
       if (snapshot.accounts) setAccounts(normalizeFlowAccounts(snapshot.accounts));
@@ -1490,7 +1556,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       submitAbortRef.current = null;
       if ((error as Error).name === "AbortError") return; // delete-all aborted — no-op
       const message = error instanceof Error ? error.message : String(error);
-      setApiError(message);
+      const automaticImageQuota = isAutomaticImageQuotaError(createKind, message);
+      // Image quota is handled by the backend's model/account fallback;
+      // do not surface the generic quota banner while that handoff settles.
+      setApiError(automaticImageQuota ? "" : message);
       // Clear optimistic stubs so the queue does not keep fake jobs after a hard block.
       setJobs((current) => current.filter((j) => !j.id.startsWith("_opt_")));
       if (/FLOW_NO_ONLINE_ACCOUNTS|NO_ONLINE_ACCOUNTS/i.test(message)) {
@@ -1501,7 +1570,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           "No Flow accounts are online. Connect an account before generating.",
         ));
       }
-      if (isFlowLimitError(message)) showLimitNotice(message);
+      if (isFlowLimitError(message) && !automaticImageQuota) showLimitNotice(message);
     }
   };
   const addAccount = () => {
@@ -1741,17 +1810,21 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       setRetryBusy(false);
       return;
     }
-    const retryRequests = groups.flatMap((group) => {
+    const batchItems = groups.flatMap((group) => {
       const retryBase = /omni.*flash/i.test(group.model) && group.duration.trim()
         ? { model: group.model, ratio: group.ratio, duration: group.duration, resolution: group.resolution, quality: group.quality, count: group.count, concurrency }
         : { model: group.model, ratio: group.ratio, resolution: group.resolution, quality: group.quality, count: group.count, concurrency };
       // Persist Open Chrome on the job settings (and top-level for older backends).
       const retrySettings = { ...retryBase, removeLogo: retryTarget.removeLogo, headless: retryTarget.headless };
-      return group.jobs.map((job) => flowRequest<Record<string, unknown>>(`/api/flow/jobs/${job.id}/retry`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accountId: group.accountId, mode: group.mode, settings: retrySettings, fresh: retryTarget.fresh, headless: retryTarget.headless, manual: true }),
-      }).then(updateJob));
+      return group.jobs.map((job) => ({
+        jobId: job.id,
+        accountId: group.accountId,
+        mode: group.mode,
+        settings: retrySettings,
+        fresh: retryTarget.fresh,
+        headless: retryTarget.headless,
+        manual: true,
+      }));
     });
     // Remember the dialog choice in quick settings so the next open matches.
     setSettings((current) => {
@@ -1759,17 +1832,22 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(next)); } catch { /* ponytail: quota */ }
       return next;
     });
-    void Promise.allSettled(retryRequests)
-      .then(async (results) => {
+    void flowRequest<{ jobs: Array<Record<string, unknown>>; acceptedCount: number; rejectedCount: number }>("/api/flow/jobs/batch-retry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: batchItems }),
+    })
+      .then(async (result) => {
         const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
         setJobs(normalizeFlowJobs(data.jobs, accounts));
-        const failed = results.find((result) => result.status === "rejected");
-        if (failed?.status === "rejected") throw failed.reason;
         toast.success(
           retryJobs.every((job) => job.status === "done")
-            ? t(`Đã đưa ${retryJobs.length} job vào hàng đợi tạo mới.`, `Queued ${retryJobs.length} jobs to create new media.`)
-            : t(`Đã đưa ${retryJobs.length} job vào hàng đợi chạy lại.`, `Queued ${retryJobs.length} jobs for retry.`),
+            ? t(`Đã đưa ${result.acceptedCount} job vào hàng đợi tạo mới.`, `Queued ${result.acceptedCount} jobs to create new media.`)
+            : t(`Đã đưa ${result.acceptedCount} job vào hàng đợi chạy lại.`, `Queued ${result.acceptedCount} jobs for retry.`),
         );
+        if (result.rejectedCount) {
+          toast.error(t(`${result.rejectedCount} job không thể đưa vào hàng đợi.`, `${result.rejectedCount} jobs could not be queued.`));
+        }
       })
       .catch((error) => {
         const msg = error instanceof Error ? error.message : String(error);
@@ -1815,12 +1893,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     });
   };
   const cancelAllJobs = useCallback(() => {
+    if (bulkBusy) return;
     const activeCount = jobs.filter((job) => job.status === "queued" || job.status === "processing").length;
     if (!activeCount) return;
     setConfirmAction({
       message: t(`Hủy ${activeCount} job đang chờ/chạy?`, `Cancel ${activeCount} queued/running jobs?`),
       confirmLabel: t("Hủy tất cả", "Cancel all"),
-      run: () => {
+      run: async () => {
+        setBulkBusy(true);
         // Abort in-flight POST, drop stubs, mark active jobs cancelled
         submitAbortRef.current?.abort();
         submitAbortRef.current = null;
@@ -1833,12 +1913,25 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
           ));
         window.dispatchEvent(new CustomEvent("zm-ai-tool:background-tasks-clear", { detail: { topic: "flow" } }));
         setApiError("");
-        toast.success(t("Đã hủy tất cả job.", "All jobs cancelled."));
-        // One command to backend — handles everything
-        flowRequest<{ ok: boolean }>("/api/flow/jobs/cancel-all", { method: "POST" }).catch(() => {});
+        try {
+          // One command to backend — success is reported only after the
+          // atomic store update, then refresh the authoritative snapshot.
+          await flowRequest<{ ok: boolean; cancelled: number }>("/api/flow/jobs/cancel-all", { method: "POST" });
+          const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
+          setJobs(normalizeFlowJobs(data.jobs, accounts));
+          toast.success(t("Đã hủy tất cả job.", "All jobs cancelled."));
+        } catch (error) {
+          try {
+            const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
+            setJobs(normalizeFlowJobs(data.jobs, accounts));
+          } catch { /* keep the optimistic view until polling reconnects */ }
+          toast.error(error instanceof Error ? error.message : String(error));
+        } finally {
+          setBulkBusy(false);
+        }
       },
     });
-  }, [jobs, t]);
+  }, [jobs, t, bulkBusy, accounts]);
 
   const canRetryJob = (job: FlowJob) =>
     job.status === "done"
@@ -1874,32 +1967,40 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     setConfirmAction({
       message: t(`Xóa ${jobs.length} job cùng file đầu ra trên đĩa? Không thể hoàn tác.`, `Delete all ${jobs.length} jobs and their output files from disk? This cannot be undone.`),
       confirmLabel: t("Xóa tất cả", "Delete all"),
-      run: () => {
-        // 1. Clear UI immediately — toast fires now, no waiting for backend
+      run: async () => {
+        if (bulkBusy) return;
+        setBulkBusy(true);
+        // 1. Clear the optimistic view while the atomic backend delete runs.
         submitAbortRef.current?.abort();
         submitAbortRef.current = null;
         postInFlightRef.current = false;
         deletingAllRef.current = true;
         setJobs([]);
         setApiError("");
-        toast.success(t("Đã xóa tất cả job.", "All jobs deleted."));
-        // 2. Backend wipe in background; keep UI empty until server confirms
-        void (async () => {
-          try {
-            await flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" }).catch(() => {});
-            // One retry if the first wipe raced with a straggler write
-            const check = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs").catch(() => ({ jobs: [] as Array<Record<string, unknown>> }));
-            if ((check.jobs || []).length) {
-              await flowRequest<{ ok: boolean }>("/api/flow/jobs", { method: "DELETE" }).catch(() => {});
-            }
-            if (!isDesktopApp && webOutputRootRef.current) {
-              await Promise.allSettled(currentJobs.map((job) => deleteWebFlowOutputs(job)));
-            }
-            setJobs([]);
-          } finally {
-            deletingAllRef.current = false;
+        // 2. Wipe the backend atomically; the success toast waits for an
+        // empty authoritative snapshot. File cleanup stays best-effort.
+        try {
+          await flowRequest<{ ok: boolean; deleted: number }>("/api/flow/jobs", { method: "DELETE" });
+          const check = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
+          setJobs(normalizeFlowJobs(check.jobs || [], accounts));
+          if ((check.jobs || []).length > 0) {
+            throw new Error(t("Chưa xác nhận hàng đợi đã rỗng.", "The queue is not confirmed empty yet."));
           }
-        })();
+          if (!isDesktopApp && webOutputRootRef.current) {
+            await Promise.allSettled(currentJobs.map((job) => deleteWebFlowOutputs(job)));
+          }
+          setJobs([]);
+          toast.success(t("Đã xóa tất cả job.", "All jobs deleted."));
+        } catch (error) {
+          try {
+            const data = await flowRequest<{ jobs: Array<Record<string, unknown>> }>("/api/flow/jobs");
+            setJobs(normalizeFlowJobs(data.jobs || [], accounts));
+          } catch { /* keep the empty view until polling reconnects */ }
+          toast.error(error instanceof Error ? error.message : String(error));
+        } finally {
+          deletingAllRef.current = false;
+          setBulkBusy(false);
+        }
       },
     });
   };
@@ -2020,15 +2121,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     }
   };
   const connectAccount = (account: FlowAccount) => {
-    const isReconnect = !!account.projectId;
     // Chỉ 1 toast ngay khi nhấn — kết quả sẽ được toast bởi useEffect watch status
-    toast.info(
-      isReconnect
-        ? t("Đang kết nối lại ở chế độ ẩn. Chỉ mở Chrome nếu lỗi.", "Reconnecting in the background. Chrome opens only if it fails.")
-        : t("Đang đăng nhập ở chế độ ẩn. Chỉ mở Chrome nếu lỗi.", "Signing in in the background. Chrome opens only if it fails.")
-    );
+    toast.info(t("Đang kết nối tài khoản… Chrome sẽ mở nếu cần.", "Connecting account… Chrome will open if needed."));
     void flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/connect`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ manual: true }),
     }).then((connected) => {
       setAccounts((current) => current.map((item) => item.id === connected.id ? normalizeFlowAccounts([connected])[0] : item));
     }).catch((error) => {
@@ -2108,6 +2206,21 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       .catch((error) => {
         const msg = error instanceof Error ? error.message : String(error);
         toast.error(t("Không thể bỏ cách ly", "Failed to clear suspension") + ": " + msg);
+      });
+  };
+  const clearModelSuspension = (account: FlowAccount, kind: string, model: string) => {
+    void flowRequest<FlowAccount>(`/api/flow/accounts/${account.id}/clear-model-suspension`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, model }),
+    })
+      .then((updated) => {
+        setAccounts((current) => current.map((item) => item.id === updated.id ? normalizeFlowAccounts([updated])[0] : item));
+        toast.success(t(`Đã bỏ cách ly model ${model}`, `Model ${model} suspension cleared`));
+      })
+      .catch((error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        toast.error(t("Không thể bỏ cách ly model", "Failed to clear model suspension") + ": " + msg);
       });
   };
   const syncAllAccounts = async () => {
@@ -2265,6 +2378,21 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       await copyText(text, t('Đã sao chép log.', 'Logs copied.'));
       setLogsCopied(true);
       window.setTimeout(() => setLogsCopied(false), 1800);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const copyJobLog = async (job: FlowJob) => {
+    const code = String(job.error || "FLOW_ERROR").split(":", 1)[0].trim() || "FLOW_ERROR";
+    const safe = [
+      `job=${job.id}`,
+      `account=${job.accountId || ""}`,
+      `code=${code}`,
+      `stage=${job.stage || job.status}`,
+      `timestamp=${new Date((job.finishedAt || job.updatedAt || job.createdAt) * 1000).toISOString()}`,
+    ].join(" ");
+    try {
+      await copyText(safe, t("Đã sao chép log nhiệm vụ.", "Job log copied."));
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     }
@@ -2486,13 +2614,13 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     setAccountCookie("");
                   }}>
                     <option value="chrome">{t("Đăng nhập Chrome", "Sign in with Chrome")}</option>
-                    <option value="cookie">{t("Dán Cookie Google Labs", "Paste Google Labs Cookie")}</option>
+                    <option value="cookie">{t("Dán Cookie Google Flow", "Paste Google Flow Cookie")}</option>
                   </select>
                 </label>
                 {accountLoginMode === "cookie" && <label className="flow-account-cookie">
-                  <span>{t("Cookie Google Labs *", "Google Labs Cookie *")}</span>
-                  <small id="flow-cookie-help">{t("Mở labs.google/fx/tools/flow đã đăng nhập → F12 → Network → chọn request tới labs.google → Request Headers → sao chép Cookie. Cookie là thông tin đăng nhập, không chia sẻ với người khác; phiên được lưu trong Chrome profile của tài khoản.", "Open labs.google/fx/tools/flow while signed in → F12 → Network → select a labs.google request → Request Headers → copy Cookie. Cookies are sign-in credentials; do not share them. The session is stored in the account's Chrome profile.")}</small>
-                  <textarea required rows={4} maxLength={32768} autoComplete="off" spellCheck={false} disabled={accountSaving} aria-describedby="flow-cookie-help" value={accountCookie} onChange={(event) => setAccountCookie(event.target.value)} placeholder={t("Dán Cookie Google Labs tại đây", "Paste Google Labs Cookie here")} />
+                  <span>{t("Cookie Google Flow *", "Google Flow Cookie *")}</span>
+                  <small id="flow-cookie-help">{t("Mở flow.google.com đã đăng nhập → F12 → Network → chọn request tới flow.google.com → Request Headers → sao chép Cookie. Cookie là thông tin đăng nhập, không chia sẻ với người khác; phiên được lưu trong Chrome profile của tài khoản.", "Open flow.google.com while signed in → F12 → Network → select a flow.google.com request → Request Headers → copy Cookie. Cookies are sign-in credentials; do not share them. The session is stored in the account's Chrome profile.")}</small>
+                  <textarea required rows={4} maxLength={32768} autoComplete="off" spellCheck={false} disabled={accountSaving} aria-describedby="flow-cookie-help" value={accountCookie} onChange={(event) => setAccountCookie(event.target.value)} placeholder={t("Dán Cookie Google Flow tại đây", "Paste Google Flow Cookie here")} />
                 </label>}
                 <footer>
                   <button type="button" disabled={accountSaving} onClick={() => {
@@ -2524,7 +2652,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       ? account.plan
                       : t("Chưa xác minh", "Unverified")}</span>
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      {Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000) && (
+                      {(Boolean(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000) || activeFlowModelSuspensions(account).length > 0) && (
                         <mark
                           className="suspended"
                           style={{
@@ -2534,7 +2662,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             fontWeight: 600,
                           }}
                         >
-                          ⚠️ {t("Tạm cách ly", "Suspended")}
+                          ⚠️ {account.suspendedUntil && account.suspendedUntil > Date.now() / 1000
+                            ? t("Tạm cách ly", "Suspended")
+                            : t("Model tạm cách ly", "Model suspended")}
                         </mark>
                       )}
                       <mark className={account.status}>
@@ -2549,9 +2679,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <div className="flow-account-name-row">
                     <h3>
                       {account.email || account.label}
-                      {account.isDefault && (
-                        <small>{t("Mặc định", "Default")}</small>
-                      )}
                     </h3>
                     {account.status === "online" && account.projectId && (
                       <button
@@ -2590,7 +2717,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                         </span>
                         <button
                           type="button"
-                          style={{ fontSize: 11, padding: "2px 7px", cursor: "pointer", borderRadius: 4, whiteSpace: "nowrap", flexShrink: 0 }}
+                          className="flow-suspension-action"
                           onClick={() => void clearSuspension(account)}
                         >
                           {t("Bỏ cách ly", "Unblock")}
@@ -2604,19 +2731,49 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                           {formatFlowExplain(explainFlowError(account.suspendReason), t).title}
                         </div>
                       )}
-                      <details><summary>{t("Chi tiết để copy cho AI/dev", "Copy details for AI/dev")}</summary>
-                        <pre style={{ whiteSpace: "pre-wrap" }}>{technicalFlowDetail(account.suspendReason)}</pre>
-                        <button type="button" onClick={() => void copyText(technicalFlowDetail(account.suspendReason))}>{t("Copy lỗi", "Copy error")}</button>
+                      <details className="flow-suspension-details"><summary>{t("Chi tiết để copy cho AI/dev", "Copy details for AI/dev")}</summary>
+                        <pre>{technicalFlowDetail(account.suspendReason)}</pre>
+                        <button className="flow-suspension-action" type="button" onClick={() => void copyText(technicalFlowDetail(account.suspendReason))}>{t("Copy lỗi", "Copy error")}</button>
                       </details>
                     </div>
                   )}
 
-                  {account.lastModelFallback && <details>
-                    <summary>{t("Pro hết hạn mức → Nano Banana 2.1", "Pro quota reached → Nano Banana 2.1")}</summary>
-                    <p>{t("Nano Banana Pro đã đạt hạn mức. Đã chuyển sang Nano Banana 2.1 và lên lịch tạo lại.", "Nano Banana Pro reached its quota. Switched to Nano Banana 2.1 and scheduled a retry.")}</p>
-                    <pre style={{ whiteSpace: "pre-wrap" }}>{technicalFlowDetail(account.lastModelFallback.rawError)}</pre>
-                    <button type="button" onClick={() => void copyText(technicalFlowDetail(account.lastModelFallback?.rawError))}>{t("Copy lỗi", "Copy error")}</button>
-                  </details>}
+                  {activeFlowModelSuspensions(account).map(([key, entry]) => {
+                    const [kind, ...modelParts] = key.split(":");
+                    const model = modelParts.join(":") || key;
+                    return (
+                      <div
+                        className="flow-account-suspension-box"
+                        key={key}
+                        style={{
+                          margin: "8px 0",
+                          padding: "5px 8px",
+                          background: "rgba(234, 88, 12, 0.08)",
+                          border: "1px solid rgba(234, 88, 12, 0.25)",
+                          borderRadius: 6,
+                          fontSize: 12,
+                          color: "#c2410c",
+                        }}
+                      >
+                        <div className="flow-suspension-row">
+                          <strong>
+                            ⏸ {model} · {new Date(Number(entry.until) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} ({formatRemainingCooldown(Number(entry.until), t)})
+                          </strong>
+                          <button className="flow-suspension-action" type="button" onClick={() => void clearModelSuspension(account, kind, model)}>
+                            {t("Bỏ cách ly", "Unblock")}
+                          </button>
+                        </div>
+                        {entry.reason && (
+                          <details className="flow-suspension-details">
+                            <summary>{t("Chi tiết để copy cho AI/dev", "Copy details for AI/dev")}</summary>
+                            <pre>{technicalFlowDetail(entry.reason)}</pre>
+                            <button className="flow-suspension-action" type="button" onClick={() => void copyText(technicalFlowDetail(entry.reason))}>{t("Copy lỗi", "Copy error")}</button>
+                          </details>
+                        )}
+                      </div>
+                    );
+                  })}
+
                   <div className="flow-account-credits">
                     <div className="flow-account-credits-head">
                       <strong>
@@ -2664,9 +2821,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                     >
                       {account.status === "connecting"
                         ? t("Đang kết nối…", "Connecting…")
-                        : account.status === "online"
-                          ? t("Đăng nhập lại", "Reconnect")
-                          : t("Kết nối", "Connect")}
+                        : t("Kết nối", "Connect")}
                     </button>
                     <button type="button" disabled={account.status === "connecting"} onClick={() => editAccount(account)}>
                       {t("Sửa", "Edit")}
@@ -3405,14 +3560,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                 <button
                   className="flow-text-button"
                   type="button"
-                  disabled={actionBusy || retryBusy || !jobs.some(canRemoveLogo)}
+                  disabled={actionBusy || retryBusy || bulkBusy || !jobs.some(canRemoveLogo)}
                   onClick={() => removeLogoForJobs(jobs)}
                 >
                   {t("Xoá tất cả logo", "Remove all logos")}
                 </button>
-                <button className="flow-text-button" type="button" disabled={actionBusy || retryBusy || jobs.some((job) => job.status === "queued" || job.status === "processing") || !jobs.some(canRetryJob)} onClick={retryAllJobs}>{jobs.filter(canRetryJob).every(isFreshCreateJob) && jobs.some(canRetryJob) ? t("Tạo mới tất cả", "Create all new") : t("Chạy lại tất cả", "Retry all")}</button>
-                <button className="flow-text-button" type="button" disabled={!jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={cancelAllJobs}>{t("Hủy tất cả", "Cancel all")}</button>
-                <button className="flow-text-button is-danger" type="button" disabled={!jobs.length} onClick={deleteAllJobs}>{t("Xóa tất cả", "Delete all")}</button>
+                <button className="flow-text-button" type="button" disabled={actionBusy || retryBusy || bulkBusy || jobs.some((job) => job.status === "queued" || job.status === "processing") || !jobs.some(canRetryJob)} onClick={retryAllJobs}>{jobs.filter(canRetryJob).every(isFreshCreateJob) && jobs.some(canRetryJob) ? t("Tạo mới tất cả", "Create all new") : t("Chạy lại tất cả", "Retry all")}</button>
+                <button className="flow-text-button" type="button" disabled={actionBusy || retryBusy || bulkBusy || !jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={cancelAllJobs}>{t("Hủy tất cả", "Cancel all")}</button>
+                <button className="flow-text-button is-danger" type="button" disabled={actionBusy || retryBusy || bulkBusy || !jobs.length} onClick={deleteAllJobs}>{t("Xóa tất cả", "Delete all")}</button>
               </div>
             </div>
             <div className="flow-queue-kind-tabs" role="tablist" aria-label={t("Loại hàng đợi", "Queue type")}>
@@ -3563,6 +3718,20 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             </i>
                             <small>{job.progress}%</small>
                           </div>
+                          {job.fallbackNotice && (
+                            <small className="flow-job-fallback-notice">
+                              {typeof job.fallbackNotice === "string"
+                                ? job.fallbackNotice
+                                : t(job.fallbackNotice.vi, job.fallbackNotice.en)}
+                            </small>
+                          )}
+                          {job.recoveryNotice && (
+                            <small className="flow-job-recovery-notice">
+                              {typeof job.recoveryNotice === "string"
+                                ? job.recoveryNotice
+                                : t(job.recoveryNotice.vi, job.recoveryNotice.en)}
+                            </small>
+                          )}
                           {job.error && (
                             <small className="flow-job-error">{jobErrorText(job.error)}</small>
                           )}
@@ -3761,9 +3930,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   </tr>
                 </thead>
                 <tbody>
-                  {[...jobs].sort((left, right) => right.createdAt - left.createdAt).map((job, index) => (
+                  {sortFlowJobs(jobs).map((job) => (
                     <tr key={job.id}>
-                      <td>24/08 · 14:{30 - index * 4}</td>
+                      <td>
+                        <div>{formatFlowTimestamp(job.createdAt)}</div>
+                        <small>{t("Chạy", "Elapsed")}: {formatFlowElapsed(job, historyNow)}</small>
+                      </td>
                       <td>
                         <mark>
                           {job.kind === "video"
@@ -3844,6 +4016,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                               onClick={() => removeLogoOnly(job.id)}
                             >
                               {t("Xoá logo", "Remove logo")}
+                            </button>
+                          )}
+                          {tab === "history" && job.error && ["done", "failed", "cancelled", "action_required"].includes(job.status) && (
+                            <button type="button" onClick={() => void copyJobLog(job)}>
+                              {t("Sao chép log", "Copy log")}
                             </button>
                           )}
                         </div>
@@ -3991,9 +4168,11 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
             )}
           </section>
         )}
-        {actionBusy && !hideActionNotice && (
+        {(actionBusy || retryBusy || bulkBusy) && !hideActionNotice && (
           <div className="flow-action-notice" role="status" aria-live="polite">
-            <span>{t("Đang xử lý yêu cầu, vui lòng chờ…", "Processing your request, please wait…")}</span>
+            <span>{retryBusy || bulkBusy
+              ? t("Đang cập nhật hàng loạt…", "Updating queue in bulk…")
+              : t("Đang xử lý yêu cầu, vui lòng chờ…", "Processing your request, please wait…")}</span>
             <button type="button" onClick={() => setHideActionNotice(true)} aria-label={t("Ẩn thông báo", "Hide notice")}>×</button>
           </div>
         )}

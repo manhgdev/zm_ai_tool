@@ -128,7 +128,7 @@ test('Flow cookie account inputs have Vietnamese and English labels', () => {
       pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
     }
   })
-  for (const vi of ['Email Google', 'Cách kết nối', 'Dán Cookie Google Labs', 'Cookie Google Labs *', 'Lưu và kết nối', 'Mở phiên']) {
+  for (const vi of ['Email Google', 'Cách kết nối', 'Dán Cookie Google Flow', 'Cookie Google Flow *', 'Lưu và kết nối', 'Mở phiên']) {
     assert.ok(pairs.get(vi)?.trim(), `Missing English label for ${vi}`)
     assert.notEqual(pairs.get(vi), vi)
   }
@@ -146,6 +146,19 @@ test('headless Flow login explains cookie and desktop recovery in both languages
     assert.match(action, /desktop\/VNC/)
     assert.match(action, /[Pp]assword|mật khẩu/)
   }
+})
+
+test('Flow login redirect keeps bilingual recovery copy without claiming cookie expiry or an open window', () => {
+  const error = explainFlowError('FLOW_COOKIE_EXPIRED')
+  for (const field of ['title', 'summary', 'action']) {
+    assert.ok(error[`${field}Vi`]?.trim())
+    assert.ok(error[`${field}En`]?.trim())
+    assert.notEqual(error[`${field}Vi`], error[`${field}En`])
+  }
+  assert.doesNotMatch(error.titleVi, /hết hạn/)
+  assert.doesNotMatch(error.titleEn, /expired/i)
+  assert.doesNotMatch(error.actionVi, /vừa mở/)
+  assert.doesNotMatch(error.actionEn, /that opened/)
 })
 
 test('CapCut errors produce Vietnamese and English messages while preserving diagnostics', () => {

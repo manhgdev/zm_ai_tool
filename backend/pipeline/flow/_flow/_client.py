@@ -131,7 +131,7 @@ class FlowClient:
 
         # Navigate to project page to load session + reCAPTCHA
         page = await bm.page()
-        if "flow.google.com" not in page.url and "labs.google" not in page.url:
+        if "flow.google.com" not in page.url:
             proj_url = f"https://flow.google.com/project/{pid}"
             await page.goto(proj_url, wait_until="domcontentloaded", timeout=20_000)
             await asyncio.sleep(2)

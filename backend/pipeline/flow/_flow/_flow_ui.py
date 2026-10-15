@@ -53,7 +53,7 @@ _FLOW_TRIGGER_SELECTOR = 'button, [role="button"]'
 
 
 class FlowUI:
-    """Knows the exact selector patterns for labs.google/fx/tools/flow."""
+    """Knows the exact selector patterns for flow.google.com."""
 
     # ==================================================================
     # PROJECT PAGE — Navigation / Settings / Prompt / Submit
@@ -67,7 +67,7 @@ class FlowUI:
 
     async def navigate_to_edit(self, page, project_id: str, workflow_id: str) -> None:
         """Navigate to the edit view for a specific workflow."""
-        url = f"https://labs.google/fx/tools/flow/project/{project_id}/edit/{workflow_id}"
+        url = f"https://flow.google.com/project/{project_id}/edit/{workflow_id}"
         if url.rstrip("/") in page.url:
             return
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)

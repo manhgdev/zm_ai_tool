@@ -319,7 +319,13 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       prompt: String(raw.prompt || ""),
       inputType: ["txt", "csv", "json"].includes(raw.inputType as string) ? raw.inputType as "txt" | "csv" | "json" : "prompt",
       createdAt: Number(raw.createdAt || Date.now() / 1000),
-      status: ["processing", "queued", "done", "cancelled"].includes(raw.status as string) ? raw.status as FlowJob["status"] : "failed",
+      updatedAt: raw.updatedAt == null ? undefined : Number(raw.updatedAt),
+      queueOrder: raw.queueOrder == null ? undefined : Number(raw.queueOrder),
+      startedAt: raw.startedAt == null ? null : Number(raw.startedAt),
+      finishedAt: raw.finishedAt == null ? null : Number(raw.finishedAt),
+      elapsedSeconds: Number(raw.elapsedSeconds || 0),
+      status: ["processing", "queued", "done", "failed", "cancelled", "action_required"].includes(raw.status as string)
+        ? raw.status as FlowJob["status"] : "failed",
       stage: String(raw.stage || ""),
       progress: Number(raw.progress || 0),
       accountId,
@@ -337,6 +343,8 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
       error: raw.error ? String(raw.error) : null,
       quotaModelFallbackApplied: raw.quotaModelFallbackApplied === true,
       modelFallback: raw.modelFallback as FlowJob["modelFallback"],
+      fallbackNotice: raw.fallbackNotice as FlowJob["fallbackNotice"],
+      recoveryNotice: raw.recoveryNotice as FlowJob["recoveryNotice"],
       settings: {
         model: savedModel === "Veo 3.1 - Lite [Lower Priority]" ? "Veo 3.1 - Fast" : savedModel,
         ratio: String(s.ratio || "16:9"),
@@ -356,6 +364,47 @@ export function normalizeFlowJobs(rows: Array<Record<string, unknown>>, accounts
         concurrency: s.concurrency != null ? String(s.concurrency) : undefined,
       },
     };
+  });
+}
+
+const FLOW_ACTIVE_STAGES = new Set(["processing", "recovering_session", "reconciling", "downloading", "model_fallback"]);
+
+/** Shared ordering for queue, history, initial snapshots, polling and SSE. */
+export function sortFlowJobs<T extends Pick<FlowJob, "status" | "stage" | "createdAt" | "id"> & { updatedAt?: number }>(jobs: T[]): T[] {
+  const rank = (job: T) => {
+    if (job.status === "processing" || FLOW_ACTIVE_STAGES.has(String(job.stage || ""))) return 0;
+    if (job.status === "queued") return 1;
+    return 2;
+  };
+  return [...jobs].sort((left, right) => {
+    const group = rank(left) - rank(right);
+    if (group) return group;
+    const updated = Number(right.updatedAt || 0) - Number(left.updatedAt || 0);
+    if (updated) return updated;
+    const created = Number(right.createdAt || 0) - Number(left.createdAt || 0);
+    if (created) return created;
+    return String(left.id).localeCompare(String(right.id));
+  });
+}
+
+/** Queue order is the user's submission order, independent of job status. */
+export function sortFlowQueueJobs<T extends Pick<FlowJob, "index" | "createdAt" | "id"> & { queueOrder?: number }>(jobs: T[]): T[] {
+  const inputIndexOrInfinity = (value: unknown) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : Number.POSITIVE_INFINITY;
+  };
+  const queueOrderOrInfinity = (value: unknown) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : Number.POSITIVE_INFINITY;
+  };
+  return [...jobs].sort((left, right) => {
+    const index = inputIndexOrInfinity(left.index) - inputIndexOrInfinity(right.index);
+    if (index) return index;
+    const queueOrder = queueOrderOrInfinity(left.queueOrder) - queueOrderOrInfinity(right.queueOrder);
+    if (queueOrder) return queueOrder;
+    const created = Number(left.createdAt || 0) - Number(right.createdAt || 0);
+    if (created) return created;
+    return String(left.id).localeCompare(String(right.id));
   });
 }
 
@@ -431,15 +480,14 @@ export function normalizeFlowAccounts(rows: FlowAccount[]): FlowAccount[] {
   });
 }
 
-const FLOW_PLAN_ORDER = ["Ultra", "Pro", "Plus", "Free"];
-
-/** Display order: default account first, then Ultra → Pro → Plus → Free (unknown plans last). */
+/** Keep the chosen default first, then use a stable identity order. */
 export function sortFlowAccounts(accounts: FlowAccount[]): FlowAccount[] {
-  const rank = (a: FlowAccount) => {
-    const plan = FLOW_PLAN_ORDER.indexOf(a.plan);
-    return plan < 0 ? FLOW_PLAN_ORDER.length : plan;
-  };
-  return [...accounts].sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)) || rank(a) - rank(b));
+  const key = (account: FlowAccount) => String(account.email || account.label || account.id || "").trim().toLocaleLowerCase();
+  return [...accounts].sort((a, b) =>
+    Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault))
+    || key(a).localeCompare(key(b))
+    || String(a.id || "").localeCompare(String(b.id || "")),
+  );
 }
 
 export function isFlowAccountConnected(account: FlowAccount): boolean {
