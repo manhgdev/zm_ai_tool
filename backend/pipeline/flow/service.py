@@ -543,13 +543,6 @@ def _classify_visible_flow_error(text: str) -> str:
         low,
     ):
         return f"FLOW_AUTOMATION_BLOCKED: {raw}"
-    # Transient throttle / rate limit — not daily quota and not bot detection.
-    if re.search(
-        r"please wait a few seconds|vui lòng chờ vài giây|rate.?limit|too many|"
-        r"try again (?:in|later)|thử lại sau",
-        low,
-    ):
-        return f"FLOW_GENERATION_REJECTED: {raw}"
     # Credits only when the copy is clearly about Flow credits (not bare "not enough").
     if _flow_credit_blocked(raw) or re.search(
         r"(?:out of|h[eế]t)\s+(?:credits?|t[ií]n(?:\s*d[uụ]ng)?)|"
@@ -559,12 +552,22 @@ def _classify_visible_flow_error(text: str) -> str:
         low,
     ):
         return f"FLOW_CREDITS_EMPTY: {raw}"
+    # Daily/plan quota before "try again later" — Flow often appends
+    # "Vui lòng thử lại sau" to hạn mức copy; that must not become REJECTED.
     if re.search(
         r"quota|h[eế]t l[uư][oợ]t|h[eế]t h[aạ]n m[uứ]c|usage limit|generation limit|"
-        r"daily limit|monthly limit|h[aạ]n m[uứ]c",
+        r"daily limit|monthly limit|h[aạ]n m[uứ]c|"
+        r"b[aạ]n [đd][ãa] [đd][aạ]t [đd][eế]n h[aạ]n m[uứ]c",
         low,
     ):
         return f"FLOW_QUOTA_EXHAUSTED: {raw}"
+    # Transient throttle / rate limit — not daily quota and not bot detection.
+    if re.search(
+        r"please wait a few seconds|vui lòng chờ vài giây|rate.?limit|too many|"
+        r"try again (?:in|later)|thử lại sau",
+        low,
+    ):
+        return f"FLOW_GENERATION_REJECTED: {raw}"
     return f"FLOW_GENERATION_REJECTED: {raw}"
 
 
@@ -2871,16 +2874,17 @@ class FlowService:
         account_id = str(account["id"])
         browser = None
         try:
-            from .browser import BrowserManager, FLOW_BASE_URL
+            from .browser import BrowserManager, FLOW_BASE_URL, free_local_port
             browser = BrowserManager(
                 headless=True,
                 profile_dir=store.profile_dir(account_id),
                 restore_last_session=cookie_auth,
+                remote_debugging_port=free_local_port(),
             )
             await browser.start()
             if stored and seed:
                 try:
-                    await browser.context.add_cookies(stored)
+                    await browser.context.add_cookies(_cookies_for_fresh_profile(stored))
                 except Exception:
                     pass
             page = await browser.page()
@@ -3959,7 +3963,10 @@ class FlowService:
             # Clone only after Chrome released the profile — otherwise cookies are incomplete
             # and every job raises "Could not obtain Bearer token" in a loop.
             if login_ok:
-                # Drop stale session clones so Mở phiên recopies the flushed canonical profile.
+                # Jar is source of truth: drop partial Cookie DB so Mở phiên / jobs
+                # always re-seed via add_cookies (packaged kill may not flush).
+                _strip_profile_cookie_db(store.profile_dir(account_id))
+                # Drop stale session clones so Mở phiên recopies the canonical profile.
                 for kind in ("image", "video"):
                     shutil.rmtree(self._session_profile_dir(account_id, kind), ignore_errors=True)
                 self._requeue_auth_failed_jobs(account_id)
@@ -4231,7 +4238,7 @@ class FlowService:
 
         ponytail: short 30-s timeout; failure is expected and safe.
         """
-        from .browser import BrowserManager, FLOW_BASE_URL
+        from .browser import BrowserManager, FLOW_BASE_URL, free_local_port
         browser = None
         try:
             account = store.get_row("accounts", account_id) or {}
@@ -4240,10 +4247,11 @@ class FlowService:
                 headless=True,
                 profile_dir=store.profile_dir(account_id),
                 restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
+                remote_debugging_port=free_local_port(),
             )
             await browser.start()
             if seed:
-                cookie_records = _account_cookie_records(account.get("cookie"))
+                cookie_records = _cookies_for_fresh_profile(account.get("cookie"))
                 if cookie_records:
                     await browser.context.add_cookies(cookie_records)
             # Another worker may already have replaced a deleted project while
@@ -4607,16 +4615,13 @@ class FlowService:
         generation_token = str(job.get("generationToken") or "")
         order = int(job.get("queueOrder", job.get("inputIndex", 0)))
         with self._account_condition:
-            def account_concurrency_limit() -> int:
-                # Image and video share one account budget. Use the highest
-                # requested Flow lane count across this account's queued or
-                # active jobs instead of blocking one media kind at another
-                # kind's smaller per-job setting.
+            def global_concurrency_limit() -> int:
+                # Luồng chạy is a process-wide cap (not per account): N means at
+                # most N jobs processing total, whether 1 or many accounts.
                 values = [
                     _job_concurrency(row.get("settings") or {})
                     for row in store.list_rows("jobs")
-                    if str(row.get("accountId") or "") == account_id
-                    and row.get("status") in {"queued", "processing"}
+                    if row.get("status") in {"queued", "processing"}
                 ]
                 return max(values or [_job_concurrency(job.get("settings") or {})])
 
@@ -4639,7 +4644,7 @@ class FlowService:
                     next_queued_order(),
                     int((store.get_row("jobs", job_id) or {}).get("queueOrder", order)),
                 )  # lowest order first, retries included
-                or self._account_active.get(account_id, 0) >= account_concurrency_limit()
+                or sum(self._account_active.values()) >= global_concurrency_limit()
                 or self._account_session_blocked(account_id)
                 or self._session_warmup_wait(account_id)
                 or self._account_suspended(account_id)
@@ -5052,9 +5057,29 @@ class FlowService:
                 err_msg = str(current_job.get("error") or "Unknown error")
                 if _session_needs_login(Exception(err_msg)):
                     self._requeue_auth_failed_jobs(account_id)
-                if current_job.get("quotaModelFallbackApplied") and "FLOW_QUOTA_EXHAUSTED" in err_msg:
-                    self.suspend_account(account_id, err_msg)
-                elif _is_automation_block_error(err_msg) or current_job.get("allowAccountFallback", bool(current_job.get("randomAccount"))):
+                settings = dict(current_job.get("settings") or {})
+                pro_quota = (
+                    "FLOW_QUOTA_EXHAUSTED" in err_msg
+                    and str(current_job.get("kind") or "") == "image"
+                    and str(settings.get("model") or "") == "Nano Banana Pro"
+                    and not bool(current_job.get("quotaModelFallbackApplied"))
+                )
+                allow_account = bool(
+                    current_job.get("allowAccountFallback", bool(current_job.get("randomAccount")))
+                )
+                if pro_quota:
+                    # Pro hit hạn mức: other Pro-capable account first, then Banana 2.
+                    if allow_account and self._try_fallback_account(job_id, account_id, err_msg):
+                        pass
+                    else:
+                        self._apply_image_quota_fallback(job_id, err_msg)
+                        if (store.get_row("jobs", job_id) or {}).get("stage") == "model_fallback":
+                            self.retry(job_id, {"accountId": account_id})
+                elif current_job.get("quotaModelFallbackApplied") and "FLOW_QUOTA_EXHAUSTED" in err_msg:
+                    # Banana 2 still quota — try another account, else suspend.
+                    if not (allow_account and self._try_fallback_account(job_id, account_id, err_msg)):
+                        self.suspend_account(account_id, err_msg)
+                elif _is_automation_block_error(err_msg) or allow_account:
                     self._try_fallback_account(job_id, account_id, err_msg)
                 elif re.search(r"FLOW_CREDITS_EMPTY|FLOW_QUOTA_EXHAUSTED", err_msg, re.I):
                     self.suspend_account(account_id, err_msg)
@@ -7387,7 +7412,7 @@ class FlowService:
             if account.get("status") != "online" or not project_id:
                 raise RuntimeError("FLOW_LOGIN_REQUIRED: connect the Google Flow account first")
             from ._flow._api import FlowAPI
-            from .browser import BrowserManager
+            from .browser import BrowserManager, free_local_port
             from ._flow._client import FlowClient
             # Keep the default queue invisible. Users can opt into a visible
             # Chrome window from Flow quick settings when debugging UI drift.
@@ -7401,23 +7426,30 @@ class FlowService:
                 "info", "browser_mode", job_id=job_id, account_id=account["id"],
                 details={"kind": job_kind, "headless": bool(headless), "profileSlot": profile_slot, "manualSession": False},
             )
-            # Visible and headless jobs deliberately use the same browser path;
-            # the only behavioral switch is ``headless``.  Each job gets one
-            # isolated profile, so Flow never has to coordinate multiple tabs
-            # or a separately bootstrapped CDP session.
+            # Same CDP spawn as Connect (not Playwright launch_persistent) so
+            # packaged jobs share the signed-in Chrome surface and re-seed jar.
+            runtime_dir = profile_dir or (
+                self._clone_runtime_profile(str(account["id"]), job_id, job_kind)
+                if job_kind in {"image", "video"}
+                else store.profile_dir(account["id"])
+            )
             browser = BrowserManager(
                 headless=headless,
-                profile_dir=profile_dir or (
-                    self._clone_runtime_profile(str(account["id"]), job_id, job_kind)
-                    if job_kind in {"image", "video"}
-                    else store.profile_dir(account["id"])
-                ),
+                profile_dir=runtime_dir,
                 restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
+                remote_debugging_port=free_local_port(),
             )
             self._check_cancel(job_id)
             with self._guard:
                 self._active_browsers[job_id] = browser
             await browser.start()
+            if _seed_stored_cookies({**account, "id": str(account["id"])}):
+                jar = _cookies_for_fresh_profile(account.get("cookie"))
+                if jar:
+                    try:
+                        await browser.context.add_cookies(jar)
+                    except Exception:
+                        pass
             if job_kind in {"image", "video"}:
                 if not getattr(browser, "cdp_url", None):
                     runtime_profile = Path(browser.profile_dir)
@@ -8066,15 +8098,8 @@ class FlowService:
                 classified_error = _classify_visible_flow_error(error)
                 if classified_error.startswith("FLOW_QUOTA_EXHAUSTED:"):
                     error = classified_error
-            quota_model_fallback = (
-                error.startswith("FLOW_QUOTA_EXHAUSTED:")
-                and str((current.get("settings") or {}).get("model") or "") == "Nano Banana Pro"
-                and str(current.get("kind") or "") == "image"
-                and not bool(current.get("quotaModelFallbackApplied"))
-            )
-            if quota_model_fallback:
-                self._apply_image_quota_fallback(job_id, error)
-                return
+            # Pro image + FLOW_QUOTA_EXHAUSTED: do not downshift here. _run_sync
+            # finally tries another account first, then Nano Banana 2.
             # A normal submit/timeout/auth error belongs to this job only. Do
             # not take a healthy account offline unless Flow explicitly shows
             # unusual activity and the shared recovery path is required.

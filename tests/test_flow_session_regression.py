@@ -603,11 +603,15 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
     async def test_login_ok_drops_session_clones_after_stop(self):
         service = FlowService()
         with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
-            store._write("accounts", [{"id": "a", "status": "connecting", "projectId": "p"}])
+            store._write("accounts", [{"id": "a", "status": "connecting", "projectId": "p",
+                                      "cookie": [{"name": "SID", "value": "x", "domain": ".google.com", "path": "/"}]}])
             for kind in ("image", "video"):
                 clone = service._session_profile_dir("a", kind)
                 clone.mkdir(parents=True)
                 (clone / "marker").write_text("stale", encoding="utf-8")
+            cookie_db = store.profile_dir("a") / "Default" / "Network" / "Cookies"
+            cookie_db.parent.mkdir(parents=True)
+            cookie_db.write_bytes(b"stale-db")
             page = MagicMock()
             page.url = "https://flow.google.com/project/p"
             page.goto = AsyncMock()
@@ -635,8 +639,79 @@ class FlowSessionRegressionTest(unittest.IsolatedAsyncioTestCase):
             saved = store.get_row("accounts", "a")
             self.assertEqual(saved["status"], "online")
             self.assertIn("a", service._account_session_ready)
+            self.assertFalse(cookie_db.exists())
             for kind in ("image", "video"):
                 self.assertFalse(service._session_profile_dir("a", kind).exists())
+
+    async def test_prepare_probe_uses_cdp_port(self):
+        service = FlowService()
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            store._write("accounts", [{
+                "id": "a", "label": "Acc", "status": "online", "projectId": "p",
+                "cookie": [{"name": "SID", "value": "live", "domain": ".google.com", "path": "/", "expires": 9e9}],
+            }])
+            page = MagicMock(url="https://flow.google.com/")
+            page.goto = AsyncMock()
+            context = MagicMock()
+            context.add_cookies = AsyncMock()
+            context.cookies = AsyncMock(return_value=[
+                {"name": "SID", "value": "live", "domain": ".google.com", "expires": 9e9},
+            ])
+            browser = MagicMock(context=context)
+            browser.start = AsyncMock()
+            browser.stop = AsyncMock()
+            browser.page = AsyncMock(return_value=page)
+            with patch("pipeline.flow.browser.BrowserManager", return_value=browser) as browser_cls, \
+                 patch("pipeline.flow.browser.free_local_port", return_value=9333), \
+                 patch("pipeline.flow.service.asyncio.sleep", AsyncMock()):
+                result = await service.prepare_account_cookies("a")
+            self.assertTrue(result["ok"])
+            kwargs = browser_cls.call_args.kwargs
+            self.assertEqual(kwargs.get("remote_debugging_port"), 9333)
+            context.add_cookies.assert_awaited()
+
+    async def test_job_browser_uses_cdp_and_seeds_jar(self):
+        service = FlowService()
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            jar = [{"name": "SID", "value": "live", "domain": ".google.com", "path": "/", "secure": True, "expires": 9e9}]
+            store._write("accounts", [{
+                "id": "a", "status": "online", "projectId": "p", "imageProjectId": "p",
+                "authMethod": "chrome", "cookie": jar, "credits": 10, "plan": "Pro",
+            }])
+            job = {
+                "id": "j", "accountId": "a", "kind": "image", "mode": "text",
+                "status": "processing", "settings": {"model": "Nano Banana 2", "headless": True},
+                "prompt": "hi", "sourceFiles": [],
+            }
+            store._write("jobs", [job])
+            context = MagicMock()
+            context.add_cookies = AsyncMock()
+            browser = MagicMock(context=context, cdp_url="http://127.0.0.1:1", profile_dir=Path(raw) / "rt")
+            browser.start = AsyncMock()
+            browser.stop = AsyncMock()
+            browser.page = AsyncMock(return_value=MagicMock(url="https://flow.google.com/project/p"))
+            captured = {}
+
+            def make_browser(**kwargs):
+                captured.update(kwargs)
+                return browser
+
+            with patch("pipeline.flow.browser.BrowserManager", side_effect=make_browser), \
+                 patch("pipeline.flow.browser.free_local_port", return_value=9444), \
+                 patch.object(service, "_clone_runtime_profile", return_value=Path(raw) / "rt"), \
+                 patch.object(service, "_check_cancel"), \
+                 patch.object(service, "_log"), \
+                 patch.object(service, "_start_session_refresh", return_value=None), \
+                 patch.object(
+                     service, "_ensure_account_project_page",
+                     AsyncMock(side_effect=RuntimeError("stop-after-seed")),
+                 ), \
+                 patch("pipeline.flow._flow._api.FlowAPI"), \
+                 patch("pipeline.flow._flow._client.FlowClient"):
+                # Errors after browser start are handled inside _run_once; assert seed path only.
+                await service._run_once("j")
+            self.assertEqual(captured.get("remote_debugging_port"), 9444)
+            context.add_cookies.assert_awaited()
 
     async def test_page_shell_warning_does_not_fail_pending_generation(self):
         service = FlowService()

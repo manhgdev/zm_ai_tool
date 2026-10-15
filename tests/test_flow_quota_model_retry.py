@@ -91,3 +91,67 @@ class QuotaModelRetryTest(unittest.TestCase):
             event = store.get_row("jobs", "failed")["modelFallback"]
             self.assertEqual(event, store.get_row("accounts", "a")["lastModelFallback"])
             self.assertTrue(event["randomAccount"])
+
+    def test_pro_quota_tries_account_before_model_downshift(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            account = {
+                "id": "a", "status": "online", "projectId": "p", "plan": "Pro", "credits": 100,
+                "imageProjectId": "p",
+            }
+            store._write("accounts", [account, {
+                "id": "b", "status": "online", "projectId": "p2", "plan": "Pro", "credits": 100,
+                "imageProjectId": "p2",
+            }])
+            store._write("jobs", [{
+                "id": "j", "accountId": "a", "kind": "image", "status": "queued",
+                "queueOrder": 0, "randomAccount": True, "allowAccountFallback": True,
+                "settings": {"model": "Nano Banana Pro"},
+            }])
+            service = FlowService()
+
+            async def fail_quota(job_id, **kwargs):
+                store.patch_row("jobs", job_id, {
+                    "status": "failed", "stage": "failed",
+                    "error": "FLOW_QUOTA_EXHAUSTED: Bạn đã đạt đến hạn mức sử dụng. Vui lòng thử lại sau.",
+                })
+
+            with patch.object(service, "_verify_account_plan_before_enqueue", return_value=account), \
+                 patch.object(service, "_run", side_effect=fail_quota), \
+                 patch.object(service, "_try_fallback_account", return_value=True) as account_fb, \
+                 patch.object(service, "_apply_image_quota_fallback") as model_fb, \
+                 patch("pipeline.flow.service._network_ready_for_flow_job", return_value=True):
+                service._run_sync("j")
+            account_fb.assert_called_once()
+            model_fb.assert_not_called()
+
+    def test_pro_quota_downshifts_model_when_no_other_account(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(store, "ROOT", Path(directory)):
+            account = {
+                "id": "a", "status": "online", "projectId": "p", "plan": "Pro", "credits": 100,
+                "imageProjectId": "p",
+            }
+            store._write("accounts", [account])
+            store._write("jobs", [{
+                "id": "j", "accountId": "a", "kind": "image", "status": "queued",
+                "queueOrder": 0, "randomAccount": False, "allowAccountFallback": False,
+                "settings": {"model": "Nano Banana Pro"},
+            }])
+            service = FlowService()
+
+            async def fail_quota(job_id, **kwargs):
+                store.patch_row("jobs", job_id, {
+                    "status": "failed", "stage": "failed",
+                    "error": "FLOW_QUOTA_EXHAUSTED: Bạn đã đạt đến hạn mức sử dụng. Vui lòng thử lại sau.",
+                })
+
+            with patch.object(service, "_verify_account_plan_before_enqueue", return_value=account), \
+                 patch.object(service, "_run", side_effect=fail_quota), \
+                 patch.object(service, "_try_fallback_account", return_value=False) as account_fb, \
+                 patch.object(service, "retry") as retried, \
+                 patch("pipeline.flow.service._network_ready_for_flow_job", return_value=True):
+                service._run_sync("j")
+            account_fb.assert_not_called()
+            job = store.get_row("jobs", "j")
+            self.assertEqual(job["settings"]["model"], "Nano Banana 2")
+            self.assertTrue(job.get("quotaModelFallbackApplied"))
+            retried.assert_called_once_with("j", {"accountId": "a"})

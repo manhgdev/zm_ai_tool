@@ -3269,12 +3269,12 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   <div className="flow-random-info-box">
                     🎲 {createKind === "image"
                       ? t(
-                          "Chế độ ngẫu nhiên tài khoản tạo ảnh: Các ảnh sẽ được tự động luân phiên giữa các tài khoản online và tự động fallback sang tài khoản khác khi gặp lỗi.",
-                          "Random mode active for image generation: Images are automatically distributed across online accounts with automatic error fallback."
+                          "Chế độ ngẫu nhiên tài khoản tạo ảnh: Các ảnh sẽ được tự động luân phiên giữa các tài khoản online và tự động fallback sang tài khoản khác khi gặp lỗi. Luồng chạy là tổng số job chạy cùng lúc (mọi tài khoản), không phải mỗi tài khoản.",
+                          "Random mode for images: jobs are distributed across online accounts with automatic error fallback. Concurrent jobs is a total cap across all accounts, not per account."
                         )
                       : t(
-                          "Chế độ ngẫu nhiên tài khoản tạo video: Các video sẽ được tự động luân phiên giữa các tài khoản online và tự động fallback sang tài khoản khác khi gặp lỗi.",
-                          "Random mode active for video generation: Videos are automatically distributed across online accounts with automatic error fallback."
+                          "Chế độ ngẫu nhiên tài khoản tạo video: Các video sẽ được tự động luân phiên giữa các tài khoản online và tự động fallback sang tài khoản khác khi gặp lỗi. Luồng chạy là tổng số job chạy cùng lúc (mọi tài khoản), không phải mỗi tài khoản.",
+                          "Random mode for videos: jobs are distributed across online accounts with automatic error fallback. Concurrent jobs is a total cap across all accounts, not per account."
                         )}
                   </div>
                 )}
@@ -3282,7 +3282,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               {advancedOpen && (
                 <div className="flow-advanced">
                   <FlowSelect
-                    label={t("Luồng chạy", "Concurrent jobs")}
+                    label={t("Luồng chạy (tổng)", "Concurrent jobs (total)")}
                     value={settings.concurrency}
                     onChange={(concurrency) =>
                       setSettings((current) => ({ ...current, concurrency }))
@@ -4189,7 +4189,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                   }}
                 />
                 <FlowSelect
-                  label={t("Luồng chạy", "Concurrent jobs")}
+                  label={t("Luồng chạy (tổng)", "Concurrent jobs (total)")}
                   value={retryTarget.concurrency}
                   onChange={(concurrency) => setRetryTarget((current) => current ? { ...current, concurrency } : current)}
                   options={Array.from({ length: 18 }, (_, index) => String(index + 1))}

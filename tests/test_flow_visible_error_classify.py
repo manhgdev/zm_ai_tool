@@ -38,6 +38,13 @@ class FlowVisibleErrorClassifyTest(unittest.TestCase):
         msg = _classify_visible_flow_error("Bạn đã đạt đến hạn mức sử dụng")
         self.assertTrue(msg.startswith("FLOW_QUOTA_EXHAUSTED:"))
 
+    def test_usage_limit_with_try_again_later_is_still_quota(self) -> None:
+        # Flow appends "Vui lòng thử lại sau" — must not win as GENERATION_REJECTED.
+        msg = _classify_visible_flow_error(
+            "Bạn đã đạt đến hạn mức sử dụng. Vui lòng thử lại sau."
+        )
+        self.assertTrue(msg.startswith("FLOW_QUOTA_EXHAUSTED:"), msg)
+
     def test_rate_limit_is_reject_not_quota(self) -> None:
         msg = _classify_visible_flow_error("Too many requests — please try again later")
         self.assertTrue(msg.startswith("FLOW_GENERATION_REJECTED:"))
