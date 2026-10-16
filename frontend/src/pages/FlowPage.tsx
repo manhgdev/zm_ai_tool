@@ -29,6 +29,7 @@ import {
   formatFlowExplain,
   technicalFlowDetail,
   isFlowLimitError,
+  isNonQuotaImageRejectError,
   isProImageQuotaError,
   isAutomaticImageQuotaError,
 } from "@/features/flow/flow.explain";
@@ -139,6 +140,7 @@ function isFlowAccountAvailable(account: FlowAccount): boolean {
   if (!isFlowAccountConnected(account)) return false;
   const suspendedUntil = Number(account.suspendedUntil || 0);
   const reason = String(account.suspendReason || "");
+  if (isNonQuotaImageRejectError(reason)) return true;
   if (/FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit/i.test(reason)) return true;
   if (String(account.suspensionScope || "account") === "video" && /FLOW_QUOTA_EXHAUSTED|quota|hạn mức|usage limit|generation limit|daily limit|monthly limit/i.test(reason)) return true;
   return !(suspendedUntil > Date.now() / 1000);
@@ -147,6 +149,7 @@ function isFlowAccountAvailable(account: FlowAccount): boolean {
 function isFlowAccountSuspendedForKind(account: FlowAccount, kind: CreateKind): boolean {
   if (!(account.suspendedUntil && account.suspendedUntil > Date.now() / 1000)) return false;
   const reason = String(account.suspendReason || "");
+  if (isNonQuotaImageRejectError(reason)) return false;
   if (kind === "image" && String(account.suspensionScope || "account") === "video") return false;
   return !(kind === "image" && /FLOW_CREDITS_EMPTY|CREDITS_EMPTY|out of credits|hết tín|insufficient credit/i.test(reason));
 }
@@ -164,7 +167,9 @@ function formatRemainingCooldown(untilSec: number, t: (vi: string, en: string) =
 
 function activeFlowModelSuspensions(account: FlowAccount): Array<[string, { until: number; reason?: string }]> {
   const now = Date.now() / 1000;
-  const entries = Object.entries(account.modelSuspensions || {}).filter(([, entry]) => Number(entry?.until || 0) > now);
+  const entries = Object.entries(account.modelSuspensions || {}).filter(
+    ([, entry]) => Number(entry?.until || 0) > now && !isNonQuotaImageRejectError(entry?.reason),
+  );
   return entries as Array<[string, { until: number; reason?: string }]>;
 }
 
@@ -3718,23 +3723,32 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             </i>
                             <small>{job.progress}%</small>
                           </div>
-                          {job.fallbackNotice && (
-                            <small className="flow-job-fallback-notice">
-                              {typeof job.fallbackNotice === "string"
-                                ? job.fallbackNotice
-                                : t(job.fallbackNotice.vi, job.fallbackNotice.en)}
-                            </small>
-                          )}
-                          {job.recoveryNotice && (
+                          {job.error && (job.status === "failed" || job.status === "action_required") ? (
+                            <small className="flow-job-error">{jobErrorText(job.error)}</small>
+                          ) : job.recoveryNotice && (
+                            job.stage === "recovering_session"
+                            || job.stage === "waiting_session_reset"
+                            || job.stage === "action_required"
+                            || (
+                              job.status === "queued"
+                              && !job.fallbackNotice
+                              && accounts.some((acc) => acc.id === job.accountId && acc.status !== "online")
+                            )
+                          ) ? (
                             <small className="flow-job-recovery-notice">
                               {typeof job.recoveryNotice === "string"
                                 ? job.recoveryNotice
                                 : t(job.recoveryNotice.vi, job.recoveryNotice.en)}
                             </small>
-                          )}
-                          {job.error && (
+                          ) : job.fallbackNotice && (job.status === "queued" || job.status === "processing") ? (
+                            <small className="flow-job-fallback-notice">
+                              {typeof job.fallbackNotice === "string"
+                                ? job.fallbackNotice
+                                : t(job.fallbackNotice.vi, job.fallbackNotice.en)}
+                            </small>
+                          ) : job.error ? (
                             <small className="flow-job-error">{jobErrorText(job.error)}</small>
-                          )}
+                          ) : null}
                         </div>
                         <aside>
                           <mark>{jobStatusText(job)}</mark>

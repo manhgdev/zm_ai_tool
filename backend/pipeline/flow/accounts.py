@@ -28,7 +28,12 @@ from .controls import (
     _flow_control_is_selected,
     _mode_tab_icon,
 )
-from .errors import _collapse_flow_login_error, _is_automation_block_error, _session_needs_login
+from .errors import (
+    _collapse_flow_login_error,
+    _is_automation_block_error,
+    _is_non_quota_image_reject,
+    _session_needs_login,
+)
 from .models import (
     _capability_entry,
     _clean_flow_model_name,
@@ -113,15 +118,31 @@ class FlowAccountsMixin:
         return f"{str(kind or '').strip().lower()}:{str(model or '').strip()}"
 
     def _migrate_legacy_image_quota_suspension(self, account: dict[str, Any]) -> dict[str, Any]:
-        """Move old Pro image quota cooldowns off the whole account.
-
-        Older versions stored every quota cooldown in ``suspendedUntil``.  A
-        Pro image fallback already records the affected model, so preserve its
-        remaining cooldown under a model key and release the account-wide
-        quarantine.  This is intentionally idempotent for existing JSON rows.
-        """
-        event = account.get("lastModelFallback")
+        """Move old Pro image quota cooldowns off the whole account and drop false-positive rejects."""
+        account_id = str(account.get("id") or "")
+        raw_suspensions = dict(account.get("modelSuspensions") or {})
+        cleaned_suspensions = {
+            k: v for k, v in raw_suspensions.items()
+            if isinstance(v, dict) and not _is_non_quota_image_reject(str(v.get("reason") or ""))
+        }
         reason = str(account.get("suspendReason") or "")
+        clear_account_reject = bool(reason and _is_non_quota_image_reject(reason))
+        if account_id and (len(cleaned_suspensions) != len(raw_suspensions) or clear_account_reject):
+            cleanup_patch: dict[str, Any] = {
+                "modelSuspensions": cleaned_suspensions,
+                "updatedAt": time.time(),
+            }
+            if clear_account_reject:
+                cleanup_patch.update({
+                    "suspendedUntil": None,
+                    "suspendReason": None,
+                    "suspensionScope": None,
+                })
+            store.patch_row("accounts", account_id, cleanup_patch)
+            account.update(cleanup_patch)
+            reason = str(account.get("suspendReason") or "")
+
+        event = account.get("lastModelFallback")
         if not isinstance(event, dict) or str(event.get("fromModel") or "") != "Nano Banana Pro":
             return account
         if str(event.get("toModel") or "") != "Nano Banana 2.1" or not re.search(
@@ -130,7 +151,6 @@ class FlowAccountsMixin:
             re.I,
         ):
             return account
-        account_id = str(account.get("id") or "")
         if not account_id:
             return account
         try:
@@ -138,7 +158,7 @@ class FlowAccountsMixin:
         except (TypeError, ValueError):
             until = 0.0
         suspensions = dict(account.get("modelSuspensions") or {})
-        if until > time.time():
+        if until > time.time() and not _is_non_quota_image_reject(reason):
             suspensions.setdefault(self._model_suspension_key("image", "Nano Banana Pro"), {
                 "until": until,
                 "reason": reason,
@@ -160,6 +180,8 @@ class FlowAccountsMixin:
         entry = (account.get("modelSuspensions") or {}).get(key)
         if not isinstance(entry, dict):
             return None
+        if _is_non_quota_image_reject(str(entry.get("reason") or "")):
+            return None
         try:
             if float(entry.get("until") or 0) > time.time():
                 return entry
@@ -179,6 +201,8 @@ class FlowAccountsMixin:
         account = store.get_row("accounts", account_id)
         if not account:
             return {}
+        if _is_non_quota_image_reject(str(reason or "")):
+            return self._public_account(account)
         if duration_seconds is None:
             duration_seconds = _COOLDOWN_QUOTA_S
         if not duration_seconds:
@@ -226,6 +250,8 @@ class FlowAccountsMixin:
         account = store.get_row("accounts", account_id)
         if not account:
             return {}
+        if _is_non_quota_image_reject(str(reason or "")):
+            return self._public_account(account)
         if duration_seconds is None:
             r = str(reason)
             # Unusual activity is per-Chrome (each job has its own profile) and

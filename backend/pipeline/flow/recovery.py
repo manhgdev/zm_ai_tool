@@ -319,13 +319,34 @@ class FlowRecoveryMixin:
         for job in store.list_rows("jobs"):
             if str(job.get("accountId") or "") != account_id:
                 continue
-            if job.get("status") != "action_required":
+            job_id = str(job.get("id") or "")
+            if not job_id:
+                continue
+            status = str(job.get("status") or "")
+            if status in {"queued", "processing"}:
+                patch_clear: dict[str, Any] = {}
+                if job.get("recoveryNotice") is not None:
+                    patch_clear["recoveryNotice"] = None
+                if status == "queued" and job.get("stage") == "waiting_session_reset":
+                    patch_clear.update({"stage": "queued", "error": None})
+                if patch_clear:
+                    patch_clear["updatedAt"] = time.time()
+                    store.patch_row("jobs", job_id, patch_clear)
+                if status == "queued":
+                    with self._account_condition:
+                        should_start = job_id not in self._running_jobs and job_id not in self._cancelled
+                    if should_start:
+                        threading.Thread(
+                            target=self._run_sync,
+                            args=(job_id,),
+                            daemon=True,
+                            name=f"flow-reauth-q-{job_id}",
+                        ).start()
+                continue
+            if status != "action_required":
                 continue
             job_error = str(job.get("error") or "")
             if not (_session_needs_login(Exception(job_error)) or _is_automation_block_error(job_error)):
-                continue
-            job_id = str(job.get("id") or "")
-            if not job_id:
                 continue
             with self._account_condition:
                 if job_id in self._running_jobs or job.get("authRetryCount", 0):
@@ -423,6 +444,7 @@ class FlowRecoveryMixin:
             "stage": "queued",
             "progress": 0,
             "error": None,
+            "recoveryNotice": None,
             "autoRetryCount": 0,
             "generationRejectRetryCount": 0,
             "sessionResetRetryCount": 0,
@@ -682,17 +704,31 @@ class FlowRecoveryMixin:
             for row in store.list_rows("jobs"):
                 is_current = row["id"] == job_id
                 if not is_current and not (
-                    row.get("accountId") == account_id and row.get("status") == "queued"
+                    row.get("accountId") == account_id and row.get("status") in {"queued", "processing"}
                     and row.get("kind") == "image"
                     and (row.get("settings") or {}).get("model") == "Nano Banana Pro"
                 ):
                     continue
-                patch = {"settings": {**dict(row.get("settings") or {}), "model": "Nano Banana 2.1"},
-                         "fallbackNotice": notice, "updatedAt": time.time()}
+                next_settings = {
+                    **dict(row.get("settings") or {}),
+                    "model": "Nano Banana 2.1",
+                    "imageModel": "Nano Banana 2.1",
+                }
+                patch = {
+                    "settings": next_settings,
+                    "quotaModelFallbackApplied": True,
+                    "fallbackNotice": notice,
+                    "recoveryNotice": None,
+                    "error": None,
+                    "updatedAt": time.time(),
+                }
                 if is_current:
-                    patch.update({"quotaModelFallbackApplied": True, "modelFallback": event,
-                                  "fallbackNotice": notice,
-                                  "status": "processing", "stage": "model_fallback", "error": None})
+                    is_queued = row.get("status") == "queued"
+                    patch.update({
+                        "modelFallback": event,
+                        "status": "queued" if is_queued else "processing",
+                        "stage": "queued" if is_queued else "model_fallback",
+                    })
                 store.patch_row("jobs", row["id"], patch)
             # Keep the account online: only the exhausted Pro image model is
             # quarantined.  Nano Banana 2.1 and all video models remain eligible.

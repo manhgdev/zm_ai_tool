@@ -83,6 +83,13 @@ class FlowWorkerMixin:
         generation_token = str(job.get("generationToken") or "")
         order = int(job.get("queueOrder", job.get("inputIndex", 0)))
         with self._account_condition:
+            def current_job_model() -> tuple[str, str]:
+                row = store.get_row("jobs", job_id) or job
+                return (
+                    str(row.get("kind") or job_kind or "video"),
+                    str((row.get("settings") or {}).get("model") or ""),
+                )
+
             def global_concurrency_limit() -> int:
                 # Luồng chạy is a process-wide cap (not per account): N means at
                 # most N jobs processing total, whether 1 or many accounts.
@@ -115,22 +122,39 @@ class FlowWorkerMixin:
                 or sum(self._account_active.values()) >= global_concurrency_limit()
                 or self._account_session_blocked(account_id)
                 or self._session_warmup_wait(account_id)
-                or self._account_suspended(account_id, job_kind, job_model)
+                or self._account_suspended(account_id, *current_job_model())
             ):
+                job_kind, job_model = current_job_model()
                 # Long daily/monthly quota: fail the queue. Short rate-limit
                 # cooldowns wait here until suspendedUntil elapses.
                 if self._account_quota_suspended(account_id, job_kind, job_model):
                     account_snapshot = store.get_row("accounts", account_id) or {}
-                    store.patch_row("jobs", job_id, {
-                        "status": "failed",
-                        "stage": "failed",
-                        "error": self._account_suspension_error(account_snapshot, job_kind, job_model),
-                        "updatedAt": time.time(),
-                    })
+                    susp_error = self._account_suspension_error(account_snapshot, job_kind, job_model)
+                    row_now = store.get_row("jobs", job_id) or job
+                    if (
+                        job_kind == "image"
+                        and job_model == "Nano Banana Pro"
+                        and not bool(row_now.get("quotaModelFallbackApplied"))
+                    ):
+                        self._apply_image_quota_fallback(job_id, susp_error)
+                        continue
+                    allow_account = bool(
+                        row_now.get("allowAccountFallback", bool(row_now.get("randomAccount")))
+                    )
                     if order == self._account_next_start[account_id]:
                         self._account_next_start[account_id] += 1
                         self._account_condition.notify_all()
                     self._running_jobs.discard(job_id)
+                    if allow_account and self._try_fallback_account(job_id, account_id, susp_error):
+                        return
+                    store.patch_row("jobs", job_id, {
+                        "status": "failed",
+                        "stage": "failed",
+                        "error": susp_error,
+                        "fallbackNotice": None,
+                        "recoveryNotice": None,
+                        "updatedAt": time.time(),
+                    })
                     return
                 if job_id in self._cancelled:
                     if order == self._account_next_start[account_id]:
@@ -157,6 +181,7 @@ class FlowWorkerMixin:
             # waiter recalculates the first pending order.
             store.patch_row("jobs", job_id, {
                 "status": "processing", "stage": "starting", "progress": 1,
+                "error": None, "recoveryNotice": None,
                 "sessionGeneration": self._session_generation(account_id),
                 "updatedAt": time.time(),
             })
@@ -573,6 +598,16 @@ class FlowWorkerMixin:
                         self.suspend_model(account_id, "image", str(settings.get("model") or "Nano Banana Pro"), err_msg)
                     else:
                         self.suspend_account(account_id, err_msg, scope="video")
+                latest_after = store.get_row("jobs", job_id) or {}
+                if latest_after.get("status") == "failed" and (
+                    latest_after.get("fallbackNotice") is not None
+                    or latest_after.get("recoveryNotice") is not None
+                ):
+                    store.patch_row("jobs", job_id, {
+                        "fallbackNotice": None,
+                        "recoveryNotice": None,
+                        "updatedAt": time.time(),
+                    })
             self._close_auto_session_if_idle(
                 account_id,
                 str(current_job.get("kind") or job.get("kind") or "video"),
@@ -620,8 +655,22 @@ class FlowWorkerMixin:
         account = store.get_row("accounts", str(job.get("accountId"))) if job else None
         if not job or not account or job.get("status") in {"done", "cancelled"}:
             return
+        account_id_str = str(account.get("id") or "")
+        if (
+            str(job.get("kind") or "") == "image"
+            and str((job.get("settings") or {}).get("model") or "") == "Nano Banana Pro"
+            and self._account_quota_suspended(account_id_str, "image", "Nano Banana Pro")
+        ):
+            susp_err = self._account_suspension_error(account, "image", "Nano Banana Pro")
+            self._apply_image_quota_fallback(job_id, susp_err)
+            job = store.get_row("jobs", job_id) or job
+            if job.get("stage") == "model_fallback":
+                store.patch_row("jobs", job_id, {
+                    "status": "processing", "stage": "starting", "updatedAt": time.time(),
+                })
+                job = store.get_row("jobs", job_id) or job
         expected_generation = int(job.get("sessionGeneration") or 0)
-        current_generation = self._session_generation(str(account.get("id") or ""))
+        current_generation = self._session_generation(account_id_str)
         if (
             account.get("status") == "reconnect"
             and _confirmed_login_wall_error(str(account.get("error") or ""))

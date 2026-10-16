@@ -38,9 +38,24 @@ class FlowQueueMixin:
         # timestamp in the UI when a newest-first view is appropriate.
         # Hot path: never run legacy folder migration here — with hundreds of
         # jobs it rewrites jobs.json / hits disk and starves DELETE / cancel.
+        account_status = {
+            str(acc.get("id") or ""): str(acc.get("status") or "")
+            for acc in store.list_rows("accounts")
+        }
         rows: list[dict[str, Any]] = []
         for row in sorted(store.list_rows("jobs"), key=lambda item: item.get("createdAt", 0)):
             item = dict(row)
+            status = str(item.get("status") or "")
+            stage = str(item.get("stage") or "")
+            if status in {"done", "failed", "cancelled"}:
+                item["fallbackNotice"] = None
+                item["recoveryNotice"] = None
+            elif (
+                item.get("recoveryNotice")
+                and stage not in {"recovering_session", "waiting_session_reset", "action_required"}
+                and account_status.get(str(item.get("accountId") or "")) == "online"
+            ):
+                item["recoveryNotice"] = None
             settings = item.get("settings")
             if isinstance(settings, dict) and str(settings.get("outputDir") or "").strip():
                 try:
@@ -501,6 +516,8 @@ class FlowQueueMixin:
                         for key, image_key in (("model", "imageModel"), ("ratio", "imageRatio"), ("resolution", "imageResolution"), ("count", "imageCount")):
                             if requested.get(key) not in (None, ""):
                                 settings[image_key] = requested[key]
+                            elif requested.get(image_key) in (None, "") and settings.get(key) not in (None, ""):
+                                settings[image_key] = settings[key]
                         settings = _normalize_image_request_settings(settings)
                     model = settings.get("model")
                     if account_id in {"random", "auto", ""}:
@@ -543,6 +560,8 @@ class FlowQueueMixin:
                         **recovery_fields,
                         "status": "queued", "stage": "queued", "progress": 0,
                         "queueOrder": queue_order, "error": None, "outputs": [],
+                        "recoveryNotice": None,
+                        **({"fallbackNotice": None} if bool(overrides.get("manual")) else {}),
                         "accountId": account_id, "settings": settings,
                         "generationToken": uuid.uuid4().hex, "mode": str(overrides.get("mode") or existing.get("mode") or "text"),
                         "generationRejectRetryCount": 0, "autoRetryCount": 0, "authRetryCount": 0,
@@ -693,6 +712,8 @@ class FlowQueueMixin:
             for key, image_key in (("model", "imageModel"), ("ratio", "imageRatio"), ("resolution", "imageResolution"), ("count", "imageCount")):
                 if requested_settings.get(key) not in (None, ""):
                     settings[image_key] = requested_settings[key]
+                elif requested_settings.get(image_key) in (None, "") and settings.get(key) not in (None, ""):
+                    settings[image_key] = settings[key]
             settings = _normalize_image_request_settings(settings)
         model = settings.get("model")
 
@@ -769,6 +790,8 @@ class FlowQueueMixin:
                     **recovery_fields,
                     "status": "queued", "stage": "queued", "progress": 0,
                     "queueOrder": order, "error": None, "outputs": [], "updatedAt": time.time(),
+                    "recoveryNotice": None,
+                    **({"fallbackNotice": None} if manual_retry else {}),
                     "accountId": account_id, "settings": settings,
                     "generationToken": uuid.uuid4().hex,
                     "mode": mode,

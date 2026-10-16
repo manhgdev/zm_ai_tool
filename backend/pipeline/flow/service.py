@@ -80,6 +80,7 @@ from .errors import (
     _is_automation_block_error,
     _is_flow_infra_interrupt,
     _is_flow_quota_exhausted,
+    _is_non_quota_image_reject,
     _network_ready_for_flow_job,
     _redact_flow_diag_url,
     _rpc_public_error,

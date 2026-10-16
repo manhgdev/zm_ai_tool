@@ -207,3 +207,13 @@ test('Windows Setup Vietnamese uses complete message sections', () => {
   assert.match(messages, /^CannotInstallToNetworkDrive=.+/m)
   assert.doesNotMatch(messages, /^(CannotInstallTo|InstallingDesc|PreviousInstallDetected|UninstallDataNotice)=/m)
 })
+
+test('non-quota Flow image rejection tile maps to FLOW_GENERATION_REJECTED and strips icon ligatures', () => {
+  const error = explainFlowError(
+    'FLOW_QUOTA_EXHAUSTED: warning Không thành công Rất tiếc, không tạo được hình ảnh này. Bạn chưa bị tính phí cho lượt tạo này. refresh undo delete_forever'
+  )
+  assert.equal(error.code, 'FLOW_GENERATION_REJECTED')
+  assert.doesNotMatch(error.titleVi, /refresh|undo|delete_forever|warning Không thành công/i)
+  assert.ok(error.actionVi.trim() && error.actionEn.trim())
+  assert.notEqual(error.actionVi, error.actionEn)
+})

@@ -10,6 +10,15 @@ export type FlowExplain = {
   code: string;
 };
 
+const NON_QUOTA_IMAGE_REJECT_RE = /(?:không\s+tạo\s+được\s+(?:hình(?:\s+ảnh)?|ảnh)|couldn['’]?t\s+(?:create|generate)\s+this\s+image|unable\s+to\s+(?:create|generate)\s+(?:this\s+)?image)/i;
+const EXPLICIT_QUOTA_WORDS_RE = /(?:\bquota\b|hết\s+lượt|hết\s+hạn\s+mức|đạt\s+hạn\s+mức|tạm\s+cách\s+ly|temporarily\s+quarantined|usage\s+limit|generation\s+limit|daily\s+limit|monthly\s+limit|rate[\s_-]*limit|too\s+many\s+requests|resource_exhausted|\b429\b|try\s+again\s+tomorrow|thử\s+lại\s+vào\s+ngày\s+mai)/i;
+const TRAILING_FLOW_ICON_TOKENS_RE = /(?:\s+\b(?:refresh|undo|redo|delete_forever|delete|more_vert|close|content_copy|download|warning|error_outline)\b)+\s*$/i;
+
+export function isNonQuotaImageRejectError(raw: string | null | undefined): boolean {
+  const body = String(raw || "").replace(/^(?:FLOW_[A-Z0-9_]+:\s*)+/i, "").trim();
+  return Boolean(body) && NON_QUOTA_IMAGE_REJECT_RE.test(body) && !EXPLICIT_QUOTA_WORDS_RE.test(body);
+}
+
 /** Keep developer detail useful: remove Flow DOM dumps while retaining code and cause. */
 export function technicalFlowDetail(message: string | null | undefined): string {
   const raw = String(message || "").trim();
@@ -17,10 +26,11 @@ export function technicalFlowDetail(message: string | null | undefined): string 
   const code = codeOf(raw);
   // Only remove repetitions of the outer code; keep distinct nested causes.
   // codeOf returns a fixed identifier containing letters, digits and underscores.
-  const repeatedCode = new RegExp(`^(?:${code}:\\s*)+`, "i");
+  const repeatedCode = new RegExp(`^(?:(?:${code}|FLOW_QUOTA_EXHAUSTED):\\s*)+`, "i");
   const detail = raw
     .replace(repeatedCode, "")
     .replace(/^(?:warning|error|info)\s+(?:không thành công|failed|error|success)\s+/i, "")
+    .replace(TRAILING_FLOW_ICON_TOKENS_RE, "")
     .replace(/\s+/g, " ").trim();
   // Keep the original cause for copy/paste; only collapse obvious UI dumps and cap size.
   const compact = detail.length > 1200 ? `${detail.slice(0, 1200)} …[truncated]` : detail;
@@ -64,6 +74,7 @@ function codeOf(message: string): string {
   if (/FLOW_LOGIN_VERIFICATION_REQUIRED/i.test(text)) return "FLOW_LOGIN_VERIFICATION_REQUIRED";
   if (/FLOW_LOGIN_PASSWORD_REQUIRED/i.test(text)) return "FLOW_LOGIN_PASSWORD_REQUIRED";
   if (/FLOW_COOKIE_EXPIRED/i.test(text)) return "FLOW_COOKIE_EXPIRED";
+  if (isNonQuotaImageRejectError(text)) return "FLOW_GENERATION_REJECTED";
   const flow = text.match(/^(FLOW_[A-Z0-9_]+)/);
   if (flow) return flow[1];
   if (/batchGenerateImages/i.test(text)) return "FLOW_IMAGE_RPC_TIMEOUT";
@@ -82,8 +93,12 @@ function codeOf(message: string): string {
 export function explainFlowError(message: string): FlowExplain {
   const raw = String(message || "").trim();
   const code = codeOf(raw);
-  // Strip repeated CODE: prefixes (nested FLOW_LOGIN_REQUIRED: …) for display.
-  const detail = raw.replace(/^(?:FLOW_[A-Z0-9_]+:\s*)+/i, "").trim() || raw;
+  // Strip repeated CODE: prefixes (nested FLOW_LOGIN_REQUIRED: …) and trailing icon tokens for display.
+  const detail = raw
+    .replace(/^(?:FLOW_[A-Z0-9_]+:\s*)+/i, "")
+    .replace(/^(?:warning|error|info)\s+(?:không thành công|failed|error|success)\s+/i, "")
+    .replace(TRAILING_FLOW_ICON_TOKENS_RE, "")
+    .trim() || raw;
 
   /** Helper: build result with raw detail as title, no summary, custom action. */
   const make = (
@@ -386,7 +401,7 @@ export function formatFlowExplain(
 /** True when Flow blocked create due to credits or creation quota/rate limit. */
 export function isFlowLimitError(raw: string | null | undefined): boolean {
   const text = String(raw || "");
-  if (!text.trim()) return false;
+  if (!text.trim() || isNonQuotaImageRejectError(text)) return false;
   const explained = explainFlowError(text);
   if (explained.code === "FLOW_CREDITS_EMPTY" || explained.code === "FLOW_CREDITS_INSUFFICIENT" || explained.code === "FLOW_QUOTA_EXHAUSTED") {
     return true;

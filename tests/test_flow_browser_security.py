@@ -596,6 +596,96 @@ class SessionTests(unittest.TestCase):
                 service._clone_runtime_profile('account', 'job')
             self.assertFalse(profile_lock(Path(raw)).locked())
 
+    def test_non_quota_image_reject_never_quarantines_model_or_account(self):
+        from pipeline.flow import store
+        from pipeline.flow.errors import _classify_visible_flow_error, _is_flow_quota_exhausted
+
+        tile_msg = (
+            "FLOW_QUOTA_EXHAUSTED: Rất tiếc, không tạo được hình ảnh này. "
+            "Bạn chưa bị tính phí cho lượt tạo này. refresh undo delete_forever"
+        )
+        classified = _classify_visible_flow_error(tile_msg)
+        self.assertTrue(classified.startswith("FLOW_GENERATION_REJECTED:"), classified)
+        self.assertNotIn("refresh undo delete_forever", classified)
+        self.assertFalse(_is_flow_quota_exhausted(tile_msg))
+        self.assertFalse(_is_flow_quota_exhausted(classified))
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            future_ts = 9999999999.0
+            store._write("accounts", [{
+                "id": "acc1",
+                "label": "cskh.zm",
+                "status": "online",
+                "modelSuspensions": {
+                    "image:Nano Banana 2.1": {"until": future_ts, "reason": tile_msg},
+                    "image:Nano Banana Pro": {"until": future_ts, "reason": "FLOW_QUOTA_EXHAUSTED: Đã đạt hạn mức sử dụng."},
+                },
+            }])
+            service = FlowService()
+            self.assertFalse(service._account_suspended("acc1", "image", "Nano Banana 2.1"))
+            self.assertTrue(service._account_suspended("acc1", "image", "Nano Banana Pro"))
+            service.suspend_model("acc1", "image", "Nano Banana 2.1", tile_msg)
+            service.suspend_account("acc1", tile_msg)
+            cleaned = service.accounts()[0]
+            self.assertNotIn("image:Nano Banana 2.1", cleaned.get("modelSuspensions") or {})
+            self.assertIn("image:Nano Banana Pro", cleaned.get("modelSuspensions") or {})
+            self.assertIsNone(cleaned.get("suspendedUntil"))
+
+    def test_pro_image_quota_fallback_syncs_image_model_and_clears_stale_notices(self):
+        from pipeline.flow import store
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            store._write("accounts", [{
+                "id": "acc1",
+                "label": "cskh.zm",
+                "status": "online",
+                "plan": "Pro",
+                "imageProjectId": "6e98f844-554a-4e93-898c-4b3096681a04",
+            }])
+            store._write("jobs", [
+                {
+                    "id": "job1",
+                    "accountId": "acc1",
+                    "kind": "image",
+                    "status": "failed",
+                    "stage": "failed",
+                    "queueOrder": 0,
+                    "settings": {"model": "Nano Banana Pro", "imageModel": "Nano Banana Pro"},
+                    "recoveryNotice": {"vi": "stale", "en": "stale"},
+                },
+                {
+                    "id": "job2",
+                    "accountId": "acc1",
+                    "kind": "image",
+                    "status": "queued",
+                    "stage": "queued",
+                    "queueOrder": 1,
+                    "settings": {"model": "Nano Banana Pro", "imageModel": "Nano Banana Pro"},
+                    "recoveryNotice": {"vi": "stale", "en": "stale"},
+                },
+            ])
+            service = FlowService()
+            service._apply_image_quota_fallback("job1", "FLOW_QUOTA_EXHAUSTED: Pro quota hit")
+            job1_after = store.get_row("jobs", "job1")
+            job2_after = store.get_row("jobs", "job2")
+            self.assertEqual(job1_after["settings"]["model"], "Nano Banana 2.1")
+            self.assertEqual(job1_after["settings"]["imageModel"], "Nano Banana 2.1")
+            self.assertIsNone(job1_after.get("recoveryNotice"))
+            self.assertEqual(job2_after["settings"]["model"], "Nano Banana 2.1")
+            self.assertEqual(job2_after["settings"]["imageModel"], "Nano Banana 2.1")
+            self.assertEqual(job2_after["status"], "queued")
+            self.assertIsNone(job2_after.get("recoveryNotice"))
+
+            with patch.object(service, "_run_sync"):
+                retried = service.retry("job1", {"accountId": "acc1"})
+            self.assertEqual(retried["status"], "queued")
+            self.assertEqual(retried["settings"]["model"], "Nano Banana 2.1")
+            self.assertEqual(retried["settings"]["imageModel"], "Nano Banana 2.1")
+
+            failed_row = store.patch_row("jobs", "job1", {"status": "failed", "stage": "failed", "error": "FLOW_QUOTA_EXHAUSTED: test"})
+            self.assertIsNone(failed_row.get("fallbackNotice"))
+            self.assertIsNone(failed_row.get("recoveryNotice"))
+
 
 if __name__ == '__main__':
     unittest.main()

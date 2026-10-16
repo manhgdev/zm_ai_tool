@@ -66,9 +66,36 @@ def _network_ready_for_flow_job(service: "FlowService", job_id: str, *, force: b
     return paused
 
 
+def _is_non_quota_image_reject(text: str) -> bool:
+    """True for Flow's generic image failure tile without actual quota/limit copy."""
+    body = re.sub(r"^(?:FLOW_[A-Z0-9_]+:\s*)+", "", str(text or "").strip(), flags=re.I).lower()
+    if not body:
+        return False
+    if re.search(
+        r"quota|h[eế]t l[uư][oợ]t|h[eế]t h[aạ]n m[uứ]c|usage limit|generation limit|"
+        r"daily limit|monthly limit|h[aạ]n m[uứ]c|"
+        r"b[aạ]n [đd][ãa] [đd][aạ]t [đd][eế]n h[aạ]n m[uứ]c",
+        body,
+    ):
+        return False
+    return bool(
+        re.search(
+            r"không tạo được hình|couldn'?t create(?: this)? image|unable to (?:create|generate)(?: this)? image",
+            body,
+        )
+    )
+
+
 def _classify_visible_flow_error(text: str) -> str:
     """Map Flow tile error copy to a stable code (credits vs quota vs generic)."""
-    raw = str(text or "").strip()
+    raw = re.sub(r"^(?:FLOW_[A-Z0-9_]+:\s*)+", "", str(text or "").strip(), flags=re.I).strip()
+    raw = re.sub(r"^(?:warning|error|info)\s+(?:không thành công|failed|error|success)\s+", "", raw, flags=re.I)
+    raw = re.sub(
+        r"(?:\s+\b(?:refresh|undo|redo|delete_forever|delete|more_vert|close|content_copy|download|warning|error_outline)\b)+\s*$",
+        "",
+        raw,
+        flags=re.I,
+    ).strip()
     if not raw:
         return ""
     low = raw.lower()
@@ -95,18 +122,11 @@ def _classify_visible_flow_error(text: str) -> str:
         low,
     ):
         return f"FLOW_QUOTA_EXHAUSTED: {raw}"
-    # Soft-fail tile without "hạn mức" — still Pro daily/model limit in practice.
-    if (
-        re.search(
-            r"không tạo được hình|couldn'?t create(?: this)? image|unable to (?:create|generate)(?: this)? image",
-            low,
-        )
-        and re.search(
-            r"chưa bị tính phí|weren'?t charged|were not charged|not charged|you (?:were|are) not charged",
-            low,
-        )
-    ):
-        return f"FLOW_QUOTA_EXHAUSTED: {raw}"
+    # Soft-fail image tile without "hạn mức" ("Rất tiếc, không tạo được hình ảnh này.
+    # Bạn chưa bị tính phí cho lượt tạo này.") is a per-prompt generation reject, not
+    # an account/model quota exhaustion — must not quarantine the model or account.
+    if _is_non_quota_image_reject(raw):
+        return f"FLOW_GENERATION_REJECTED: {raw}"
     # Transient throttle / rate limit — not daily quota and not bot detection.
     if re.search(
         r"please wait a few seconds|vui lòng chờ vài giây|rate.?limit|too many|"
@@ -120,6 +140,8 @@ def _classify_visible_flow_error(text: str) -> str:
 def _is_flow_quota_exhausted(text: str) -> bool:
     """True for coded or raw Flow hạn mức / daily quota tile copy."""
     raw = str(text or "")
+    if _is_non_quota_image_reject(raw):
+        return False
     if "FLOW_QUOTA_EXHAUSTED" in raw:
         return True
     return _classify_visible_flow_error(raw).startswith("FLOW_QUOTA_EXHAUSTED:")

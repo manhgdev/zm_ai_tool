@@ -132,9 +132,17 @@ def patch_row(name: str, row_id: str, patch: dict[str, Any]) -> dict[str, Any] |
                             lifecycle_patch["elapsedSeconds"] = max(0.0, now - float(lifecycle_patch.get("startedAt") or row["startedAt"]))
                         except (TypeError, ValueError):
                             pass
-                    if effective_status == "done" and row.get("fallbackNotice"):
+                    if (
+                        effective_status in {"done", "failed", "cancelled"}
+                        and row.get("fallbackNotice")
+                        and not patch.get("fallbackNotice")
+                    ):
                         lifecycle_patch["fallbackNotice"] = None
-                    if effective_status == "done" and row.get("recoveryNotice"):
+                    if (
+                        effective_status in {"done", "failed", "cancelled"}
+                        and row.get("recoveryNotice")
+                        and not patch.get("recoveryNotice")
+                    ):
                         lifecycle_patch["recoveryNotice"] = None
                     row.update(lifecycle_patch)
                 else:
@@ -187,9 +195,17 @@ def patch_rows(name: str, patches: dict[str, dict[str, Any]]) -> list[dict[str, 
                         lifecycle_patch["elapsedSeconds"] = max(0.0, now - float(lifecycle_patch.get("startedAt") or row["startedAt"]))
                     except (TypeError, ValueError):
                         pass
-                if effective_status == "done" and row.get("fallbackNotice"):
+                if (
+                    effective_status in {"done", "failed", "cancelled"}
+                    and row.get("fallbackNotice")
+                    and not patch.get("fallbackNotice")
+                ):
                     lifecycle_patch["fallbackNotice"] = None
-                if effective_status == "done" and row.get("recoveryNotice"):
+                if (
+                    effective_status in {"done", "failed", "cancelled"}
+                    and row.get("recoveryNotice")
+                    and not patch.get("recoveryNotice")
+                ):
                     lifecycle_patch["recoveryNotice"] = None
                 row.update(lifecycle_patch)
             else:
