@@ -875,6 +875,39 @@ def jobs_delete_folder(body: OutputFolderIn):
     }
 
 
+@router.post("/jobs/zip-folder")
+def jobs_zip_folder(body: OutputFolderIn, reveal: bool = True):
+    try:
+        zip_path = service.zip_output_folder(body.outputDir, body.kind)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if reveal:
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", str(zip_path)])
+            elif sys.platform == "win32":
+                subprocess.Popen(["explorer", "/select,", str(zip_path)])
+            else:
+                subprocess.Popen(["xdg-open", str(zip_path.parent)])
+        except OSError:
+            pass
+    return {
+        "ok": True,
+        "path": str(zip_path),
+        "filename": zip_path.name,
+    }
+
+
+@router.get("/jobs/folder-zip")
+def jobs_folder_zip_download(outputDir: str, kind: str = ""):
+    try:
+        zip_path = service.zip_output_folder(outputDir, kind)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
+
+
+
 @router.post("/jobs/{job_id}/cancel")
 def jobs_cancel(job_id: str):
     job = service.cancel(job_id)

@@ -217,3 +217,16 @@ test('non-quota Flow image rejection tile maps to FLOW_GENERATION_REJECTED and s
   assert.ok(error.actionVi.trim() && error.actionEn.trim())
   assert.notEqual(error.actionVi, error.actionEn)
 })
+
+test('Flow folder header actions include bilingual Zip button between Cancel and Delete', () => {
+  const page = read('pages/FlowPage.tsx')
+  const section = page.split('className="flow-queue-folder-actions"')[1]?.slice(0, 2600) || ''
+  const cancelIdx = section.indexOf('t("Hủy", "Cancel")')
+  const zipIdx = section.indexOf('t("Nén ZIP", "Zip")')
+  const deleteIdx = section.indexOf('t("Xóa", "Delete")')
+  assert.ok(cancelIdx >= 0 && zipIdx > cancelIdx && deleteIdx > zipIdx)
+})
+
+
+
+

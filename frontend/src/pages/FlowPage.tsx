@@ -2046,6 +2046,34 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       },
     });
   };
+  const [zippingFolderKeys, setZippingFolderKeys] = useState<Set<string>>(() => new Set());
+  const zipFolderJobs = async (groupKey: string, outputDir: string, kind: CreateKind) => {
+    if (zippingFolderKeys.has(groupKey)) return;
+    setZippingFolderKeys((current) => new Set(current).add(groupKey));
+    try {
+      const result = await flowRequest<{ ok: boolean; path: string; filename: string }>(
+        "/api/flow/jobs/zip-folder?reveal=true",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ outputDir, kind }),
+        },
+      );
+      toast.success(
+        t(`Đã nén ZIP: ${result.filename}`, `Created ZIP: ${result.filename}`),
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setApiError(msg);
+      toast.error(msg);
+    } finally {
+      setZippingFolderKeys((current) => {
+        const next = new Set(current);
+        next.delete(groupKey);
+        return next;
+      });
+    }
+  };
   const deleteFolderJobs = (outputDir: string, folderJobs: FlowJob[]) => {
     if (!folderJobs.length) return;
     const folderIds = folderJobs.map((job) => job.id);
@@ -3646,6 +3674,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                             </button>
                           )}
                           <button className="flow-text-button is-warning" type="button" disabled={actionBusy || !group.jobs.some((job) => job.status === "queued" || job.status === "processing")} onClick={() => cancelFolderJobs(group.outputDir, group.jobs)}>{t("Hủy", "Cancel")}</button>
+                          <button
+                            className="flow-text-button"
+                            type="button"
+                            disabled={actionBusy || zippingFolderKeys.has(groupKey) || !group.jobs.some((job) => (job.outputs?.length || 0) > 0)}
+                            onClick={() => void zipFolderJobs(groupKey, group.outputDir, group.kind)}
+                          >
+                            {zippingFolderKeys.has(groupKey) ? t("Đang nén…", "Zipping…") : t("Nén ZIP", "Zip")}
+                          </button>
                           <button className="flow-text-button is-danger" type="button" onClick={() => deleteFolderJobs(group.outputDir, group.jobs)}>{t("Xóa", "Delete")}</button>
                         </div>
                       </div>

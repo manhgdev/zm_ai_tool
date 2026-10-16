@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -312,3 +313,88 @@ class FlowOutputsMixin:
         input_index = int(job["inputIndex"])
         variant = f"_{output_index:02d}" if max(1, int(settings.get("count", 1))) > 1 else ""
         return folder / f"{input_index:03d}__{job['id']}__{prefix}_{input_index:03d}{variant}.{safe_suffix}"
+
+    def zip_output_folder(self, output_dir: str, kind: str = "") -> Path:
+        """Bundle all completed output files in a Flow folder into a single .zip archive."""
+        selected = str(output_dir or "").strip()
+        if not selected:
+            raise ValueError("FLOW_ZIP_EMPTY: Missing output folder")
+        matched = [
+            job for job in store.list_rows("jobs")
+            if str((job.get("settings") or {}).get("outputDir") or "").strip() == selected
+            and (not kind or str(job.get("kind") or "") == kind)
+        ]
+        matched.sort(key=lambda j: (int(j.get("inputIndex") or 0), float(j.get("createdAt") or 0)))
+        if matched:
+            raw_folder = str(matched[0].get("outputFolder") or "").strip()
+            folder = Path(raw_folder) if raw_folder else self._output_folder(matched[0], create=True)
+        else:
+            folder = self._output_folder({"kind": kind or "image", "settings": {"outputDir": selected}}, create=True)
+        folder.mkdir(parents=True, exist_ok=True)
+        seen: set[Path] = set()
+        files: list[Path] = []
+        for job in matched:
+            for raw in job.get("outputs") or []:
+                path = Path(str(raw))
+                try:
+                    resolved = path.resolve()
+                    if resolved not in seen and path.is_file() and path.stat().st_size > 0:
+                        seen.add(resolved)
+                        files.append(path)
+                except OSError:
+                    pass
+        if folder.is_dir():
+            for child in sorted(folder.iterdir(), key=lambda p: p.name):
+                try:
+                    if (
+                        not child.is_file()
+                        or child.suffix.lower() in {".zip", ".tmp"}
+                        or ".logo_tmp." in child.name
+                        or child.stat().st_size <= 0
+                    ):
+                        continue
+                    resolved = child.resolve()
+                    if resolved not in seen:
+                        seen.add(resolved)
+                        files.append(child)
+                except OSError:
+                    pass
+        zip_stem = safe_output_part(folder.name or Path(selected).name or "flow_outputs", "flow_outputs")
+        lowered_parts = [part.casefold() for part in folder.parts]
+        if "flow" in lowered_parts:
+            flow_idx = max(idx for idx, part in enumerate(lowered_parts) if part == "flow")
+            zip_dir = Path(*folder.parts[: flow_idx + 1]) / "zip"
+        else:
+            zip_dir = selected_or_default("flow-zip", "")
+        zip_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = zip_dir / f"{zip_stem}.zip"
+        if not files:
+            if zip_path.is_file() and zip_path.stat().st_size > 0:
+                return zip_path
+            raise ValueError("FLOW_ZIP_EMPTY: Chưa có file đầu ra trong thư mục này để nén ZIP.")
+        try:
+            if zip_path.is_file() and zip_path.stat().st_size > 0:
+                zip_mtime = zip_path.stat().st_mtime
+                latest_file_mtime = max(path.stat().st_mtime for path in files)
+                if zip_mtime >= latest_file_mtime:
+                    with zipfile.ZipFile(zip_path, "r") as existing_zf:
+                        if len(existing_zf.namelist()) == len(files):
+                            return zip_path
+        except (OSError, zipfile.BadZipFile):
+            pass
+        tmp_path = zip_dir / f".{zip_stem}.{os.getpid()}.{time.monotonic_ns()}.zip.tmp"
+        used_names: dict[str, int] = {}
+        try:
+            with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+                for path in files:
+                    arcname = path.name
+                    count = used_names.get(arcname, 0)
+                    used_names[arcname] = count + 1
+                    if count > 0:
+                        arcname = f"{path.stem}_{count + 1}{path.suffix}"
+                    zf.write(path, arcname=arcname)
+            tmp_path.replace(zip_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+        return zip_path
+

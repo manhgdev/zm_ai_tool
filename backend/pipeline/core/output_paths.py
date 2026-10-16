@@ -18,6 +18,7 @@ _OUTPUT_SUBFOLDERS: dict[str, tuple[str, ...]] = {
     "flow": ("flow",),
     "flow-video": ("flow", "video"),
     "flow-image": ("flow", "image"),
+    "flow-zip": ("flow", "zip"),
     "download-video": ("download-video",),
     "tts": ("text-to-speech",),
     "subtitle-export": ("subtitles", "export"),

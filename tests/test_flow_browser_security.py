@@ -686,6 +686,50 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(failed_row.get("fallbackNotice"))
             self.assertIsNone(failed_row.get("recoveryNotice"))
 
+    def test_zip_output_folder_bundles_completed_outputs(self):
+        import zipfile
+        from pipeline.flow import store
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)), patch.dict(os.environ, {"ZM_AI_TOOL_OUTPUT_ROOT": raw}):
+            out_dir = Path(raw) / "flow" / "image" / "batch_01"
+            out_dir.mkdir(parents=True)
+            img1 = out_dir / "001__j1__image_001.jpg"
+            img2 = out_dir / "002__j2__image_002.jpg"
+            img1.write_bytes(b"img-one")
+            img2.write_bytes(b"img-two")
+            store._write("jobs", [
+                {
+                    "id": "j1",
+                    "kind": "image",
+                    "inputIndex": 1,
+                    "status": "done",
+                    "outputFolder": str(out_dir),
+                    "outputs": [str(img1)],
+                    "settings": {"outputDir": "batch_01"},
+                },
+                {
+                    "id": "j2",
+                    "kind": "image",
+                    "inputIndex": 2,
+                    "status": "done",
+                    "outputFolder": str(out_dir),
+                    "outputs": [str(img2)],
+                    "settings": {"outputDir": "batch_01"},
+                },
+            ])
+            service = FlowService()
+            zip_path = service.zip_output_folder("batch_01", "image")
+            self.assertTrue(zip_path.is_file())
+            self.assertEqual(zip_path, Path(raw) / "flow" / "zip" / "batch_01.zip")
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                self.assertEqual(zf.namelist(), [img1.name, img2.name])
+            first_mtime_ns = zip_path.stat().st_mtime_ns
+            with patch.object(zipfile.ZipFile, "write", side_effect=AssertionError("should not rewrite existing zip")):
+                reused_path = service.zip_output_folder("batch_01", "image")
+            self.assertEqual(reused_path, zip_path)
+            self.assertEqual(reused_path.stat().st_mtime_ns, first_mtime_ns)
+
 
 if __name__ == '__main__':
     unittest.main()
+
