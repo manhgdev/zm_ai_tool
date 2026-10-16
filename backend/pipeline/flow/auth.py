@@ -85,9 +85,13 @@ class FlowAuthMixin:
             live = _live_flow_cookies(await browser.context.cookies())
         except Exception:
             return False
-        if any(cookie["name"] in {"SID", "__Secure-1PSID", "__Secure-3PSID"} for cookie in live):
-            # A redirect can also require Google verification. Replaying an
-            # older jar here overwrites Chrome's freshly rotated login cookies.
+        # ponytail: Runtime profile clones (job Chrome) always need the
+        # verified jar.  Their native Cookies DB is a copy that may be stale
+        # (Google rotated during login Chrome shutdown) or DBSC-bound to the
+        # original Chrome process.  Only skip for live sessions where Chrome
+        # itself rotated cookies and the jar would be older.
+        runtime_clone = "runtime-profiles" in str(getattr(browser, "profile_dir", ""))
+        if not runtime_clone and any(cookie["name"] in {"SID", "__Secure-1PSID", "__Secure-3PSID"} for cookie in live):
             return False
         try:
             await browser.context.add_cookies(jar)
