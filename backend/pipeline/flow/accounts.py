@@ -110,6 +110,11 @@ class FlowAccountsMixin:
                 if account["id"] != row["id"]:
                     store.patch_row("accounts", account["id"], {"isDefault": False})
         row.pop("password", None)
+        if payload.get("headlessFallbackEnabled") is not None:
+            enabled = bool(payload["headlessFallbackEnabled"])
+            if enabled != bool(existing.get("headlessFallbackEnabled")):
+                row["headlessFallbackAt"] = None
+            row["headlessFallbackEnabled"] = enabled
         saved = store.put_row("accounts", row)
         return self._public_account(saved)
 

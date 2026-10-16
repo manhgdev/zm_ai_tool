@@ -275,8 +275,22 @@ class FlowMediaMixin:
         count: int,
     ) -> list[dict[str, Any]]:
         """Recover a request that succeeded while the old interceptor timed out."""
+        elements = await self._project_media_elements(page)
+        owned_ids = {str(mid) for mid in (job.get("mediaIds") or job.get("rpcMediaIds") or [])}
+        if owned_ids:
+            owned = [
+                item for item in elements
+                if str(item.get("id")) in owned_ids
+                and item.get("tag") == ("img" if kind == "image" else "video")
+                and str(item.get("src") or "").startswith("https://")
+                and (kind != "image" or int(item.get("width") or 0) > 0)
+            ]
+            if len(owned) >= count:
+                return owned[:count]
         try:
-            data = await api.get_project_data()
+            # The legacy project endpoint can stall while the image is
+            # already in the DOM. A metadata probe must not block collection.
+            data = await asyncio.wait_for(api.get_project_data(), timeout=3)
         except Exception:
             data = {}
         submission_time = float(job.get("submissionStartedAt") or 0)
@@ -346,10 +360,10 @@ class FlowMediaMixin:
                 <= project_changed_at + _PROJECT_MIGRATION_RECOVERY_WINDOW_S
             ):
                 baseline_ids.clear()
-            required_ids = {str(media_id) for media_id in job.get("mediaIds") or []}
+            required_ids = owned_ids
             found: list[dict[str, Any]] = []
             seen: set[str] = set()
-            for item in await self._project_media_elements(page):
+            for item in elements:
                 media_id = str(item.get("id") or "")
                 src = str(item.get("src") or "")
                 if (
@@ -404,7 +418,7 @@ class FlowMediaMixin:
             return found
         by_id = {
             str(item.get("id")): item
-            for item in await self._project_media_elements(page)
+            for item in elements
             if item.get("id") and str(item.get("src") or "").startswith("http")
         }
         # Project data is authoritative for identity; the DOM supplies the
@@ -425,13 +439,33 @@ class FlowMediaMixin:
     async def _recover_submitted_media(self, api, page, job, timeout_s=_IMAGE_GENERATION_TIMEOUT_S):
         """Poll the original project and persist ownership before downloading."""
         count = len(job.get("mediaIds") or []) or max(1, min(4, int((job.get("settings") or {}).get("count", 1))))
-        deadline = time.monotonic() + timeout_s if timeout_s > 0 else None
-        empty_checks = 0
-        # Flow may acknowledge the request before it mounts a generating tile.
-        # Do not recreate an image on the first empty DOM probe.
-        submission_grace_deadline = time.monotonic() + 8 if job.get("kind") == "image" else 0
-        while deadline is None or time.monotonic() < deadline:
+        image = job.get("kind") == "image"
+        started = time.monotonic()
+        timeout_s = timeout_s if timeout_s > 0 else _IMAGE_GENERATION_TIMEOUT_S
+        deadline = started + (min(8, timeout_s) if image else timeout_s)
+        hard_deadline = started + timeout_s * _GENERATION_WAIT_CAP
+        last_percent = -1
+        was_generating = False
+        store.patch_row("jobs", job["id"], {"resumeOnly": True})
+        while time.monotonic() < deadline:
             self._check_cancel(job["id"])
+            # Check the result first: an old/sibling failed tile must not
+            # prevent downloading this job's completed image.
+            recovery_job = {**job, "recoveryOnly": True}
+            try:
+                items = await asyncio.wait_for(
+                    self._find_existing_project_media(api, page, recovery_job, job["kind"], count),
+                    timeout=min(4, max(0.1, deadline - time.monotonic())),
+                )
+            except asyncio.TimeoutError:
+                items = []
+            if len(items) >= count:
+                ids = list(job.get("mediaIds") or [])
+                if not ids:
+                    ids = self._claim_media_ids([str(item['id']) for item in items], count)
+                if ids:
+                    store.patch_row("jobs", job["id"], {"mediaIds": ids, "stage": "downloading", "updatedAt": time.time()})
+                    return ids
             visible_error = await self._claim_visible_flow_error(page, job, count)
             if visible_error:
                 classified = _classify_visible_flow_error(visible_error)
@@ -442,86 +476,26 @@ class FlowMediaMixin:
                         "updatedAt": time.time(),
                     })
                 raise RuntimeError(classified)
-            # Recovery may need to claim media records whose request metadata
-            # is absent in Flow's project payload. Keep this flag local to the
-            # recovery probe so the initial parallel poll remains strict.
-            recovery_job = {**job, "recoveryOnly": True}
-            items = await self._find_existing_project_media(api, page, recovery_job, job["kind"], count)
-            if len(items) >= count:
-                ids = list(job.get("mediaIds") or [])
-                if not ids:
-                    ids = self._claim_media_ids([str(item['id']) for item in items], count)
-                if ids:
-                    store.patch_row("jobs", job["id"], {"mediaIds": ids, "stage": "downloading", "updatedAt": time.time()})
-                    return ids
-            # Recovery runs against an existing submission. The first visible
-            # tile can belong to an older job (including an unusual-activity
-            # banner), so classifying it here would attach the wrong error to
-            # this submission. Initial submit polling still checks visible
-            # errors in _wait_for_project_media().
-            if job.get("kind") == "image" and page is not None and deadline is not None:
-                try:
-                    tile_state = await page.evaluate("""() => {
-                        const tiles = [...document.querySelectorAll('flow-grid-tile-container')];
-                        let percent = -1;
-                        let generating = false;
-                        for (const tile of tiles) {
-                            if (tile.querySelector('[data-media-id], img, video')) continue;
-                            const text = tile.innerText || '';
-                            const match = text.match(/(\\d+)\\s*%/);
-                            const bar = tile.querySelector('[role="progressbar"][aria-valuenow]');
-                            const aria = Number(bar?.getAttribute('aria-valuenow'));
-                            const value = Math.max(bar && Number.isFinite(aria) ? aria : -1, match ? Number(match[1]) : -1);
-                            if (Number.isFinite(value) && value >= 0) percent = Math.max(percent, Math.min(99, value));
-                            if (bar || tile.querySelector('mat-progress-spinner, mat-spinner, .generating') || match) generating = true;
-                        }
-                        return { generating, percent };
-                    }""") or {}
-                    generating = bool(tile_state.get("generating"))
-                    percent = int(tile_state.get("percent") or -1)
-                    if generating and percent >= 0:
-                        store.patch_row("jobs", job["id"], {
-                            "stage": "generating", "progress": _flow_generation_progress(percent),
-                            "updatedAt": time.time(),
-                        })
-                except Exception:
-                    generating = False
-                # Keep polling only while Flow visibly reports an active tile.
-                # A completed tile was handled above; everything else is a
-                # failed or lost submission and should surface immediately.
+            patch = {"stage": "recovering", "updatedAt": time.time()}
+            if image and page is not None:
+                percent = await self._flow_tile_percent(page, count, str(job.get("prompt") or ""))
+                generating = percent >= 0 or await self._flow_pending_generation(page, str(job.get("prompt") or ""))
                 if generating:
-                    deadline = max(deadline, time.monotonic() + 5)
-            empty_checks += 1
-            if empty_checks >= 1 and page is not None and time.monotonic() >= submission_grace_deadline:
-                try:
-                    has_pending = bool(await page.evaluate("""() =>
-                        [...document.querySelectorAll('flow-grid-tile-container')].some(tile =>
-                            !tile.querySelector('[data-media-id]') && Boolean(
-                                tile.querySelector('[role="progressbar"], mat-progress-spinner, mat-spinner, .loading, .generating')
-                                || /(?:generating|đang tạo|processing|%)/i.test(tile.innerText || '')
-                            )
-                        )
-                    """))
-                except Exception:
-                    has_pending = True
-                # An empty grid during the first recovery probes is not proof
-                # that submit failed; Flow can mount the tile after navigation
-                # settles. Keep the browser alive until the real recovery
-                # timeout instead of closing Chrome and recreating too early.
-            store.patch_row("jobs", job["id"], {"stage": "recovering", "updatedAt": time.time()})
-            await asyncio.sleep(5)
-        if job.get("kind") == "image":
-            baseline = {str(x) for x in job.get("baselineMediaIds") or []}
-            reliable = False
-            try:
-                data = await api.get_project_data()
-                names = {str(m.get("name")) for m in data.get("projectContents", {}).get("media", []) if isinstance(m, dict)}
-                reliable = bool(names) and (not baseline or bool(names & baseline))
-            except Exception:
-                reliable = False
-            if reliable:
-                raise RuntimeError("FLOW_RESULT_NOT_FOUND: submitted image result not found and nothing is generating; recreating")
-        raise RuntimeError("FLOW_GENERATION_TIMEOUT: original result is not ready; retry continues recovery")
+                    patch["stage"] = "generating"
+                    if percent >= 0:
+                        current = int((store.get_row("jobs", job["id"]) or {}).get("progress") or 0)
+                        patch["progress"] = max(current, _flow_generation_progress(percent))
+                    if not was_generating or percent > last_percent:
+                        deadline = max(deadline, min(hard_deadline, time.monotonic() + timeout_s))
+                    last_percent = max(last_percent, percent)
+                else:
+                    deadline = min(deadline, time.monotonic() + 8)
+                was_generating = was_generating or generating
+            store.patch_row("jobs", job["id"], patch)
+            await asyncio.sleep(1)
+        # A missing DOM tile does not prove the billed generation failed.
+        # Preserve its identity and stop; manual retry checks the same result.
+        raise RuntimeError("FLOW_GENERATION_TIMEOUT: original result could not be collected; retry keeps the original submission")
 
     @staticmethod
     async def _scan_visible_errors(page, limit: int) -> list[dict[str, Any]]:
@@ -545,7 +519,7 @@ class FlowMediaMixin:
                         // play_circle/keyboard_return. Require actual error
                         // language before claiming a generation rejection.
                         if (text && /(?:error|failed|failure|unsuccessful|rejected|blocked|sensitive|safety|try again|not available|abnormal activity|suspicious activity|unusual activity|lỗi|thất bại|không thành công|hoạt động bất thường|hoạt động đáng ngờ|nhạy cảm|an toàn|thử lại)/i.test(text)) {
-                            return { index, text, tile: true };
+                            return { index, text, tile: true, prompt: tile.getAttribute('aria-label') || '' };
                         }
                     }
                     // Prompt/preview tiles contain icon names and prompt text.
@@ -587,6 +561,12 @@ class FlowMediaMixin:
         those other jobs (or this attempt) already claimed since then.
         """
         errors = await self._scan_visible_errors(page, max(tile_limit, 24))
+        prompt = re.sub(r"\s+", " ", str(job.get("prompt") or "")).strip().casefold()
+        if prompt and await self._flow_pending_generation(page, prompt):
+            # A sibling's failed tile cannot reject this active prompt.
+            # Keep an explicit error on this prompt, even if its % remains.
+            errors = [item for item in errors if item.get("tile") and prompt in
+                      re.sub(r"\s+", " ", str(item.get("prompt") or "")).strip().casefold()]
         if not errors:
             return ""
         account = store.get_row("accounts", str(job.get("accountId") or "")) or {}
@@ -618,46 +598,50 @@ class FlowMediaMixin:
         return ""
 
     @staticmethod
-    async def _flow_tile_percent(page, expected_count: int) -> int:
+    async def _flow_tile_percent(page, expected_count: int, prompt: str = "") -> int:
         """Real % on incomplete Flow tiles, or -1 when Flow shows none.
 
         Prefer tiles that are still generating so a finished sibling cannot
         hide this job's rising percentage and starve the wait deadline.
         """
         try:
-            values = await page.evaluate("""(n) => {
+            values = await page.evaluate("""([n, prompt]) => {
                 const all = [...document.querySelectorAll('flow-grid-tile-container')];
+                const normalize = value => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                const expected = normalize(prompt);
                 const incomplete = all.filter((tile) => !tile.querySelector(
                     '[data-media-id], img[src^="http"], video[src^="http"]'
-                ));
-                const pool = (incomplete.length ? incomplete : all).slice(0, n);
+                ) && (!expected || normalize(tile.getAttribute('aria-label')).includes(expected)));
+                const pool = incomplete.slice(0, n);
                 return pool.map((t) => {
                     const bar = t.querySelector('[role="progressbar"][aria-valuenow]');
                     const aria = parseFloat(bar?.getAttribute('aria-valuenow'));
                     const m = ((t.innerText || '') + ' ' + (t.textContent || '')).match(/(\\d+)\\s*%/);
                     return Math.round(Math.max(isNaN(aria) ? -1 : aria, m ? parseInt(m[1], 10) : -1));
                 });
-            }""", max(1, expected_count)) or []
+            }""", [max(1, expected_count), prompt]) or []
         except Exception:
             return -1
         values = [v for v in values if v >= 0]
         return max(values) if values else -1
 
     @staticmethod
-    async def _flow_pending_generation(page) -> bool:
+    async def _flow_pending_generation(page, prompt: str = "") -> bool:
         """True when a grid tile is visibly generating without completed media."""
         if page is None:
             return False
         try:
-            return bool(await page.evaluate("""() =>
+            return bool(await page.evaluate("""(prompt) =>
                 [...document.querySelectorAll('flow-grid-tile-container')].some((tile) => {
+                    const normalize = value => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                    if (prompt && !normalize(tile.getAttribute('aria-label')).includes(normalize(prompt))) return false;
                     if (tile.querySelector('[data-media-id], img[src^="http"], video[src^="http"]')) return false;
                     return Boolean(
                         tile.querySelector('[role="progressbar"], mat-progress-spinner, mat-spinner, .generating')
                         || /(?:generating|đang tạo|processing|\\d+\\s*%)/i.test(tile.innerText || '')
                     );
                 })
-            """))
+            """, prompt))
         except Exception:
             return False
 
@@ -763,10 +747,11 @@ class FlowMediaMixin:
                 })
                 raise RuntimeError(classified)
             current_progress = int((store.get_row("jobs", job_id) or {}).get("progress") or 0)
-            pct = await self._flow_tile_percent(page, expected_count)
+            prompt = str((job or {}).get("prompt") or "")
+            pct = await self._flow_tile_percent(page, expected_count, prompt)
             # Keep waiting while Flow still owns this submission (RPC names or
             # a pending tile), even when % is mute — still capped by hard_deadline.
-            submission_alive = bool(rpc_names) or await self._flow_pending_generation(page)
+            submission_alive = bool(rpc_names) or await self._flow_pending_generation(page, prompt)
             # Only expose a real Flow tile percentage. Missing progress means
             # the submission is not healthy and must be handled by timeout or
             # recovery instead of being presented as advancing work.
@@ -781,7 +766,7 @@ class FlowMediaMixin:
                     # mounted. Keep collecting this submitted result instead
                     # of treating the near-complete job as lost and charging
                     # a duplicate retry.
-                    deadline = max(deadline or 0, time.monotonic() + 20)
+                    deadline = max(deadline or 0, min(hard_deadline, time.monotonic() + 20))
             elif submission_alive and deadline is not None:
                 deadline = max(deadline, min(hard_deadline, time.monotonic() + timeout_s))
             store.patch_row("jobs", job_id, patch)

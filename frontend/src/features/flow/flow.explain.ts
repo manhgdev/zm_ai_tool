@@ -107,8 +107,8 @@ export function explainFlowError(message: string): FlowExplain {
     actionEn: string,
   ): FlowExplain => ({
     code: resolvedCode,
-    titleVi: ({ FLOW_QUOTA_EXHAUSTED: "Đã đạt hạn mức sử dụng", FLOW_AUTOMATION_BLOCKED: "Flow phát hiện hoạt động bất thường", FLOW_CREDITS_EMPTY: "Tài khoản hết tín dụng" } as Record<string, string>)[resolvedCode] || detail,
-    titleEn: ({ FLOW_QUOTA_EXHAUSTED: "Usage quota reached", FLOW_AUTOMATION_BLOCKED: "Flow detected unusual activity", FLOW_CREDITS_EMPTY: "Account has no credits" } as Record<string, string>)[resolvedCode] || detail,
+    titleVi: ({ FLOW_QUOTA_EXHAUSTED: "Đã đạt hạn mức sử dụng", FLOW_AUTOMATION_BLOCKED: "Flow phát hiện hoạt động bất thường", FLOW_CREDITS_EMPTY: "Tài khoản hết tín dụng", FLOW_GENERATION_TIMEOUT: "Chưa lấy được kết quả đã gửi" } as Record<string, string>)[resolvedCode] || detail,
+    titleEn: ({ FLOW_QUOTA_EXHAUSTED: "Usage quota reached", FLOW_AUTOMATION_BLOCKED: "Flow detected unusual activity", FLOW_CREDITS_EMPTY: "Account has no credits", FLOW_GENERATION_TIMEOUT: "Submitted result not collected" } as Record<string, string>)[resolvedCode] || detail,
     summaryVi: "",
     summaryEn: "",
     actionVi,
@@ -284,8 +284,8 @@ export function explainFlowError(message: string): FlowExplain {
   if (code === "FLOW_GENERATION_TIMEOUT") {
     return make(
       code,
-      "Flow chưa trả media sau khi gửi. App sẽ khôi phục kết quả đã gửi trước (không tạo mới ngay). Chạy lại cũng recover trước.",
-      "Flow has not returned media after submit yet. The app recovers the existing submission first (no immediate regenerate). Retry also recovers first.",
+      "App đã dừng chờ và giữ lượt tạo trên Flow. Chạy lại với cùng tài khoản để tìm và tải kết quả đó.",
+      "The app stopped waiting and preserved the generation on Flow. Retry with the same account to find and download it.",
     );
   }
   if (code === "FLOW_CREDITS_INSUFFICIENT" || /FLOW_CREDITS_INSUFFICIENT|insufficient credits|not enough credits/i.test(raw)) {
@@ -372,6 +372,7 @@ export function explainFlowEvent(event: string): { titleVi: string; titleEn: str
     account_unsuspended: ["Đã gỡ cách ly tài khoản", "Account suspension cleared"],
     job_retry: ["Đưa job vào chạy lại", "Job queued for retry"],
     job_auto_retry: ["Tự chạy lại job bằng Chrome mới", "Auto-retrying job in a fresh Chrome"],
+    browser_headed_fallback: ["Tự chuyển sang Chrome có giao diện ngoài màn hình", "Switching to a Chrome window placed off screen"],
     unusual_activity_session_reset: ["Reset phiên Flow vì hoạt động bất thường", "Resetting Flow session after unusual activity"],
     unusual_activity_reconnected: ["Đã kết nối lại sau reset phiên", "Reconnected after session reset"],
     unusual_activity_retry: ["Chạy lại job sau reset phiên", "Retrying job after session reset"],

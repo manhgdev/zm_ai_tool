@@ -2,10 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
-import { explainFlowError } from '../frontend/src/features/flow/flow.explain.ts'
+import { explainFlowError, explainFlowEvent } from '../frontend/src/features/flow/flow.explain.ts'
 
 const read = path => readFileSync(new URL(`../frontend/src/${path}`, import.meta.url), 'utf8')
 const parse = path => ts.createSourceFile(path, read(path), ts.ScriptTarget.Latest, true)
+test('Flow automatic headed fallback has Vietnamese and English event labels', () => {
+  const label = explainFlowEvent('browser_headed_fallback')
+  assert.match(label.titleVi, /Chrome.*ngoài màn hình/)
+  assert.match(label.titleEn, /Chrome.*off screen/)
+})
 function visit(node, check) {
   check(node)
   ts.forEachChild(node, child => visit(child, check))
@@ -159,6 +164,16 @@ test('Flow login redirect keeps bilingual recovery copy without claiming cookie 
   assert.doesNotMatch(error.titleEn, /expired/i)
   assert.doesNotMatch(error.actionVi, /vừa mở/)
   assert.doesNotMatch(error.actionEn, /that opened/)
+})
+
+test('Flow result timeout explains stopped collection and same-account retry in both languages', () => {
+  const error = explainFlowError('FLOW_GENERATION_TIMEOUT: original result could not be collected')
+  assert.equal(error.titleVi, 'Chưa lấy được kết quả đã gửi')
+  assert.equal(error.titleEn, 'Submitted result not collected')
+  assert.match(error.actionVi, /dừng chờ/)
+  assert.match(error.actionVi, /cùng tài khoản/)
+  assert.match(error.actionEn, /stopped waiting/)
+  assert.match(error.actionEn, /same account/)
 })
 
 test('CapCut errors produce Vietnamese and English messages while preserving diagnostics', () => {

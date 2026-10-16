@@ -15,6 +15,7 @@ from typing import Any
 
 from . import store
 from .constants import POST_PROGRESS_START, _IMAGE_UI_MODELS, _TERMINAL, _VIDEO_UI_MODELS
+from .errors import _is_automation_block_error
 from .models import (
     _catalog_section,
     _ensure_flow_credits_for_job,
@@ -548,6 +549,10 @@ class FlowQueueMixin:
                     settings, _ = _normalize_catalog_settings(account, kind, settings)
                     fresh = bool(overrides.get("fresh"))
                     force_new = bool(fresh and existing.get("status") == "done" and not existing.get("error"))
+                    force_new = (
+                        force_new or account_id != str(existing.get("accountId") or "")
+                        or _is_automation_block_error(existing.get("error") or "")
+                    )
                     recover_submission = bool(
                         not force_new
                         and existing.get("submissionStartedAt")
@@ -560,6 +565,7 @@ class FlowQueueMixin:
                         and not existing.get("outputs")
                         and re.search(r"FLOW_DOWNLOAD_FAILED", str(existing.get("error") or ""), re.I)
                     )
+                    recover_submission = recover_submission and not force_new
                     if bool(overrides.get("manual")) and requested_account_id not in {"random", "auto", ""} and suspended:
                         if kind == "image" and model:
                             self.clear_model_suspension(account_id, kind, str(model))
@@ -568,6 +574,8 @@ class FlowQueueMixin:
                     recovery_fields = {"resumeOnly": True} if recover_submission else {
                         "resumeOnly": False, "submissionStartedAt": None, "submissionProjectId": None,
                         "baselineMediaIds": [], "baselineThumbs": [], "mediaIds": [],
+                        "baselineErrorTexts": [], "lastGenerationRejectedSubmissionAt": None,
+                        "lastFlowErrorSignature": None,
                     }
                     queue_order = int(existing.get("queueOrder")) if str(existing.get("queueOrder", "")).isdigit() else int(existing.get("inputIndex", 0))
                     patches[job_id] = {
@@ -579,7 +587,8 @@ class FlowQueueMixin:
                         "accountId": account_id, "settings": settings,
                         "generationToken": uuid.uuid4().hex, "mode": str(overrides.get("mode") or existing.get("mode") or "text"),
                         "generationRejectRetryCount": 0, "autoRetryCount": 0, "authRetryCount": 0,
-                        "sessionResetRetryCount": 0, "forceNew": force_new, "logoDone": [],
+                        "sessionResetRetryCount": 0, "headedFallbackCount": 0,
+                        "forceNew": force_new, "logoDone": [],
                         "updatedAt": time.time(),
                     }
                     accepted.append({"jobId": job_id, "accountId": account_id})
@@ -750,6 +759,13 @@ class FlowQueueMixin:
 
         if not account:
             raise ValueError("FLOW_NO_ONLINE_ACCOUNTS: No eligible connected Flow account is available.")
+        # Submission/media IDs are scoped to the original account. Switching
+        # accounts or retrying an unusual-activity rejection creates a new job.
+        force_new = (
+            force_new or account_id != str(existing.get("accountId") or "")
+            or _is_automation_block_error(existing.get("error") or "")
+        )
+        recover_submission = recover_submission and not force_new
         if (
             manual_retry
             and requested_account_id not in {"random", "auto", ""}
@@ -792,6 +808,9 @@ class FlowQueueMixin:
                     "baselineMediaIds": [],
                     "baselineThumbs": [],
                     "mediaIds": [],
+                    "baselineErrorTexts": [],
+                    "lastGenerationRejectedSubmissionAt": None,
+                    "lastFlowErrorSignature": None,
                 }
             )
             self._release_media_ids(existing.get("mediaIds"))
@@ -813,6 +832,7 @@ class FlowQueueMixin:
                     "autoRetryCount": 0,
                     "authRetryCount": 0,
                     "sessionResetRetryCount": 0,
+                    "headedFallbackCount": 0,
                     "forceNew": force_new,
                     "logoDone": [],
                 })

@@ -1,7 +1,9 @@
 import sys
 import os
+import asyncio
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -164,12 +166,12 @@ class WindowsChromeIsolationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class FlowBrowserGeometryTest(unittest.TestCase):
-    def test_first_two_windows_fill_one_horizontal_row(self):
+    def test_first_two_windows_overlap_in_one_horizontal_row(self):
         positions = [_visible_window_geometry(i, 1440, 900) for i in range(2)]
 
         self.assertEqual(positions, [
-            (733, 0, 707, 900),
-            (0, 0, 707, 900),
+            (360, 0, 1080, 900),
+            (0, 0, 1080, 900),
         ])
         self.assertEqual(len({(x, y) for x, y, _, _ in positions}), 2)
 
@@ -194,33 +196,119 @@ class FlowBrowserGeometryTest(unittest.TestCase):
 
     def test_six_windows_fill_screen_to_left_edge(self):
         positions = [_visible_window_geometry(i, 1512, 949) for i in range(6)]
-        self.assertEqual(len(set(positions)), 3)
-        self.assertEqual([positions[i][0] for i in (0, 1, 2)], [1012, 506, 0])
+        self.assertEqual(len(set(positions)), 2)
+        self.assertEqual([positions[i][0] for i in (0, 1, 2)], [432, 0, 432])
         for x, y, width, height in positions:
             self.assertLessEqual(x + width, 1512)
             self.assertLessEqual(y + height, 949)
-        self.assertEqual(_visible_window_geometry(3, 1512, 949), positions[0])
-        self.assertEqual(positions[0], (1012, 0, 500, 949))
+        self.assertEqual(_visible_window_geometry(2, 1512, 949), positions[0])
+        self.assertEqual(positions[0], (432, 0, 1080, 949))
 
-    def test_large_work_areas_add_rows_and_columns(self):
-        for screen_width, screen_height, columns, rows in (
-            (2560, 1440, 5, 3), (3840, 2160, 7, 4),
+    def test_large_work_areas_keep_two_full_height_columns(self):
+        for screen_width, screen_height in (
+            (2560, 1440), (3840, 2160),
         ):
             with self.subTest(size=(screen_width, screen_height)):
                 positions = [_visible_window_geometry(i, screen_width, screen_height)
-                             for i in range(columns * rows)]
-                self.assertEqual(len({x for x, _, _, _ in positions}), columns)
+                             for i in range(6)]
+                self.assertEqual(len({x for x, _, _, _ in positions}), 2)
                 self.assertEqual(len({y for _, y, _, _ in positions}), 1)
                 for x, y, width, height in positions:
                     self.assertGreaterEqual(x, 0)
                     self.assertGreaterEqual(y, 0)
                     self.assertLessEqual(x + width, screen_width)
                     self.assertLessEqual(y + height, screen_height)
-                    self.assertGreaterEqual(width, 500)
-                    self.assertGreaterEqual(height, 420)
+                    self.assertEqual(width, screen_width // 2)
+                    self.assertEqual(height, screen_height)
 
 
 class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_background_chrome_has_no_startup_window_and_creates_only_a_minimized_page(self):
+        for platform in ('darwin', 'win32'):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as raw:
+                page = SimpleNamespace(url='about:blank', bring_to_front=AsyncMock())
+                ready = asyncio.get_running_loop().create_future()
+                ready.set_result(page)
+
+                @asynccontextmanager
+                async def expect_page():
+                    yield SimpleNamespace(value=ready)
+
+                context = SimpleNamespace(pages=[], expect_page=expect_page, new_page=AsyncMock())
+                native_session = SimpleNamespace(send=AsyncMock(), detach=AsyncMock())
+                cdp_browser = SimpleNamespace(
+                    contexts=[context], new_browser_cdp_session=AsyncMock(return_value=native_session))
+                playwright = SimpleNamespace(
+                    chromium=SimpleNamespace(connect_over_cdp=AsyncMock(return_value=cdp_browser)),
+                    stop=AsyncMock())
+                fake_proc = Mock(poll=Mock(return_value=0))
+                executable = Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
+                with patch('sys.platform', platform), \
+                     patch('pipeline.flow.browser.network_available', return_value=True), \
+                     patch('pipeline.flow.browser._windows_chrome_user_data_dir_policy', return_value=None), \
+                     patch('pipeline.flow.browser.chrome_executable', return_value=executable), \
+                     patch('pipeline.flow.browser._cdp_endpoint_ready', return_value=True), \
+                     patch('pipeline.flow.browser._capture_active_window') as capture, \
+                     patch('pipeline.flow.browser.free_local_port', return_value=9333), \
+                     patch('pipeline.flow.browser.subprocess.CREATE_NEW_PROCESS_GROUP', 512, create=True), \
+                     patch('pipeline.flow.browser.subprocess.Popen', return_value=fake_proc) as popen, \
+                     patch('pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))), \
+                     patch('pipeline.flow.browser._goto_tolerant', new_callable=AsyncMock) as goto:
+                    manager = BrowserManager(headless=False, profile_dir=Path(raw),
+                                             window_position=(-30000, -30000), restore_last_session=True)
+                    manager._place_visible_window = AsyncMock()
+                    await manager.start()
+                    argv = popen.call_args.args[0]
+                    self.assertIn('--no-startup-window', argv)
+                    self.assertIn('--restore-last-session', argv)
+                    self.assertNotIn('--headless=new', argv)
+                    if platform == 'darwin':
+                        self.assertEqual(argv[:9], ['/usr/bin/open', '-g', '-j', '-n', '-W', '-a',
+                                                   '/Applications/Google Chrome.app', '--args',
+                                                   f'--user-data-dir={Path(raw).resolve()}'])
+                    else:
+                        self.assertEqual(argv[0], str(executable))
+                    capture.assert_not_called()
+                    self.assertIs(await manager.page(), page)
+                    native_session.send.assert_awaited_once_with('Target.createTarget', {
+                        'url': 'about:blank', 'newWindow': True, 'background': True,
+                        'windowState': 'minimized', 'width': 1080, 'height': 800})
+                    goto.assert_awaited_once_with(page, 'https://flow.google.com')
+                    manager._place_visible_window.assert_not_awaited()
+                    page.bring_to_front.assert_not_awaited()
+                    context.new_page.assert_not_awaited()
+                    native_session.detach.assert_awaited_once()
+                    with patch.object(manager, 'kill_now'):
+                        await manager.stop()
+
+    async def test_offscreen_headed_window_keeps_position_and_does_not_bring_front(self):
+        session = SimpleNamespace(send=AsyncMock(return_value={"windowId": 7}), detach=AsyncMock())
+        context = SimpleNamespace(new_cdp_session=AsyncMock(return_value=session))
+        page = SimpleNamespace(bring_to_front=AsyncMock())
+        manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-offscreen-test'),
+                                 window_position=(-30000, -30000))
+        manager._ctx = context
+        manager._apply_visible_zoom = AsyncMock()
+        with patch('sys.platform', 'win32'), patch('pipeline.flow.browser._restore_active_window'):
+            await manager._finish_page(page, bring_front=True)
+        page.bring_to_front.assert_not_awaited()
+        self.assertEqual(session.send.call_args.args, ('Browser.setWindowBounds', {
+            'windowId': 7, 'bounds': {'left': -30000, 'top': -30000, 'width': 1080, 'height': 800}}))
+        argv = manager._spawn_chrome_argv(Path('chrome'), 9333)
+        self.assertIn('--window-position=-30000,-30000', argv)
+        self.assertNotIn('--headless=new', argv)
+        self.assertFalse(any(arg.startswith('--user-agent=') for arg in argv))
+
+    async def test_macos_offscreen_fallback_minimizes_only_its_own_window(self):
+        session = SimpleNamespace(send=AsyncMock(return_value={"windowId": 9}), detach=AsyncMock())
+        manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-offscreen-mac'),
+                                 window_position=(-30000, -30000))
+        manager._ctx = SimpleNamespace(new_cdp_session=AsyncMock(return_value=session))
+        with patch('sys.platform', 'darwin'), patch('pipeline.flow.browser._restore_active_window'):
+            await manager._place_visible_window(object())
+        self.assertEqual(session.send.call_args.args, ('Browser.setWindowBounds', {
+            'windowId': 9, 'bounds': {'windowState': 'minimized'}}))
+
     async def test_job_browser_cleanup_force_kills_owned_browser_after_stop_error(self):
         service = FlowService()
         browser = SimpleNamespace(
@@ -319,6 +407,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn('--restore-last-session', argv)
             self.assertNotIn('--disable-blink-features=AutomationControlled', argv)
             self.assertNotIn('--headless=new', argv)
+            self.assertNotIn('--no-startup-window', argv)
             self.assertFalse(any(arg.startswith('--user-agent=') for arg in argv))
             context.add_init_script.assert_not_awaited()
             with patch.object(manager, 'kill_now') as killer:
@@ -350,6 +439,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             await manager.start()
             argv = popen.call_args.args[0]
             self.assertIn('--headless=new', argv)
+            self.assertNotIn('--no-startup-window', argv)
             self.assertFalse(any(arg.startswith('--user-agent=') for arg in argv))
             await manager.stop()
 
@@ -447,14 +537,14 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             'left': -1440, 'top': 25, 'width': 1440, 'height': 875,
         }))
         session = SimpleNamespace(send=AsyncMock(side_effect=[
-            {'windowId': 7}, {}, {}, {'bounds': {'width': 740, 'height': 260}}, {},
+            {'windowId': 7}, {}, {}, {'bounds': {'width': 1160, 'height': 900}}, {},
         ]), detach=AsyncMock())
         manager = BrowserManager(headless=False, profile_dir=Path('/tmp/flow-bounds-test'))
         manager._ctx = SimpleNamespace(new_cdp_session=AsyncMock(return_value=session))
         with patch('pipeline.flow.browser._visible_window_index', 0):
             await manager._place_visible_window(page)
         self.assertEqual(session.send.await_args_list[-1].args[1], {
-            'windowId': 7, 'bounds': {'left': -740, 'top': 25},
+            'windowId': 7, 'bounds': {'left': -1160, 'top': 25},
         })
         session.detach.assert_awaited_once()
         self.assertTrue(manager._window_placed)

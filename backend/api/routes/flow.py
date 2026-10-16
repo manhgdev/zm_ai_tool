@@ -50,6 +50,7 @@ class AccountIn(BaseModel):
     projectId: str = Field(default="", max_length=160)
     isDefault: bool = False
     authMethod: str = Field(default="chrome", pattern="^(chrome|cookie)$")
+    headlessFallbackEnabled: bool | None = None
 
 
 class AccountCreateIn(AccountIn):

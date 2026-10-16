@@ -10,7 +10,8 @@ import uuid
 from typing import Any
 
 from . import store
-from .constants import _ACCOUNT_RECOVERY_MAX, _PROJECT_RE, _TERMINAL
+from .browser import _display_available
+from .constants import _ACCOUNT_RECOVERY_MAX, _PROJECT_RE, _TERMINAL, _UNUSUAL_ACTIVITY_RESET_MAX
 from .errors import (
     _collapse_flow_login_error,
     _confirmed_login_wall_error,
@@ -84,7 +85,7 @@ class FlowRecoveryMixin:
             if joined_job and joined_job.get("status") not in _TERMINAL:
                 store.patch_row("jobs", job_id, {
                     "stage": "waiting_session_reset",
-                    "recoveryNotice": {
+                    "recoveryNotice": None if _is_automation_block_error(reason) else {
                         "vi": "Tài khoản Flow đã đăng xuất — đang tự đăng nhập lại bằng cookie",
                         "en": "Flow account signed out — signing in again with the saved cookie",
                     }, "updatedAt": time.time(),
@@ -102,6 +103,7 @@ class FlowRecoveryMixin:
 
         account = store.get_row("accounts", account_id) or {}
         now = time.time()
+        automation_block = _is_automation_block_error(reason)
         attempt = int(account.get("resetAttemptCount") or 0) + 1
         if attempt > _ACCOUNT_RECOVERY_MAX:
             store.patch_row("accounts", account_id, {
@@ -137,6 +139,13 @@ class FlowRecoveryMixin:
                 "vi": "Tài khoản Flow đã đăng xuất — đang tự đăng nhập lại bằng cookie",
                 "en": "Flow account signed out — signing in again with the saved cookie",
             }, "updatedAt": now}
+            if automation_block:
+                # Every job using the old session consumes this one reset,
+                # including siblings interrupted by the profile replacement.
+                patch.update({
+                    "sessionResetRetryCount": _UNUSUAL_ACTIVITY_RESET_MAX,
+                    "recoveryNotice": None,
+                })
             if row.get("status") == "processing":
                 patch.update({"stage": "recovering_session"})
             store.patch_row("jobs", str(row.get("id") or ""), patch)
@@ -384,21 +393,63 @@ class FlowRecoveryMixin:
             )
         return restarted
 
+    def _try_headed_fallback(self, job_id: str, account_id: str, reason: str) -> bool:
+        """Use the account's opt-in desktop compatibility fallback once."""
+        with self._account_condition:
+            job = store.get_row("jobs", job_id) or {}
+            account = store.get_row("accounts", account_id) or {}
+            if (
+                not account.get("headlessFallbackEnabled")
+                or not _display_available()
+                or not _is_automation_block_error(reason)
+                or job.get("status") != "failed"
+                or job_id in self._cancelled
+                or str(job.get("accountId") or "") != account_id
+                or job.get("mediaIds") or job.get("outputs")
+                or job.get("headedFallbackCount")
+                or job.get("effectiveHeadless") is not True
+                or int(job.get("sessionResetRetryCount") or 0) < _UNUSUAL_ACTIVITY_RESET_MAX
+            ):
+                return False
+            now = time.time()
+            store.patch_row("accounts", account_id, {
+                "headlessFallbackAt": account.get("headlessFallbackAt") or now,
+                "updatedAt": now,
+            })
+            self._clear_unsent_submission(job_id)
+            store.patch_row("jobs", job_id, {
+                "status": "queued", "stage": "retrying", "progress": 0,
+                "error": None, "recoveryNotice": None,
+                "headedFallbackCount": 1, "baselineErrorTexts": [],
+                "lastGenerationRejectedSubmissionAt": None, "lastFlowErrorSignature": None,
+                "updatedAt": now,
+            })
+            self._account_condition.notify_all()
+        self._log(
+            "warning", "browser_headed_fallback", job_id=job_id, account_id=account_id,
+            details={"headless": False, "windowPosition": [-30000, -30000], "maxAttempts": 1},
+        )
+        return True
+
     def _try_fallback_account(self, job_id: str, failed_account_id: str, reason: str) -> bool:
         """Attempt to fallback a failed/blocked job to another eligible online account."""
         # Completed media belongs to its original account/project. Switching
         # accounts here would regenerate it rather than retry the download.
         existing = store.get_row("jobs", job_id) or {}
-        if existing.get("mediaIds") or existing.get("outputs"):
+        if (existing.get("mediaIds") or existing.get("outputs") or (
+            existing.get("submissionStartedAt") and existing.get("resumeOnly")
+            and "FLOW_GENERATION_TIMEOUT" in reason
+        )):
             return False
         job = store.get_row("jobs", job_id)
         if not job or job.get("status") in {"done", "cancelled"} or job_id in self._cancelled:
             return False
-        # An unusual-activity response must stay on this account so the
-        # shared cookie reset can preserve its project and submission identity.
-        if _is_automation_block_error(reason) or not job.get(
-            "allowAccountFallback", bool(job.get("randomAccount"))
-        ):
+        # First share the account reset; only a subsequent block may move a
+        # rejected/unsent job to another account.
+        if (
+            _is_automation_block_error(reason)
+            and int(job.get("sessionResetRetryCount") or 0) < _UNUSUAL_ACTIVITY_RESET_MAX
+        ) or not job.get("allowAccountFallback", bool(job.get("randomAccount"))):
             return False
 
         kind = str(job.get("kind") or "image")
@@ -448,6 +499,15 @@ class FlowRecoveryMixin:
             "autoRetryCount": 0,
             "generationRejectRetryCount": 0,
             "sessionResetRetryCount": 0,
+            "headedFallbackCount": 0,
+            "submissionStartedAt": None,
+            "submissionProjectId": None,
+            "baselineMediaIds": [],
+            "baselineThumbs": [],
+            "baselineErrorTexts": [],
+            "lastGenerationRejectedSubmissionAt": None,
+            "lastFlowErrorSignature": None,
+            "resumeOnly": False,
             "triedAccountIds": next_tried,
             "updatedAt": time.time(),
         })

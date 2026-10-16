@@ -334,9 +334,21 @@ class FlowWorkerMixin:
                 finished = store.get_row("jobs", job_id) or finished
                 finished_error = str(finished.get("error") or "")
                 rejected = "FLOW_GENERATION_REJECTED" in finished_error
-                # Each job owns an isolated Chrome profile, so unusual activity
-                # is retried in a fresh Chrome for this job only; siblings keep running.
+                # The account coordinator shares one reset across this cohort.
                 blocked = _is_automation_block_error(finished_error)
+                if self._try_headed_fallback(job_id, account_id, finished_error):
+                    break
+                if blocked and not finished.get("outputs") and not finished.get("mediaIds"):
+                    # An unusual-activity rejection always starts a fresh
+                    # generation after recovery, never polls the rejected one.
+                    self._release_media_ids(finished.get("mediaIds"))
+                    self._clear_unsent_submission(job_id)
+                    store.patch_row("jobs", job_id, {
+                        "mediaIds": [], "baselineErrorTexts": [],
+                        "lastGenerationRejectedSubmissionAt": None,
+                        "lastFlowErrorSignature": None,
+                    })
+                    finished = store.get_row("jobs", job_id) or finished
                 download_recovery = bool(
                     finished.get("mediaIds")
                     and not finished.get("outputs")
@@ -377,6 +389,12 @@ class FlowWorkerMixin:
                 )
                 should_auto_retry = (
                     finished.get("status") == "failed"
+                    and not (blocked and (finished.get("mediaIds") or finished.get("outputs")))
+                    and not (
+                        "FLOW_GENERATION_TIMEOUT" in finished_error
+                        and finished.get("resumeOnly")
+                        and finished.get("submissionStartedAt")
+                    )
                     and soft_transient
                     and within_budget
                     and (
@@ -429,17 +447,11 @@ class FlowWorkerMixin:
                         "baselineMediaIds": [], "mediaIds": [], "resumeOnly": False,
                     })
                 elif blocked:
-                    # A browser/security wall does not prove that Flow
-                    # discarded the server-side generation. Preserve every
-                    # submission/media field and let the account coordinator
-                    # reconcile it after cookie recovery.
+                    # The rejected submission was cleared above for a fresh run.
                     patch.update({
                         "stage": "recovering_session",
                         "error": finished_error,
-                        "recoveryNotice": {
-                            "vi": "Tài khoản Flow đã đăng xuất — đang tự đăng nhập lại bằng cookie",
-                            "en": "Flow account signed out — signing in again with the saved cookie",
-                        },
+                        "recoveryNotice": None,
                     })
                 elif recovering_timeout:
                     # Recover the already-submitted result; do not clear and
@@ -588,10 +600,9 @@ class FlowWorkerMixin:
                             self.suspend_model(account_id, "image", str(settings.get("model") or "Nano Banana 2.1"), err_msg)
                         else:
                             self.suspend_account(account_id, err_msg, scope="video")
-                elif allow_account and not _is_automation_block_error(err_msg):
-                    # Explicit fallback remains available for non-session
-                    # failures.  An unusual-activity response is handled by
-                    # the shared same-account cookie reset coordinator above.
+                elif allow_account:
+                    # The helper allows a blocked account only after its
+                    # shared reset budget, with no unresolved generation.
                     self._try_fallback_account(job_id, account_id, err_msg)
                 elif re.search(r"FLOW_CREDITS_EMPTY", err_msg, re.I) or quota_hit:
                     if str(current_job.get("kind") or "") == "image" and quota_hit:
@@ -735,11 +746,13 @@ class FlowWorkerMixin:
                 if headless_override is not None
                 else _flow_headless(job.get("settings") or {})
             )
-            profile_slot = self._session_key(str(account["id"]), job_kind)
-            self._log(
-                "info", "browser_mode", job_id=job_id, account_id=account["id"],
-                details={"kind": job_kind, "headless": bool(headless), "profileSlot": profile_slot, "manualSession": False},
+            background_headed = bool(
+                headless and headless_override is None
+                and account.get("headlessFallbackEnabled") and account.get("headlessFallbackAt")
             )
+            if background_headed:
+                headless = False
+            profile_slot = self._session_key(str(account["id"]), job_kind)
             # Same CDP spawn as Connect (not Playwright launch_persistent) so
             # packaged jobs share the signed-in Chrome surface and re-seed jar.
             runtime_dir = profile_dir or (
@@ -752,6 +765,13 @@ class FlowWorkerMixin:
                 profile_dir=runtime_dir,
                 restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
                 remote_debugging_port=free_local_port(),
+                window_position=(-30000, -30000) if background_headed else None,
+            )
+            store.patch_row("jobs", job_id, {"effectiveHeadless": browser.headless})
+            self._log(
+                "info", "browser_mode", job_id=job_id, account_id=account["id"],
+                details={"kind": job_kind, "headless": browser.headless, "profileSlot": profile_slot,
+                         "manualSession": False, "windowPosition": browser.window_position},
             )
             browser._flow_session_generation = expected_generation
             browser._flow_started_at = time.time()
@@ -874,6 +894,7 @@ class FlowWorkerMixin:
                 }
                 store.patch_row("jobs", job_id, reset)
                 job = {**job, **reset}
+                recovery_state = False
                 self._log(
                     "warning",
                     "submission_project_missing",

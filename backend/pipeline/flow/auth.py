@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from . import store
 from .constants import _PROJECT_RE
+from .errors import _soft_retry_backoff_s
 from .models import _detect_plan
 from .profiles import (
     _account_cookie_records,
@@ -537,6 +538,9 @@ class FlowAuthMixin:
             if login_ok:
                 for kind in ("image", "video"):
                     shutil.rmtree(self._session_profile_dir(account_id, kind), ignore_errors=True)
+                if account.get("resetState") == "reconnecting":
+                    # Keep admission closed until the promised post-login delay.
+                    await asyncio.sleep(_soft_retry_backoff_s(1))
                 store.patch_row("accounts", account_id, patch)
                 self._mark_session_ready(account_id)
                 self._log("success", "account_connected", account_id=account_id,

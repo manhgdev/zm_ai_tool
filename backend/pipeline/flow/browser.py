@@ -141,13 +141,13 @@ def _display_available() -> bool:
     return True
 
 
-def _visible_window_args(*, fullscreen: bool = False) -> list[str]:
+def _visible_window_args(*, fullscreen: bool = False, position: tuple[int, int] | None = None) -> list[str]:
     """Start compactly; the page then supplies the real monitor work area."""
     # Do not create Tk/AppKit from a Flow worker thread.  macOS aborts the
     # process when Tk initializes Cocoa off the main thread (SIGABRT/-6).
     return [
-        "--window-position=0,0",
-        *(["--start-maximized"] if fullscreen else ["--window-size=1080,800"]),
+        f"--window-position={position[0]},{position[1]}" if position else "--window-position=0,0",
+        *(["--start-maximized"] if fullscreen and position is None else ["--window-size=1080,800"]),
     ]
 
 
@@ -345,7 +345,7 @@ async def _goto_tolerant(page, url: str) -> None:
 class BrowserManager:
     """Subset of flow-py's browser contract backed by installed Google Chrome."""
 
-    def __init__(self, *, headless: bool = True, profile_dir: Path | None = None, slow_mo: int = 0, google_login_compat: bool = False, fullscreen: bool = False, page_zoom: float = 1.0, cdp_url: str | None = None, remote_debugging_port: int | None = None, restore_last_session: bool = False) -> None:
+    def __init__(self, *, headless: bool = True, profile_dir: Path | None = None, slow_mo: int = 0, google_login_compat: bool = False, fullscreen: bool = False, page_zoom: float = 1.0, cdp_url: str | None = None, remote_debugging_port: int | None = None, restore_last_session: bool = False, window_position: tuple[int, int] | None = None) -> None:
         self.cdp_url = cdp_url  # flow-py checks this optional upstream attribute.
         # ``headless`` / ``_chromeless``: keep the user's selected mode. Linux
         # without a display necessarily falls back to true headless Chrome.
@@ -365,6 +365,7 @@ class BrowserManager:
         self.page_zoom = page_zoom
         self.remote_debugging_port = remote_debugging_port
         self.restore_last_session = restore_last_session
+        self.window_position = window_position
         self._pw: Playwright | None = None
         self._ctx: BrowserContext | None = None
         self._cdp_browser: Any = None
@@ -411,7 +412,10 @@ class BrowserManager:
         if self._chromeless:
             args.extend(["--headless=new", "--window-size=1080,800"])
         else:
-            args.extend(_visible_window_args(fullscreen=self.fullscreen))
+            args.extend(_visible_window_args(fullscreen=self.fullscreen, position=self.window_position))
+            if self.window_position is not None:
+                # Create the background window via CDP already minimized.
+                args.append("--no-startup-window")
         return args
 
     async def _attach_cdp_context(self, cdp_url: str) -> None:
@@ -432,6 +436,12 @@ class BrowserManager:
         self.remote_debugging_port = port
         self.cdp_url = f"http://127.0.0.1:{port}"
         argv = self._spawn_chrome_argv(executable, port)
+        if sys.platform == "darwin" and not self.headless and self.window_position is not None:
+            # LaunchServices hides this new instance before any window exists.
+            # -W keeps the launcher owned until Chrome exits; profile-scoped
+            # kill_now() also reaps Chrome if startup/CDP fails.
+            argv = ["/usr/bin/open", "-g", "-j", "-n", "-W", "-a",
+                    str(executable.parents[2]), "--args", *argv[1:]]
         popen_kwargs: dict[str, Any] = {
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
@@ -501,13 +511,14 @@ class BrowserManager:
         visible_launch_owned = False
         show_window = not self.headless
         if show_window:
-            self._prior_app = _capture_active_window()
+            if self.window_position is None:
+                self._prior_app = _capture_active_window()
             while not _visible_launch_guard.acquire(blocking=False):
                 await asyncio.sleep(0.05)
             visible_launch_owned = True
         try:
             # Connect, manual sessions and workers use native Chrome + CDP.
-            if self.remote_debugging_port:
+            if self.remote_debugging_port or (show_window and self.window_position is not None):
                 await asyncio.wait_for(self._start_spawned_chrome(executable), timeout=60)
                 if visible_launch_owned:
                     _visible_launch_guard.release()
@@ -515,7 +526,7 @@ class BrowserManager:
                 return self
 
             self._pw = await asyncio.wait_for(async_playwright().start(), timeout=30)
-            window_args = _visible_window_args(fullscreen=self.fullscreen) if show_window else []
+            window_args = _visible_window_args(fullscreen=self.fullscreen, position=self.window_position) if show_window else []
             # Force Default inside Flow's user-data-dir so Windows never shows
             # the system "Who's using Chrome?" picker for a multi-profile store.
             launch_args = [
@@ -699,7 +710,7 @@ class BrowserManager:
         if not self.headless:
             if not self._window_placed:
                 await self._place_visible_window(page)
-            if bring_front:
+            if bring_front and self.window_position is None:
                 await page.bring_to_front()
             await self._apply_visible_zoom(page)
         return page
@@ -710,6 +721,20 @@ class BrowserManager:
                 await self._apply_visible_zoom(self._page)
             return self._page
         pages = self.context.pages
+        if not pages and not self.headless and self.window_position is not None:
+            session = await self._cdp_browser.new_browser_cdp_session()
+            try:
+                async with self.context.expect_page() as opened:
+                    await session.send("Target.createTarget", {
+                        "url": "about:blank", "newWindow": True, "background": True,
+                        "windowState": "minimized", "width": 1080, "height": 800,
+                    })
+                pages = [await opened.value]
+                # Never normalize this window before navigating: on macOS
+                # that would show it and animate its minimization again.
+                self._window_placed = True
+            finally:
+                await session.detach()
         # Reuse one initial blank page and close only extra blank tabs created
         # by the profile. Never leave about:blank tabs visible to the user.
         blank_pages = [candidate for candidate in pages if candidate.url in {"", "about:blank"}]
@@ -761,6 +786,23 @@ class BrowserManager:
         return await self._finish_page(self._page, bring_front=True)
 
     async def _place_visible_window(self, page: Page) -> None:
+        if self.window_position is not None:
+            session = await self.context.new_cdp_session(page)
+            try:
+                window_id = (await session.send('Browser.getWindowForTarget'))['windowId']
+                await session.send('Browser.setWindowBounds', {'windowId': window_id, 'bounds': {'windowState': 'normal'}})
+                await session.send('Browser.setWindowBounds', {'windowId': window_id, 'bounds': {
+                    'left': self.window_position[0], 'top': self.window_position[1], 'width': 1080, 'height': 800}})
+                if sys.platform == 'darwin':
+                    # macOS clamps off-screen coordinates, leaving a visible
+                    # edge. Minimize only this job's window instead.
+                    await session.send('Browser.setWindowBounds', {
+                        'windowId': window_id, 'bounds': {'windowState': 'minimized'}})
+                self._window_placed = True
+                await asyncio.to_thread(_restore_active_window, self._prior_app)
+            finally:
+                await session.detach()
+            return
         if self.fullscreen:
             session = await self.context.new_cdp_session(page)
             try:
