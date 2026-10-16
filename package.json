@@ -1,7 +1,7 @@
 {
   "name": "zm-ai-tool",
   "private": true,
-  "version": "8.6.72",
+  "version": "8.6.73",
   "type": "module",
   "scripts": {
     "setup": "node scripts/setup.mjs",

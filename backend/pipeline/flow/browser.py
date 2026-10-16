@@ -589,15 +589,19 @@ class BrowserManager:
         owned = self._owns_chrome_process
         proc = self._chrome_proc
         if owned and self._cdp_browser is not None:
-            # Ask Chrome to quit so Cookie DB / Login Data flush before kill.
+            # Browser.close() on a CDP attachment only disconnects Playwright.
+            # Send the native command so Chrome saves the Google session first.
             try:
-                await asyncio.wait_for(self._cdp_browser.close(), timeout=5.0)
+                async def close_chrome() -> None:
+                    session = await self._cdp_browser.new_browser_cdp_session()
+                    await session.send("Browser.close")
+                await asyncio.wait_for(close_chrome(), timeout=5.0)
             except Exception:
                 pass
             self._cdp_browser = None
             if proc is not None and proc.poll() is None:
                 try:
-                    await asyncio.to_thread(proc.wait, 5.0)
+                    await asyncio.to_thread(proc.wait, 2.0)
                 except Exception:
                     pass
         elif self.cdp_url and self._cdp_browser:

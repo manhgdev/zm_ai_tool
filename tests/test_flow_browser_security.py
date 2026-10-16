@@ -284,7 +284,11 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
     async def test_remote_debugging_port_spawns_chrome_then_attaches_cdp(self):
         """Connect/login path: real Chrome subprocess + connect_over_cdp."""
         context = SimpleNamespace(pages=[], add_init_script=AsyncMock(), close=AsyncMock())
-        cdp_browser = SimpleNamespace(contexts=[context], close=AsyncMock())
+        native_session = SimpleNamespace(send=AsyncMock())
+        cdp_browser = SimpleNamespace(
+            contexts=[context], close=AsyncMock(),
+            new_browser_cdp_session=AsyncMock(return_value=native_session),
+        )
         connect = AsyncMock(return_value=cdp_browser)
         launch = AsyncMock()
         playwright = SimpleNamespace(
@@ -319,7 +323,8 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             context.add_init_script.assert_not_awaited()
             with patch.object(manager, 'kill_now') as killer:
                 await manager.stop()
-            cdp_browser.close.assert_awaited_once()
+            native_session.send.assert_awaited_once_with('Browser.close')
+            cdp_browser.close.assert_not_awaited()
             fake_proc.wait.assert_called()
             killer.assert_called_once()
             self.assertFalse(manager._owns_chrome_process)
