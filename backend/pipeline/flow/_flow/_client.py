@@ -773,6 +773,16 @@ class FlowClient:
             )
             await asyncio.sleep(2)
         current_url = str(page.url or "")
+        # ponytail: CDP cookie injection into spawned Chrome may need one
+        # navigation cycle to propagate.  A single retry avoids a false
+        # FLOW_LOGIN_REQUIRED when cookies are valid but not yet applied.
+        if "/about" in current_url or "accounts.google.com" in current_url:
+            await asyncio.sleep(1)
+            await page.goto(
+                self._project_url, wait_until="domcontentloaded", timeout=20_000
+            )
+            await asyncio.sleep(3)
+            current_url = str(page.url or "")
         if "accounts.google.com" in current_url or "/about" in current_url or "flow.google.com/about" in current_url:
             raise RuntimeError(
                 f"FLOW_LOGIN_REQUIRED: Google session expired or redirected to {current_url}; please reconnect the account in Settings"

@@ -95,12 +95,15 @@ class FlowAuthMixin:
         if runtime_clone:
             try:
                 await browser.context.clear_cookies()
+                _log.debug("_seed_browser_cookies: cleared cookies for runtime clone (jar=%d cookies)", len(jar))
             except Exception:
                 pass
         elif any(cookie["name"] in {"SID", "__Secure-1PSID", "__Secure-3PSID"} for cookie in live):
             return False
         try:
             await browser.context.add_cookies(jar)
+            if runtime_clone:
+                _log.info("_seed_browser_cookies: injected %d cookies into runtime clone", len(jar))
         except Exception:
             raise RuntimeError("FLOW_COOKIE_IMPORT_FAILED") from None
         return True
