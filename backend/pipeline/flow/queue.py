@@ -154,6 +154,10 @@ class FlowQueueMixin:
             threading.Thread(target=self._kill_job_browsers, args=(ids,), daemon=True, name="flow-delete-all-kill").start()
             # Wipe DB first so F5 / GET see an empty queue even if notify is delayed.
             removed = store.delete_rows("jobs", ids)
+            for acc in store.list_rows("accounts"):
+                lane_reset = {k: None for k in acc if str(k).startswith("laneProject_")}
+                if lane_reset:
+                    store.patch_row("accounts", str(acc.get("id") or ""), lane_reset)
             self._bulk_queue_epoch += 1
             acquired = self._account_condition.acquire(timeout=0.5)
             if acquired:
@@ -232,6 +236,16 @@ class FlowQueueMixin:
         self._cancelled.update(ids)
         threading.Thread(target=self._kill_job_browsers, args=(ids,), daemon=True, name="flow-folder-kill").start()
         removed = store.delete_rows("jobs", ids)
+        from pipeline.core.output_paths import safe_output_part
+        folder_key = safe_output_part(selected, "results")
+        prefixes = (
+            (f"laneProject_{safe_output_part(kind)}_{folder_key}_",)
+            if kind else (f"laneProject_image_{folder_key}_", f"laneProject_video_{folder_key}_")
+        )
+        for acc in store.list_rows("accounts"):
+            lane_reset = {k: None for k in acc if any(str(k).startswith(p) for p in prefixes)}
+            if lane_reset:
+                store.patch_row("accounts", str(acc.get("id") or ""), lane_reset)
         acquired = self._account_condition.acquire(timeout=0.5)
         if acquired:
             try:

@@ -729,6 +729,88 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(reused_path, zip_path)
             self.assertEqual(reused_path.stat().st_mtime_ns, first_mtime_ns)
 
+    def test_each_output_folder_creates_distinct_flow_project_id(self):
+        import asyncio
+        from pipeline.flow import store
+
+        class _DummyCount:
+            async def count(self):
+                return 1
+
+        class _DummyPage:
+            url = "https://labs.google/fx/tools/flow/project/proj-init"
+
+            def locator(self, _sel):
+                return _DummyCount()
+
+        class _DummyApi:
+            project_id = "proj-init"
+            _project_page_url = ""
+
+        class _DummyClient:
+            project_id = "proj-init"
+            _project_url = ""
+
+            async def _ensure_project_page(self, _page):
+                return None
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            account = {
+                "id": "acc1",
+                "label": "Acc 1",
+                "status": "online",
+                "projectId": "proj-default",
+                "imageProjectId": "proj-default",
+            }
+            store._write("accounts", [account])
+            store._write("jobs", [
+                {
+                    "id": "job_folder_a",
+                    "kind": "image",
+                    "status": "processing",
+                    "accountId": "acc1",
+                    "settings": {"outputDir": "folder_a", "ratio": "16:9", "resolution": "1K"},
+                },
+                {
+                    "id": "job_folder_b",
+                    "kind": "image",
+                    "status": "processing",
+                    "accountId": "acc1",
+                    "settings": {"outputDir": "folder_b", "ratio": "16:9", "resolution": "1K"},
+                },
+            ])
+            service = FlowService()
+            created_ids = iter(["proj-folder-a", "proj-folder-b"])
+            seen_avoid: list[set[str]] = []
+
+            async def _fake_create(_page, *, avoid_project_id="", avoid_project_ids=None):
+                seen_avoid.append(set(avoid_project_ids or set()))
+                return next(created_ids)
+
+            page = _DummyPage()
+            api = _DummyApi()
+            client = _DummyClient()
+            with patch.object(service, "_create_flow_project_ui", side_effect=_fake_create), \
+                 patch("pipeline.flow.projects._dismiss_flow_whats_new", new=AsyncMock()):
+                acc_after_a = asyncio.run(
+                    service._ensure_account_project_page(
+                        page, api=api, client=client, account=account, job_id="job_folder_a", kind="image",
+                    )
+                )
+                self.assertEqual(client.project_id, "proj-folder-a")
+                acc_after_b = asyncio.run(
+                    service._ensure_account_project_page(
+                        page, api=api, client=client, account=acc_after_a, job_id="job_folder_b", kind="image",
+                    )
+                )
+                self.assertEqual(client.project_id, "proj-folder-b")
+
+            self.assertNotEqual(
+                acc_after_b.get("laneProject_image_folder_a_16-9_1K"),
+                acc_after_b.get("laneProject_image_folder_b_16-9_1K"),
+            )
+            self.assertIn("proj-folder-a", seen_avoid[1])
+
 
 if __name__ == '__main__':
     unittest.main()

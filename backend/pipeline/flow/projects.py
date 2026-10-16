@@ -72,13 +72,22 @@ class FlowProjectsMixin:
             store.patch_row("accounts", account_id, {**patch, "updatedAt": time.time()})
         return project_id
 
-    async def _create_flow_project_ui(self, page, *, avoid_project_id: str = "") -> str:
+    async def _create_flow_project_ui(
+        self,
+        page,
+        *,
+        avoid_project_id: str = "",
+        avoid_project_ids: set[str] | None = None,
+    ) -> str:
         """Create a brand-new Flow project via the lobby UI. Returns the new project id or \"\"."""
         from .browser import FLOW_BASE_URL
+        avoid = { str(pid).strip() for pid in (avoid_project_ids or set()) if str(pid or "").strip() }
+        if str(avoid_project_id or "").strip():
+            avoid.add(str(avoid_project_id).strip())
         await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
         await asyncio.sleep(2)
         match = _PROJECT_RE.search(str(page.url or ""))
-        if match and match.group(1) != avoid_project_id:
+        if match and match.group(1) not in avoid:
             return match.group(1)
 
         candidates = [
@@ -115,7 +124,7 @@ class FlowProjectsMixin:
 
         def _is_replacement(url: str) -> bool:
             found = _PROJECT_RE.search(url or "")
-            return bool(found and found.group(1) != avoid_project_id)
+            return bool(found and found.group(1) not in avoid)
 
         try:
             await page.wait_for_url(_is_replacement, timeout=15_000)
@@ -132,7 +141,7 @@ class FlowProjectsMixin:
             else:
                 return ""
         match = _PROJECT_RE.search(str(page.url or ""))
-        if match and match.group(1) != avoid_project_id:
+        if match and match.group(1) not in avoid:
             return match.group(1)
         return ""
 
@@ -158,8 +167,13 @@ class FlowProjectsMixin:
         current_job = store.get_row("jobs", job_id) if job_id else None
         scoped = bool(current_job)
         settings = (current_job or {}).get("settings") or {}
+        folder_key = safe_output_part(
+            settings.get("outputDir") or (current_job or {}).get("outputFolder") or "results",
+            "results",
+        )
         project_field = (
             "laneProject_" + safe_output_part(kind) + "_"
+            + folder_key + "_"
             + safe_output_part(settings.get("ratio") or "16:9") + "_"
             + safe_output_part(settings.get("resolution") or "default")
             if scoped else _flow_project_field(kind)
@@ -175,7 +189,15 @@ class FlowProjectsMixin:
                 persisted = store.get_row("accounts", account_id) or {}
                 target_id = str(persisted.get(project_field) or "")
                 if not target_id:
-                    target_id = await self._create_flow_project_ui(page)
+                    existing_ids = {
+                        str(val).strip()
+                        for key, val in {**account, **persisted}.items()
+                        if (key in {"projectId", "imageProjectId", "videoProjectId"} or str(key).startswith("laneProject_"))
+                        and str(val or "").strip()
+                    }
+                    if str(client.project_id or "").strip():
+                        existing_ids.add(str(client.project_id).strip())
+                    target_id = await self._create_flow_project_ui(page, avoid_project_ids=existing_ids)
                     if not target_id:
                         raise RuntimeError("FLOW_PROJECT_NOT_FOUND: Could not create scoped project")
                     store.patch_row("accounts", account_id, {project_field: target_id})
