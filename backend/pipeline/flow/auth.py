@@ -88,10 +88,16 @@ class FlowAuthMixin:
         # ponytail: Runtime profile clones (job Chrome) always need the
         # verified jar.  Their native Cookies DB is a copy that may be stale
         # (Google rotated during login Chrome shutdown) or DBSC-bound to the
-        # original Chrome process.  Only skip for live sessions where Chrome
-        # itself rotated cookies and the jar would be older.
+        # original Chrome process.  add_cookies only merges; Chrome's native
+        # cookie store can still shadow injected values.  Clear all Google/Flow
+        # cookies first so the verified jar is the sole authority.
         runtime_clone = "runtime-profiles" in str(getattr(browser, "profile_dir", ""))
-        if not runtime_clone and any(cookie["name"] in {"SID", "__Secure-1PSID", "__Secure-3PSID"} for cookie in live):
+        if runtime_clone:
+            try:
+                await browser.context.clear_cookies()
+            except Exception:
+                pass
+        elif any(cookie["name"] in {"SID", "__Secure-1PSID", "__Secure-3PSID"} for cookie in live):
             return False
         try:
             await browser.context.add_cookies(jar)

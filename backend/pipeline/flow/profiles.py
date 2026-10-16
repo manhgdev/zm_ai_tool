@@ -261,4 +261,11 @@ class FlowProfilesMixin:
                 account_id,
                 job_id,
             )
+        # ponytail: Strip native Cookies DB so Chrome starts with an empty
+        # cookie store.  _seed_browser_cookies injects the verified JSON jar;
+        # stale native entries (Google rotated during shutdown, or DBSC-bound
+        # to the login Chrome process) would shadow the injected values.
+        for rel in ("Default/Cookies", "Default/Cookies-journal",
+                    "Default/Network/Cookies", "Default/Network/Cookies-journal"):
+            (target / rel).unlink(missing_ok=True)
         return target
