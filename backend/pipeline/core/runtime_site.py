@@ -394,7 +394,31 @@ def ensure_cv2():
 
     # Re-assert path immediately before import (other code may mutate sys.path)
     prepare_cv2_import_path(root)
-    import cv2 as _cv2  # noqa: F401
+
+    # ponytail: On Windows frozen builds, PyInstaller's FrozenImporter sits
+    # in sys.meta_path and resolves "cv2" to the bundled _MEIPASS copy.
+    # OpenCV bootstrap internally does importlib.import_module("cv2") after
+    # setting sys.OpenCV_LOADER; the FrozenImporter re-enters the bundled
+    # cv2/__init__.py → "recursion is detected".  Temporarily remove frozen
+    # importers so PathFinder resolves cv2 from runtime site-packages only.
+    frozen_finders = []
+    if sys.platform == "win32":
+        kept: list = []
+        for finder in sys.meta_path:
+            cls_name = type(finder).__name__
+            if cls_name in ("FrozenImporter", "WindowsRegistryFinder") or (
+                cls_name == "_RuntimeSiteFinder"
+            ):
+                frozen_finders.append(finder)
+            else:
+                kept.append(finder)
+        if frozen_finders:
+            sys.meta_path[:] = kept
+    try:
+        import cv2 as _cv2  # noqa: F401
+    finally:
+        if frozen_finders:
+            sys.meta_path[:] = [*frozen_finders, *sys.meta_path]
 
     # OpenCV bootstrap có thể thêm site-packages/cv2 vào path; dọn lại.
     _sanitize_cv2_sys_path()
