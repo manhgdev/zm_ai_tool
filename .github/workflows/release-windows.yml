@@ -128,7 +128,8 @@ jobs:
           BUNDLE: ${{ steps.package.outputs.directory }}
         run: |
           $missing = @()
-          foreach ($leaf in @('_multiarray_umath*.pyd', 'cv2*.pyd', '_imaging*.pyd', 'onnxruntime_pybind11_state*.pyd', 'lama_fp32.onnx')) {
+          # cv2*.pyd intentionally excluded since v8.6.79 — loaded from .venv-runtime (FrozenImporter recursion fix)
+          foreach ($leaf in @('_multiarray_umath*.pyd', '_imaging*.pyd', 'onnxruntime_pybind11_state*.pyd', 'lama_fp32.onnx')) {
             $hit = Get-ChildItem -LiteralPath $env:BUNDLE -Recurse -File -Filter $leaf -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $hit) { $missing += $leaf }
           }
