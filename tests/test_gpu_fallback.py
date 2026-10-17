@@ -123,12 +123,12 @@ class TestComputeModeNoAuto:
     _root = Path(__file__).resolve().parent.parent
 
     def test_runtime_install_uses_gpu(self):
-        source = (self._root / "backend/pipeline/core/runtime_install.py").read_text()
+        source = (self._root / "backend/pipeline/core/runtime_install.py").read_text(encoding="utf-8")
         assert "'computeMode': 'cpu' if explicit_cpu else 'auto'" not in source, \
             "runtime_install.py still has computeMode = 'auto'"
 
     def test_system_api_uses_gpu(self):
-        source = (self._root / "backend/api/routes/system.py").read_text()
+        source = (self._root / "backend/api/routes/system.py").read_text(encoding="utf-8")
         assert "computeMode'] = 'cpu' if payload.mode == 'cpu' else 'auto'" not in source, \
             "system.py still has computeMode = 'auto'"
         assert "cpu_mode_enabled() else 'auto'" not in source, \
