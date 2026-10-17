@@ -1351,7 +1351,7 @@ def api_hardware_mode(payload: HardwareModeIn):
             vieneu.reset_client()
             from pipeline.asr.whisper import reset_whisper
             reset_whisper()
-            data['computeMode'] = 'cpu' if payload.mode == 'cpu' else 'auto'
+            data['computeMode'] = 'cpu' if payload.mode == 'cpu' else 'gpu'
             pointer.parent.mkdir(parents=True, exist_ok=True)
             _write_pointer(pointer.parent, pointer.name, data)
             clear_compute_caches()
@@ -1839,7 +1839,7 @@ def api_install_status():
         "updatedAt": float(st.get("updatedAt") or 0),
     }
     from pipeline.core.runtime_active import cpu_mode_enabled
-    out['computeMode'] = 'cpu' if cpu_mode_enabled() else 'auto'
+    out['computeMode'] = 'cpu' if cpu_mode_enabled() else 'gpu'
     try:
         _cpu_resume_kind()
         out['cpuRuntimeAvailable'] = sys.platform == 'win32' and os.environ.get('ZM_AI_TOOL_DESKTOP') == '1'

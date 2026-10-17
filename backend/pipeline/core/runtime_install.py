@@ -635,7 +635,7 @@ def _install_runtime(progress: Progress | None = None, *, demucs: bool = False, 
                 diagnostics = _probe(current, profile, demucs, **feature_options)
                 return {'ok': True, 'message': 'Runtime ready', 'runtimeProfile': profile,
                         'runtimePack': profile, 'diagnostics': diagnostics, 'needsRestart': False,
-                        'computeMode': 'cpu' if explicit_cpu else 'auto'}
+                        'computeMode': 'cpu' if explicit_cpu else 'gpu'}
             except RuntimeInstallError:
                 pass
         uv = _find_uv()
@@ -661,7 +661,7 @@ def _install_runtime(progress: Progress | None = None, *, demucs: bool = False, 
             _write_pointer(root, 'current.json', {
                 'schemaVersion': 1, 'recipeVersion': RECIPE_VERSION, 'path': candidate.name,
                 'runtimeProfile': profile, 'runtimePack': profile,
-                'computeMode': 'cpu' if explicit_cpu else 'auto',
+                'computeMode': 'cpu' if explicit_cpu else 'gpu',
                 'features': [*(features if features is not None else ('whisper', 'ocr', 'vieneu', 'diarization')), *(['demucs'] if demucs else [])], 'activatedAt': time.time(),
             })
         except Exception:
@@ -673,7 +673,7 @@ def _install_runtime(progress: Progress | None = None, *, demucs: bool = False, 
         _prune(root)
         return {'ok': True, 'message': 'Runtime installed', 'needsRestart': True,
                 'runtimeProfile': profile, 'runtimePack': profile, 'diagnostics': diagnostics,
-                'computeMode': 'cpu' if explicit_cpu else 'auto'}
+                'computeMode': 'cpu' if explicit_cpu else 'gpu'}
 
 
 def _prune(root: Path) -> None:

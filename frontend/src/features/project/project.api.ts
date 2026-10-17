@@ -15,7 +15,7 @@ const base = '/api'
 
 export type InstallStatus = {
   cpuRuntimeAvailable?: boolean
-  computeMode?: 'cpu' | 'auto'
+  computeMode?: 'cpu' | 'gpu' | 'auto'
   operationId?: string
   driverRepairAvailable?: boolean
   rebootRequired?: boolean

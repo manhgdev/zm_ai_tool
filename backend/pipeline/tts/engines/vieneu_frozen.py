@@ -126,6 +126,8 @@ def _prepare_cuda_weight_load(backend, device):
     if backend != "pytorch" or not str(device).startswith("cuda"):
         return
     import torch
+    if not torch.cuda.is_available():
+        return
     torch.cuda.init()
     try:
         torch.empty(1, dtype=torch.uint8, pin_memory=True)
@@ -168,6 +170,12 @@ def main():
             if op == "init":
                 backend = msg.get("backend") or "pytorch"
                 device = msg.get("device") or "cuda"
+                # ponytail: verify CUDA before committing to it
+                if backend == "pytorch" and device.startswith("cuda"):
+                    import torch as _torch
+                    if not _torch.cuda.is_available():
+                        _out({"ok": False, "error": "CUDA_UNAVAILABLE: torch.cuda.is_available() is False — PyTorch CPU-only build"})
+                        continue
                 if backend == "pytorch":
                     _enable_torchaudio_soundfile_fallback()
                 _prepare_cuda_weight_load(backend, device)
@@ -554,6 +562,16 @@ def has_ready_worker(*, mode: str = "v3turbo") -> bool:
     return False
 
 
+def _is_cuda_error(exc: BaseException) -> bool:
+    """Classify whether an exception is a recoverable CUDA/GPU error."""
+    msg = str(exc).lower()
+    markers = ("cuda_unavailable", "device_mismatch", "torch not compiled with cuda",
+               "cuda", "cudnn", "cublas", "nccl", "cusolver")
+    if any(m in msg for m in markers):
+        return True
+    return type(exc).__name__ in ("CudaError", "OutOfMemoryError")
+
+
 def synthesize(
     *,
     text: str,
@@ -582,7 +600,18 @@ def synthesize(
     except Exception:
         if mode == MODE_NANO:
             backend, device = "onnx", "cpu"
-    w = _acquire(backend, device, mode=mode, cancel_check=cancel_check)
+
+    # ponytail: GPU→CPU fallback — retry once with onnx/cpu on CUDA errors
+    fell_back = False
+    try:
+        w = _acquire(backend, device, mode=mode, cancel_check=cancel_check)
+    except Exception as exc:
+        if device not in ("cuda",) or not _is_cuda_error(exc):
+            raise
+        print(f"[vieneu] GPU worker failed ({exc}), fallback → onnx/cpu", flush=True)
+        backend, device, fell_back = "onnx", "cpu", True
+        w = _acquire(backend, device, mode=mode, cancel_check=cancel_check)
+
     try:
         from pipeline.core.jobs import is_cancelled, current_job_id, Cancelled
 
@@ -596,7 +625,7 @@ def synthesize(
             clone_ref=clone_ref,
             cancel_check=cancel_check,
         )
-    except Exception:
+    except Exception as exc:
         # worker có thể hỏng — đóng, không trả idle
         try:
             w.close()
@@ -605,6 +634,25 @@ def synthesize(
         with _pool_lock:
             if w in _all_workers:
                 _all_workers.remove(w)
+        # ponytail: one GPU→CPU fallback on synth CUDA error (not just init)
+        if not fell_back and device == "cuda" and _is_cuda_error(exc):
+            print(f"[vieneu] GPU synth error ({exc}), fallback → onnx/cpu", flush=True)
+            w2 = _acquire("onnx", "cpu", mode=mode, cancel_check=cancel_check)
+            try:
+                w2.synth(text=text, voice=voice, out_wav=out_wav, style=style,
+                         clone_ref=clone_ref, cancel_check=cancel_check)
+            except Exception:
+                try:
+                    w2.close()
+                except Exception:
+                    pass
+                with _pool_lock:
+                    if w2 in _all_workers:
+                        _all_workers.remove(w2)
+                raise
+            else:
+                _release(w2)
+            return
         raise
     else:
         _release(w)

@@ -212,6 +212,9 @@ def _prepare_cuda_weight_load(backend: str, device: str) -> bool:
         return False
     import torch
 
+    # ponytail: CPU-only torch raises AssertionError on cuda.init().
+    if not torch.cuda.is_available():
+        return False
     torch.cuda.init()
     try:
         torch.empty(1, dtype=torch.uint8, pin_memory=True)
@@ -565,7 +568,24 @@ def get_client() -> Any:
             voice_store.ensure_vieneu_dirs()
             # Prefer our voices.json for cloned voices if SDK supports path
             voices_path = voice_store.VOICES_JSON
-            client = Vieneu(**kwargs)
+            # ponytail: GPU→CPU fallback — retry once with onnx/cpu on CUDA errors
+            try:
+                client = Vieneu(**kwargs)
+            except Exception as cuda_exc:
+                _cuda_markers = ("cuda", "cudnn", "cublas", "torch not compiled with cuda")
+                _msg = str(cuda_exc).lower()
+                _is_cuda = (
+                    mode != MODE_NANO
+                    and kwargs.get("device") == "cuda"
+                    and (any(m in _msg for m in _cuda_markers)
+                         or type(cuda_exc).__name__ in ("CudaError", "OutOfMemoryError"))
+                )
+                if not _is_cuda:
+                    raise
+                print(f"[vieneu] GPU init failed ({cuda_exc}), fallback → onnx/cpu", flush=True)
+                kwargs["backend"], kwargs["device"] = "onnx", "cpu"
+                _prepare_cuda_weight_load("onnx", "cpu")
+                client = Vieneu(**kwargs)
             # Re-enroll clones from disk
             for item in voice_store.load_cloned():
                 ref = item.get("ref")

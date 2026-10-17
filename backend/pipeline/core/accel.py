@@ -152,9 +152,23 @@ def preferred_torch_device(*, refresh: bool = False) -> TorchDevice:
         except Exception:
             pass
 
-    # Physical NVIDIA → CUDA. Broken torch/DLL is a GPU bug, not a CPU path.
-    if device != "mps" and _nvidia_smi():
-        device = "cuda"
+    # ponytail: nvidia-smi is a hardware hint, NOT a torch capability proof.
+    # If torch explicitly reported "cpu" (no CUDA compiled in), forcing "cuda"
+    # causes AssertionError in torch.cuda.init(). Only use nvidia-smi as a
+    # hint when the torch probe could not import torch at all (exception branch
+    # left device as the default "cpu").
+    if device == "cpu" and not getattr(sys, "frozen", False) and _nvidia_smi():
+        # Torch imported successfully but reported cpu → CPU-only build.
+        # Don't override. The runtime installer picks torch+cu12x wheels for
+        # machines with NVIDIA; if it installed CPU-only, that's a misconfigured
+        # runtime — the fix is reinstall, not pretending CUDA works.
+        try:
+            import torch as _t  # noqa: F811
+            if not _t.cuda.is_available():
+                device = "cpu"  # trust torch: no CUDA compiled in
+        except Exception:
+            # Cannot import torch at all → nvidia-smi hint is our best guess.
+            device = "cuda"
 
     with _lock:
         _cache["torch_device"] = device
