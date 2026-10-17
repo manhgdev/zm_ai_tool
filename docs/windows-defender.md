@@ -25,6 +25,43 @@ nonzero result, new threat detection, deleted file or changed hash blocks the
 release. A pass covers those bytes with that engine/signature version only;
 it does not guarantee later runtime behavior or every antivirus verdict.
 
+## Diagnose an existing release
+
+Run `Build Windows app` manually with `audit_release=v8.6.77`. This selects a
+separate `windows-2022` job with read-only repository access; the build and
+publication job is skipped. It downloads the original Setup, verifies its
+GitHub SHA-256 digest, scans it, installs silently into the runner's temporary
+directory, inventories/scans the installed payload, and runs the packaged
+runtime-import and yt-dlp checks. Repository credentials are removed before
+executing Setup. Quarantined files are not restored.
+
+GitHub's Windows image excludes both `C:\` and `D:\` and disables archive
+scanning ([image configuration](https://github.com/actions/runner-images/blob/main/images/windows/scripts/build/Configure-WindowsDefender.ps1)).
+Only on the disposable GitHub-hosted diagnostic VM, the workflow attempts to
+remove these two blanket exclusions and enable archive scanning. Preferences
+before/after and any preparation error are saved. The diagnostic still verifies
+the actual Setup/payload exclusion status and stops if they remain excluded.
+It does not add exclusions or disable protection. Real-time settings remain as
+provided by the runner and are reported separately.
+
+The `windows-release-diagnostic` Actions artifact is saved even on failure.
+`diagnosis.json` records stages, hashes, signature/publisher information,
+process/scan exit codes and missing files. Detection records, Defender events,
+engine/signature versions and the Setup log are saved separately when available.
+`scanner_unavailable` means the runner could not provide a running Defender engine;
+`hash_mismatch` means the download did not match the release metadata;
+`scan_excluded` means Defender excludes the Setup, install directory or main EXE;
+`detected` means Defender recorded a threat. None is a clean-scan verdict.
+The runner's real-time protection state is recorded separately. On-demand scans
+can run with real-time protection disabled, but cannot establish whether a user's
+PC will quarantine the app during normal use. A signature-update failure retains
+the recorded definitions and is explicitly recorded in the report.
+
+For a new build, leave `audit_release` empty. Manual builds save a separate
+`windows-test-build` Actions artifact and smoke-test the executable; a manual
+run on a branch does not publish a GitHub release. Tests without `security_audit`
+do not establish a Defender verdict for the new bytes.
+
 For a report from a user's PC, collect:
 
 - App version, download source and action immediately before detection.

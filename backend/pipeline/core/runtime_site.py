@@ -61,10 +61,8 @@ _RUNTIME_ROOTS = frozenset(
     {
         "accelerate",
         "ctranslate2",
-        # ponytail: cv2 excluded from bundle (build.mjs) — safe to hook here.
-        # OpenCV bootstrap re-imports "cv2" internally; without FrozenImporter
-        # intercepting, PathFinder resolves from runtime site-packages cleanly.
-        "cv2",
+        # ponytail: không hook cv2 — OpenCV bootstrap tự import lại "cv2" lần 2;
+        # meta-path sẽ chạy lại __init__ → "recursion is detected".
         "datasets",
         "faster_whisper",
         "huggingface_hub",
@@ -86,10 +84,10 @@ _RUNTIME_ROOTS = frozenset(
 )
 
 # Stub/hollow modules to drop from sys.modules (may include packages not in meta-path).
-_PURGE_ROOTS = _RUNTIME_ROOTS  # cv2 now included in _RUNTIME_ROOTS
+_PURGE_ROOTS = _RUNTIME_ROOTS | frozenset({"cv2"})
 
 # Shipped inside the exe (build.mjs does not exclude them); versions == runtime_install.CORE.
-_BUNDLED_ROOTS = frozenset({"numpy", "PIL", "onnxruntime"})
+_BUNDLED_ROOTS = frozenset({"numpy", "cv2", "PIL", "onnxruntime"})
 
 _AI_PRELOAD = (
     "safetensors",
@@ -368,9 +366,8 @@ def prepare_cv2_import_path(site: Path | None = None) -> str | None:
 def ensure_cv2():
     """Import OpenCV an toàn (frozen + dev). Trả module hoặc raise ImportError.
 
-    ponytail: cv2 excluded from PyInstaller bundle (build.mjs) → FrozenImporter
-    never intercepts it → _RuntimeSiteFinder resolves from .venv-runtime →
-    OpenCV bootstrap self-import works cleanly via PathFinder.
+    OpenCV bootstrap re-import ``cv2`` khi path[0] là site khác (.venv-ocr)
+    hoặc khi ``.../site-packages/cv2`` nằm trên sys.path → recursion → APP tắt.
     """
     existing = sys.modules.get("cv2")
     if existing is not None and getattr(existing, "VideoCapture", None):
@@ -397,9 +394,6 @@ def ensure_cv2():
 
     # Re-assert path immediately before import (other code may mutate sys.path)
     prepare_cv2_import_path(root)
-
-    # ponytail: cv2 not in bundle → FrozenImporter cannot intercept → no recursion.
-    # _RuntimeSiteFinder (position 0 in meta_path) resolves cv2 from runtime site-packages.
     import cv2 as _cv2  # noqa: F401
 
     # OpenCV bootstrap có thể thêm site-packages/cv2 vào path; dọn lại.

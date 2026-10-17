@@ -3,6 +3,10 @@ name: Build Windows app
 on:
   workflow_dispatch:
     inputs:
+      audit_release:
+        description: 'Chẩn đoán Setup đã phát hành, không publish / Diagnose an existing Setup without publishing'
+        type: string
+        default: ''
       security_audit:
         description: Run the full Defender/SBOM audit explicitly
         type: boolean
@@ -17,11 +21,63 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  diagnose:
+    if: github.event_name == 'workflow_dispatch' && inputs.audit_release != ''
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Test diagnostic failure reporting
+        shell: pwsh
+        run: ./tests/test_windows_release_diagnostic.ps1
+      - name: Enable on-demand scans on the disposable hosted runner
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $output = 'build_app/windows-diagnostic'
+          New-Item -ItemType Directory -Force $output | Out-Null
+          $fields = @('ExclusionPath', 'ExclusionExtension', 'ExclusionProcess', 'DisableArchiveScanning', 'DisableRealtimeMonitoring')
+          try {
+            if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Defender preparation is restricted to a disposable GitHub-hosted runner' }
+            Get-MpPreference | Select-Object $fields | ConvertTo-Json -Depth 4 | Set-Content "$output/defender-preferences-before.json"
+            # GitHub's image excludes both drives. Remove exclusions so scans cover the downloaded bytes.
+            Remove-MpPreference -ExclusionPath 'C:\', 'D:\' -ErrorAction Stop
+            Set-MpPreference -DisableArchiveScanning $false -ErrorAction Stop
+          } catch {
+            $_ | Out-String | Set-Content "$output/defender-preparation-error.log"
+            throw
+          } finally {
+            Get-MpPreference -ErrorAction Continue | Select-Object $fields | ConvertTo-Json -Depth 4 | Set-Content "$output/defender-preferences-after.json"
+          }
+      - name: Diagnose published Windows Setup
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUDIT_RELEASE: ${{ inputs.audit_release }}
+        run: ./scripts/diagnose-windows-release.ps1 -ReleaseTag $env:AUDIT_RELEASE -Repository $env:GITHUB_REPOSITORY -Output build_app/windows-diagnostic
+      - name: Save Windows diagnosis (including failures)
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-release-diagnostic
+          path: build_app/windows-diagnostic/
+          if-no-files-found: error
+
   build:
+    if: inputs.audit_release == ''
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v6
@@ -108,6 +164,16 @@ jobs:
           backend/.venv/Scripts/python.exe scripts/lama_smoke.py $lama
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Test GPU fallback
+        shell: pwsh
+        env:
+          PYTHONPATH: backend
+        run: |
+          backend/.venv/Scripts/python.exe -m pip install pytest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          backend/.venv/Scripts/python.exe -m pytest tests/test_gpu_fallback.py -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build EXE
         shell: pwsh
         env:
@@ -115,6 +181,20 @@ jobs:
         run: |
           npm run build:app
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Smoke test packaged executable
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $exe = Join-Path $PWD "build_app/release/ZM_AI_TOOL_v$version/ZM AI TOOL.exe"
+          foreach ($check in @('runtime-import', 'yt-dlp-version')) {
+            $report = Join-Path $env:RUNNER_TEMP "$check.json"
+            $process = Start-Process -FilePath $exe -ArgumentList @("--$check-check", "`"$report`"") -PassThru
+            if (-not $process.WaitForExit(60000)) { Stop-Process -Id $process.Id -Force; throw "$check timed out" }
+            $process.Refresh()
+            if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report }
+            if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $report)) { throw "$check failed: $($process.ExitCode)" }
+          }
 
       - name: Create release package
         id: package
@@ -128,8 +208,7 @@ jobs:
           BUNDLE: ${{ steps.package.outputs.directory }}
         run: |
           $missing = @()
-          # cv2*.pyd intentionally excluded since v8.6.79 — loaded from .venv-runtime (FrozenImporter recursion fix)
-          foreach ($leaf in @('_multiarray_umath*.pyd', '_imaging*.pyd', 'onnxruntime_pybind11_state*.pyd', 'lama_fp32.onnx')) {
+          foreach ($leaf in @('_multiarray_umath*.pyd', 'cv2*.pyd', '_imaging*.pyd', 'onnxruntime_pybind11_state*.pyd', 'lama_fp32.onnx')) {
             $hit = Get-ChildItem -LiteralPath $env:BUNDLE -Recurse -File -Filter $leaf -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $hit) { $missing += $leaf }
           }
@@ -178,6 +257,14 @@ jobs:
           name: windows-security-audit
           path: build_app/windows-audit/
           if-no-files-found: warn
+
+      - name: Save manual Windows build
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-test-build
+          path: ${{ steps.package.outputs.installer }}
+          if-no-files-found: error
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/action/')
