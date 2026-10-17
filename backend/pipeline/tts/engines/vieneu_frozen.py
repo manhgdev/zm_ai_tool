@@ -518,13 +518,23 @@ def runtime_torch_cuda_ready(*, refresh: bool = False) -> bool:
 
 
 def resolve_backend() -> tuple[str, str]:
+    mode = "v3turbo"
     try:
         from pipeline.tts.engines.vieneu import MODE_NANO, current_mode
 
-        if current_mode() == MODE_NANO:
+        mode = current_mode()
+        if mode == MODE_NANO:
             return "onnx", "cpu"
     except Exception:
         pass
+    # Reuse the loaded backend after fallback; status must report the actual worker.
+    if _pool_lock.acquire(blocking=False):
+        try:
+            for w in _all_workers:
+                if w.mode == mode and w.alive():
+                    return w.backend, w.device
+        finally:
+            _pool_lock.release()
     from pipeline.core.accel import preferred_vieneu_backend
 
     return preferred_vieneu_backend()
@@ -539,9 +549,14 @@ def probe() -> tuple[bool, str]:
         from pipeline.tts.engines.vieneu import current_mode
 
         mode = current_mode()
-        w = _acquire(backend, device, mode=mode)
+        try:
+            w = _acquire(backend, device, mode=mode)
+        except Exception as exc:
+            if not device.startswith("cuda") or not _is_cuda_error(exc):
+                raise
+            w = _acquire("onnx", "cpu", mode=mode)
         _release(w)
-        return True, f"{mode}/{backend}/{device}"
+        return True, f"{mode}/{w.backend}/{w.device}"
     except Exception as e:
         return False, str(e)[-4000:]
 
@@ -564,7 +579,16 @@ def has_ready_worker(*, mode: str = "v3turbo") -> bool:
 
 def _is_cuda_error(exc: BaseException) -> bool:
     """Classify whether an exception is a recoverable CUDA/GPU error."""
-    msg = str(exc).lower()
+    from pipeline.core.jobs import Cancelled
+
+    if isinstance(exc, (Cancelled, OSError, ValueError)):
+        return False
+    # Worker RPC errors contain a traceback; classify its final exception only.
+    msg = str(exc).strip().lower().splitlines()[-1] if str(exc).strip() else ""
+    if (msg.startswith(("filenotfounderror:", "permissionerror:", "oserror:", "valueerror:",
+                        "modulenotfounderror:", "importerror:"))
+            or any(marker in msg for marker in ("cancelled", "canceled", "đã hủy"))):
+        return False
     markers = ("cuda_unavailable", "device_mismatch", "torch not compiled with cuda",
                "cuda", "cudnn", "cublas", "nccl", "cusolver")
     if any(m in msg for m in markers):
@@ -601,58 +625,33 @@ def synthesize(
         if mode == MODE_NANO:
             backend, device = "onnx", "cpu"
 
-    # ponytail: GPU→CPU fallback — retry once with onnx/cpu on CUDA errors
-    fell_back = False
-    try:
-        w = _acquire(backend, device, mode=mode, cancel_check=cancel_check)
-    except Exception as exc:
-        if device not in ("cuda",) or not _is_cuda_error(exc):
-            raise
-        print(f"[vieneu] GPU worker failed ({exc}), fallback → onnx/cpu", flush=True)
-        backend, device, fell_back = "onnx", "cpu", True
-        w = _acquire(backend, device, mode=mode, cancel_check=cancel_check)
+    from pipeline.core.jobs import is_cancelled, current_job_id, Cancelled
 
-    try:
-        from pipeline.core.jobs import is_cancelled, current_job_id, Cancelled
-
-        if is_cancelled(current_job_id()):
+    # ponytail: at most one CPU retry covers both worker initialization and synthesis.
+    for attempt in range(2):
+        if is_cancelled(current_job_id()) or (cancel_check and cancel_check()):
             raise Cancelled()
-        w.synth(
-            text=text,
-            voice=voice,
-            out_wav=out_wav,
-            style=style,
-            clone_ref=clone_ref,
-            cancel_check=cancel_check,
-        )
-    except Exception as exc:
-        # worker có thể hỏng — đóng, không trả idle
+        w = None
         try:
-            w.close()
-        except Exception:
-            pass
-        with _pool_lock:
-            if w in _all_workers:
-                _all_workers.remove(w)
-        # ponytail: one GPU→CPU fallback on synth CUDA error (not just init)
-        if not fell_back and device == "cuda" and _is_cuda_error(exc):
-            print(f"[vieneu] GPU synth error ({exc}), fallback → onnx/cpu", flush=True)
-            w2 = _acquire("onnx", "cpu", mode=mode, cancel_check=cancel_check)
-            try:
-                w2.synth(text=text, voice=voice, out_wav=out_wav, style=style,
-                         clone_ref=clone_ref, cancel_check=cancel_check)
-            except Exception:
+            w = _acquire(backend, device, mode=mode, cancel_check=cancel_check)
+            if is_cancelled(current_job_id()) or (cancel_check and cancel_check()):
+                raise Cancelled()
+            w.synth(text=text, voice=voice, out_wav=out_wav, style=style,
+                    clone_ref=clone_ref, cancel_check=cancel_check)
+        except Exception as exc:
+            if w is not None:
                 try:
-                    w2.close()
+                    w.close()
                 except Exception:
                     pass
                 with _pool_lock:
-                    if w2 in _all_workers:
-                        _all_workers.remove(w2)
+                    if w in _all_workers:
+                        _all_workers.remove(w)
+            if (attempt or not device.startswith("cuda") or not _is_cuda_error(exc)
+                    or is_cancelled(current_job_id()) or (cancel_check and cancel_check())):
                 raise
-            else:
-                _release(w2)
+            print(f"[vieneu] GPU worker failed ({exc}), fallback → onnx/cpu", flush=True)
+            backend, device = "onnx", "cpu"
+        else:
+            _release(w)
             return
-        raise
-    else:
-        _release(w)

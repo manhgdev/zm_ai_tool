@@ -1,0 +1,48 @@
+"""Run: backend/.venv/bin/python -m unittest discover -s tests -p test_windows_release_diagnostic.py"""
+from pathlib import Path
+import unittest
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class WindowsDiagnosticTest(unittest.TestCase):
+    def setUp(self):
+        self.workflow = yaml.load((ROOT / '.github/workflows/release-windows.yml').read_text(), Loader=yaml.BaseLoader)
+        self.script = (ROOT / 'scripts/diagnose-windows-release.ps1').read_text()
+
+    def test_diagnostic_cannot_publish_or_build(self):
+        jobs = self.workflow['jobs']
+        self.assertEqual(jobs['build']['if'], "inputs.audit_release == ''")
+        diagnostic = jobs['diagnose']
+        self.assertEqual(diagnostic['runs-on'], 'windows-2022')
+        self.assertEqual(diagnostic['permissions'], {'contents': 'read'})
+        self.assertEqual(self.workflow['permissions'], {'contents': 'read'})
+        steps = str(diagnostic['steps']) + self.script
+        for forbidden in ('gh release upload', 'gh release create', 'npm run build', 'git push', 'Set-MpPreference', 'Add-MpPreference', '-DisableRemediation', '-Restore'):
+            self.assertNotIn(forbidden, steps)
+        self.assertTrue(any(step.get('if') == 'always()' and 'upload-artifact' in step.get('uses', '') for step in diagnostic['steps']))
+
+    def test_installer_is_verified_and_scanned_before_execution(self):
+        positions = [self.script.index(text) for text in (
+            'gh release download', '$file = Record-File $installer',
+            '$file.sha256 -ne $report.expectedSha256', 'Scan-File $installer',
+            'Run-Checked $installer', "scripts/windows_release_audit.py", "Run-Checked $exe")]
+        self.assertEqual(positions, sorted(positions))
+        self.assertLess(self.script.index('Remove-Item Env:GH_TOKEN'), self.script.index('Run-Checked $installer'))
+
+    def test_failures_always_save_forensic_report(self):
+        finally_block = self.script[self.script.index('} finally {'):]
+        for required in ('defender-detections.json', 'defender-events.json', 'missingFiles', 'diagnosis.json'):
+            self.assertIn(required, finally_block)
+        self.assertIn("$report.status = 'scanner_unavailable'", self.script)
+        self.assertIn("$report.status = 'hash_mismatch'", self.script)
+        self.assertIn("$report.status = 'detected'", finally_block)
+        self.assertIn('InitialDetectionTime -ge $started', self.script)
+        self.assertIn('sha256 = $before.sha256', self.script)
+
+
+if __name__ == '__main__':
+    unittest.main()

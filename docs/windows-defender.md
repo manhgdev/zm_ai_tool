@@ -25,6 +25,29 @@ nonzero result, new threat detection, deleted file or changed hash blocks the
 release. A pass covers those bytes with that engine/signature version only;
 it does not guarantee later runtime behavior or every antivirus verdict.
 
+## Diagnose an existing release
+
+Run `Build Windows app` manually with `audit_release=v8.6.77`. This selects a
+separate `windows-2022` job with read-only repository access; the build and
+publication job is skipped. It downloads the original Setup, verifies its
+GitHub SHA-256 digest, scans it, installs silently into the runner's temporary
+directory, inventories/scans the installed payload, and runs the packaged
+runtime-import and yt-dlp checks. Repository credentials are removed before
+executing Setup. Defender settings and quarantined files are not changed.
+
+The `windows-release-diagnostic` Actions artifact is saved even on failure.
+`diagnosis.json` records stages, hashes, signature/publisher information,
+process/scan exit codes and missing files. Detection records, Defender events,
+engine/signature versions and the Setup log are saved separately when available.
+`scanner_unavailable` means the runner could not provide active Defender;
+`hash_mismatch` means the download did not match the release metadata;
+`detected` means Defender recorded a threat. None is a clean-scan verdict.
+
+For a new build, leave `audit_release` empty. Manual builds save a separate
+`windows-test-build` Actions artifact and smoke-test the executable; a manual
+run on a branch does not publish a GitHub release. Tests without `security_audit`
+do not establish a Defender verdict for the new bytes.
+
 For a report from a user's PC, collect:
 
 - App version, download source and action immediately before detection.

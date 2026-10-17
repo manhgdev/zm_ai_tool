@@ -214,7 +214,7 @@ def _prepare_cuda_weight_load(backend: str, device: str) -> bool:
 
     # ponytail: CPU-only torch raises AssertionError on cuda.init().
     if not torch.cuda.is_available():
-        return False
+        raise RuntimeError("CUDA_UNAVAILABLE: torch.cuda.is_available() is False")
     torch.cuda.init()
     try:
         torch.empty(1, dtype=torch.uint8, pin_memory=True)
@@ -463,7 +463,7 @@ def _register_vieneu_transformers() -> None:
         pass
 
 
-def get_client() -> Any:
+def get_client(*, cpu_fallback: bool = False) -> Any:
     """Lazy singleton — only when synth/clone needs the model."""
     global _client, _client_err, _load_state
     from pipeline.core.memory_guard import ensure_budget, register, touch
@@ -535,6 +535,8 @@ def get_client() -> Any:
             from vieneu import Vieneu
 
             backend, device = _resolve_backend()
+            if cpu_fallback:
+                backend, device = "onnx", "cpu"
             # Wrong ctranslate2 cuDNN → copy torch's DLL in, stay on CUDA.
             if backend == "pytorch" and device == "cuda":
                 try:
@@ -549,12 +551,7 @@ def get_client() -> Any:
                         )
                 except Exception:
                     pass
-            _prepare_cuda_weight_load(backend, device)
             mode = current_mode()
-            if mode != MODE_NANO and backend == "onnx":
-                from .vieneu_frozen import _enable_onnx_snapshot_paths
-
-                _enable_onnx_snapshot_paths()
             kwargs: dict[str, Any] = {"mode": mode}
             if mode == MODE_NANO:
                 # Nano is ONNX/CPU only — ignore pytorch backend kwargs
@@ -568,23 +565,20 @@ def get_client() -> Any:
             voice_store.ensure_vieneu_dirs()
             # Prefer our voices.json for cloned voices if SDK supports path
             voices_path = voice_store.VOICES_JSON
+            from .vieneu_frozen import _is_cuda_error, _enable_onnx_snapshot_paths
+
             # ponytail: GPU→CPU fallback — retry once with onnx/cpu on CUDA errors
             try:
+                _prepare_cuda_weight_load(backend, device)
+                if mode != MODE_NANO and backend == "onnx":
+                    _enable_onnx_snapshot_paths()
                 client = Vieneu(**kwargs)
             except Exception as cuda_exc:
-                _cuda_markers = ("cuda", "cudnn", "cublas", "torch not compiled with cuda")
-                _msg = str(cuda_exc).lower()
-                _is_cuda = (
-                    mode != MODE_NANO
-                    and kwargs.get("device") == "cuda"
-                    and (any(m in _msg for m in _cuda_markers)
-                         or type(cuda_exc).__name__ in ("CudaError", "OutOfMemoryError"))
-                )
-                if not _is_cuda:
+                if mode == MODE_NANO or not device.startswith("cuda") or not _is_cuda_error(cuda_exc):
                     raise
                 print(f"[vieneu] GPU init failed ({cuda_exc}), fallback → onnx/cpu", flush=True)
                 kwargs["backend"], kwargs["device"] = "onnx", "cpu"
-                _prepare_cuda_weight_load("onnx", "cpu")
+                _enable_onnx_snapshot_paths()
                 client = Vieneu(**kwargs)
             # Re-enroll clones from disk
             for item in voice_store.load_cloned():
@@ -1248,7 +1242,20 @@ def synthesize(
     # PyTorch MPS' shader cache and the VieNeu client are not thread-safe.
     # Studio/Dub/Review may all reach this shared client concurrently.
     with _inference_lock:
-        _synthesize_once(text, voice, out_wav, **kwargs)
+        try:
+            _synthesize_once(text, voice, out_wav, **kwargs)
+        except Exception as exc:
+            from .vieneu_frozen import _is_cuda_error
+
+            client = _client
+            device = str(getattr(getattr(client, "engine", None), "device", ""))
+            if (not device.startswith("cuda") or not _is_cuda_error(exc)
+                    or (cancel_check and cancel_check())):
+                raise
+            print(f"[vieneu] GPU synth error ({exc}), fallback → onnx/cpu", flush=True)
+            reset_client()
+            get_client(cpu_fallback=True)
+            _synthesize_once(text, voice, out_wav, **kwargs)
 
 
 def _write_wav_pcm16(path: Path, samples: Any, sr: int) -> None:
