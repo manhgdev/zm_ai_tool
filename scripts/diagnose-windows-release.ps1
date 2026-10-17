@@ -147,6 +147,9 @@ try {
     $failure = $_
     if ($report.status -eq 'running') { $report.status = 'failed' }
     $report.error = [string]$_
+    $report.hresult = $_.Exception.HResult
+    $report.nativeErrorCode = $_.Exception.NativeErrorCode
+    if (-not $report.nativeErrorCode) { $report.nativeErrorCode = $_.Exception.InnerException.NativeErrorCode }
     $_ | Out-String | Set-Content -LiteralPath (Join-Path $Output 'error.log')
 } finally {
     Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
@@ -167,6 +170,10 @@ try {
     } catch { Save-Json @{ error = [string]$_ } 'defender-events.json' }
     $missing = @($report.files | Where-Object { -not (Test-Path -LiteralPath $_.path) } | ForEach-Object { $_.path })
     $report.missingFiles = $missing
+    if ($missing.Count -gt 0 -and $report.status -eq 'passed') {
+        $report.status = 'failed'
+        $report.error = 'Files disappeared during executable checks'
+    }
     $report.finishedAt = (Get-Date).ToUniversalTime().ToString('o')
     Save-Json $report 'diagnosis.json'
     if ($env:GITHUB_STEP_SUMMARY) {
