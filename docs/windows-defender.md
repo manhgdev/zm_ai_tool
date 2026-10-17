@@ -39,9 +39,14 @@ The `windows-release-diagnostic` Actions artifact is saved even on failure.
 `diagnosis.json` records stages, hashes, signature/publisher information,
 process/scan exit codes and missing files. Detection records, Defender events,
 engine/signature versions and the Setup log are saved separately when available.
-`scanner_unavailable` means the runner could not provide active Defender;
+`scanner_unavailable` means the runner could not provide a running Defender engine;
 `hash_mismatch` means the download did not match the release metadata;
+`scan_excluded` means Defender excludes the Setup, install directory or main EXE;
 `detected` means Defender recorded a threat. None is a clean-scan verdict.
+The runner's real-time protection state is recorded separately. On-demand scans
+can run with real-time protection disabled, but cannot establish whether a user's
+PC will quarantine the app during normal use. A signature-update failure retains
+the recorded definitions and is explicitly recorded in the report.
 
 For a new build, leave `audit_release` empty. Manual builds save a separate
 `windows-test-build` Actions artifact and smoke-test the executable; a manual

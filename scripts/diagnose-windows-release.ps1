@@ -10,7 +10,7 @@ $Output = (Resolve-Path -LiteralPath $Output).Path
 $started = Get-Date
 $report = [ordered]@{
     status = 'running'; stage = 'metadata'; release = $ReleaseTag; repository = $Repository
-    startedAt = $started.ToUniversalTime().ToString('o'); files = @(); scans = @(); checks = @()
+    startedAt = $started.ToUniversalTime().ToString('o'); files = @(); scans = @(); checks = @(); exclusions = @()
 }
 $failure = $null
 $scanner = $null
@@ -34,6 +34,7 @@ function Record-File([string]$File) {
 }
 
 function Scan-File([string]$File) {
+    Check-ScanExclusion $File
     $before = Record-File $File
     $scan = [ordered]@{ target = $File; sha256 = $before.sha256; exitCode = $null; existsAfter = $false }
     $report.scans += $scan
@@ -48,6 +49,18 @@ function Scan-File([string]$File) {
     }
     $newThreats = @(Get-MpThreatDetection | Where-Object { $_.InitialDetectionTime -ge $started })
     if ($newThreats.Count) { throw 'Defender recorded a detection; execution is blocked' }
+}
+
+function Check-ScanExclusion([string]$File) {
+    $result = & $scanner -CheckExclusion -Path $File 2>&1
+    $code = $LASTEXITCODE
+    $report.exclusions += @{ path = $File; exitCode = $code }
+    $result | Out-File -LiteralPath (Join-Path $Output 'defender-exclusions.log') -Append -Encoding utf8
+    if ($code -eq 0) {
+        $report.status = 'scan_excluded'
+        throw "Defender excludes this scan target: $File"
+    }
+    if ($code -ne 1) { throw "Could not verify scan exclusions: $File (exit $code)" }
 }
 
 function Run-Checked([string]$File, [string[]]$Arguments, [int]$TimeoutSeconds) {
@@ -75,9 +88,9 @@ try {
     $report.stage = 'defender-status'
     try {
         $status = Get-MpComputerStatus
-        Save-Json $status 'defender-status.json'
-        if (-not $status.AntivirusEnabled -or -not $status.AMServiceEnabled -or -not $status.RealTimeProtectionEnabled) {
-            throw 'Defender antivirus, service, or real-time protection is disabled'
+        Save-Json ($status | Select-Object AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled, AMRunningMode, AMEngineVersion, AntivirusSignatureVersion, AntivirusSignatureLastUpdated) 'defender-status.json'
+        if (-not $status.AntivirusEnabled -or -not $status.AMServiceEnabled) {
+            throw 'Defender antivirus or service is disabled'
         }
         $platform = Join-Path $env:ProgramData 'Microsoft\Windows Defender\Platform'
         $scanner = Get-ChildItem -LiteralPath $platform -Filter MpCmdRun.exe -Recurse -ErrorAction SilentlyContinue |
@@ -89,11 +102,18 @@ try {
         throw
     }
     $report.stage = 'signature-update'
-    Update-MpSignature -ErrorAction Stop
-    $status = Get-MpComputerStatus
-    Save-Json $status 'defender-status.json'
+    try {
+        Update-MpSignature -ErrorAction Stop
+        $status = Get-MpComputerStatus
+    } catch {
+        # Match the existing release audit: retain the recorded definitions on an update failure.
+        $report.signatureUpdateError = [string]$_
+    }
+    Save-Json ($status | Select-Object AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled, AMRunningMode, AMEngineVersion, AntivirusSignatureVersion, AntivirusSignatureLastUpdated) 'defender-status.json'
     $report.signatureVersion = $status.AntivirusSignatureVersion
     $report.engineVersion = $status.AMEngineVersion
+    $report.realTimeProtectionEnabled = [bool]$status.RealTimeProtectionEnabled
+    $report.coverage = 'On-demand file scans and executable checks; no guarantee of matching a user PC detection'
     $report.stage = 'download'
     New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
     gh release download $ReleaseTag --repo $Repository --pattern $assetName --dir $downloadDir --clobber
@@ -121,6 +141,8 @@ try {
     foreach ($binary in Get-ChildItem -LiteralPath $installDir -Recurse -File | Where-Object { $_.Extension -in @('.exe', '.dll', '.pyd') }) {
         $null = Record-File $binary.FullName
     }
+    Check-ScanExclusion $installDir
+    Check-ScanExclusion $exe
     $scan = [ordered]@{ target = $installDir; exitCode = $null }
     $report.scans += $scan
     $result = & $scanner -Scan -ScanType 3 -File $installDir 2>&1
@@ -177,7 +199,7 @@ try {
     $report.finishedAt = (Get-Date).ToUniversalTime().ToString('o')
     Save-Json $report 'diagnosis.json'
     if ($env:GITHUB_STEP_SUMMARY) {
-        "### Windows release diagnosis: $ReleaseTag`n`nStatus: **$($report.status)**; stage: $($report.stage).`n`n$($report.error)`n`nResults cover the recorded file hashes and Defender version only." |
+        "### Windows release diagnosis: $ReleaseTag`n`nStatus: **$($report.status)**; stage: $($report.stage).`n`n$($report.error)`n`nReal-time protection enabled: $($report.realTimeProtectionEnabled). Results cover the recorded file hashes and Defender version only." |
             Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
     }
 }
