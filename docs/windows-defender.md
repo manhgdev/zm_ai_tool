@@ -33,7 +33,16 @@ publication job is skipped. It downloads the original Setup, verifies its
 GitHub SHA-256 digest, scans it, installs silently into the runner's temporary
 directory, inventories/scans the installed payload, and runs the packaged
 runtime-import and yt-dlp checks. Repository credentials are removed before
-executing Setup. Defender settings and quarantined files are not changed.
+executing Setup. Quarantined files are not restored.
+
+GitHub's Windows image excludes both `C:\` and `D:\` and disables archive
+scanning ([image configuration](https://github.com/actions/runner-images/blob/main/images/windows/scripts/build/Configure-WindowsDefender.ps1)).
+Only on the disposable GitHub-hosted diagnostic VM, the workflow attempts to
+remove these two blanket exclusions and enable archive scanning. Preferences
+before/after and any preparation error are saved. The diagnostic still verifies
+the actual Setup/payload exclusion status and stops if they remain excluded.
+It does not add exclusions or disable protection. Real-time settings remain as
+provided by the runner and are reported separately.
 
 The `windows-release-diagnostic` Actions artifact is saved even on failure.
 `diagnosis.json` records stages, hashes, signature/publisher information,

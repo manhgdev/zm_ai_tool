@@ -40,6 +40,25 @@ jobs:
       - name: Test diagnostic failure reporting
         shell: pwsh
         run: ./tests/test_windows_release_diagnostic.ps1
+      - name: Enable on-demand scans on the disposable hosted runner
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $output = 'build_app/windows-diagnostic'
+          New-Item -ItemType Directory -Force $output | Out-Null
+          $fields = @('ExclusionPath', 'ExclusionExtension', 'ExclusionProcess', 'DisableArchiveScanning', 'DisableRealtimeMonitoring')
+          try {
+            if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Defender preparation is restricted to a disposable GitHub-hosted runner' }
+            Get-MpPreference | Select-Object $fields | ConvertTo-Json -Depth 4 | Set-Content "$output/defender-preferences-before.json"
+            # GitHub's image excludes both drives. Remove exclusions so scans cover the downloaded bytes.
+            Remove-MpPreference -ExclusionPath 'C:\', 'D:\' -ErrorAction Stop
+            Set-MpPreference -DisableArchiveScanning $false -ErrorAction Stop
+          } catch {
+            $_ | Out-String | Set-Content "$output/defender-preparation-error.log"
+            throw
+          } finally {
+            Get-MpPreference -ErrorAction Continue | Select-Object $fields | ConvertTo-Json -Depth 4 | Set-Content "$output/defender-preferences-after.json"
+          }
       - name: Diagnose published Windows Setup
         shell: pwsh
         env:

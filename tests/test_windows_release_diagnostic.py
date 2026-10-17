@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class WindowsDiagnosticTest(unittest.TestCase):
     def setUp(self):
-        self.workflow = yaml.load((ROOT / '.github/workflows/release-windows.yml').read_text(), Loader=yaml.BaseLoader)
-        self.script = (ROOT / 'scripts/diagnose-windows-release.ps1').read_text()
+        self.workflow = yaml.load((ROOT / '.github/workflows/release-windows.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
+        self.script = (ROOT / 'scripts/diagnose-windows-release.ps1').read_text(encoding='utf-8')
 
     def test_diagnostic_cannot_publish_or_build(self):
         jobs = self.workflow['jobs']
@@ -20,9 +20,12 @@ class WindowsDiagnosticTest(unittest.TestCase):
         self.assertEqual(diagnostic['runs-on'], 'windows-2022')
         self.assertEqual(diagnostic['permissions'], {'contents': 'read'})
         self.assertEqual(self.workflow['permissions'], {'contents': 'read'})
-        steps = str(diagnostic['steps']) + self.script
-        for forbidden in ('gh release upload', 'gh release create', 'npm run build', 'git push', 'Set-MpPreference', 'Add-MpPreference', '-DisableRemediation', '-Restore'):
+        steps = '\n'.join(step.get('run', '') for step in diagnostic['steps']) + self.script
+        for forbidden in ('gh release upload', 'gh release create', 'npm run build', 'git push', 'Add-MpPreference', '-DisableRemediation', '-Restore', '-DisableArchiveScanning $true', '-DisableRealtimeMonitoring $true'):
             self.assertNotIn(forbidden, steps)
+        self.assertIn("Remove-MpPreference -ExclusionPath 'C:\\', 'D:\\'", steps)
+        self.assertIn('Set-MpPreference -DisableArchiveScanning $false', steps)
+        self.assertIn("$env:RUNNER_ENVIRONMENT -ne 'github-hosted'", steps)
         self.assertTrue(any(step.get('if') == 'always()' and 'upload-artifact' in step.get('uses', '') for step in diagnostic['steps']))
 
     def test_installer_is_verified_and_scanned_before_execution(self):
