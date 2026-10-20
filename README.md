@@ -156,6 +156,15 @@ npm run dev:all
 - API: `http://127.0.0.1:8787`
 - API docs: `http://127.0.0.1:8787/docs`
 
+Setup tải và kiểm tra thực thi model LaMa dùng để xóa logo, giống model đi kèm bản desktop. Nếu cần bổ sung model cho server đã cài trước đó:
+
+```bash
+backend/.venv/bin/python scripts/setup_lama.py
+backend/.venv/bin/python scripts/lama_smoke.py
+```
+
+Khởi động lại backend sau khi bổ sung model, rồi chạy lại bước xóa logo trên file gốc.
+
 `npm run dev:all` chỉ quản lý hai cổng 5173 và 8787 của project. Dừng lệnh bằng `Ctrl+C` để tắt cả Vite và API.
 
 ### Các lệnh thường dùng

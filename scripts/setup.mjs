@@ -128,6 +128,10 @@ console.log('Cài backend dependencies...')
 run(venvPython, ['-m', 'pip', 'install', '--upgrade', 'pip'])
 run(venvPython, ['-m', 'pip', 'install', '-r', path.join(root, 'backend', 'requirements.txt')])
 
+console.log('Chuẩn bị và kiểm tra model xóa logo LaMa... / Preparing and testing the LaMa logo removal model...')
+run(venvPython, [path.join(root, 'scripts', 'setup_lama.py')])
+run(venvPython, [path.join(root, 'scripts', 'lama_smoke.py')])
+
 const detectedAccel = spawnSync(venvPython, [
   '-c',
   'import sys; sys.path.insert(0, "backend"); from pipeline.core.media import detect_device; print(detect_device().get("accel", "cpu"))',
