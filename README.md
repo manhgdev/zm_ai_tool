@@ -139,7 +139,7 @@ Ghép ảnh/video với audio và phụ đề, phù hợp để tạo video theo
 ### Yêu cầu
 
 - Node.js 24 (khớp GitHub Actions release).
-- Python 3.12.
+- Python 3.12. Nếu chưa có Python tương thích, setup tự chuẩn bị `uv` và tải Python 3.12.10 riêng cho tool; không cần gỡ Python khác đang có trên máy.
 - FFmpeg và FFprobe trong `PATH`.
 - macOS hoặc Windows được hỗ trợ chính thức bởi workflow build hiện tại.
 
