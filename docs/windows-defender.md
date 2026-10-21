@@ -64,8 +64,11 @@ temporary home and synthesize a v3turbo preset through the frozen app's real
 worker path. `vieneu-tts.json`, its progress log and WAV record that result. The
 runtime directory is cleaned after the worker shuts down and is not uploaded.
 The original-release diagnostic does not run TTS because earlier launchers lack
-those checks. This covers ONNX/CPU; the hosted runner has no NVIDIA GPU and does
-not test CUDA inference. It does not prove that React rendered successfully.
+those checks. The audit also runs the SDK's PyTorch path on CPU, including the
+pinned MOSS codec, and retains `vieneu-pytorch.json` and a separate WAV. The
+hosted runner has no NVIDIA GPU and does not test CUDA inference. These CLI
+TTS checks run before normal GUI bootstrap; native startup is checked separately.
+They do not prove that React rendered successfully or that TTS ran through the UI.
 A signature-update failure retains
 the recorded definitions and is explicitly recorded in the report.
 
@@ -73,6 +76,33 @@ For a new build, leave `audit_release` empty. Manual builds save a separate
 `windows-test-build` Actions artifact and smoke-test the executable; a manual
 run on a branch does not publish a GitHub release. Tests without `security_audit`
 do not establish a Defender verdict for the new bytes.
+
+## VieNeu startup and model code
+
+Opening `TtsStudio` calls `/api/tts/warm` without requiring a first synthesis.
+The endpoint starts `vieneu.warm()` in the background. In a frozen Windows app,
+this probes a persistent external runtime Python worker. `accel.py` selects
+PyTorch/CUDA when usable; otherwise it selects ONNX/CPU. The saved CPU mode and
+explicit backend override also apply. Nano always uses ONNX/CPU. All VieNeu
+presets, references and clones use the same worker and UTF-8 JSON stdin protocol;
+text, voice and file paths do not become Python or PowerShell program text.
+The normal Windows launcher wraps `Popen` with `external_process_dll_search` to
+prevent an external Python from inheriting PyInstaller's incompatible DLL path.
+
+VieNeu 3.2.0's PyTorch engine loads its MOSS codec using
+`AutoModel.from_pretrained(..., trust_remote_code=True)` without a revision.
+That loads executable Python from a moving Hub branch. The app now uses the
+SDK's existing `moss_tokenizer` argument to pass a local snapshot pinned to
+`6aa02b01e445cc585582cf0ba480bc3ea6c8dd68`, including the codec's configuration,
+Python source and safetensors weights. Both the frozen worker and direct loader
+use this helper. A missing pinned snapshot remains an error; it never retries
+the moving branch. ONNX does not fetch this PyTorch codec, including after CUDA
+fallback. This fixes a dependency code provenance gap; it does not identify
+what Microsoft's classifier flagged on a particular PC.
+
+Reviewed codec source:
+[configuration](https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano/blob/6aa02b01e445cc585582cf0ba480bc3ea6c8dd68/configuration_moss_audio_tokenizer.py),
+[model](https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano/blob/6aa02b01e445cc585582cf0ba480bc3ea6c8dd68/modeling_moss_audio_tokenizer.py).
 
 ## Windows system TTS
 

@@ -37,6 +37,15 @@ try {
         $report.vieneu = Get-Content -LiteralPath $ttsReport -Raw | ConvertFrom-Json
         if (-not $report.vieneu.ok) { throw 'Packaged VieNeu did not produce valid audio' }
         $report.coverage = 'System TTS, VieNeu v3turbo ONNX/CPU, API and native WebView startup; no NVIDIA GPU exercised'
+        $ttsReport = Join-Path $Output 'vieneu-pytorch.json'
+        Remove-Item -LiteralPath $ttsReport -Force -ErrorAction SilentlyContinue
+        $process = Start-Process -FilePath $Exe -ArgumentList @('--vieneu-pytorch-check', "`"$ttsReport`"") -PassThru
+        if (-not $process.WaitForExit(1200000)) { throw 'Packaged VieNeu PyTorch installation/synthesis timed out after 20 minutes' }
+        $process.Refresh()
+        if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $ttsReport)) { throw "Packaged VieNeu PyTorch failed: $($process.ExitCode)" }
+        $report.vieneuPytorch = Get-Content -LiteralPath $ttsReport -Raw | ConvertFrom-Json
+        if (-not $report.vieneuPytorch.ok) { throw 'Packaged VieNeu PyTorch did not produce valid audio' }
+        $report.coverage = 'System TTS, VieNeu v3turbo ONNX/CPU and PyTorch/CPU, API and native WebView startup; no NVIDIA GPU exercised'
     }
     # Reuse the launcher's updater handshake, which runs after native GUI startup.
     $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ready

@@ -96,7 +96,7 @@ def packaged_ytdlp_version_check(report: Path) -> int:
         return 1
 
 
-def packaged_tts_check(report: Path, engine: str = "system") -> int:
+def packaged_tts_check(report: Path, engine: str = "system", backend: str = "onnx") -> int:
     """Exercise a packaged Windows TTS engine and retain a real WAV for CI."""
     import tempfile
     import wave
@@ -107,11 +107,12 @@ def packaged_tts_check(report: Path, engine: str = "system") -> int:
     try:
         if sys.platform != "win32":
             raise RuntimeError("Packaged TTS check requires Windows")
-        output = report.with_name(f"{engine} tiếng Việt ‘quote’ & (test).wav")
+        output = report.with_name(f"{engine}{'-pytorch' if backend == 'pytorch' else ''} tiếng Việt ‘quote’ & (test).wav")
         if engine == "vieneu":
             runtime = tempfile.TemporaryDirectory(prefix="zm-vieneu-check-", ignore_cleanup_errors=True)
             os.environ.update(ZM_AI_TOOL_HOME=runtime.name, ZM_AI_TOOL_DATA=str(Path(runtime.name) / "data"),
-                              HF_HOME=str(Path(runtime.name) / "huggingface"), VIENEU_MODE="v3turbo")
+                              HF_HOME=str(Path(runtime.name) / "huggingface"), VIENEU_MODE="v3turbo",
+                              VIENEU_BACKEND="pytorch-cpu" if backend == "pytorch" else "onnx")
             from pipeline.core.runtime_install import install_runtime
             from pipeline.tts.engines import vieneu
 
@@ -124,8 +125,12 @@ def packaged_tts_check(report: Path, engine: str = "system") -> int:
             presets = vieneu.list_preset_from_assets()
             if not presets:
                 raise RuntimeError("Installed VieNeu SDK has no preset voices")
-            result.update(stage="synthesis", mode="v3turbo", backend="onnx", device="cpu", voice=presets[0]["id"])
+            result.update(stage="synthesis", mode="v3turbo", backend=backend, device="cpu", voice=presets[0]["id"])
             vieneu.synthesize("Xin chào, đây là bài kiểm tra tạo giọng nói trên Windows.", f"vn:{presets[0]['id']}", output)
+            from pipeline.tts.engines import vieneu_frozen
+
+            if vieneu_frozen.resolve_backend() != (backend, "cpu"):
+                raise RuntimeError("Packaged VieNeu loaded a different backend than requested")
         else:
             from pipeline.tts.engines.system import synthesize
 
@@ -134,7 +139,7 @@ def packaged_tts_check(report: Path, engine: str = "system") -> int:
             frames = audio.getnframes()
             rate = audio.getframerate()
             if not frames or rate <= 0 or len(set(audio.readframes(frames))) < 2:
-                raise RuntimeError("System TTS returned empty or silent audio")
+                raise RuntimeError("TTS returned empty or silent audio")
             result.update(ok=True, frames=frames, sampleRate=rate, duration=frames / rate)
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
@@ -157,6 +162,8 @@ if len(sys.argv) == 3 and sys.argv[1] == "--system-tts-check":
     raise SystemExit(packaged_tts_check(Path(sys.argv[2])))
 if len(sys.argv) == 3 and sys.argv[1] == "--vieneu-tts-check":
     raise SystemExit(packaged_tts_check(Path(sys.argv[2]), "vieneu"))
+if len(sys.argv) == 3 and sys.argv[1] == "--vieneu-pytorch-check":
+    raise SystemExit(packaged_tts_check(Path(sys.argv[2]), "vieneu", "pytorch"))
 if sys.argv[1:] == ["--yt-dlp-cli", "--version"]:
     from yt_dlp import main as _ytdlp_version_main
 

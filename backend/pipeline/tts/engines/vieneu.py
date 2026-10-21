@@ -565,19 +565,22 @@ def get_client(*, cpu_fallback: bool = False) -> Any:
             voice_store.ensure_vieneu_dirs()
             # Prefer our voices.json for cloned voices if SDK supports path
             voices_path = voice_store.VOICES_JSON
-            from .vieneu_frozen import _is_cuda_error, _enable_onnx_snapshot_paths
+            from .vieneu_frozen import _is_cuda_error, _enable_onnx_snapshot_paths, _pinned_moss_tokenizer
 
             # ponytail: GPU→CPU fallback — retry once with onnx/cpu on CUDA errors
             try:
                 _prepare_cuda_weight_load(backend, device)
                 if mode != MODE_NANO and backend == "onnx":
                     _enable_onnx_snapshot_paths()
+                elif mode != MODE_NANO:
+                    kwargs["moss_tokenizer"] = _pinned_moss_tokenizer()
                 client = Vieneu(**kwargs)
             except Exception as cuda_exc:
                 if mode == MODE_NANO or not device.startswith("cuda") or not _is_cuda_error(cuda_exc):
                     raise
                 print(f"[vieneu] GPU init failed ({cuda_exc}), fallback → onnx/cpu", flush=True)
                 kwargs["backend"], kwargs["device"] = "onnx", "cpu"
+                kwargs.pop("moss_tokenizer", None)
                 _enable_onnx_snapshot_paths()
                 client = Vieneu(**kwargs)
             # Re-enroll clones from disk
