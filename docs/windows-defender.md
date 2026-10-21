@@ -57,7 +57,10 @@ can run with real-time protection disabled, but cannot establish whether a user'
 PC will quarantine the app during normal use. `desktop-startup.json` separately
 records a normal native-window launch using the existing updater readiness
 handshake, a 10-second observation, the EXE hash, version and effective real-time
-protection state. This check does not exercise AI jobs or prove that React rendered
+protection state. New builds also synthesize system TTS through the packaged EXE,
+verify nonempty, nonsilent WAV samples, and retain `system-tts.json` and the WAV.
+The original-release diagnostic does not run TTS because earlier launchers lack
+that check. These checks do not exercise AI models or prove that React rendered
 successfully. A signature-update failure retains
 the recorded definitions and is explicitly recorded in the report.
 
@@ -65,6 +68,20 @@ For a new build, leave `audit_release` empty. Manual builds save a separate
 `windows-test-build` Actions artifact and smoke-test the executable; a manual
 run on a branch does not publish a GitHub release. Tests without `security_audit`
 do not establish a Defender verdict for the new bytes.
+
+## Windows system TTS
+
+The system voice engine previously inserted text, voice and output paths into a
+PowerShell program, escaping only ASCII apostrophes. PowerShell also treats curly
+single quotes as delimiters: a TTS input with such a quote could change the
+program. All three values now travel as ASCII-escaped JSON on stdin, and the
+PowerShell program is fixed. Unicode and long text no longer depend on shell
+quoting or the Windows command-line length limit. Synthesis errors remain failures
+and the speech synthesizer is disposed in `finally`.
+
+This is a confirmed input/code boundary bug in system TTS. It does not establish
+the cause of a particular Defender detection, nor does it apply to CapCut,
+ElevenLabs or the JSON-based VieNeu worker.
 
 ## Driver repair launch
 

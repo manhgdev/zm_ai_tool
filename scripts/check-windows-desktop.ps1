@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Exe,
-    [Parameter(Mandatory=$true)][string]$Output
+    [Parameter(Mandatory=$true)][string]$Output,
+    [switch]$CheckSystemTts
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -14,6 +15,17 @@ $report = [ordered]@{ status = 'running'; coverage = 'API and native WebView sta
 try {
     $report.sha256 = (Get-FileHash -LiteralPath $Exe -Algorithm SHA256).Hash.ToLowerInvariant()
     $report.realTimeProtectionEnabled = [bool](Get-MpComputerStatus).RealTimeProtectionEnabled
+    if ($CheckSystemTts) {
+        $ttsReport = Join-Path $Output 'system-tts.json'
+        Remove-Item -LiteralPath $ttsReport -Force -ErrorAction SilentlyContinue
+        $process = Start-Process -FilePath $Exe -ArgumentList @('--system-tts-check', "`"$ttsReport`"") -PassThru
+        if (-not $process.WaitForExit(150000)) { throw 'Packaged system TTS timed out after 150s' }
+        $process.Refresh()
+        if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $ttsReport)) { throw "Packaged system TTS failed: $($process.ExitCode)" }
+        $report.systemTts = Get-Content -LiteralPath $ttsReport -Raw | ConvertFrom-Json
+        if (-not $report.systemTts.ok) { throw 'Packaged system TTS did not produce valid audio' }
+        $report.coverage = 'System TTS synthesis, API and native WebView startup; no AI model workload exercised'
+    }
     # Reuse the launcher's updater handshake, which runs after native GUI startup.
     $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ready
     $process = Start-Process -FilePath $Exe -PassThru

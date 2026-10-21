@@ -1,6 +1,7 @@
 """System TTS — Windows SAPI / macOS say / Linux espeak-ng."""
 from __future__ import annotations
 
+import json
 import platform
 import re
 import subprocess
@@ -144,20 +145,23 @@ def list_voices(lang: str | None = None) -> list[dict[str, str]]:
 
 
 def _windows_synthesize(text: str, voice_name: str, out_wav: Path) -> None:
-    # Escape for PowerShell single-quoted string
-    safe_text = (text or ".").replace("'", "''")
-    safe_voice = voice_name.replace("'", "''")
-    out = str(out_wav.resolve()).replace("'", "''")
+    # PowerShell also parses smart quotes as delimiters. Keep all data on stdin.
     ps = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$request = [Console]::In.ReadToEnd() | ConvertFrom-Json; "
         "Add-Type -AssemblyName System.Speech; "
         "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-        f"try {{ $s.SelectVoice('{safe_voice}') }} catch {{ }}; "
-        f"$s.SetOutputToWaveFile('{out}'); "
-        f"$s.Speak('{safe_text}'); "
-        "$s.Dispose()"
+        "try { "
+        "try { $s.SelectVoice($request.voice) } catch { }; "
+        "$s.SetOutputToWaveFile($request.output); "
+        "$s.Speak($request.text) "
+        "} finally { $s.Dispose() }"
     )
-    subprocess.check_call(
-        ["powershell", "-NoProfile", "-Command", ps],
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+        input=json.dumps({"text": text or ".", "voice": voice_name, "output": str(out_wav.resolve())}),
+        text=True,
+        check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         timeout=120,

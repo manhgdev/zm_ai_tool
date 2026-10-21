@@ -166,6 +166,8 @@ jobs:
         run: |
           backend/.venv/Scripts/python.exe -m unittest discover -s tests -p test_nvidia_driver_launch.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          backend/.venv/Scripts/python.exe -m unittest discover -s tests -p test_system_tts_windows.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./tests/test_windows_release_audit.ps1
 
       - name: Build EXE
@@ -255,7 +257,7 @@ jobs:
         shell: pwsh
         env:
           BUNDLE: ${{ steps.package.outputs.directory }}
-        run: ./scripts/check-windows-desktop.ps1 -Exe "$env:BUNDLE/ZM AI TOOL.exe" -Output build_app/windows-audit
+        run: ./scripts/check-windows-desktop.ps1 -Exe "$env:BUNDLE/ZM AI TOOL.exe" -Output build_app/windows-audit -CheckSystemTts
 
       - name: Save audit diagnostics (including failures)
         if: always() && inputs.security_audit == true

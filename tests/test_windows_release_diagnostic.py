@@ -55,6 +55,8 @@ class WindowsDiagnosticTest(unittest.TestCase):
     def test_diagnostic_launches_normal_desktop_after_scanning(self):
         self.assertLess(self.script.index("'scan-payload'"), self.script.index("'desktop-startup'"))
         self.assertIn("'check-windows-desktop.ps1'", self.script)
+        build_steps = self.workflow['jobs']['build']['steps']
+        self.assertTrue(any('-CheckSystemTts' in step.get('run', '') for step in build_steps))
 
 
 if __name__ == '__main__':

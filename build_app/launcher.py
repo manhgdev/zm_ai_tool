@@ -96,10 +96,36 @@ def packaged_ytdlp_version_check(report: Path) -> int:
         return 1
 
 
+def packaged_system_tts_check(report: Path) -> int:
+    """Exercise the packaged Windows TTS engine and retain a real WAV for CI."""
+    import wave
+
+    result = {"ok": False, "engine": "system", "platform": sys.platform}
+    try:
+        if sys.platform != "win32":
+            raise RuntimeError("System TTS check requires Windows")
+        from pipeline.tts.engines.system import synthesize
+
+        output = report.with_name("TTS tiếng Việt ‘quote’ & (test).wav")
+        synthesize("Xin chào. It's fine: ‘hello’, “world”.\nHello, Windows.", "system", output, lang="en")
+        with wave.open(str(output), "rb") as audio:
+            frames = audio.getnframes()
+            rate = audio.getframerate()
+            if not frames or rate <= 0 or len(set(audio.readframes(frames))) < 2:
+                raise RuntimeError("System TTS returned empty or silent audio")
+            result.update(ok=True, frames=frames, sampleRate=rate, duration=frames / rate)
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    report.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    return 0 if result["ok"] else 1
+
+
 if len(sys.argv) == 3 and sys.argv[1] == "--runtime-import-check":
     raise SystemExit(packaged_runtime_import_check(Path(sys.argv[2])))
 if len(sys.argv) == 3 and sys.argv[1] == "--yt-dlp-version-check":
     raise SystemExit(packaged_ytdlp_version_check(Path(sys.argv[2])))
+if len(sys.argv) == 3 and sys.argv[1] == "--system-tts-check":
+    raise SystemExit(packaged_system_tts_check(Path(sys.argv[2])))
 if sys.argv[1:] == ["--yt-dlp-cli", "--version"]:
     from yt_dlp import main as _ytdlp_version_main
 
