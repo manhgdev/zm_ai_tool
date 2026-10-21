@@ -19,8 +19,9 @@ additional release downloads.
 
 The full CI audit runs on manual workflow dispatch with `security_audit`
 enabled. Ordinary releases only verify release hashes;
-they must not be described as Defender-scanned. The explicit audit scans
-EXE/payload and Setup before publishing. A missing scanner,
+they must not be described as Defender-scanned. The explicit audit checks
+exclusions for the bundle, every native binary, Setup and bundled PowerShell
+scripts, then scans EXE/payload and Setup before publishing. A missing scanner,
 nonzero result, new threat detection, deleted file or changed hash blocks the
 release. A pass covers those bytes with that engine/signature version only;
 it does not guarantee later runtime behavior or every antivirus verdict.
@@ -32,17 +33,16 @@ separate `windows-2022` job with read-only repository access; the build and
 publication job is skipped. It downloads the original Setup, verifies its
 GitHub SHA-256 digest, scans it, installs silently into the runner's temporary
 directory, inventories/scans the installed payload, and runs the packaged
-runtime-import and yt-dlp checks. Repository credentials are removed before
+runtime-import, yt-dlp and native desktop startup checks. Repository credentials are removed before
 executing Setup. Quarantined files are not restored.
 
 GitHub's Windows image excludes both `C:\` and `D:\` and disables archive
 scanning ([image configuration](https://github.com/actions/runner-images/blob/main/images/windows/scripts/build/Configure-WindowsDefender.ps1)).
-Only on the disposable GitHub-hosted diagnostic VM, the workflow attempts to
-remove these two blanket exclusions and enable archive scanning. Preferences
-before/after and any preparation error are saved. The diagnostic still verifies
-the actual Setup/payload exclusion status and stops if they remain excluded.
-It does not add exclusions or disable protection. Real-time settings remain as
-provided by the runner and are reported separately.
+On the disposable GitHub-hosted VM, both diagnostics and explicit build audits
+attempt to remove these two blanket exclusions and enable archive scanning and
+real-time protection. Preferences before/after and any preparation error are
+saved. The actual exclusion coverage and effective engine protection state are
+checked separately. Excluded scan targets block the audit.
 
 The `windows-release-diagnostic` Actions artifact is saved even on failure.
 `diagnosis.json` records stages, hashes, signature/publisher information,
@@ -54,13 +54,28 @@ engine/signature versions and the Setup log are saved separately when available.
 `detected` means Defender recorded a threat. None is a clean-scan verdict.
 The runner's real-time protection state is recorded separately. On-demand scans
 can run with real-time protection disabled, but cannot establish whether a user's
-PC will quarantine the app during normal use. A signature-update failure retains
+PC will quarantine the app during normal use. `desktop-startup.json` separately
+records a normal native-window launch using the existing updater readiness
+handshake, a 10-second observation, the EXE hash, version and effective real-time
+protection state. This check does not exercise AI jobs or prove that React rendered
+successfully. A signature-update failure retains
 the recorded definitions and is explicitly recorded in the report.
 
 For a new build, leave `audit_release` empty. Manual builds save a separate
 `windows-test-build` Actions artifact and smoke-test the executable; a manual
 run on a branch does not publish a GitHub release. Tests without `security_audit`
 do not establish a Defender verdict for the new bytes.
+
+## Driver repair launch
+
+The opt-in NVIDIA repair runs the fixed bundled `nvidia_driver_update.ps1` with
+`-File` and `RemoteSigned`, using the same policy as the app updater. Callback,
+token, operation ID and accepted EULA fingerprint are validated script parameters.
+It no longer builds a script in memory or launches elevated `-EncodedCommand`.
+The worker continues to use Windows Update and the existing explicit UAC/EULA flow.
+This removes an unnecessary encoded-command launch pattern; it does not prove
+that this function caused a particular `Bearfoos` detection. A source diff alone
+cannot establish which bytes or behavior Microsoft's classifier flagged.
 
 For a report from a user's PC, collect:
 

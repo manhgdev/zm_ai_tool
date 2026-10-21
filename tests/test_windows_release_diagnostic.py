@@ -20,13 +20,19 @@ class WindowsDiagnosticTest(unittest.TestCase):
         self.assertEqual(diagnostic['runs-on'], 'windows-2022')
         self.assertEqual(diagnostic['permissions'], {'contents': 'read'})
         self.assertEqual(self.workflow['permissions'], {'contents': 'read'})
-        steps = '\n'.join(step.get('run', '') for step in diagnostic['steps']) + self.script
+        preparation = (ROOT / 'scripts/prepare-windows-defender.ps1').read_text(encoding='utf-8')
+        steps = '\n'.join(step.get('run', '') for step in diagnostic['steps']) + self.script + preparation
         for forbidden in ('gh release upload', 'gh release create', 'npm run build', 'git push', 'Add-MpPreference', '-DisableRemediation', '-Restore', '-DisableArchiveScanning $true', '-DisableRealtimeMonitoring $true'):
             self.assertNotIn(forbidden, steps)
         self.assertIn("Remove-MpPreference -ExclusionPath 'C:\\', 'D:\\'", steps)
         self.assertIn('Set-MpPreference -DisableArchiveScanning $false', steps)
         self.assertIn("$env:RUNNER_ENVIRONMENT -ne 'github-hosted'", steps)
         self.assertTrue(any(step.get('if') == 'always()' and 'upload-artifact' in step.get('uses', '') for step in diagnostic['steps']))
+        for job in (diagnostic, jobs['build']):
+            self.assertTrue(any('prepare-windows-defender.ps1' in step.get('run', '') for step in job['steps']))
+        for step in jobs['build']['steps']:
+            if any(script in step.get('run', '') for script in ('prepare-windows-defender.ps1', 'audit-windows-release.ps1', 'check-windows-desktop.ps1')):
+                self.assertEqual(step['if'], 'inputs.security_audit == true')
 
     def test_installer_is_verified_and_scanned_before_execution(self):
         positions = [self.script.index(text) for text in (
@@ -45,6 +51,10 @@ class WindowsDiagnosticTest(unittest.TestCase):
         self.assertIn("$report.status = 'detected'", finally_block)
         self.assertIn('InitialDetectionTime -ge $started', self.script)
         self.assertIn('sha256 = $before.sha256', self.script)
+
+    def test_diagnostic_launches_normal_desktop_after_scanning(self):
+        self.assertLess(self.script.index("'scan-payload'"), self.script.index("'desktop-startup'"))
+        self.assertIn("'check-windows-desktop.ps1'", self.script)
 
 
 if __name__ == '__main__':

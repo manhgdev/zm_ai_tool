@@ -163,6 +163,8 @@ try {
         if (-not (Test-Path -LiteralPath $checkReport)) { throw "Missing executable check report: $check" }
         if ($check -eq 'runtime-import' -and -not (Get-Content $checkReport -Raw | ConvertFrom-Json).ok) { throw 'Runtime import check failed' }
     }
+    $report.stage = 'desktop-startup'
+    & (Join-Path $PSScriptRoot 'check-windows-desktop.ps1') -Exe $exe -Output $Output
     $report.status = 'passed'
     $report.stage = 'complete'
 } catch {

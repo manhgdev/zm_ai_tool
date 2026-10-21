@@ -43,22 +43,7 @@ jobs:
       - name: Enable on-demand scans on the disposable hosted runner
         continue-on-error: true
         shell: pwsh
-        run: |
-          $output = 'build_app/windows-diagnostic'
-          New-Item -ItemType Directory -Force $output | Out-Null
-          $fields = @('ExclusionPath', 'ExclusionExtension', 'ExclusionProcess', 'DisableArchiveScanning', 'DisableRealtimeMonitoring')
-          try {
-            if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Defender preparation is restricted to a disposable GitHub-hosted runner' }
-            Get-MpPreference | Select-Object $fields | ConvertTo-Json -Depth 4 | Set-Content "$output/defender-preferences-before.json"
-            # GitHub's image excludes both drives. Remove exclusions so scans cover the downloaded bytes.
-            Remove-MpPreference -ExclusionPath 'C:\', 'D:\' -ErrorAction Stop
-            Set-MpPreference -DisableArchiveScanning $false -ErrorAction Stop
-          } catch {
-            $_ | Out-String | Set-Content "$output/defender-preparation-error.log"
-            throw
-          } finally {
-            Get-MpPreference -ErrorAction Continue | Select-Object $fields | ConvertTo-Json -Depth 4 | Set-Content "$output/defender-preferences-after.json"
-          }
+        run: ./scripts/prepare-windows-defender.ps1 -Output build_app/windows-diagnostic
       - name: Diagnose published Windows Setup
         shell: pwsh
         env:
@@ -174,6 +159,15 @@ jobs:
           backend/.venv/Scripts/python.exe -m pytest tests/test_gpu_fallback.py -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Test Windows driver launch and audit guards
+        shell: pwsh
+        env:
+          PYTHONPATH: backend
+        run: |
+          backend/.venv/Scripts/python.exe -m unittest discover -s tests -p test_nvidia_driver_launch.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./tests/test_windows_release_audit.ps1
+
       - name: Build EXE
         shell: pwsh
         env:
@@ -239,6 +233,12 @@ jobs:
           }
           @{ assets = @($assets) } | ConvertTo-Json -Depth 4 | Set-Content build_app/windows-audit/windows-artifact-manifest.json -Encoding utf8
 
+      - name: Enable on-demand scans for the explicit audit
+        if: inputs.security_audit == true
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/prepare-windows-defender.ps1 -Output build_app/windows-audit
+
       - name: Inventory and scan Windows release
         if: inputs.security_audit == true
         shell: pwsh
@@ -249,6 +249,13 @@ jobs:
           backend/.venv/Scripts/python.exe scripts/windows_release_audit.py --bundle "$env:BUNDLE" --installer "$env:INSTALLER" --output build_app/windows-audit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/audit-windows-release.ps1 -Bundle $env:BUNDLE -Installer $env:INSTALLER -Output build_app/windows-audit
+
+      - name: Check native desktop startup with Defender status
+        if: inputs.security_audit == true
+        shell: pwsh
+        env:
+          BUNDLE: ${{ steps.package.outputs.directory }}
+        run: ./scripts/check-windows-desktop.ps1 -Exe "$env:BUNDLE/ZM AI TOOL.exe" -Output build_app/windows-audit
 
       - name: Save audit diagnostics (including failures)
         if: always() && inputs.security_audit == true
