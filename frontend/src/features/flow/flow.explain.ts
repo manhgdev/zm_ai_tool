@@ -115,7 +115,7 @@ export function explainFlowError(message: string): FlowExplain {
     actionEn,
   });
 
-  if (code === "FLOW_COOKIE_EXPIRED") {
+  if (code === "FLOW_COOKIE_EXPIRED" || code === "FLOW_SESSION_EXPIRED") {
     return {
       code,
       titleVi: "Chrome đang yêu cầu đăng nhập Google",
@@ -125,14 +125,6 @@ export function explainFlowError(message: string): FlowExplain {
       actionVi: "Trong Tài khoản, bấm Kết nối hoặc Mở phiên để kiểm tra và hoàn tất đăng nhập Google nếu được yêu cầu.",
       actionEn: "In Accounts, select Connect or Open session to check and complete Google sign-in if requested.",
     };
-  }
-
-  if (code === "FLOW_SESSION_EXPIRED") {
-    return make(
-      code,
-      "Phiên Flow đã đăng xuất; hệ thống đang thử đăng nhập lại bằng cookie đã lưu.",
-      "The Flow session signed out; the app is signing in again with the saved cookie.",
-    );
   }
 
   if (code === "FLOW_ACCOUNT_NOT_FOUND") {
@@ -158,12 +150,12 @@ export function explainFlowError(message: string): FlowExplain {
   if (code === "FLOW_COOKIE_SESSION_UNVERIFIED") {
     return {
       code,
-      titleVi: "Chưa xác minh được phiên Cookie",
-      titleEn: "Cookie session could not be verified",
-      summaryVi: "Không kết luận Cookie hết hạn khi phiên Chrome vẫn có thể đang hoạt động.",
-      summaryEn: "Cookie expiry is not confirmed while the Chrome session may still be active.",
-      actionVi: "Giữ nguyên Cookie, đóng phiên trùng nếu có rồi mở lại phiên account để kiểm tra.",
-      actionEn: "Keep the Cookie, close any duplicate session, then reopen the account session to check it.",
+      titleVi: "Chưa xác minh được phiên Flow",
+      titleEn: "Flow session could not be verified",
+      summaryVi: "Chưa xác minh được phiên Chrome. Trạng thái này không xác nhận tài khoản đã đăng xuất.",
+      summaryEn: "The Chrome session could not be verified. This does not confirm that the account signed out.",
+      actionVi: "Bấm Chạy lại. Nếu vẫn lỗi, mở Log và sao chép log để kiểm tra.",
+      actionEn: "Select Retry. If it still fails, open Logs and copy the log for diagnosis.",
     };
   }
 
@@ -312,7 +304,18 @@ export function explainFlowError(message: string): FlowExplain {
       "Wait for the quota reset, switch to an account with remaining allowance, or lower concurrency.",
     );
   }
-  if (code === "FLOW_SESSION_EXPIRED" || code === "FLOW_LOGIN_REQUIRED") {
+  if (code === "FLOW_PROJECT_NOT_FOUND") {
+    return {
+      code,
+      titleVi: "Chưa mở được dự án Flow",
+      titleEn: "Could not open the Flow project",
+      summaryVi: "Flow chưa mở hoặc tạo được dự án cho tác vụ này.",
+      summaryEn: "Flow could not open or create a project for this job.",
+      actionVi: "Bấm Chạy lại. Nếu vẫn lỗi, mở Log và sao chép log để kiểm tra.",
+      actionEn: "Select Retry. If it still fails, open Logs and copy the log for diagnosis.",
+    };
+  }
+  if (code === "FLOW_LOGIN_REQUIRED") {
     return make(
       code,
       "Vào Tài khoản → Kết nối lại, đăng nhập Google, rồi chạy lại job.",
@@ -373,6 +376,8 @@ export function explainFlowEvent(event: string): { titleVi: string; titleEn: str
     job_retry: ["Đưa job vào chạy lại", "Job queued for retry"],
     job_auto_retry: ["Tự chạy lại job bằng Chrome mới", "Auto-retrying job in a fresh Chrome"],
     browser_headed_fallback: ["Tự chuyển sang Chrome có giao diện ngoài màn hình", "Switching to a Chrome window placed off screen"],
+    project_browser_retry: ["Thử lại dự án bằng Chrome chạy nền", "Retrying the project in background Chrome"],
+    project_create_control_missing: ["Chưa tìm thấy nút tạo dự án Flow", "Flow project creation control not found"],
     unusual_activity_session_reset: ["Reset phiên Flow vì hoạt động bất thường", "Resetting Flow session after unusual activity"],
     unusual_activity_reconnected: ["Đã kết nối lại sau reset phiên", "Reconnected after session reset"],
     unusual_activity_retry: ["Chạy lại job sau reset phiên", "Retrying job after session reset"],

@@ -621,7 +621,153 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(launch.call_args.kwargs['chromium_sandbox'])
 
 
+class FlowProjectCreationTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from pipeline.flow import store
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = patch.object(store, "ROOT", Path(directory.name))
+        root.start()
+        self.addCleanup(root.stop)
+        self.service = FlowService()
+
+    async def test_login_redirect_is_not_reported_as_a_project_failure(self):
+        for url in ("https://flow.google.com/about", "https://accounts.google.com/v3/signin/identifier"):
+            with self.subTest(url=url):
+                page = Mock(url=url, goto=AsyncMock())
+                with patch("pipeline.flow.projects.asyncio.sleep", new=AsyncMock()):
+                    with self.assertRaisesRegex(RuntimeError, "FLOW_COOKIE_EXPIRED"):
+                        await self.service._create_flow_project_ui(page)
+                page.get_by_role.assert_not_called()
+
+    async def test_waits_for_lobby_controls_and_skips_hidden_duplicate(self):
+        project_id = "11111111-2222-3333-4444-555555555555"
+        old_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        clock = [0.0]
+        page = Mock(url="https://flow.google.com/", goto=AsyncMock())
+        hidden = Mock(is_visible=AsyncMock(return_value=False), click=AsyncMock())
+        target = Mock(is_visible=AsyncMock(return_value=True), is_enabled=AsyncMock(return_value=True))
+
+        async def click(**_kwargs):
+            page.url = f"https://flow.google.com/project/{project_id}"
+
+        async def wait_for_url(predicate, **_kwargs):
+            self.assertTrue(predicate(page.url))
+            self.assertFalse(predicate(f"https://flow.google.com/project/{old_id}"))
+
+        async def sleep(delay):
+            clock[0] += delay
+
+        target.click = AsyncMock(side_effect=click)
+        page.wait_for_url = AsyncMock(side_effect=wait_for_url)
+        locator = Mock(count=AsyncMock(side_effect=lambda: 2 if clock[0] > 2 else 0))
+        locator.nth.side_effect = [hidden, target]
+        page.get_by_role.return_value = locator
+        page.get_by_text.return_value = locator
+        page.locator.return_value = locator
+        with patch("pipeline.flow.projects._dismiss_flow_whats_new", new=AsyncMock()), \
+             patch("pipeline.flow.projects.asyncio.sleep", side_effect=sleep), \
+             patch("pipeline.flow.projects.time.monotonic", side_effect=lambda: clock[0]):
+            result = await self.service._create_flow_project_ui(page, avoid_project_id=old_id)
+        self.assertEqual(result, project_id)
+        page.goto.assert_not_awaited()  # Keep the lobby bootstrap already in progress.
+        hidden.click.assert_not_awaited()
+        target.click.assert_awaited_once()
+
+    async def test_project_control_wait_has_a_deadline(self):
+        clock = [0.0]
+        page = Mock(url="https://flow.google.com/", goto=AsyncMock())
+        locator = Mock(count=AsyncMock(return_value=0))
+        page.get_by_role.return_value = locator
+        page.get_by_text.return_value = locator
+        page.locator.return_value = locator
+
+        async def sleep(delay):
+            clock[0] += delay
+
+        with patch("pipeline.flow.projects._dismiss_flow_whats_new", new=AsyncMock()), \
+             patch("pipeline.flow.projects.asyncio.sleep", side_effect=sleep), \
+             patch("pipeline.flow.projects.time.monotonic", side_effect=lambda: clock[0]):
+            self.assertEqual(await self.service._create_flow_project_ui(page), "")
+        self.assertLessEqual(clock[0], 17.25)
+        page.wait_for_url.assert_not_called()
+
+    async def test_scoped_project_login_failure_preserves_account_and_job(self):
+        from pipeline.flow import store
+
+        account = {"id": "account", "projectId": "saved-project", "imageProjectId": "saved-project"}
+        job = {"id": "job", "accountId": "account", "settings": {"outputDir": "batch"}}
+        store.put_row("accounts", account)
+        store.put_row("jobs", job)
+        page = Mock(url="https://flow.google.com/about", goto=AsyncMock())
+        client = SimpleNamespace(project_id="saved-project", _ensure_project_page=AsyncMock())
+        with patch("pipeline.flow.projects.asyncio.sleep", new=AsyncMock()):
+            with self.assertRaisesRegex(RuntimeError, "FLOW_COOKIE_EXPIRED"):
+                await self.service._ensure_account_project_page(
+                    page, api=Mock(), client=client, account=account, job_id="job",
+                )
+        self.assertEqual(store.get_row("accounts", "account"), account)
+        self.assertEqual(store.get_row("jobs", "job"), job)
+        client._ensure_project_page.assert_not_awaited()
+
+
 class SessionTests(unittest.TestCase):
+    def test_runtime_profile_keeps_the_connected_native_session(self):
+        from pipeline.flow import store
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(store, "ROOT", Path(raw)):
+            source = store.profile_dir("account")
+            files = ("Default/Cookies", "Default/Network/Cookies", "Default/Device Bound Sessions")
+            for relative in files:
+                path = source / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"connected-session")
+            cached = source / "Default" / "Service Worker" / "cached-app"
+            cached.parent.mkdir(parents=True)
+            cached.write_bytes(b"old-flow-app")
+            target = FlowService()._clone_closed_profile("account", "job")
+            for relative in files:
+                self.assertEqual((target / relative).read_bytes(), b"connected-session")
+                self.assertEqual((source / relative).read_bytes(), b"connected-session")
+            self.assertFalse((target / "Default" / "Service Worker").exists())
+            self.assertEqual(cached.read_bytes(), b"old-flow-app")
+
+    def test_cookie_bootstrap_does_not_replace_runtime_native_session(self):
+        jar = [{"name": "SID", "value": "saved", "domain": ".google.com", "path": "/"}]
+        for live, rejected in ((jar, False), (jar, True), ([], False)):
+            with self.subTest(has_native_session=bool(live), rejected=rejected):
+                context = SimpleNamespace(cookies=AsyncMock(return_value=live),
+                                          clear_cookies=AsyncMock(), add_cookies=AsyncMock())
+                browser = SimpleNamespace(profile_dir=Path("runtime-profiles/account/job"), context=context,
+                                          page=AsyncMock(return_value=SimpleNamespace(
+                                              url="https://flow.google.com/about" if rejected else "https://flow.google.com/")))
+                seeded = asyncio.run(FlowService()._seed_browser_cookies({"cookie": jar}, browser))
+                self.assertEqual(seeded, not bool(live) or rejected)
+                context.clear_cookies.assert_not_awaited()
+                self.assertEqual(context.add_cookies.await_count, int(not bool(live) or rejected))
+
+    def test_google_sso_restores_flow_without_replacing_native_cookies(self):
+        jar = [{"name": "SID", "value": "saved", "domain": ".google.com", "path": "/"}]
+        context = SimpleNamespace(cookies=AsyncMock(return_value=jar),
+                                  clear_cookies=AsyncMock(), add_cookies=AsyncMock())
+        page = SimpleNamespace(url="https://flow.google.com/about", goto=AsyncMock())
+
+        async def wait_for_url(predicate, **kwargs):
+            self.assertFalse(predicate("https://accounts.google.com/signin"))
+            self.assertFalse(predicate("https://flow.google.com/about"))
+            self.assertTrue(predicate("https://flow.google.com/"))
+            self.assertEqual(kwargs["timeout"], 10_000)
+            page.url = "https://flow.google.com/"
+
+        page.wait_for_url = AsyncMock(side_effect=wait_for_url)
+        browser = SimpleNamespace(context=context, page=AsyncMock(return_value=page))
+        account = {"email": "account@example.com", "cookie": jar}
+        self.assertFalse(asyncio.run(FlowService()._seed_browser_cookies(account, browser)))
+        self.assertIn("login_hint=account%40example.com", page.goto.call_args.args[0])
+        context.add_cookies.assert_not_awaited()
+        context.clear_cookies.assert_not_awaited()
+
     def test_session_profile_copy_skips_files_locked_by_live_chrome(self):
         import importlib
         flow_profiles = importlib.import_module("pipeline.flow.profiles")

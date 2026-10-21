@@ -261,18 +261,6 @@ class FlowProfilesMixin:
                 account_id,
                 job_id,
             )
-        # ponytail: Strip native Cookies DB *and* Device Bound Sessions so
-        # Chrome starts with an empty cookie store and no DBSC binding.
-        # _seed_browser_cookies injects the verified JSON jar; stale native
-        # entries (Google rotated during shutdown) would shadow injected values.
-        # DBSC ties session cookies to the login Chrome's TPM/Keychain key —
-        # a clone carrying these files makes the job Chrome reject the injected
-        # session, redirecting to /about immediately.
-        for rel in ("Default/Cookies", "Default/Cookies-journal",
-                    "Default/Network/Cookies", "Default/Network/Cookies-journal",
-                    "Default/Device Bound Sessions",
-                    "Default/Device Bound Sessions-journal",
-                    "Default/Network/Device Bound Sessions",
-                    "Default/Network/Device Bound Sessions-journal"):
-            (target / rel).unlink(missing_ok=True)
+        # A job needs Google's native identity, not copied Flow app/cache state.
+        _wipe_profile_keep_login(target)
         return target

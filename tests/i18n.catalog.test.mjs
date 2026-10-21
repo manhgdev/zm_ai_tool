@@ -10,6 +10,12 @@ test('Flow automatic headed fallback has Vietnamese and English event labels', (
   const label = explainFlowEvent('browser_headed_fallback')
   assert.match(label.titleVi, /Chrome.*ngoài màn hình/)
   assert.match(label.titleEn, /Chrome.*off screen/)
+  for (const event of ['project_browser_retry', 'project_create_control_missing']) {
+    const label = explainFlowEvent(event)
+    assert.notEqual(label.titleVi, event)
+    assert.notEqual(label.titleVi, label.titleEn)
+    assert.ok(label.titleEn.trim())
+  }
 })
 function visit(node, check) {
   check(node)
@@ -154,16 +160,18 @@ test('headless Flow login explains cookie and desktop recovery in both languages
 })
 
 test('Flow login redirect keeps bilingual recovery copy without claiming cookie expiry or an open window', () => {
-  const error = explainFlowError('FLOW_COOKIE_EXPIRED')
-  for (const field of ['title', 'summary', 'action']) {
-    assert.ok(error[`${field}Vi`]?.trim())
-    assert.ok(error[`${field}En`]?.trim())
-    assert.notEqual(error[`${field}Vi`], error[`${field}En`])
+  for (const code of ['FLOW_COOKIE_EXPIRED', 'FLOW_SESSION_EXPIRED']) {
+    const error = explainFlowError(code)
+    for (const field of ['title', 'summary', 'action']) {
+      assert.ok(error[`${field}Vi`]?.trim())
+      assert.ok(error[`${field}En`]?.trim())
+      assert.notEqual(error[`${field}Vi`], error[`${field}En`])
+    }
+    assert.doesNotMatch(error.titleVi, /hết hạn/)
+    assert.doesNotMatch(error.titleEn, /expired/i)
+    assert.doesNotMatch(error.actionVi, /vừa mở|đang thử đăng nhập/)
+    assert.doesNotMatch(error.actionEn, /that opened|is signing in/)
   }
-  assert.doesNotMatch(error.titleVi, /hết hạn/)
-  assert.doesNotMatch(error.titleEn, /expired/i)
-  assert.doesNotMatch(error.actionVi, /vừa mở/)
-  assert.doesNotMatch(error.actionEn, /that opened/)
 })
 
 test('Flow result timeout explains stopped collection and same-account retry in both languages', () => {
@@ -174,6 +182,22 @@ test('Flow result timeout explains stopped collection and same-account retry in 
   assert.match(error.actionVi, /cùng tài khoản/)
   assert.match(error.actionEn, /stopped waiting/)
   assert.match(error.actionEn, /same account/)
+})
+
+test('Flow project and copied-session errors have bilingual guidance without claiming logout', () => {
+ for (const code of ['FLOW_PROJECT_NOT_FOUND', 'FLOW_COOKIE_SESSION_UNVERIFIED']) {
+  const error = explainFlowError(`${code}: Could not prepare job Chrome`)
+  assert.equal(error.code, code)
+  for (const field of ['title', 'summary', 'action']) {
+    assert.ok(error[`${field}Vi`]?.trim())
+    assert.ok(error[`${field}En`]?.trim())
+    assert.notEqual(error[`${field}Vi`], error[`${field}En`])
+  }
+  assert.match(error.actionVi, /Chạy lại/)
+  assert.match(error.actionEn, /Retry/)
+  assert.doesNotMatch(error.actionVi, /đăng nhập|Kết nối/)
+  assert.doesNotMatch(error.actionEn, /sign.in|Reconnect/)
+ }
 })
 
 test('CapCut errors produce Vietnamese and English messages while preserving diagnostics', () => {

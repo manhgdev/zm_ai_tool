@@ -12,6 +12,8 @@ from typing import Any
 from pipeline.core.network import network_available
 
 from . import store
+from .auth import _browser_at_login_wall
+from .browser import _display_available
 from .constants import (
     _IMAGE_GENERATION_TIMEOUT_S,
     _JOB_AUTO_RETRY_MAX,
@@ -642,6 +644,29 @@ class FlowWorkerMixin:
             try:
                 await self._run_once(job_id, profile_dir=profile_dir,
                                      headless_override=headless_override, generation_token=generation_token)
+                latest = store.get_row("jobs", job_id) or {}
+                if (
+                    headless_override is None and latest.get("effectiveHeadless")
+                    and latest.get("status") in {"failed", "action_required"}
+                    and (not generation_token or latest.get("generationToken") == generation_token)
+                    and str(latest.get("error") or "").startswith((
+                        "FLOW_PROJECT_NOT_FOUND:", "FLOW_COOKIE_SESSION_UNVERIFIED:",
+                    ))
+                    and not any(latest.get(key) for key in ("submissionStartedAt", "mediaIds", "outputs", "resumeOnly"))
+                    and job_id not in self._cancelled and _display_available()
+                ):
+                    # A copied profile can fail while Connect still works.
+                    # Reuse the connected native profile once before submission;
+                    # BrowserManager owns its existing per-profile lock.
+                    headless_override = False
+                    profile_dir = store.profile_dir(str(latest.get("accountId") or ""))
+                    store.patch_row("jobs", job_id, {
+                        "status": "processing", "stage": "starting", "error": None,
+                        "updatedAt": time.time(),
+                    })
+                    self._log("info", "project_browser_retry", job_id=job_id,
+                              account_id=str(latest.get("accountId") or ""))
+                    continue
                 return
             except _FlowNetworkInterrupted:
                 # _run_once has closed Chrome. Keep submission/media/output
@@ -737,7 +762,7 @@ class FlowWorkerMixin:
             if account.get("status") != "online" or not project_id:
                 raise RuntimeError("FLOW_LOGIN_REQUIRED: connect the Google Flow account first")
             from ._flow._api import FlowAPI
-            from .browser import BrowserManager, free_local_port
+            from .browser import BrowserManager, FLOW_BASE_URL, free_local_port
             from ._flow._client import FlowClient
             # Keep the default queue invisible. Users can opt into a visible
             # Chrome window from Flow quick settings when debugging UI drift.
@@ -747,8 +772,11 @@ class FlowWorkerMixin:
                 else _flow_headless(job.get("settings") or {})
             )
             background_headed = bool(
-                headless and headless_override is None
-                and account.get("headlessFallbackEnabled") and account.get("headlessFallbackAt")
+                _flow_headless(job.get("settings") or {})
+                and (headless_override is False or (
+                    headless_override is None
+                    and account.get("headlessFallbackEnabled") and account.get("headlessFallbackAt")
+                ))
             )
             if background_headed:
                 headless = False
@@ -763,7 +791,8 @@ class FlowWorkerMixin:
             browser = BrowserManager(
                 headless=headless,
                 profile_dir=runtime_dir,
-                restore_last_session=str(account.get("authMethod") or "chrome") == "cookie",
+                # Reopening a cloned profile must retain native session cookies.
+                restore_last_session=True,
                 remote_debugging_port=free_local_port(),
                 window_position=(-30000, -30000) if background_headed else None,
             )
@@ -785,6 +814,14 @@ class FlowWorkerMixin:
             self._check_cancel(job_id)
             self._assert_session_generation(str(account["id"]), expected_generation)
             await self._seed_browser_cookies(account, browser)
+            # Match Connect's settled redirect check. A cold Flow navigation can
+            # still look signed in before its client redirects to /about.
+            await asyncio.sleep(2)
+            if await _browser_at_login_wall(browser):
+                await self._seed_browser_cookies(account, browser)
+                if await _browser_at_login_wall(browser):
+                    page = await browser.page()
+                    await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
             if job_kind in {"image", "video"}:
                 if not getattr(browser, "cdp_url", None):
                     runtime_profile = Path(browser.profile_dir)
@@ -1420,15 +1457,15 @@ class FlowWorkerMixin:
             # prompts must not storm reconnect and look like a logout.
             if needs_login and not automation_block and confirmed_wall:
                 account_id = str(account.get("id") or "")
-                self._stop_account_after_cookie_logout(account_id, error)
-                self._log(
-                    "warning",
-                    "session_cookie_check",
-                    job_id=job_id,
-                    account_id=account_id,
-                    message="Cookie/phiên chưa đăng nhập — đang kết nối lại, các job khác chờ / Session not signed in — reconnecting, other jobs wait",
-                )
-                return
+                if browser:
+                    # A job browser failure does not prove the Google account logged out.
+                    error = "FLOW_COOKIE_SESSION_UNVERIFIED: Job Chrome could not restore the saved Flow session"
+                    needs_login = False
+                else:
+                    self._stop_account_after_cookie_logout(account_id, error)
+                    self._log("warning", "session_cookie_check", job_id=job_id,
+                              account_id=account_id, message="Flow session reached Google sign-in")
+                    return
             if needs_login and not automation_block and not confirmed_wall:
                 error = _collapse_flow_login_error(error)
             if not needs_login and _is_flow_quota_exhausted(error):
@@ -1444,7 +1481,9 @@ class FlowWorkerMixin:
             # A normal submit/timeout/auth error belongs to this job only. Do
             # not take a healthy account offline unless Flow explicitly shows
             # unusual activity and the shared recovery path is required.
-            action = "action_required" if needs_login and automation_block else "failed"
+            action = "action_required" if (
+                (needs_login and automation_block) or error.startswith("FLOW_COOKIE_SESSION_UNVERIFIED:")
+            ) else "failed"
             failed_stage = (store.get_row("jobs", job_id) or {}).get("stage")
             store.patch_row("jobs", job_id, {
                 "status": action, "stage": action, "error": error,
@@ -1478,7 +1517,7 @@ class FlowWorkerMixin:
             if job.get("seriesContext"):
                 from . import series
                 series.mark_job_error(job, str(exc))
-            self._log("error", "job_failed", job_id=job_id, account_id=account["id"], message=str(exc), details={
+            self._log("error", "job_failed", job_id=job_id, account_id=account["id"], message=error, details={
                 "stage": failed_stage,
                 "kind": job.get("kind"),
                 "model": (job.get("settings") or {}).get("model"),

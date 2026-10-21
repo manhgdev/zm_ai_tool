@@ -131,7 +131,7 @@ class FlowBlockRecoveryTest(unittest.TestCase):
         self.service._clone_runtime_profile = Mock(return_value=Path(self.temp.name) / "profile")
         for enabled, override, expected in ((True, None, (False, (-30000, -30000))),
                                             (False, None, (True, None)),
-                                            (True, False, (False, None))):
+                                            (True, False, (False, (-30000, -30000)))):
             with self.subTest(enabled=enabled, override=override):
                 store.patch_row("accounts", "a", {
                     "headlessFallbackEnabled": enabled, "headlessFallbackAt": 123.0,
@@ -141,6 +141,91 @@ class FlowBlockRecoveryTest(unittest.TestCase):
                      patch("pipeline.flow.worker.network_available", return_value=True):
                     asyncio.run(self.service._run_once("job", headless_override=override))
                 self.assertEqual((browser.call_args.kwargs["headless"], browser.call_args.kwargs["window_position"]), expected)
+                self.assertTrue(browser.call_args.kwargs["restore_last_session"])
+
+    def test_project_browser_retry_is_bounded_and_keeps_submission_identity(self):
+        self.threads.stop()
+        for change in ({}, {"submissionStartedAt": 123}, {"mediaIds": ["media"]},
+                       {"outputs": ["output.jpg"]}, {"resumeOnly": True}):
+            with self.subTest(change=change):
+                self.job(**{"submissionStartedAt": None, **change})
+                self.service._run_once = AsyncMock()
+
+                async def fail(job_id, **kwargs):
+                    store.patch_row("jobs", job_id, {
+                        "status": "failed", "effectiveHeadless": kwargs["headless_override"] is None,
+                        "error": "FLOW_PROJECT_NOT_FOUND: missing create control",
+                    })
+
+                self.service._run_once.side_effect = fail
+                with patch("pipeline.flow.worker._display_available", return_value=True):
+                    asyncio.run(self.service._run("job"))
+                calls = self.service._run_once.call_args_list
+                self.assertEqual(len(calls), 1 if change else 2)
+                if not change:
+                    self.assertIs(calls[1].kwargs["headless_override"], False)
+                    self.assertEqual(calls[1].kwargs["profile_dir"], store.profile_dir("a"))
+                result = store.get_row("jobs", "job")
+                self.assertEqual(result["accountId"], "a")
+                self.assertEqual(result["submissionProjectId"], "old-project")
+                for key, value in change.items():
+                    self.assertEqual(result[key], value)
+
+    def test_failed_job_browser_never_marks_connected_account_logged_out(self):
+        self.threads.stop()
+        self.job(submissionStartedAt=None)
+        profile = store.profile_dir("a")
+        self.service._clone_runtime_profile = Mock(return_value=profile)
+        self.service._seed_browser_cookies = AsyncMock(side_effect=RuntimeError(
+            "FLOW_COOKIE_EXPIRED: Google session is not signed in (https://flow.google.com/about)"))
+        self.service._close_job_browser = AsyncMock()
+        self.service._stop_account_after_cookie_logout = Mock()
+        browser = SimpleNamespace(headless=True, profile_dir=profile, window_position=None, start=AsyncMock())
+        with patch("pipeline.flow.browser.BrowserManager", return_value=browser), \
+             patch("pipeline.flow.worker.network_available", return_value=True):
+            asyncio.run(self.service._run_once("job"))
+        result = store.get_row("jobs", "job")
+        self.assertEqual(result["status"], "action_required")
+        self.assertTrue(result["error"].startswith("FLOW_COOKIE_SESSION_UNVERIFIED:"))
+        self.assertEqual(store.get_row("accounts", "a"), self.account)
+        self.service._stop_account_after_cookie_logout.assert_not_called()
+
+    def test_unverified_copy_retries_only_when_a_display_is_available(self):
+        self.threads.stop()
+        for available in (True, False):
+            with self.subTest(display=available):
+                self.job(submissionStartedAt=None)
+
+                async def fail(job_id, **kwargs):
+                    store.patch_row("jobs", job_id, {
+                        "status": "action_required", "effectiveHeadless": kwargs["headless_override"] is None,
+                        "error": "FLOW_COOKIE_SESSION_UNVERIFIED: Could not restore job Chrome",
+                    })
+
+                self.service._run_once = AsyncMock(side_effect=fail)
+                with patch("pipeline.flow.worker._display_available", return_value=available):
+                    asyncio.run(self.service._run("job"))
+                self.assertEqual(self.service._run_once.await_count, 2 if available else 1)
+                self.assertEqual(store.get_row("accounts", "a"), self.account)
+
+    def test_worker_rechecks_the_settled_redirect_before_project_creation(self):
+        self.threads.stop()
+        self.job(submissionStartedAt=None)
+        self.service._clone_runtime_profile = Mock(return_value=Path(self.temp.name) / "runtime")
+        self.service._seed_browser_cookies = AsyncMock(return_value=False)
+        self.service._close_job_browser = AsyncMock()
+        self.service._start_session_refresh = Mock(return_value=None)
+        self.service._stop_session_refresh = AsyncMock()
+        browser = SimpleNamespace(headless=True, profile_dir=Path(self.temp.name) / "runtime",
+                                  window_position=None, cdp_url="http://localhost", start=AsyncMock())
+        with patch("pipeline.flow.browser.BrowserManager", return_value=browser), \
+             patch("pipeline.flow.worker._browser_at_login_wall", new=AsyncMock(side_effect=[True, False])), \
+             patch("pipeline.flow.worker.asyncio.sleep", new=AsyncMock()), \
+             patch("pipeline.flow.worker.network_available", return_value=True), \
+             patch("pipeline.flow._flow._api.FlowAPI", side_effect=RuntimeError("stop after auth check")):
+            asyncio.run(self.service._run_once("job"))
+        self.assertEqual(self.service._seed_browser_cookies.await_count, 2)
+        self.assertEqual(store.get_row("accounts", "a"), self.account)
 
     def test_block_always_creates_fresh_even_without_a_tile_marker(self):
         self.job(sessionResetRetryCount=1, lastGenerationRejectedSubmissionAt=100.0)

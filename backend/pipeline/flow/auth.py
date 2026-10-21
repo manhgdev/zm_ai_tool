@@ -6,7 +6,7 @@ import logging
 import shutil
 import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from . import store
 from .constants import _PROJECT_RE
@@ -85,25 +85,31 @@ class FlowAuthMixin:
             live = _live_flow_cookies(await browser.context.cookies())
         except Exception:
             return False
-        # ponytail: Runtime profile clones (job Chrome) always need the
-        # verified jar.  Their native Cookies DB is a copy that may be stale
-        # (Google rotated during login Chrome shutdown) or DBSC-bound to the
-        # original Chrome process.  add_cookies only merges; Chrome's native
-        # cookie store can still shadow injected values.  Clear all Google/Flow
-        # cookies first so the verified jar is the sole authority.
-        runtime_clone = "runtime-profiles" in str(getattr(browser, "profile_dir", ""))
-        if runtime_clone:
+        if any(cookie["name"] in {"SID", "__Secure-1PSID", "__Secure-3PSID"} for cookie in live):
+            if not await _browser_at_login_wall(browser):
+                return False
+            # Flow's /about can require a new app session while Google is still
+            # signed in. Reuse the same SSO return as Connect before importing
+            # an older jar or declaring this account signed out.
             try:
-                await browser.context.clear_cookies()
-                _log.debug("_seed_browser_cookies: cleared cookies for runtime clone (jar=%d cookies)", len(jar))
+                from .browser import FLOW_BASE_URL
+                page = await browser.page()
+                email = str(account.get("email") or "").strip()
+                await page.goto(
+                    "https://accounts.google.com/ServiceLogin?service=wise"
+                    f"&continue={quote(FLOW_BASE_URL, safe='')}&login_hint={quote(email, safe='')}",
+                    wait_until="domcontentloaded", timeout=15_000,
+                )
+                await page.wait_for_url(
+                    lambda url: urlsplit(str(url)).hostname == "flow.google.com"
+                    and not any(part in {"about", "login", "signin"} for part in urlsplit(str(url)).path.split("/")),
+                    timeout=10_000,
+                )
+                return False
             except Exception:
                 pass
-        elif any(cookie["name"] in {"SID", "__Secure-1PSID", "__Secure-3PSID"} for cookie in live):
-            return False
         try:
             await browser.context.add_cookies(jar)
-            if runtime_clone:
-                _log.info("_seed_browser_cookies: injected %d cookies into runtime clone", len(jar))
         except Exception:
             raise RuntimeError("FLOW_COOKIE_IMPORT_FAILED") from None
         return True

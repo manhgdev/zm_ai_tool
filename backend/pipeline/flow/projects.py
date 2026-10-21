@@ -6,12 +6,14 @@ import re
 import threading
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 from pipeline.core.output_paths import safe_output_part
 
 from . import store
 from .constants import _PROJECT_RE
 from .controls import _dismiss_flow_whats_new
+from .errors import _redact_flow_diag_url
 
 
 def _flow_project_field(kind: str) -> str:
@@ -84,12 +86,18 @@ class FlowProjectsMixin:
         avoid = { str(pid).strip() for pid in (avoid_project_ids or set()) if str(pid or "").strip() }
         if str(avoid_project_id or "").strip():
             avoid.add(str(avoid_project_id).strip())
-        await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
+        current_url = urlsplit(str(page.url or ""))
+        if current_url.hostname != "flow.google.com" or current_url.path.rstrip("/"):
+            await page.goto(FLOW_BASE_URL, wait_until="domcontentloaded", timeout=15_000)
         await asyncio.sleep(2)
+        # A signed-out lobby has no project controls. Let the existing account
+        # recovery handle it instead of retrying project creation on /about.
+        await self._confirm_logged_in_session(page, "")
         match = _PROJECT_RE.search(str(page.url or ""))
         if match and match.group(1) not in avoid:
             return match.group(1)
 
+        await _dismiss_flow_whats_new(page)
         candidates = [
             page.get_by_role("button", name=re.compile(r"new project|create project|tạo dự án|dự án mới", re.I)),
             page.get_by_role("link", name=re.compile(r"new project|create project|tạo dự án|dự án mới", re.I)),
@@ -107,19 +115,46 @@ class FlowProjectsMixin:
             page.locator('[data-testid*="create-project" i], [data-testid*="new-project" i]'),
         ]
         clicked = False
-        for locator in candidates:
-            try:
-                target = locator.first
-                if await target.count() == 0:
-                    continue
-                if not await target.is_visible():
-                    continue
-                await target.click(force=True)
-                clicked = True
-                break
-            except Exception:
-                continue
+        deadline = time.monotonic() + 15
+        while not clicked and time.monotonic() < deadline:
+            await self._confirm_logged_in_session(page, "")
+            match = _PROJECT_RE.search(str(page.url or ""))
+            if match and match.group(1) not in avoid:
+                return match.group(1)
+            for locator in candidates:
+                for index in range(await locator.count()):
+                    target = locator.nth(index)
+                    try:
+                        if not await target.is_visible() or not await target.is_enabled():
+                            continue
+                        await target.click(timeout=2_000)
+                        clicked = True
+                        break
+                    except Exception:
+                        continue
+                if clicked:
+                    break
+            if not clicked:
+                await asyncio.sleep(0.25)
         if not clicked:
+            await self._confirm_logged_in_session(page, "")
+            try:
+                controls = await page.locator('button, [role="button"], a').evaluate_all("""nodes => nodes
+                    .filter(node => node.getClientRects().length)
+                    .map(node => (node.getAttribute('aria-label') || node.textContent || '').trim())
+                    .filter(Boolean).slice(0, 30).map(text => text.slice(0, 120))""")
+                text = await page.locator("body").inner_text(timeout=1_000)
+                screenshot = store.root() / "project-create-failure.png"
+                await page.screenshot(path=str(screenshot))
+                self._log("warning", "project_create_control_missing", details={
+                    "url": _redact_flow_diag_url(page.url),
+                    "controls": [re.sub(r'[\w.+-]+@[\w.-]+', '[email]', str(label)) for label in controls],
+                    "pageText": re.sub(r'[\w.+-]+@[\w.-]+', '[email]', text)[:1_000],
+                    "pageErrors": [_redact_flow_diag_url(error.message)[:500] for error in (await page.page_errors())[-5:]],
+                    "screenshot": str(screenshot),
+                })
+            except Exception:
+                pass
             return ""
 
         def _is_replacement(url: str) -> bool:
@@ -129,6 +164,7 @@ class FlowProjectsMixin:
         try:
             await page.wait_for_url(_is_replacement, timeout=15_000)
         except Exception:
+            await self._confirm_logged_in_session(page, "")
             create = page.get_by_role(
                 "button", name=re.compile(r"^create$|^tạo$|^tạo dự án$|^done$|^xong$|^continue$|^tiếp$", re.I),
             ).first
@@ -137,8 +173,10 @@ class FlowProjectsMixin:
                 try:
                     await page.wait_for_url(_is_replacement, timeout=15_000)
                 except Exception:
+                    await self._confirm_logged_in_session(page, "")
                     return ""
             else:
+                await self._confirm_logged_in_session(page, "")
                 return ""
         match = _PROJECT_RE.search(str(page.url or ""))
         if match and match.group(1) not in avoid:
@@ -199,7 +237,10 @@ class FlowProjectsMixin:
                         existing_ids.add(str(client.project_id).strip())
                     target_id = await self._create_flow_project_ui(page, avoid_project_ids=existing_ids)
                     if not target_id:
-                        raise RuntimeError("FLOW_PROJECT_NOT_FOUND: Could not create scoped project")
+                        raise RuntimeError(
+                            f"FLOW_PROJECT_NOT_FOUND: Could not create the {kind} project "
+                            f"for this output folder (current url: {_redact_flow_diag_url(page.url)})"
+                        )
                     store.patch_row("accounts", account_id, {project_field: target_id})
                 account = {**account, project_field: target_id}
             finally:
