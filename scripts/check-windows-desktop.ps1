@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$Exe,
     [Parameter(Mandatory=$true)][string]$Output,
-    [switch]$CheckSystemTts
+    [switch]$CheckSystemTts,
+    [switch]$CheckVieNeu
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -25,6 +26,17 @@ try {
         $report.systemTts = Get-Content -LiteralPath $ttsReport -Raw | ConvertFrom-Json
         if (-not $report.systemTts.ok) { throw 'Packaged system TTS did not produce valid audio' }
         $report.coverage = 'System TTS synthesis, API and native WebView startup; no AI model workload exercised'
+    }
+    if ($CheckVieNeu) {
+        $ttsReport = Join-Path $Output 'vieneu-tts.json'
+        Remove-Item -LiteralPath $ttsReport -Force -ErrorAction SilentlyContinue
+        $process = Start-Process -FilePath $Exe -ArgumentList @('--vieneu-tts-check', "`"$ttsReport`"") -PassThru
+        if (-not $process.WaitForExit(1200000)) { throw 'Packaged VieNeu installation/synthesis timed out after 20 minutes' }
+        $process.Refresh()
+        if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $ttsReport)) { throw "Packaged VieNeu TTS failed: $($process.ExitCode)" }
+        $report.vieneu = Get-Content -LiteralPath $ttsReport -Raw | ConvertFrom-Json
+        if (-not $report.vieneu.ok) { throw 'Packaged VieNeu did not produce valid audio' }
+        $report.coverage = 'System TTS, VieNeu v3turbo ONNX/CPU, API and native WebView startup; no NVIDIA GPU exercised'
     }
     # Reuse the launcher's updater handshake, which runs after native GUI startup.
     $env:ZM_AI_TOOL_UPDATE_READY_FILE = $ready

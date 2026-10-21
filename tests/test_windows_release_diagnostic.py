@@ -57,6 +57,7 @@ class WindowsDiagnosticTest(unittest.TestCase):
         self.assertIn("'check-windows-desktop.ps1'", self.script)
         build_steps = self.workflow['jobs']['build']['steps']
         self.assertTrue(any('-CheckSystemTts' in step.get('run', '') for step in build_steps))
+        self.assertTrue(any('-CheckVieNeu' in step.get('run', '') for step in build_steps))
 
 
 if __name__ == '__main__':

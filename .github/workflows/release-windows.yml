@@ -252,12 +252,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/audit-windows-release.ps1 -Bundle $env:BUNDLE -Installer $env:INSTALLER -Output build_app/windows-audit
 
-      - name: Check native desktop startup with Defender status
+      - name: Check native desktop and TTS with Defender status
         if: inputs.security_audit == true
         shell: pwsh
         env:
           BUNDLE: ${{ steps.package.outputs.directory }}
-        run: ./scripts/check-windows-desktop.ps1 -Exe "$env:BUNDLE/ZM AI TOOL.exe" -Output build_app/windows-audit -CheckSystemTts
+        run: ./scripts/check-windows-desktop.ps1 -Exe "$env:BUNDLE/ZM AI TOOL.exe" -Output build_app/windows-audit -CheckSystemTts -CheckVieNeu
 
       - name: Save audit diagnostics (including failures)
         if: always() && inputs.security_audit == true

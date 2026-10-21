@@ -59,9 +59,14 @@ records a normal native-window launch using the existing updater readiness
 handshake, a 10-second observation, the EXE hash, version and effective real-time
 protection state. New builds also synthesize system TTS through the packaged EXE,
 verify nonempty, nonsilent WAV samples, and retain `system-tts.json` and the WAV.
+New builds also install the app's pinned VieNeu CPU runtime into an isolated
+temporary home and synthesize a v3turbo preset through the frozen app's real
+worker path. `vieneu-tts.json`, its progress log and WAV record that result. The
+runtime directory is cleaned after the worker shuts down and is not uploaded.
 The original-release diagnostic does not run TTS because earlier launchers lack
-that check. These checks do not exercise AI models or prove that React rendered
-successfully. A signature-update failure retains
+those checks. This covers ONNX/CPU; the hosted runner has no NVIDIA GPU and does
+not test CUDA inference. It does not prove that React rendered successfully.
+A signature-update failure retains
 the recorded definitions and is explicitly recorded in the report.
 
 For a new build, leave `audit_release` empty. Manual builds save a separate

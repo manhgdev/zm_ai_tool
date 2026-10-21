@@ -96,18 +96,40 @@ def packaged_ytdlp_version_check(report: Path) -> int:
         return 1
 
 
-def packaged_system_tts_check(report: Path) -> int:
-    """Exercise the packaged Windows TTS engine and retain a real WAV for CI."""
+def packaged_tts_check(report: Path, engine: str = "system") -> int:
+    """Exercise a packaged Windows TTS engine and retain a real WAV for CI."""
+    import tempfile
     import wave
 
-    result = {"ok": False, "engine": "system", "platform": sys.platform}
+    result = {"ok": False, "engine": engine, "platform": sys.platform}
+    runtime = None
+    vieneu = None
     try:
         if sys.platform != "win32":
-            raise RuntimeError("System TTS check requires Windows")
-        from pipeline.tts.engines.system import synthesize
+            raise RuntimeError("Packaged TTS check requires Windows")
+        output = report.with_name(f"{engine} tiếng Việt ‘quote’ & (test).wav")
+        if engine == "vieneu":
+            runtime = tempfile.TemporaryDirectory(prefix="zm-vieneu-check-", ignore_cleanup_errors=True)
+            os.environ.update(ZM_AI_TOOL_HOME=runtime.name, ZM_AI_TOOL_DATA=str(Path(runtime.name) / "data"),
+                              HF_HOME=str(Path(runtime.name) / "huggingface"), VIENEU_MODE="v3turbo")
+            from pipeline.core.runtime_install import install_runtime
+            from pipeline.tts.engines import vieneu
 
-        output = report.with_name("TTS tiếng Việt ‘quote’ & (test).wav")
-        synthesize("Xin chào. It's fine: ‘hello’, “world”.\nHello, Windows.", "system", output, lang="en")
+            def progress(value, message, details):
+                with report.with_suffix(".progress.log").open("a", encoding="utf-8") as log:
+                    log.write(f"{value}: {details.get('stage', '')} {details.get('currentPackage', '')}\n")
+
+            result["stage"] = "runtime-install"
+            install_runtime(progress, compute_mode="cpu", features=("vieneu",))
+            presets = vieneu.list_preset_from_assets()
+            if not presets:
+                raise RuntimeError("Installed VieNeu SDK has no preset voices")
+            result.update(stage="synthesis", mode="v3turbo", backend="onnx", device="cpu", voice=presets[0]["id"])
+            vieneu.synthesize("Xin chào, đây là bài kiểm tra tạo giọng nói trên Windows.", f"vn:{presets[0]['id']}", output)
+        else:
+            from pipeline.tts.engines.system import synthesize
+
+            synthesize("Xin chào. It's fine: ‘hello’, “world”.\nHello, Windows.", "system", output, lang="en")
         with wave.open(str(output), "rb") as audio:
             frames = audio.getnframes()
             rate = audio.getframerate()
@@ -116,6 +138,13 @@ def packaged_system_tts_check(report: Path) -> int:
             result.update(ok=True, frames=frames, sampleRate=rate, duration=frames / rate)
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
+        if getattr(exc, "diagnostics", ""):
+            result["diagnostics"] = exc.diagnostics
+    finally:
+        if runtime is not None:
+            if vieneu is not None:
+                vieneu.reset_client()
+            runtime.cleanup()
     report.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
     return 0 if result["ok"] else 1
 
@@ -125,7 +154,9 @@ if len(sys.argv) == 3 and sys.argv[1] == "--runtime-import-check":
 if len(sys.argv) == 3 and sys.argv[1] == "--yt-dlp-version-check":
     raise SystemExit(packaged_ytdlp_version_check(Path(sys.argv[2])))
 if len(sys.argv) == 3 and sys.argv[1] == "--system-tts-check":
-    raise SystemExit(packaged_system_tts_check(Path(sys.argv[2])))
+    raise SystemExit(packaged_tts_check(Path(sys.argv[2])))
+if len(sys.argv) == 3 and sys.argv[1] == "--vieneu-tts-check":
+    raise SystemExit(packaged_tts_check(Path(sys.argv[2]), "vieneu"))
 if sys.argv[1:] == ["--yt-dlp-cli", "--version"]:
     from yt_dlp import main as _ytdlp_version_main
 
