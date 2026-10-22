@@ -1,6 +1,8 @@
 import { fetchJson } from '@/shared/api/fetchJson'
 
 export type LicenseStatus = {
+  installationId?: string
+  deviceType?: 'pc' | 'laptop'
   mode?: 'account' | 'key'
   state?: string
   code?: string

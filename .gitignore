@@ -7,6 +7,7 @@ build_app/release/
 build_app/runtime-release/
 build_app/*.spec
 backend/data/
+backend/setup_ok
 backend/public/
 backend/.venv/
 backend/.venv-demucs/

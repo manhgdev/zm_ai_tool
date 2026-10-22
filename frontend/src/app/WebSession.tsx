@@ -112,6 +112,12 @@ export function accessText(state: string, locale: AppLocale) {
   return states[state] || t('Chưa xác minh', 'Not verified')
 }
 
+export function deviceTypeText(value: string | null | undefined, locale: AppLocale) {
+  const t = (vi: string, en: string) => localize(locale, vi, en)
+  return ({ phone: t('Điện thoại', 'Phone'), tablet: t('Máy tính bảng / iPad', 'Tablet / iPad'),
+    pc: t('Máy tính bàn', 'Desktop PC'), laptop: t('Máy tính xách tay', 'Laptop') } as Record<string, string>)[value || ''] || '—'
+}
+
 export function webErrorText(code: string, locale: AppLocale) {
   const t = (vi: string, en: string) => localize(locale, vi, en)
   if (code.startsWith('ACCESS_')) return accessText(code.slice(7).toLowerCase(), locale)
@@ -136,6 +142,12 @@ export function webErrorText(code: string, locale: AppLocale) {
     INVALID_LICENSE_RESPONSE: t('Phản hồi xác thực không hợp lệ.', 'Invalid access server response.'),
     DEVICE_LIMIT_REACHED: t('Key đã đủ số thiết bị. Hãy thu hồi thiết bị cũ.', 'The key device limit is reached. Revoke an old device.'),
     DEVICE_REVOKED: t('Phiên thiết bị đã bị thu hồi. Hãy đăng nhập hoặc kích hoạt lại.', 'Device access was revoked. Sign in or activate again.'),
+    DEVICE_REPLACED: t('Quyền của nhóm thiết bị này đã chuyển sang máy khác. Hãy hủy kích hoạt cục bộ nếu muốn đăng nhập lại.', 'Access for this device category moved to another machine. Clear this activation to sign in again.'),
+    DEVICE_MISMATCH: t('Quyền kích hoạt thuộc máy khác. Hãy kích hoạt lại trên máy này.', 'This activation belongs to another machine. Activate again on this machine.'),
+    DEVICE_REACTIVATION_REQUIRED: t('Hãy cập nhật APP và kích hoạt lại một lần trên máy này.', 'Update the APP and activate again once on this machine.'),
+    DEVICE_ID_UNAVAILABLE: t('Không đọc được mã định danh máy. Hãy kiểm tra quyền truy cập thông tin hệ thống rồi thử lại.', 'Cannot read the machine identifier. Check access to system information and try again.'),
+    INVALID_DEVICE_TYPE: t('Hãy chọn loại thiết bị hợp lệ.', 'Choose a valid device category.'),
+    DEVICE_TYPE_LOCKED: t('Loại thiết bị không khớp hồ sơ máy đã kích hoạt. Hãy liên hệ quản trị viên để kiểm tra.', 'The detected category does not match this machine’s activation record. Contact the administrator to check it.'),
     DEVICE_ALREADY_CONFIGURED: t('Hãy đăng xuất hoặc hủy kích hoạt thiết bị trước khi đổi phương thức.', 'Sign out or deactivate this device before switching access methods.'),
     KEY_INVALID: t('Key không hợp lệ. Hãy dùng key mới bắt đầu bằng ZMAI-.', 'Invalid key. Use a new key starting with ZMAI-.'),
     KEY_COPY_FAILED: t('Không thể sao chép tự động. Chọn key rồi nhấn Ctrl+C (Mac: ⌘C) để sao chép.', 'Could not copy automatically. Select the key and press Ctrl+C (Mac: ⌘C) to copy.'),

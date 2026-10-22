@@ -24,6 +24,7 @@ from fastapi.responses import RedirectResponse
 import anyio
 
 ROLES = ('owner', 'admin', 'reseller', 'user')
+DEVICE_TYPES = ('phone', 'tablet', 'pc', 'laptop')
 RANK = {role: i for i, role in enumerate(ROLES)}
 UTC = timezone.utc
 
@@ -120,13 +121,19 @@ class Accounts:
         self.root = root
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = root / 'accounts.sqlite3'
+        version = 0
         if self.path.exists():
             with sqlite3.connect(self.path) as old:
                 version = old.execute('PRAGMA user_version').fetchone()[0]
-                if version > 1:
+                if version > 2:
                     raise RuntimeError('Account database schema is newer than this server')
                 backup = root / 'accounts.before-management.sqlite3'
                 if version == 0 and not backup.exists():
+                    with sqlite3.connect(backup) as target:
+                        old.backup(target)
+                    backup.chmod(0o600)
+                backup = root / 'accounts.before-device-slots.sqlite3'
+                if version < 2 and not backup.exists():
                     with sqlite3.connect(backup) as target:
                         old.backup(target)
                     backup.chmod(0o600)
@@ -143,7 +150,7 @@ class Accounts:
                     key_masked TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', issuer_id TEXT,
                     enabled INTEGER NOT NULL DEFAULT 1, deleted INTEGER NOT NULL DEFAULT 0,
                     notes TEXT NOT NULL DEFAULT '', starts_at REAL, expires_at REAL, lifetime INTEGER NOT NULL DEFAULT 0,
-                    term TEXT, max_devices INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL);
+                    term TEXT, max_devices INTEGER NOT NULL DEFAULT 4, created_at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, installation_id TEXT NOT NULL,
                     key_id TEXT, user_id TEXT, token_hash TEXT UNIQUE NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
                     name TEXT NOT NULL, created_at REAL NOT NULL, last_seen REAL NOT NULL);
@@ -170,6 +177,17 @@ class Accounts:
                 if name not in key_columns:
                     db.execute(f'ALTER TABLE keys ADD COLUMN {name} TEXT')
             db.execute('BEGIN IMMEDIATE')
+            device_columns = {item['name'] for item in db.execute('PRAGMA table_info(devices)')}
+            for name in ('device_type', 'revoked_reason'):
+                if name not in device_columns:
+                    db.execute(f'ALTER TABLE devices ADD COLUMN {name} TEXT')
+            if version < 2:
+                # Existing installations have no confirmed category or hardware binding.
+                db.execute("UPDATE devices SET enabled=0,revoked_reason='DEVICE_REACTIVATION_REQUIRED' WHERE device_type IS NULL")
+                db.execute('UPDATE keys SET max_devices=4')
+            for field in ('key_id', 'user_id'):
+                db.execute(f'CREATE UNIQUE INDEX IF NOT EXISTS devices_{field}_slot ON devices({field},device_type) '
+                           f'WHERE enabled=1 AND {field} IS NOT NULL AND device_type IS NOT NULL')
             db.execute("INSERT OR IGNORE INTO settings(name,value) VALUES('key_secret',?)", (secrets.token_hex(32),))
             owners = [email.strip().lower() for email in os.environ.get('ZM_AI_TOOL_OWNER_EMAILS', '').split(',') if email.strip()]
             if owners and not db.execute("SELECT 1 FROM settings WHERE name='owners_seeded'").fetchone():
@@ -184,7 +202,7 @@ class Accounts:
                         uid = row['id']
                     db.execute("UPDATE users SET role='owner',enabled=1,deleted=0,starts_at=?,lifetime=1,expires_at=NULL WHERE id=?", (time.time(), uid))
                 db.execute("INSERT INTO settings VALUES('owners_seeded','1')")
-            db.execute('PRAGMA user_version=1')
+            db.execute('PRAGMA user_version=2')
         self.path.chmod(0o600)
 
     @contextmanager
@@ -332,7 +350,7 @@ class Accounts:
         if kind not in ('accounts', 'keys') or action == 'rotate' and kind != 'keys' or action == 'revoke-sessions' and kind != 'accounts':
             fail('INVALID_ACTION')
         table = 'users' if kind == 'accounts' else 'keys'
-        allowed = {'name', 'notes', 'enabled', 'issuer_id', 'term'} | ({'email', 'role', 'max_accounts', 'max_keys', 'max_days', 'allow_lifetime'} if kind == 'accounts' else {'max_devices'})
+        allowed = {'name', 'notes', 'enabled', 'issuer_id', 'term'} | ({'email', 'role', 'max_accounts', 'max_keys', 'max_days', 'allow_lifetime'} if kind == 'accounts' else set())
         if not isinstance(data, dict) or (action == 'update' and set(data) - allowed):
             fail('INVALID_FIELDS')
         with self.connect(write=True) as db:
@@ -352,7 +370,7 @@ class Accounts:
                 if kind == 'accounts':
                     row.update(email='', google_sub='pending:' + uid, role='user', max_accounts=0, max_keys=0, max_days=0, allow_lifetime=0)
                 else:
-                    row.update(max_devices=1, created_by=actor['id'])
+                    row.update(max_devices=4, created_by=actor['id'])
             raw_key = None
             if old and old['deleted'] and action != 'restore':
                 fail('ACCOUNT_DELETED', 409)
@@ -365,7 +383,7 @@ class Accounts:
                             fail('INVALID_FIELDS')
                         row[field] = int(value)
                     elif field.startswith('max_'):
-                        row[field] = integer(value, 1 if field == 'max_devices' else 0)
+                        row[field] = integer(value)
                     elif field in ('name', 'notes'):
                         if not isinstance(value, str) or len(value) > (200 if field == 'name' else 4000):
                             fail('INVALID_FIELDS')
@@ -424,14 +442,12 @@ class Accounts:
                 if covered != float('inf'):
                     fail('LAST_OWNER_REQUIRED', 409)
             self.check_quota(db, row, kind)
-            if kind == 'keys' and old and row['max_devices'] < db.execute('SELECT count(*) FROM devices WHERE key_id=? AND enabled=1', (uid,)).fetchone()[0] and action != 'rotate':
-                fail('DEVICE_LIMIT_BELOW_ACTIVE', 409)
             if kind == 'keys' and (not old or action == 'rotate'):
                 row['key_nonce'] = secrets.token_hex(16)
                 raw_key = self.key_value(db, row)
                 row.update(key_hash=self.digest(raw_key), key_masked=raw_key[:9] + '••••' + raw_key[-4:])
                 if action == 'rotate':
-                    db.execute('UPDATE devices SET enabled=0 WHERE key_id=?', (uid,))
+                    db.execute('UPDATE devices SET enabled=0,revoked_reason=NULL WHERE key_id=?', (uid,))
             if old:
                 fields = [k for k in row if k != 'id']
                 db.execute(f"UPDATE {table} SET " + ','.join(f'{k}=?' for k in fields) + ' WHERE id=?', [row[k] for k in fields] + [uid])
@@ -440,7 +456,7 @@ class Accounts:
             if kind == 'accounts' and (action in ('delete', 'revoke-sessions') or old and old['role'] != row['role']):
                 db.execute('DELETE FROM sessions WHERE user_id=?', (uid,))
                 db.execute('DELETE FROM desktop_codes WHERE user_id=?', (uid,))
-                db.execute('UPDATE devices SET enabled=0 WHERE user_id=?', (uid,))
+                db.execute('UPDATE devices SET enabled=0,revoked_reason=NULL WHERE user_id=?', (uid,))
             self.audit(db, actor, kind, uid, action, {k: {'before': old.get(k) if old else None, 'after': v} for k, v in row.items() if (not old or old.get(k) != v) and k not in {'key_hash', 'google_sub', 'key_nonce'}})
             return {**self.public(row, kind), **({'key': raw_key} if raw_key else {})}
 
@@ -451,7 +467,7 @@ class Accounts:
             if not row:
                 fail('NOT_FOUND', 404)
             self.authorize(actor, dict(row))
-            return [dict(r) for r in db.execute('SELECT id,name,installation_id,enabled,created_at,last_seen FROM devices WHERE key_id=? ORDER BY created_at DESC', (key_id,))]
+            return [dict(r) for r in db.execute('SELECT id,name,installation_id,device_type,enabled,created_at,last_seen FROM devices WHERE key_id=? ORDER BY created_at DESC', (key_id,))]
 
     def revoke_device(self, actor_id, key_id, device_id):
         with self.connect(write=True) as db:
@@ -460,31 +476,38 @@ class Accounts:
             if not row:
                 fail('NOT_FOUND', 404)
             self.authorize(actor, dict(row))
-            db.execute('UPDATE devices SET enabled=0 WHERE id=? AND key_id=?', (device_id, key_id))
+            db.execute('UPDATE devices SET enabled=0,revoked_reason=NULL WHERE id=? AND key_id=?', (device_id, key_id))
             self.audit(db, actor, 'keys', key_id, 'revoke-device', {'device_id': device_id})
         return {'ok': True}
 
-    def issue_device(self, db, row, installation, name, kind):
-        if not isinstance(installation, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{16,128}', installation) or not isinstance(name, str) or len(name) > 200:
+    def issue_device(self, db, row, installation, name, kind, device_type):
+        if device_type is None:
+            fail('DEVICE_REACTIVATION_REQUIRED', 409)
+        if not isinstance(device_type, str) or device_type not in DEVICE_TYPES:
+            fail('INVALID_DEVICE_TYPE')
+        if not isinstance(installation, str) or not re.fullmatch(r'[a-f0-9]{64}', installation) or not isinstance(name, str) or len(name) > 200:
             fail('INVALID_DEVICE')
         field = 'key_id' if kind == 'key' else 'user_id'
         previous = db.execute(f'SELECT * FROM devices WHERE {field}=? AND installation_id=?', (row['id'], installation)).fetchone()
-        if kind == 'key':
-            count = db.execute('SELECT count(*) FROM devices WHERE key_id=? AND enabled=1', (row['id'],)).fetchone()[0]
-            if not (previous and previous['enabled']) and count >= row['max_devices']:
-                fail('DEVICE_LIMIT_REACHED', 409)
+        if previous and previous['device_type'] and previous['device_type'] != device_type:
+            fail('DEVICE_TYPE_LOCKED', 409)
+        # The caller holds BEGIN IMMEDIATE: replacement and the new token commit together.
+        db.execute(f"UPDATE devices SET enabled=0,revoked_reason='DEVICE_REPLACED' WHERE {field}=? AND device_type=? AND enabled=1",
+                   (row['id'], device_type))
         token, now = secrets.token_urlsafe(32), time.time()
         if previous:
-            db.execute('UPDATE devices SET token_hash=?,enabled=1,name=?,last_seen=? WHERE id=?', (self.digest(token), name, now, previous['id']))
+            db.execute('UPDATE devices SET token_hash=?,enabled=1,name=?,last_seen=?,device_type=?,revoked_reason=NULL WHERE id=?',
+                       (self.digest(token), name, now, device_type, previous['id']))
         else:
-            db.execute(f'INSERT INTO devices(id,installation_id,{field},token_hash,name,created_at,last_seen) VALUES(?,?,?,?,?,?,?)',
-                       (secrets.token_hex(16), installation, row['id'], self.digest(token), name, now, now))
+            db.execute(f'INSERT INTO devices(id,installation_id,{field},token_hash,name,created_at,last_seen,device_type) VALUES(?,?,?,?,?,?,?,?)',
+                       (secrets.token_hex(16), installation, row['id'], self.digest(token), name, now, now, device_type))
         count = db.execute(f'SELECT count(*) FROM devices WHERE {field}=? AND enabled=1', (row['id'],)).fetchone()[0]
-        return {'deviceToken': token, **license_status(row, kind), 'activationCount': count,
+        return {'deviceToken': token, **license_status(row, kind), 'activationCount': count, 'activationLimit': len(DEVICE_TYPES),
+                'installationId': installation, 'deviceType': device_type,
                 'user': self.public(row) if kind == 'account' else None}
 
     def activate(self, body):
-        if set(body) - {'key', 'installationId', 'name'} or not isinstance(body.get('key'), str):
+        if set(body) - {'key', 'installationId', 'name', 'deviceType'} or not isinstance(body.get('key'), str):
             fail('INVALID_FIELDS')
         with self.connect(write=True) as db:
             found = db.execute('SELECT * FROM keys WHERE key_hash=?', (self.digest(body['key'].strip()),)).fetchone()
@@ -501,24 +524,32 @@ class Accounts:
                 db.execute('UPDATE keys SET starts_at=?,expires_at=? WHERE id=?', (row['starts_at'], row['expires_at'], row['id']))
             if not access(row)['valid']:
                 fail('ACCESS_' + access(row)['state'].upper(), 403)
-            return self.issue_device(db, row, body.get('installationId'), body.get('name', ''), 'key')
+            return self.issue_device(db, row, body.get('installationId'), body.get('name', ''), 'key', body.get('deviceType'))
 
-    def device_status(self, token, logout=False):
+    def device_status(self, token, installation=None, logout=False):
         if not isinstance(token, str) or not 20 <= len(token) <= 200:
             fail('DEVICE_REVOKED', 401)
         with self.connect(write=True) as db:
             device = db.execute('SELECT * FROM devices WHERE token_hash=?', (self.digest(token),)).fetchone()
-            if not device or not device['enabled']:
+            if not device:
                 fail('DEVICE_REVOKED', 401)
+            if not device['device_type']:
+                fail('DEVICE_REACTIVATION_REQUIRED', 401)
+            if (not isinstance(installation, str) or not re.fullmatch(r'[a-f0-9]{64}', installation)
+                    or not secrets.compare_digest(device['installation_id'], installation)):
+                fail('DEVICE_MISMATCH', 401)
+            if not device['enabled']:
+                fail(device['revoked_reason'] or 'DEVICE_REVOKED', 401)
             if logout:
-                db.execute('UPDATE devices SET enabled=0 WHERE id=?', (device['id'],))
+                db.execute("UPDATE devices SET enabled=0,revoked_reason=NULL WHERE id=?", (device['id'],))
                 return {'ok': True}
             field, mode = ('keys', 'key') if device['key_id'] else ('users', 'account')
             row = dict(db.execute(f'SELECT * FROM {field} WHERE id=?', (device['key_id'] or device['user_id'],)).fetchone())
             db.execute('UPDATE devices SET last_seen=? WHERE id=?', (time.time(), device['id']))
             subject = 'key_id' if mode == 'key' else 'user_id'
             count = db.execute(f'SELECT count(*) FROM devices WHERE {subject}=? AND enabled=1', (row['id'],)).fetchone()[0]
-            return {**license_status(row, mode), 'activationCount': count,
+            return {**license_status(row, mode), 'activationCount': count, 'activationLimit': len(DEVICE_TYPES),
+                    'installationId': device['installation_id'], 'deviceType': device['device_type'],
                     'user': self.public(row) if mode == 'account' else None}
 
     @staticmethod
@@ -533,7 +564,7 @@ class Accounts:
         return value
 
     def exchange(self, body):
-        if set(body) - {'code', 'verifier', 'redirectUri', 'installationId', 'name'}:
+        if set(body) - {'code', 'verifier', 'redirectUri', 'installationId', 'name', 'deviceType'}:
             fail('INVALID_FIELDS')
         with self.connect(write=True) as db:
             code = db.execute('SELECT * FROM desktop_codes WHERE hash=?', (self.digest(str(body.get('code', ''))),)).fetchone()
@@ -546,7 +577,7 @@ class Accounts:
             if row['deleted']:
                 fail('ACCOUNT_DELETED', 403)
             db.execute('DELETE FROM desktop_codes WHERE hash=?', (code['hash'],))
-            return self.issue_device(db, row, body.get('installationId'), body.get('name', ''), 'account')
+            return self.issue_device(db, row, body.get('installationId'), body.get('name', ''), 'account', body.get('deviceType'))
 
 
 async def read_body(request):
@@ -684,6 +715,8 @@ def management_routes(auth):
             return await anyio.to_thread.run_sync(auth.activate, body)
         if action == 'exchange':
             return await anyio.to_thread.run_sync(auth.exchange, body)
-        return await anyio.to_thread.run_sync(auth.device_status, body.get('deviceToken'), action == 'logout')
+        if set(body) - {'deviceToken', 'installationId'}:
+            fail('INVALID_FIELDS')
+        return await anyio.to_thread.run_sync(auth.device_status, body.get('deviceToken'), body.get('installationId'), action == 'logout')
 
     return router

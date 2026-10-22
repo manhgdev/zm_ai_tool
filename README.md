@@ -213,7 +213,7 @@ Mở rộng nhiều host cần cơ chế lập lịch worker.
   đúng email. Sau đó database giữ vai trò, không tự nâng lại quyền khi restart.
 - `/admin/accounts`: thêm theo email Google, cấp/gia hạn thời gian, phân quyền,
   giao đại lý, khóa, thu hồi phiên, xóa/khôi phục. Tài khoản đã liên kết giữ ID và workspace.
-- `/admin/keys`: tạo key `ZMAI-…` mới, thời hạn, số thiết bị (mặc định 1), gia hạn,
+- `/admin/keys`: tạo key `ZMAI-…` mới, thời hạn, gia hạn,
   khóa, tạo lại, thu hồi thiết bị và xóa/khôi phục. Key đầy đủ hiển thị một lần;
   database chỉ lưu băm. Key cũ từ `api.zm.io.vn` không dùng trong APP cập nhật.
 - Chủ quản lý tất cả. Admin chỉ sửa/cấp Đại lý và User. Đại lý chỉ quản lý User/key
@@ -224,7 +224,7 @@ Mở rộng nhiều host cần cơ chế lập lịch worker.
   đầu ngay, theo lịch hoặc lần kích hoạt đầu. Lưu UTC, quản trị hiển thị UTC+7.
   Gia hạn tính từ hạn cũ còn hiệu lực hoặc thời điểm hiện tại nếu đã hết hạn.
 - SQLite `accounts.sqlite3` có phiên bản migration, bản sao trước migration
-  `accounts.before-management.sqlite3`, lịch sử quản lý và xóa mềm. Sao lưu khi
+  `accounts.before-management.sqlite3` và `accounts.before-device-slots.sqlite3`, lịch sử quản lý và xóa mềm. Sao lưu khi
   đã dừng gateway/worker để SQLite và workspace nhất quán; giữ cả WAL nếu copy nóng.
 - APP đăng nhập Google qua trình duyệt hệ thống, callback loopback, state/PKCE/mã
   một lần theo [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252.html); Secret ở gateway.
@@ -240,6 +240,22 @@ Mở rộng nhiều host cần cơ chế lập lịch worker.
   không cộng dồn thời hạn. Trong **Cấu hình → Quyền sử dụng**, xem phương thức,
   hạn dùng và số thiết bị/giới hạn theo server; dùng **Kiểm tra lại quyền** sau khi
   quản trị thay đổi cấu hình. Đăng xuất/hủy kích hoạt trước khi đổi tài khoản hoặc key.
+- Mỗi key hoặc tài khoản có 4 chỗ APP cố định: 1 điện thoại, 1 máy tính bảng/iPad,
+  1 PC và 1 laptop. APP desktop tự nhận PC hoặc laptop từ chassis/model của máy,
+  dùng thông tin pin khi nền tảng không cung cấp chassis/model; không có lựa chọn tay.
+  Máy mới thay máy cũ
+  cùng loại; các loại khác và phiên Web vẫn giữ quyền. Máy cũ nhận thu hồi ở lần
+  xác minh tiếp theo; không tự chiếm lại chỗ. Một máy đã ghi loại cho key/tài khoản
+  đó không tự đổi sang loại khác để chiếm thêm chỗ.
+- Mã máy là SHA-256 của định danh nền tảng: IOPlatformUUID (macOS), SMBIOS UUID
+  (Windows), DMI UUID hoặc machine-id (Linux). Định danh gốc không gửi lên server.
+  File kích hoạt gắn mã máy; chép sang máy khác cần kích hoạt lại. Đây không phải
+  chứng thực phần cứng: client đã bị sửa hoặc VM sao chép UUID vẫn có thể giả mã máy.
+  Các nhóm điện thoại/iPad là chính sách cấp quyền, chưa bổ sung gói APP di động.
+- Nâng cấp server xác thực trước, sau đó cập nhật APP. Schema 2 yêu cầu các APP
+  đã kích hoạt cập nhật và kích hoạt lại một lần; giữ key, hạn sử dụng,
+  dự án/kết quả và phiên Web. APP cũ nhận `DEVICE_REACTIVATION_REQUIRED`.
+  Giữ `.env` cục bộ và bản sao SQLite khi triển khai.
 - Dev dùng URL được in ở dòng `Web →`; callback Google phải đăng ký chính xác
   `<URL đó>/api/auth/google/callback`. Người dùng tự chọn/xác minh
   Google khi nghiệm thu; không dùng phiên giả để kết luận OAuth thật thành công.

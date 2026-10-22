@@ -351,8 +351,20 @@ test('APP activation identifies one method and exposes a red destructive action'
   const source = read('features/license/LicensePage.tsx')
   for (const pair of ["t('Phương thức kích hoạt APP', 'APP activation method')", "t('Tài khoản Google', 'Google account')", "t('Thiết bị đang kích hoạt / giới hạn', 'Active devices / limit')", "t('Kiểm tra lại quyền', 'Refresh access')", "t('Hủy kích hoạt thiết bị', 'Deactivate device')"]) assert.ok(source.includes(pair), pair)
   assert.match(source, /status\.configured \? <>/)
-  assert.match(source, /disabled=\{busy \|\| waiting \|\| !key\.trim\(\)\}/)
+  assert.match(source, /disabled=\{busy \|\| waiting \|\| !key\.trim\(\) \|\| !status\.installationId\}/)
   assert.match(read('features/license/LicensePage.css'), /\.license-deactivate\.license-danger\s*\{[^}]*color: var\(--destructive\)/)
+})
+
+test('APP shows detected hardware without manual selection and keeps bilingual replacement states', () => {
+  const source = read('features/license/LicensePage.tsx')
+  for (const pair of ["t('Loại thiết bị', 'Device category')", "t('Mã máy', 'Machine ID')", "t('Mã máy: ', 'Machine ID: ')"]) assert.ok(source.includes(pair), pair)
+  assert.doesNotMatch(source, /<select|selectedType|Xác nhận loại thiết bị này|Confirm this device category/)
+  assert.match(source, /deviceTypeText\(status\.deviceType, locale\)/)
+  assert.match(read('features/license/license.api.ts'), /deviceType\?: 'pc' \| 'laptop'/)
+  const shared = read('app/WebSession.tsx')
+  for (const pair of ["t('Điện thoại', 'Phone')", "t('Máy tính bảng / iPad', 'Tablet / iPad')", "t('Máy tính bàn', 'Desktop PC')", "t('Máy tính xách tay', 'Laptop')"]) assert.ok(shared.includes(pair), pair)
+  for (const code of ['DEVICE_REPLACED', 'DEVICE_MISMATCH', 'DEVICE_REACTIVATION_REQUIRED', 'DEVICE_ID_UNAVAILABLE', 'DEVICE_TYPE_LOCKED']) assert.match(shared, new RegExp(code + ': t\\('))
+  assert.ok(!read('pages/AdminPage.tsx').includes('form.max_devices'))
 })
 
 

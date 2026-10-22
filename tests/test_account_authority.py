@@ -19,6 +19,15 @@ from web import create_web_app, SESSION_COOKIE
 LIFETIME = {'mode': 'lifetime', 'start': 'now'}
 DAY = {'mode': 'duration', 'start': 'now', 'amount': 1, 'unit': 'days'}
 
+
+def machine(index=0):
+    return hashlib.sha256(f'test-machine-{index}'.encode()).hexdigest()
+
+
+def device(index=0, category='pc'):
+    return {'installationId': machine(index), 'deviceType': category}
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setenv('ZM_AI_TOOL_OWNER_EMAILS', 'owner@example.com,second@example.com')
@@ -49,7 +58,7 @@ def test_migration_seeds_once_and_preserves_identity_workspace(store):
     assert (root / 'work.txt').read_text() == 'keep'
     assert again.get(linked)['google_sub'] == 'google-verified'
     with again.connect() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 1
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 2
     uid = again.login_identity({'sub': 'new-sub', 'email': 'new@example.com', 'email_verified': True})
     assert access(again.get(uid))['state'] == 'pending'
     with pytest.raises(ValueError):
@@ -129,24 +138,24 @@ def test_devices_first_activation_idempotency_rotation_and_revoke(store):
     oid = owner(store)['id']
     key = store.mutate(oid, 'keys', None, {'term': {**DAY, 'start': 'first_activation'}})
     def activate(index):
-        try:
-            return store.activate({'key': key['key'], 'installationId': f'device_{index:020d}'})
-        except HTTPException as exc:
-            return exc.detail
+        return store.activate({'key': key['key'], **device(index)})
     with ThreadPoolExecutor(8) as pool:
         results = list(pool.map(activate, range(8)))
-    assert sum(isinstance(result, dict) for result in results) == 1
-    assert results.count('DEVICE_LIMIT_REACHED') == 7
-    index = next(i for i, result in enumerate(results) if isinstance(result, dict))
+    rows = store.device_list(oid, key['id'])
+    assert sum(row['enabled'] for row in rows) == 1
+    active = next(row for row in rows if row['enabled'])
+    index = next(i for i in range(8) if machine(i) == active['installation_id'])
+    for i, result in enumerate(results):
+        if i != index:
+            denied('DEVICE_REPLACED', store.device_status, result['deviceToken'], machine(i))
     first = results[index]
     again = activate(index)
     assert again['deviceToken'] != first['deviceToken']
     assert again['expiresAt'] == first['expiresAt']
     denied('DEVICE_REVOKED', store.device_status, first['deviceToken'])
-    assert store.device_status(again['deviceToken'])['valid']
-    device = store.device_list(oid, key['id'])[0]
-    store.revoke_device(oid, key['id'], device['id'])
-    denied('DEVICE_REVOKED', store.device_status, again['deviceToken'])
+    assert store.device_status(again['deviceToken'], machine(index))['valid']
+    store.revoke_device(oid, key['id'], active['id'])
+    denied('DEVICE_REVOKED', store.device_status, again['deviceToken'], machine(index))
     new = store.mutate(oid, 'keys', key['id'], {}, 'rotate')
     assert new['key'] != key['key']
     denied('KEY_INVALID', store.activate, {'key': key['key'], 'installationId': 'device_1234567890123456'})
@@ -166,7 +175,7 @@ def test_full_keys_survive_restart_and_obey_management_scope(store):
     assert 'key_nonce' not in listed and 'key_hash' not in listed
     assert reopened.list_items(other['id'], 'keys', {})['items'] == []
     denied('ADMIN_FORBIDDEN', reopened.list_items, user['id'], 'keys', {})
-    assert reopened.activate({'key': listed['key'], 'installationId': 'copy_test_installation_1234'})['valid']
+    assert reopened.activate({'key': listed['key'], **device()})['valid']
     rotated = reopened.mutate(oid, 'keys', key['id'], {}, 'rotate')
     assert rotated['key'] != key['key']
     assert reopened.list_items(oid, 'keys', {})['items'][0]['key'] == rotated['key']
@@ -179,7 +188,7 @@ def test_full_keys_survive_restart_and_obey_management_scope(store):
     with reopened.connect(write=True) as db:
         db.execute('UPDATE keys SET key_nonce=NULL WHERE id=?', (key['id'],))
     assert Accounts(store.root).list_items(oid, 'keys', {})['items'][0]['key'] is None
-    assert reopened.activate({'key': rotated['key'], 'installationId': 'copy_test_installation_1234'})['valid']
+    assert reopened.activate({'key': rotated['key'], **device()})['valid']
 
 def test_calendar_terms_exact_expiry_and_renewal(store):
     ts = lambda value: datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp()
@@ -207,7 +216,7 @@ def test_desktop_pkce_single_use_and_loopback(store):
         denied('INVALID_DESKTOP_REDIRECT', store.desktop_redirect, uri)
     with store.connect(write=True) as db:
         db.execute('INSERT INTO desktop_codes VALUES(?,?,?,?,?)', (store.digest('code'), owner(store)['id'], challenge, callback, time.time() + 60))
-    body = {'code': 'code', 'verifier': verifier, 'redirectUri': callback, 'installationId': 'installation_12345678'}
+    body = {'code': 'code', 'verifier': verifier, 'redirectUri': callback, **device()}
     denied('DESKTOP_CODE_INVALID', store.exchange, {**body, 'verifier': 'wrong' * 10})
     assert store.exchange(body)['mode'] == 'account'
     denied('DESKTOP_CODE_INVALID', store.exchange, body)
@@ -249,13 +258,16 @@ def test_desktop_real_verification_cache_expiry_and_revocation(tmp_path, monkeyp
     monkeypatch.setattr(licensing, 'LICENSE_FILE', tmp_path / 'license.json')
     monkeypatch.setattr(licensing, '_cache', None)
     monkeypatch.setattr(licensing, '_checked_at', 0)
+    monkeypatch.setattr(licensing, 'machine_id', machine)
+    monkeypatch.setattr(licensing, 'desktop_device_type', lambda: 'pc')
     clock = [float(int(time.time()))]
     monkeypatch.setattr(licensing.time, 'time', lambda: clock[0])
     monkeypatch.setattr(licensing.time, 'monotonic', lambda: clock[0])
     def response():
         return {'valid': True, 'configured': True, 'mode': 'key', 'state': 'active', 'lifetime': False,
                 'startsAt': datetime.fromtimestamp(clock[0]-100, timezone.utc).isoformat(),
-                'expiresAt': datetime.fromtimestamp(clock[0]+3600, timezone.utc).isoformat(), 'deviceToken': 'x'*43}
+                'expiresAt': datetime.fromtimestamp(clock[0]+3600, timezone.utc).isoformat(), 'deviceToken': 'x'*43,
+                **device()}
     with patch.object(licensing, '_request', return_value=response()) as request:
         assert licensing.activate_license('ZMAI-NEW')['valid']
         verified = licensing._read()['verified_at']
@@ -330,7 +342,7 @@ def test_unactivated_key_renewal_and_future_last_owner_protection(store):
     oid = owner(store)['id']
     key = store.mutate(oid, 'keys', None, {'term': {**DAY, 'start': 'first_activation'}})
     store.mutate(oid, 'keys', key['id'], {'amount': 1, 'unit': 'hours'}, 'renew')
-    activated = store.activate({'key': key['key'], 'installationId': 'installation_12345678'})
+    activated = store.activate({'key': key['key'], **device()})
     assert datetime.fromisoformat(activated['expiresAt']).timestamp() - datetime.fromisoformat(activated['startsAt']).timestamp() == 90000
     with store.connect() as db:
         second = db.execute("SELECT id FROM users WHERE email='second@example.com'").fetchone()[0]
@@ -409,10 +421,11 @@ def test_concurrent_http_quota_and_device_limits(tmp_path, monkeypatch):
         assert codes.count(200) == 1 and codes.count(409) == 7
         key = client.post('/api/admin/keys', json={'term': {**DAY, 'start': 'first_activation'}}).json()
         def device_request(index):
-            return client.post('/api/desktop/activate', json={'key': key['key'], 'installationId': f'installation_{index:016d}'}).status_code
+            return client.post('/api/desktop/activate', json={'key': key['key'], **device(index)}).status_code
         with ThreadPoolExecutor(8) as pool:
             codes = list(pool.map(device_request, range(8)))
-        assert codes.count(200) == 1 and codes.count(409) == 7
+        assert codes == [200] * 8
+        assert sum(row['enabled'] for row in auth.device_list(oid, key['id'])) == 1
 
 
 def test_local_app_rejects_cross_site_signout():
@@ -437,6 +450,9 @@ def desktop(store, tmp_path, monkeypatch):
     monkeypatch.setattr(licensing, '_cache', None)
     monkeypatch.setattr(licensing, '_checked_at', 0)
     monkeypatch.setattr(licensing, '_pending', {})
+    monkeypatch.setattr(licensing, 'machine_id', machine)
+    monkeypatch.setattr(licensing, 'desktop_device_type', lambda: 'pc')
+    monkeypatch.setattr(licensing, 'start_license_monitor', lambda: None)
     monkeypatch.setattr(licensing.webbrowser, 'open', lambda _: True)
     def request(action, body):
         try:
@@ -444,7 +460,7 @@ def desktop(store, tmp_path, monkeypatch):
                 return store.activate(body)
             if action == 'exchange':
                 return store.exchange(body)
-            return store.device_status(body['deviceToken'], logout=action == 'logout')
+            return store.device_status(body['deviceToken'], body['installationId'], logout=action == 'logout')
         except HTTPException as exc:
             raise ValueError(exc.detail) from None
     monkeypatch.setattr(licensing, '_request', request)
@@ -453,23 +469,38 @@ def desktop(store, tmp_path, monkeypatch):
 
 def test_app_key_status_matches_authority_configuration_and_releases_slot(store, desktop):
     from api.app import create_app
-    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY, 'max_devices': 2})
+    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY})
     with TestClient(create_app()) as client:
         status = client.post('/api/license/activate', json={'key': key['key']}).json()
         assert status['valid'] and status['mode'] == 'key' and status['configured']
         assert status['keyMasked'] == key['key_masked']
         assert status['expiresAt'] == key['access']['expiresAt']
-        assert (status['activationCount'], status['activationLimit']) == (1, 2)
+        assert (status['activationCount'], status['activationLimit']) == (1, 4)
+        assert status['installationId'] == machine() and status['deviceType'] == 'pc'
         assert 'deviceToken' not in status and key['key'] not in json.dumps(status)
         assert desktop._read()['authority'] == 'https://authority.example'
-        store.mutate(owner(store)['id'], 'keys', key['id'], {'max_devices': 3, 'term': LIFETIME})
+        store.mutate(owner(store)['id'], 'keys', key['id'], {'term': LIFETIME})
         refreshed = client.get('/api/license/status?force=true').json()
-        assert refreshed['activationLimit'] == 3 and refreshed['remainingDay'] == -1
+        assert refreshed['activationLimit'] == 4 and refreshed['remainingDay'] == -1
         assert client.post('/api/auth/desktop/start').json()['detail'] == 'DEVICE_ALREADY_CONFIGURED'
         assert client.post('/api/license/activate', json={'key': key['key']}).json()['detail'] == 'DEVICE_ALREADY_CONFIGURED'
         assert not client.post('/api/license/deactivate').json()['configured']
         assert not store.device_list(owner(store)['id'], key['id'])[0]['enabled']
         assert client.post('/api/license/activate', json={'key': key['key']}).json()['activationCount'] == 1
+
+
+@pytest.mark.parametrize('category', ['pc', 'laptop'])
+def test_app_uses_detected_type_for_key_and_google_not_caller_selection(store, desktop, monkeypatch, category):
+    from api.app import create_app
+    monkeypatch.setattr(desktop, 'desktop_device_type', lambda: category)
+    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY})
+    with TestClient(create_app()) as client:
+        status = client.get('/api/license/status').json()
+        assert status['deviceType'] == category and status['installationId'] == machine()
+        client.post('/api/auth/desktop/start', json={'deviceType': 'phone'})
+        assert next(iter(desktop._pending.values()))['deviceType'] == category
+        status = client.post('/api/license/activate', json={'key': key['key'], 'deviceType': 'tablet'}).json()
+        assert status['valid'] and status['deviceType'] == category
 
 
 def test_app_account_and_key_are_exclusive_and_late_callback_cannot_replace_key(store, desktop):
@@ -485,7 +516,7 @@ def test_app_account_and_key_are_exclusive_and_late_callback_cannot_replace_key(
         desktop.activate_license('ZMAI-TEST')
     account_token = desktop._read()['device_token']
     desktop.deactivate_license()
-    denied('DEVICE_REVOKED', store.device_status, account_token)
+    denied('DEVICE_REVOKED', store.device_status, account_token, machine())
     pending = parse_qs(urlsplit(desktop.start_desktop_login(34567)['authorizationUrl']).query)
     key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY})
     desktop.activate_license(key['key'])
@@ -502,7 +533,7 @@ def test_app_deactivation_preserves_offline_credentials_but_clears_revoked_devic
         with pytest.raises(ValueError, match='LOGOUT_NETWORK_REQUIRED'):
             desktop.deactivate_license()
     assert desktop._read()['device_token'] == token
-    store.device_status(token, logout=True)
+    store.device_status(token, machine(), logout=True)
     assert not desktop.deactivate_license()['configured']
     assert 'device_token' not in desktop._read()
 
@@ -518,3 +549,118 @@ def test_app_cached_remaining_days_follow_expiry(desktop):
     now = time.time()
     status = {'valid': True, 'remainingDay': 9, 'expiresAt': datetime.fromtimestamp(now + 100, timezone.utc).isoformat()}
     assert desktop._current(status, now)['remainingDay'] == 1
+
+
+@pytest.mark.parametrize('mode', ['key', 'account'])
+def test_four_hardware_slots_replace_only_the_same_category(store, mode):
+    oid = owner(store)['id']
+    subject = store.mutate(oid, 'keys', None, {'term': DAY}) if mode == 'key' else create(store, term=DAY)
+    browser_token = 'unchanged-browser-session'
+    with store.connect(write=True) as db:
+        db.execute('INSERT INTO sessions VALUES(?,?,?)', (store.digest(browser_token), subject['id'] if mode == 'account' else oid, time.time() + 60))
+
+    def activate(index, category):
+        if mode == 'key':
+            return store.activate({'key': subject['key'], **device(index, category)})
+        verifier = 'v' * 43
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+        callback = 'http://127.0.0.1:34567/api/auth/desktop/callback'
+        code = f'code-{index}-{category}'
+        with store.connect(write=True) as db:
+            db.execute('INSERT INTO desktop_codes VALUES(?,?,?,?,?)',
+                       (store.digest(code), subject['id'], challenge, callback, time.time() + 60))
+        return store.exchange({'code': code, 'verifier': verifier, 'redirectUri': callback, **device(index, category)})
+
+    categories = ['phone', 'tablet', 'pc', 'laptop']
+    grants = [activate(i, category) for i, category in enumerate(categories)]
+    assert [grant['activationCount'] for grant in grants] == [1, 2, 3, 4]
+    assert all(grant['activationLimit'] == 4 for grant in grants)
+    denied('DEVICE_TYPE_LOCKED', activate, 2, 'laptop')
+    replacement = activate(4, 'pc')
+    assert replacement['activationCount'] == 4
+    denied('DEVICE_REPLACED', store.device_status, grants[2]['deviceToken'], machine(2))
+    for i in (0, 1, 3):
+        assert store.device_status(grants[i]['deviceToken'], machine(i))['valid']
+    # Neither a new key nor another account consumes this subject's slots.
+    other = store.mutate(oid, 'keys', None, {'term': DAY})
+    store.activate({'key': other['key'], **device(5)})
+    assert store.device_status(replacement['deviceToken'], machine(4))['valid']
+    with store.connect() as db:
+        assert db.execute('SELECT 1 FROM sessions WHERE hash=?', (store.digest(browser_token),)).fetchone()
+
+
+def test_machine_binding_is_required_for_status_and_logout(store):
+    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY})
+    denied('DEVICE_REACTIVATION_REQUIRED', store.activate, {'key': key['key'], 'installationId': 'old-installation'})
+    denied('INVALID_FIELDS', store.mutate, owner(store)['id'], 'keys', key['id'], {'max_devices': 8})
+    grant = store.activate({'key': key['key'], **device()})
+    for installation in (None, '', 'định-danh', machine(1)):
+        denied('DEVICE_MISMATCH', store.device_status, grant['deviceToken'], installation)
+        denied('DEVICE_MISMATCH', store.device_status, grant['deviceToken'], installation, logout=True)
+    assert store.device_status(grant['deviceToken'], machine())['valid']
+    for values in ({'deviceType': 'other'}, {'installationId': 'random-installation'}, {'name': 'x' * 201}):
+        denied('INVALID_DEVICE_TYPE' if 'deviceType' in values else 'INVALID_DEVICE', store.activate,
+               {'key': key['key'], **device(1), **values})
+    assert store.device_status(grant['deviceToken'], machine())['valid']
+
+
+def test_slot_migration_backs_up_and_requires_reactivation_without_touching_web(store):
+    oid = owner(store)['id']
+    key = store.mutate(oid, 'keys', None, {'term': DAY})
+    session = 'owner-browser-session'
+    with store.connect(write=True) as db:
+        db.execute('INSERT INTO sessions VALUES(?,?,?)', (store.digest(session), oid, time.time() + 60))
+        db.execute('PRAGMA user_version=1')
+        db.execute('UPDATE keys SET max_devices=9 WHERE id=?', (key['id'],))
+        db.execute('INSERT INTO devices(id,installation_id,key_id,token_hash,name,created_at,last_seen) VALUES(?,?,?,?,?,?,?)',
+                   ('old-device', 'old-random-installation', key['id'], store.digest('old-token-1234567890123456'), 'Old PC', 1, 1))
+    reopened = Accounts(store.root)
+    backup = store.root / 'accounts.before-device-slots.sqlite3'
+    assert backup.exists()
+    with sqlite3.connect(backup) as db:
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 1
+        assert db.execute('SELECT enabled FROM devices').fetchone()[0] == 1
+    denied('DEVICE_REACTIVATION_REQUIRED', reopened.device_status, 'old-token-1234567890123456')
+    with reopened.connect() as db:
+        assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+        assert db.execute('SELECT max_devices FROM keys WHERE id=?', (key['id'],)).fetchone()[0] == 4
+        assert db.execute('SELECT user_id FROM sessions WHERE hash=?', (store.digest(session),)).fetchone()[0] == oid
+    assert reopened.list_items(oid, 'keys', {})['items'][0]['access'] == key['access']
+    active = reopened.activate({'key': key['key'], **device()})
+    again = Accounts(store.root)
+    assert again.device_status(active['deviceToken'], machine())['valid']
+
+
+def test_copying_activation_to_another_machine_requires_new_activation(store, desktop, monkeypatch):
+    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY})
+    desktop.activate_license(key['key'])
+    old_token = desktop._read()['device_token']
+    monkeypatch.setattr(desktop, '_cache', None)
+    monkeypatch.setattr(desktop, 'machine_id', lambda: machine(1))
+    assert not desktop._read()  # The copied file's signature is bound to the original machine.
+    assert not desktop.license_status()['valid']
+    assert desktop.activate_license(key['key'])['valid']
+    denied('DEVICE_REPLACED', store.device_status, old_token, machine())
+
+
+def test_app_observes_replacement_without_reclaiming_slot_and_keeps_admitted_job(store, desktop):
+    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY})
+    desktop.activate_license(key['key'])
+    replacement = store.activate({'key': key['key'], **device(1)})
+    status = desktop.license_status(force=True)
+    assert not status['valid'] and status['code'] == 'DEVICE_REPLACED'
+    assert not desktop.can_start_job()
+    with desktop.admitted_job():
+        assert desktop.can_start_job()
+    assert not desktop.deactivate_license()['configured']
+    assert store.device_status(replacement['deviceToken'], machine(1))['valid']
+
+
+@pytest.mark.parametrize('fields', [{'installationId': machine(1)}, {'deviceType': 'laptop'}])
+def test_app_rejects_grant_for_the_wrong_machine_or_category(store, desktop, fields):
+    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY})
+    result = store.activate({'key': key['key'], **device()})
+    with patch.object(desktop, '_request', return_value={**result, **fields}):
+        with pytest.raises(RuntimeError, match='INVALID_LICENSE_RESPONSE'):
+            desktop.activate_license(key['key'])
+    assert 'device_token' not in desktop._read()

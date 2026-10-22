@@ -13,7 +13,6 @@ import secrets
 import sqlite3
 import threading
 import time
-import uuid
 import webbrowser
 import weakref
 from contextlib import contextmanager
@@ -24,6 +23,7 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 
 from pipeline.core.config import DATA, ensure_data_dirs
+from pipeline.core.device_identity import desktop_device_type, machine_id
 
 LICENSE_FILE = DATA / 'license.json'
 _CACHE_SECONDS = 300
@@ -37,11 +37,11 @@ _continuations = set()
 _admitted = contextvars.ContextVar('admitted_job', default=False)
 _monitor_started = False
 _pending_watchers = []
-_SIG_KEY = f'zm-tool-license-{uuid.getnode()}-2025'.encode()
 
 
 def _sign(payload):
-    return hmac.new(_SIG_KEY, json.dumps(payload, sort_keys=True, ensure_ascii=False).encode(), hashlib.sha256).hexdigest()
+    key = ('zm-tool-license-v2:' + machine_id()).encode()
+    return hmac.new(key, json.dumps(payload, sort_keys=True, ensure_ascii=False).encode(), hashlib.sha256).hexdigest()
 
 
 def _read():
@@ -88,8 +88,14 @@ def _request(action, body):
 
 
 def _empty(code='ACCESS_PENDING', configured=False):
-    return {'valid': False, 'configured': configured, 'mode': 'account', 'keyMasked': '', 'remainingDay': 0,
-            'expiresAt': None, 'activationLimit': 0, 'message': '', 'code': code, 'state': code.removeprefix('ACCESS_').lower()}
+    result = {'valid': False, 'configured': configured, 'mode': 'account', 'keyMasked': '', 'remainingDay': 0,
+              'expiresAt': None, 'activationLimit': 0, 'message': '', 'code': code, 'state': 'pending'}
+    if os.environ.get('ZM_AI_TOOL_WEB_WORKER') != '1':
+        try:
+            result.update(installationId=machine_id(), deviceType=desktop_device_type())
+        except ValueError:
+            result['code'] = 'DEVICE_ID_UNAVAILABLE'
+    return result
 
 
 def _current(status, verified_at):
@@ -118,7 +124,7 @@ def _current(status, verified_at):
     return result
 
 
-def _install(result, previous=None, *, mode=None):
+def _install(result, previous=None, *, mode=None, device_type=None):
     global _cache, _checked_at
     if not isinstance(result.get('deviceToken'), str) or not result['deviceToken'] or not isinstance(result.get('valid'), bool):
         raise RuntimeError('INVALID_LICENSE_RESPONSE')
@@ -138,10 +144,15 @@ def _install(result, previous=None, *, mode=None):
                 except (ValueError, TypeError, AttributeError):
                     raise RuntimeError('INVALID_LICENSE_RESPONSE') from None
     data = previous or _read()
+    expected_type = device_type or data.get('device_type')
+    if (result.get('installationId') != machine_id() or result.get('deviceType') not in ('pc', 'laptop')
+            or result['deviceType'] != expected_type):
+        raise RuntimeError('INVALID_LICENSE_RESPONSE')
     token = result['deviceToken']
     status = {k: v for k, v in result.items() if k != 'deviceToken'}
     status.update(configured=True, message='')
-    data.update(device_token=token, status=status, verified_at=time.time(), authority=server_url())
+    data.update(device_token=token, status=status, verified_at=time.time(), authority=server_url(),
+                installation_id=machine_id(), device_type=result['deviceType'])
     _save(data)
     _cache, _checked_at = data, time.monotonic()
     return _current(status, data['verified_at'])
@@ -149,8 +160,9 @@ def _install(result, previous=None, *, mode=None):
 
 def installation():
     data = _read()
-    if not data.get('installation_id'):
-        data['installation_id'] = secrets.token_hex(16)
+    identity = machine_id()
+    if data.get('installation_id') != identity:
+        data = {'installation_id': identity}
         _save(data)
     return data
 
@@ -172,11 +184,14 @@ def license_status(*, force=False):
             data = _cache or _read()
             token = data.get('device_token')
             if not token or data.get('authority') != server_url():
-                return _empty()
+                code = 'DEVICE_REACTIVATION_REQUIRED' if not data and LICENSE_FILE.exists() else 'ACCESS_PENDING'
+                return _empty(code)
+            if data.get('installation_id') != machine_id():
+                return _empty('DEVICE_MISMATCH')
             if not force and _checked_at and time.monotonic() - _checked_at < _CACHE_SECONDS:
                 return _current(data.get('status') or _empty(), data.get('verified_at', 0))
         try:
-            result = _request('status', {'deviceToken': token})
+            result = _request('status', {'deviceToken': token, 'installationId': machine_id()})
             if not isinstance(result.get('valid'), bool):
                 raise RuntimeError('INVALID_LICENSE_RESPONSE')
             return _install({**result, 'deviceToken': token}, data, mode=data.get('status', {}).get('mode'))
@@ -200,11 +215,13 @@ def activate_license(key):
     if not isinstance(key, str) or not key.strip().startswith('ZMAI-'):
         raise ValueError('KEY_INVALID')
     with _request_lock, _lock:
+        device_type = desktop_device_type()
         data = installation()
         if data.get('device_token') and data.get('authority') == server_url():
             raise ValueError('DEVICE_ALREADY_CONFIGURED')
-        result = _request('activate', {'key': key.strip(), 'installationId': data['installation_id'], 'name': platform.node()[:200]})
-        status = _install(result, data, mode='key')
+        result = _request('activate', {'key': key.strip(), 'installationId': machine_id(),
+                                     'name': platform.node()[:200], 'deviceType': device_type})
+        status = _install(result, data, mode='key', device_type=device_type)
         _pending.clear()  # A late browser callback must not replace the chosen key.
         return status
 
@@ -215,28 +232,31 @@ def deactivate_license():
         data = installation()
         if data.get('device_token'):
             try:
-                _request('logout', {'deviceToken': data['device_token']})
+                _request('logout', {'deviceToken': data['device_token'], 'installationId': machine_id()})
             except ValueError as exc:
-                if str(exc) != 'DEVICE_REVOKED':
+                if str(exc) not in ('DEVICE_REVOKED', 'DEVICE_REPLACED', 'DEVICE_REACTIVATION_REQUIRED', 'DEVICE_MISMATCH'):
                     raise ValueError('LOGOUT_NETWORK_REQUIRED') from None
             except Exception:
                 # Keep the credential so an offline sign-out can be retried without losing the device slot.
                 raise ValueError('LOGOUT_NETWORK_REQUIRED') from None
-        _save({'installation_id': data['installation_id']})
+        data = {'installation_id': machine_id(), 'device_type': data.get('device_type')}
+        _save(data)
         _pending.clear()
         _cache, _checked_at = None, 0
     return _empty()
 
 
 def start_desktop_login(port):
-    with _lock:
-        data = _read()
+    with _request_lock, _lock:
+        device_type = desktop_device_type()
+        data = installation()
         if data.get('device_token') and data.get('authority') == server_url():
             raise ValueError('DEVICE_ALREADY_CONFIGURED')
         state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
         redirect = f'http://127.0.0.1:{port}/api/auth/desktop/callback'
         _pending.clear()
-        _pending[state] = {'verifier': verifier, 'redirectUri': redirect, 'expires': time.time() + 600}
+        _pending[state] = {'verifier': verifier, 'redirectUri': redirect, 'expires': time.time() + 600,
+                           'deviceType': device_type}
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
         url = server_url() + '/api/desktop/authorize?' + urlencode({'state': state, 'challenge': challenge, 'redirect_uri': redirect})
     webbrowser.open(url)
@@ -253,7 +273,7 @@ def finish_desktop_login(state, code):
             raise ValueError('DEVICE_ALREADY_CONFIGURED')
         result = _request('exchange', {**{k: v for k, v in pending.items() if k != 'expires'}, 'code': code,
                                       'installationId': data['installation_id'], 'name': platform.node()[:200]})
-        _install(result, data, mode='account')
+        _install(result, data, mode='account', device_type=pending['deviceType'])
 
 
 def license_cached_valid():

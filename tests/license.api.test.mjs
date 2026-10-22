@@ -27,5 +27,15 @@ test('activation and deactivation wait for stale status polls, including failed 
     assert.equal((await changed).configured, action === 'activate')
     assert.equal(calls[1].url, `/api/license/${action}`)
     assert.equal(calls[1].options.method, 'POST')
+    if (action === 'activate') assert.deepEqual(JSON.parse(calls[1].options.body), { key: 'ZMAI-TEST' })
   }
+})
+
+test('APP Google sign-in leaves hardware detection to the local backend', async () => {
+  const calls = []
+  const api = vm.runInNewContext(`${code}; licenseApi`, { fetchJson: (url, options) => { calls.push({ url, options }); return Promise.resolve({}) } })
+  await api.login()
+  assert.equal(calls[0].url, '/api/auth/desktop/start')
+  assert.equal(calls[0].options.method, 'POST')
+  assert.equal(calls[0].options.body, undefined)
 })

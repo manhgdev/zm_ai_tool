@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { licenseApi, type LicenseStatus } from './license.api'
 import { localize, useLocale } from '@/app/i18n'
-import { accessText, useWebUser, webErrorText } from '@/app/WebSession'
+import { accessText, deviceTypeText, useWebUser, webErrorText } from '@/app/WebSession'
 import { IconGoogle, IconKey, IconLogo, IconUser } from '@/shared/components/Icons'
 import './LicensePage.css'
 
@@ -41,7 +41,11 @@ export default function LicensePage({ status, gate = false, embedded = false, on
       <div><dt>{status.mode === 'key' ? t('Key ứng dụng', 'Application key') : t('Tài khoản', 'Account')}</dt><dd>{status.mode === 'key' ? status.keyMasked : user?.email || status.user?.email || '—'}</dd></div>
       <div><dt>{t('Bắt đầu · Giờ Việt Nam', 'Starts · Vietnam time')}</dt><dd>{date(status.startsAt)}</dd></div>
       <div><dt>{t('Hết hạn · Giờ Việt Nam', 'Expires · Vietnam time')}</dt><dd>{status.lifetime || status.remainingDay === -1 ? t('Vĩnh viễn', 'Lifetime') : date(status.expiresAt)}</dd></div>
-      {status.mode === 'key' && <div><dt>{t('Thiết bị đang kích hoạt / giới hạn', 'Active devices / limit')}</dt><dd>{status.activationCount ?? '—'} / {status.activationLimit}</dd></div>}
+      {!user && <>
+        <div><dt>{t('Loại thiết bị', 'Device category')}</dt><dd>{deviceTypeText(status.deviceType, locale)}</dd></div>
+        <div><dt>{t('Mã máy', 'Machine ID')}</dt><dd title={status.installationId}>{status.installationId?.slice(0, 16).toUpperCase() || '—'}</dd></div>
+        <div><dt>{t('Thiết bị đang kích hoạt / giới hạn', 'Active devices / limit')}</dt><dd>{status.activationCount ?? '—'} / {status.activationLimit}</dd></div>
+      </>}
     </dl>}
     {user ? <a className="license-deactivate" href="/account">{t('Thông tin tài khoản và đăng xuất', 'Account details and sign out')}</a> : <>
       {status.configured ? <>
@@ -57,13 +61,14 @@ export default function LicensePage({ status, gate = false, embedded = false, on
         </div>
       </> : <>
       <p className="license-method-hint">{t('Chọn một cách để kích hoạt APP: tài khoản Google đã được cấp quyền hoặc key ứng dụng. Hai phương thức không cộng dồn thời hạn.', 'Choose one way to activate the APP: an authorized Google account or an application key. Their access periods are not combined.')}</p>
-      <button type="button" className="license-google" disabled={busy || waiting} onClick={() => void perform(async () => { await licenseApi.login(); setWaiting(true) })}><IconGoogle />{waiting ? t('Đang chờ đăng nhập trên trình duyệt…', 'Waiting for browser sign-in…') : t('Đăng nhập bằng Google', 'Sign in with Google')}</button>
+      {status.installationId && <p className="license-machine" title={status.installationId}>{deviceTypeText(status.deviceType, locale)} · {t('Mã máy: ', 'Machine ID: ')}<code>{status.installationId.slice(0, 16).toUpperCase()}</code></p>}
+      <button type="button" className="license-google" disabled={busy || waiting || !status.installationId} onClick={() => void perform(async () => { await licenseApi.login(); setWaiting(true) })}><IconGoogle />{waiting ? t('Đang chờ đăng nhập trên trình duyệt…', 'Waiting for browser sign-in…') : t('Đăng nhập bằng Google', 'Sign in with Google')}</button>
       {waiting && <button type="button" className="license-deactivate" onClick={() => setWaiting(false)}>{t('Thử đăng nhập lại', 'Try sign-in again')}</button>}
       <p className="license-divider">{t('Hoặc kích hoạt bằng key mới được cấp cho ứng dụng.', 'Or activate with a new application key.')}</p>
       <form className="license-form" onSubmit={e => { e.preventDefault(); void perform(async () => { onStatusChange(await licenseApi.activate(key.trim())); setKey('') }) }}>
         <label className="license-input-label" htmlFor="license-key">{t('Key ứng dụng', 'Application key')}</label>
         <input id="license-key" value={key} onChange={e => setKey(e.target.value)} placeholder="ZMAI-…" autoComplete="off" disabled={busy || waiting} required />
-        <button type="submit" disabled={busy || waiting || !key.trim()}>{busy ? t('Đang kiểm tra…', 'Checking…') : t('Kích hoạt', 'Activate')}</button>
+        <button type="submit" disabled={busy || waiting || !key.trim() || !status.installationId}>{busy ? t('Đang kiểm tra…', 'Checking…') : t('Kích hoạt', 'Activate')}</button>
       </form>
       </>}
     </>}
