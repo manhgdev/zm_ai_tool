@@ -9,6 +9,23 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { accountStorage } from '../frontend/src/app/appSettings.ts'
 
+test('PM2 production uses npm start with one instance and no desktop mode', () => {
+  const { apps } = JSON.parse(readFileSync(new URL('../pm2.start.json', import.meta.url), 'utf8'))
+  assert.equal(apps.length, 1)
+  const app = apps[0]
+  assert.equal(app.name, 'zm_ai_tool')
+  assert.equal(app.cwd, '.')
+  assert.equal(app.script, 'npm')
+  assert.equal(app.args, 'run start')
+  assert.equal(app.interpreter, 'none')
+  assert.equal(app.exec_mode, 'fork')
+  assert.equal(app.instances, 1)
+  assert.equal(app.watch, false)
+  assert.equal(app.env.ZM_AI_TOOL_DESKTOP, '0')
+  assert.equal(app.env.ZM_AI_TOOL_HOST, '127.0.0.1')
+  assert.ok(app.kill_timeout > 45000) // Let the runner finish its shutdown grace period.
+})
+
 test('web account UI caches stay separate and never consume desktop caches', () => {
   const values = new Map([['zm_ai_tool.session', 'desktop-project']])
   const native = {
@@ -34,13 +51,14 @@ test('web account UI caches stay separate and never consume desktop caches', () 
   assert.equal(b.getItem('zm_ai_tool.session'), 'project-b')
 })
 
-test('dev/start share one Web runner, proxy auth, reject busy ports and stop both servers', { timeout: 45_000 }, async t => {
+for (const production of [false, true]) test(`${production ? 'start serves built files' : 'dev runs Vite'}; auth, busy ports and shutdown remain safe`, { timeout: 45_000 }, async t => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const python = path.join(root, 'backend/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
   if (!existsSync(python)) return t.skip('Requires the backend environment from setup')
   const scripts = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).scripts
-  assert.equal(scripts.dev, scripts.start)
   assert.equal(scripts.dev, 'node scripts/dev.mjs')
+  assert.equal(scripts.start, 'node scripts/dev.mjs --production')
+  if (production && !existsSync(path.join(root, 'frontend/dist/index.html'))) return t.skip('Run npm run build first')
   const listeners = [createServer(), createServer()]
   for (const server of listeners) server.listen(0, '127.0.0.1')
   await Promise.all(listeners.map(server => once(server, 'listening')))
@@ -50,18 +68,20 @@ test('dev/start share one Web runner, proxy auth, reject busy ports and stop bot
   const env = { ...process.env, ZM_AI_TOOL_HOST: '127.0.0.1', ZM_AI_TOOL_PORT: String(apiPort),
     ZM_AI_TOOL_WEB_ORIGIN: `http://localhost:${webPort}`, ZM_AI_TOOL_WEB_DATA: data,
     ZM_AI_TOOL_GOOGLE_CLIENT_ID: '', ZM_AI_TOOL_GOOGLE_CLIENT_SECRET: '', ZM_AI_TOOL_DESKTOP: '1' }
-  const child = spawn(process.execPath, ['scripts/dev.mjs'], { cwd: root, env, stdio: 'pipe' })
+  const args = ['scripts/dev.mjs', ...(production ? ['--production'] : [])]
+  const child = spawn(process.execPath, args, { cwd: root, env, stdio: 'pipe' })
   const finished = once(child, 'exit')
   let output = ''
   child.stdout.on('data', chunk => { output += chunk })
   child.stderr.on('data', chunk => { output += chunk })
   const get = (port, route) => fetch(`http://127.0.0.1:${port}${route}`, { signal: AbortSignal.timeout(1000) })
+  const pagePort = production ? apiPort : webPort
   try {
     let response
     const deadline = Date.now() + 30_000
     while (Date.now() < deadline && child.exitCode === null) {
       try {
-        response = await get(webPort, '/api/auth/session')
+        response = await get(pagePort, '/api/auth/session')
         if (response.ok) break
       } catch { /* Wait for API and Vite. */ }
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -69,11 +89,17 @@ test('dev/start share one Web runner, proxy auth, reject busy ports and stop bot
     assert.ok(response?.ok, output)
     assert.deepEqual(await response.json(), { mode: 'web', configured: false, user: null })
     assert.equal((await (await get(apiPort, '/api/health')).json()).mode, 'web')
-    assert.equal((await get(webPort, '/api/config')).status, 401)
-    assert.match(await (await get(webPort, '/login')).text(), /@vite\/client/)
-    const duplicate = spawn(process.execPath, ['scripts/dev.mjs'], { cwd: root, env, stdio: 'ignore' })
+    assert.equal((await get(pagePort, '/api/config')).status, 401)
+    const html = await (await get(pagePort, '/login')).text()
+    if (production) {
+      assert.doesNotMatch(html, /@vite\/client/)
+      const asset = html.match(/src="(\/assets\/[^" ]+\.js)"/)[1]
+      assert.equal((await get(pagePort, asset)).status, 200)
+      await assert.rejects(() => get(webPort, '/'))
+    } else assert.match(html, /@vite\/client/)
+    const duplicate = spawn(process.execPath, args, { cwd: root, env, stdio: 'ignore' })
     assert.equal((await once(duplicate, 'exit'))[0], 1)
-    assert.equal((await get(webPort, '/api/health')).status, 200)
+    assert.equal((await get(pagePort, '/api/health')).status, 200)
   } finally {
     child.kill('SIGTERM')
     await finished

@@ -2,16 +2,22 @@
     "apps": [
         {
             "name": "zm_ai_tool",
+            "cwd": ".",
             "script": "npm",
-            "args": "start",
+            "args": "run start",
             "interpreter": "none",
             "exec_mode": "fork",
-            "kill_timeout": 5000,
+            "instances": 1,
+            "watch": false,
+            "kill_timeout": 60000,
+            "restart_delay": 3000,
             "wait_ready": false,
             "log_date_format": "HH:mm 〉",
             "env": {
-                "NODE_ENV": "production"
+                "NODE_ENV": "production",
+                "ZM_AI_TOOL_DESKTOP": "0",
+                "ZM_AI_TOOL_HOST": "127.0.0.1"
             }
         }
     ]
-}   
+}

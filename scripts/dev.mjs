@@ -1,4 +1,4 @@
-/** dev/start: the same Web (Vite + authenticated Python API). APP is built separately. */
+/** Web runner: dev uses Vite; --production serves frontend/dist through Python. */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -9,12 +9,13 @@ import path from 'node:path'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 if (existsSync(path.join(root, '.env'))) process.loadEnvFile(path.join(root, '.env'))
 const backend = path.join(root, 'backend')
+const production = process.argv.includes('--production')
 const host = process.env.ZM_AI_TOOL_HOST || '127.0.0.1'
-const origin = process.env.ZM_AI_TOOL_WEB_ORIGIN || 'http://localhost:5173'
+const apiPort = Number(process.env.ZM_AI_TOOL_PORT || 8787)
+const origin = process.env.ZM_AI_TOOL_WEB_ORIGIN || `http://localhost:${production ? apiPort : 5173}`
 const originUrl = new URL(origin)
 const webPort = originUrl.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(originUrl.hostname)
   ? Number(originUrl.port || 80) : 5173
-const apiPort = Number(process.env.ZM_AI_TOOL_PORT || 8787)
 const connectHost = host === '0.0.0.0' ? '127.0.0.1' : host.includes(':') ? `[${host === '::' ? '::1' : host}]` : host
 const apiUrl = `http://${connectHost}:${apiPort}`
 const env = { ...process.env, ZM_AI_TOOL_DESKTOP: '0', ZM_AI_TOOL_WEB_ORIGIN: origin,
@@ -68,14 +69,17 @@ async function requireFreePort(port) {
 }
 
 try {
-  if (!python || !existsSync(vite)) throw new Error('Chạy bun run setup trước. / Run bun run setup first.')
-  if (![apiPort, webPort].every(port => Number.isInteger(port) && port > 0 && port <= 65535) || apiPort === webPort) {
+  if (!python || (!production && !existsSync(vite))) throw new Error('Chạy npm run setup trước. / Run npm run setup first.')
+  if (production && !existsSync(path.join(root, 'frontend/dist/index.html'))) {
+    throw new Error('Chạy npm run build trước npm run start. / Run npm run build before npm run start.')
+  }
+  if (!(production ? [apiPort] : [apiPort, webPort]).every(port => Number.isInteger(port) && port > 0 && port <= 65535) || (!production && apiPort === webPort)) {
     throw new Error('Cổng API và Web phải hợp lệ và khác nhau. / API and Web ports must be valid and different.')
   }
   // Fail on occupied ports; never terminate an unrelated listener.
   await requireFreePort(apiPort)
-  await requireFreePort(webPort)
-  const api = start('api', python, ['-m', 'uvicorn', 'main:app', '--host', host, '--port', String(apiPort), '--no-access-log'], backend)
+  if (!production) await requireFreePort(webPort)
+  const api = start('api', python, ['main.py'], backend)
   let ready = false
   const deadline = Date.now() + 30_000
   while (!stopping && Date.now() < deadline) {
@@ -88,9 +92,11 @@ try {
   }
   if (!stopping) {
     if (!ready) throw new Error('API chưa sẵn sàng sau 30s. / API did not start within 30s.')
-    start('web', process.execPath, [vite, '--config', path.join(root, 'frontend/vite.config.ts'),
-      '--strictPort', '--host', host, '--port', String(webPort)], root)
-    console.log(`Web → http://localhost:${webPort}\nAPI → ${apiUrl}\nCtrl+C để dừng / to stop.`)
+    if (!production) {
+      start('web', process.execPath, [vite, '--config', path.join(root, 'frontend/vite.config.ts'),
+        '--strictPort', '--host', host, '--port', String(webPort)], root)
+    }
+    console.log(`Web → ${production ? apiUrl : `http://localhost:${webPort}`}\nAPI → ${apiUrl}\nCtrl+C để dừng / to stop.`)
   }
 } catch (error) {
   console.error(`[web] ${error.message}`)

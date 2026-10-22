@@ -167,9 +167,11 @@ Khởi động lại backend sau khi bổ sung model, rồi chạy lại bước
 
 ### Chỉ có hai bản: Web và APP
 
-- **Web:** `bun run dev` và `bun run start` là hai tên cho cùng một luồng chạy
-  Vite + backend Web để phát triển/thử nghiệm. Mặc định mở `http://localhost:5173`,
-  API ở `127.0.0.1:8787`. `Ctrl+C` dừng cả hai. Cổng đang bận sẽ báo lỗi.
+- **Web dev:** `npm run dev` chạy Vite + backend Web để phát triển/thử nghiệm.
+  Mặc định mở `http://localhost:5173`, API ở `127.0.0.1:8787`. `Ctrl+C` dừng cả hai.
+- **Web production:** `npm run build` rồi `npm run start` chạy backend phục vụ
+  giao diện tĩnh từ `frontend/dist` tại `127.0.0.1:8787`, không khởi động Vite.
+  Cổng đang bận sẽ báo lỗi; `Ctrl+C` dừng backend và worker.
 - **APP:** `bun run build:app` đóng gói ứng dụng desktop; launcher tự chọn backend
   APP. `bun run build` chỉ build giao diện dùng chung cho Web/APP.
 
@@ -186,8 +188,9 @@ ZM_AI_TOOL_GOOGLE_CLIENT_SECRET=your-google-web-client-secret
 Google Cloud → Google Auth platform → Clients → tạo **Web application**.
 Đăng ký callback `https://zmaitool.com/api/auth/google/callback`; nếu thử local,
 đăng ký thêm `http://localhost:5173/api/auth/google/callback`.
-Nếu `.env` đã có origin local khác (ví dụ `http://localhost:18787`), dev/start dùng
-cổng đó cho Vite và giữ nguyên callback đã đăng ký. Client ID/Secret có thể để trống
+Nếu `.env` đã có origin local khác (ví dụ `http://localhost:18787`), dev dùng
+cổng đó cho Vite. Với start, đặt `ZM_AI_TOOL_PORT=18787` nếu truy cập trực tiếp
+không qua reverse proxy để khớp origin/callback. Client ID/Secret có thể để trống
 để xem giao diện; API dữ liệu riêng vẫn yêu cầu đăng nhập.
 
 Mỗi tài khoản Google có project, job, cấu hình, kết quả và cache UI riêng.
@@ -237,7 +240,7 @@ Mở rộng nhiều host cần cơ chế lập lịch worker.
 origin HTTPS và Google credentials trong `.env`, rồi chạy chính entry backend:
 
 ```sh
-backend/.venv/bin/python backend/main.py
+npm run start
 ```
 
 Reverse proxy HTTPS của `zmaitool.com` về `127.0.0.1:8787`, giữ header `Origin`,
@@ -247,12 +250,35 @@ Chạy một gateway, không bật reload hoặc nhiều Uvicorn worker khi ch�
 Biến môi trường của service/shell ưu tiên hơn `.env`; secret chỉ nằm ở backend.
 Sao lưu toàn bộ `WEB_DATA` gồm SQLite và dữ liệu các tài khoản.
 
+**Ubuntu với PM2:** chạy các lệnh sau từ thư mục gốc repository, bằng cùng user
+đã cài môi trường. Chuẩn bị `.env` với `ZM_AI_TOOL_WEB_ORIGIN=https://zmaitool.com`
+và Google Client ID/Secret; không đưa secret vào `pm2.start.json`.
+
+```sh
+npm run setup                 # Lần đầu hoặc khi dependency thay đổi
+npm run build
+# Chờ job đang chạy hoàn tất trước khi dừng/restart.
+pm2 startOrRestart pm2.start.json --only zm_ai_tool --update-env
+curl --fail http://127.0.0.1:8787/api/health
+curl --fail --silent --output /dev/null --write-out '%{http_code}\n' http://127.0.0.1:8787/
+pm2 logs zm_ai_tool --lines 50 --nostream
+pm2 save
+```
+
+Health phải trả `"mode":"web"`; mở domain HTTPS để kiểm tra giao diện và đăng nhập.
+PM2 gọi `npm run start`, backend phục vụ `frontend/dist`, không chạy Vite. `.env` được
+đọc mỗi lần khởi động; cổng mặc định 8787, có thể đổi bằng `ZM_AI_TOOL_PORT`.
+Nginx phải dùng cùng cổng. Lần đầu cấu hình tự chạy sau reboot bằng `pm2 startup`,
+chạy đúng lệnh mà PM2 in ra rồi `pm2 save`. Các lần cập nhật sau dùng
+`npm run build && pm2 restart pm2.start.json --only zm_ai_tool --update-env`.
+
 ### Các lệnh thường dùng
 
 | Lệnh | Mục đích |
 |---|---|
 | `npm run setup` | Cài dependency và chuẩn bị môi trường. |
-| `bun run dev` / `bun run start` | Cùng chạy bản Web: Vite + backend xác thực Google. |
+| `npm run dev` | Web development: Vite + backend xác thực Google. |
+| `npm run start` | Web production: backend phục vụ giao diện đã build, không chạy Vite. |
 | `npm run build` | Type-check TypeScript và build frontend. |
 | `npm run test:i18n` | Kiểm tra catalog Việt/Anh. |
 | `npm run build:app` | Đóng gói desktop; macOS cài đè `~/Applications`. Tăng patch: `BUMP_VERSION=1`. |
