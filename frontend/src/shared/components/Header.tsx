@@ -395,10 +395,10 @@ export default function Header({
             type="button"
             className={`license-expiry${licenseStatus.remainingDay === -1 ? ' is-unlimited' : licenseStatus.remainingDay <= 7 ? ' is-warning' : ''}`}
             onClick={onOpenLicense}
-            aria-label={licenseStatus.remainingDay === -1 ? t('header.unlimited') : t('header.daysLeft', { count: licenseStatus.remainingDay })}
+            aria-label={!licenseStatus.valid ? t('header.activate') : licenseStatus.remainingDay === -1 ? t('header.unlimited') : t('header.daysLeft', { count: licenseStatus.remainingDay })}
             title={licenseStatus.remainingDay === -1 ? t('header.unlimited') : licenseStatus.expiresAt ? t('header.expires', { date: new Date(licenseStatus.expiresAt).toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US') }) : undefined}
           >
-            {licenseStatus.remainingDay === -1 ? <span aria-hidden="true">∞</span> : t('header.daysLeft', { count: licenseStatus.remainingDay })}
+            {!licenseStatus.valid ? t('header.activate') : licenseStatus.remainingDay === -1 ? <span aria-hidden="true">∞</span> : t('header.daysLeft', { count: licenseStatus.remainingDay })}
           </button>
         )}
         <span className="dot" aria-hidden="true" />

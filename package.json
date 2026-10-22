@@ -1,7 +1,7 @@
 {
   "name": "zm-ai-tool",
   "private": true,
-  "version": "8.6.87",
+  "version": "8.6.88",
   "type": "module",
   "scripts": {
     "setup": "node scripts/setup.mjs",
@@ -15,7 +15,7 @@
     "build:installer": "node build_app/build_installer.mjs",
     "check:build": "node build_app/check_build.mjs",
     "start": "node scripts/dev.mjs --production",
-    "release": "npm version && git push && git push --tags"
+    "release": "bash scripts/release.sh"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

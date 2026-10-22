@@ -415,6 +415,22 @@ test('APP Google callback failures stop waiting with bilingual errors and refres
 })
 
 
+test('unactivated APP retains its header and routes workspace interactions to activation settings', () => {
+  const app = read('app/App.tsx')
+  assert.match(app, /appUsable && \(\s*<Header/)
+  assert.doesNotMatch(app, /app-license-gate|status=\{licenseStatus \|\| EMPTY_LICENSE\}\s+gate/)
+  for (const event of ['onClickCapture', 'onPointerDownCapture', 'onKeyDownCapture', 'onSubmitCapture', 'onDropCapture']) {
+    assert.ok(app.includes(`${event}={requireActivation}`), event)
+  }
+  assert.match(app, /if \(!licenseBlocked \|\| appMode === 'license'\) return/)
+  assert.match(app, /event\.preventDefault\(\)[\s\S]*event\.stopPropagation\(\)[\s\S]*openActivation\(\)/)
+  assert.match(app, /setConfigSection\('license'\)\s+setConfigOpen\(true\)/)
+  assert.match(app, /key=\{licenseStatus\?\.valid \? 'active' : 'inactive'\}/)
+  assert.match(read('features/configuration/ConfigModal.tsx'), /t\('Kiểm tra cập nhật', 'Check for updates'\)/)
+  assert.match(read('shared/components/Header.tsx'), /!licenseStatus\.valid \? t\('header\.activate'\)/)
+  assert.match(read('app/i18n.tsx'), /'header.activate': \{ vi: 'Kích hoạt APP', en: 'Activate APP' \}/)
+})
+
 test('header locale switch collapses to a bilingual toggle on small screens', () => {
   const source = read('shared/components/LocaleSwitch.tsx')
   assert.ok(read('shared/components/Header.tsx').includes('compactOnSmallScreen'))

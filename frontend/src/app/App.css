@@ -31,8 +31,7 @@
 
 /* License gate has no Header.  Do not keep the normal 58px Header grid row:
    WebView2 can then paint the full-height gate outside its grid hit region. */
-.app.app-license-gate { grid-template-rows: minmax(0, 1fr); }
-.app.app-license-gate .license-page { grid-row: 1; min-height: 100%; width: 100%; box-sizing: border-box; }
+.app-workspace { display: contents; }
 
 .main {
   min-height: 0;

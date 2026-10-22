@@ -327,7 +327,7 @@ trong `.env` của server; không đưa secret vào log hay chat.
 | `npm run build:release:windows` | Windows local giống `build:app` (Setup.exe; cần Inno Setup). |
 | `npm run build:installer` | Chỉ chạy lại Inno Setup (Setup.exe) khi đã có thư mục ứng dụng đã build. |
 | `npm run check:build` | Kiểm tra artifact desktop. |
-| `npm run release -- patch` | Bump patch version, tạo tag và push lên GitHub (trigger CI build). |
+| `npm run release` | Tăng patch version, commit toàn bộ thay đổi, push main và annotated tag lên GitHub (trigger CI build). |
 
 ## Cấu hình cloud tùy chọn
 
@@ -338,12 +338,18 @@ File `.env` dùng cấu hình đăng nhập/địa chỉ Web; không commit file
 ## Đóng gói và phát hành
 
 ```bash
-# Phát hành patch (ví dụ 3.7.3 → 3.7.4) — bump version + tag + push trong một lệnh
-npm run release -- patch
+# Phát hành patch (ví dụ 8.6.87 → 8.6.88): tăng version + commit all + push + tag
+npm run release
 
 # Hoặc chỉ định thẳng version
-npm run release -- 3.8.0
+npm run release -- 8.7.0
 ```
+
+Chạy trên branch `main`, cần Bash, Node/npm và quyền push tới `origin`.
+Lệnh commit tất cả file đã sửa/thêm/xóa, trừ file được Git ignore.
+Có thể dùng `npm run release -- minor` hoặc `npm run release -- major`.
+Version chỉ định phải lớn hơn hiện tại và tag chưa tồn tại. Lệnh dừng khi có lỗi;
+không tự chạy test/build, hãy kiểm tra trước khi phát hành.
 
 Artifact local được tạo trong `build_app/release/`. GitHub Actions build macOS và Windows khi push tag theo dạng `v*` và đính kèm các gói phát hành vào GitHub Release.
 

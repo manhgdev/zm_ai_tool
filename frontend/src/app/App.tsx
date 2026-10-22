@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type SyntheticEvent,
 } from 'react'
 import { Toaster, toast } from 'sonner'
 import Header, { type AppMode } from '@/shared/components/Header'
@@ -892,16 +893,24 @@ export default function App() {
   // Chỉ sau Bắt đầu / đã lưu cổng — tránh Header+Modal+workspace cùng chiếm CSS grid → trắng.
   const firstRunBlocked = !setupGatePassed
   const appUsable = setupGatePassed
-  // Do not mount workspace pages until the backend has confirmed the license;
-  // their startup polling would otherwise create background 403 requests.
   const licenseBlocked = appUsable && (!licenseStatus || !licenseStatus.valid)
   const configModalOpen = configOpen || firstRunBlocked
+  const openActivation = () => {
+    setConfigSection('license')
+    setConfigOpen(true)
+  }
+  const requireActivation = (event: SyntheticEvent) => {
+    if (!licenseBlocked || appMode === 'license') return
+    event.preventDefault()
+    event.stopPropagation()
+    openActivation()
+  }
 
   return (
     <RealtimeProvider enabled={Boolean(appUsable && licenseStatus?.valid)}>
     <LocaleContext.Provider value={{ locale, setLocale: changeLocale }}>
     <LocaleTextSync />
-    <div className={`app${licenseBlocked ? ' app-license-gate' : ''}`}>
+    <div className="app">
       {!appUsable ? (
         <p className="cfg-boot-msg">
           {setupChecked
@@ -911,7 +920,7 @@ export default function App() {
             : 'Đang kết nối backend…'}
         </p>
       ) : null}
-      {appUsable && !licenseBlocked && (
+      {appUsable && (
       <Header
         hardware={hw}
         dark={dark}
@@ -921,7 +930,10 @@ export default function App() {
         onMenuClick={
           appMode === 'tts' ? () => setTtsSideOpen((o) => !o) : undefined
         }
-        onModeChange={navigateToMode}
+        onModeChange={(mode) => {
+          navigateToMode(mode)
+          if (licenseBlocked && mode !== 'license') openActivation()
+        }}
         onHardwareChange={async (mode) => {
           try { setHw(await api.hardwareMode(mode)) }
           catch (error) {
@@ -941,10 +953,7 @@ export default function App() {
         onToggleTheme={() => setDark(d => !d)}
         locale={locale}
         onLocaleChange={changeLocale}
-        onOpenLicense={() => {
-          setConfigSection('license')
-          setConfigOpen(true)
-        }}
+        onOpenLicense={openActivation}
         onOpenConfig={() => {
           setConfigOpen(true)
         }}
@@ -958,7 +967,10 @@ export default function App() {
         onSetupReady={passSetupGate}
         onSaved={() => refreshVoices(undefined, true)}
         licenseStatus={licenseStatus || undefined}
-        onLicenseStatusChange={setLicenseStatus}
+        onLicenseStatusChange={(next) => {
+          setLicenseStatus(next)
+          if (!licenseStatus?.valid && next.valid && configSection === 'license') setConfigOpen(false)
+        }}
         onClose={() => {
           if (firstRunBlocked) return
           setConfigOpen(false)
@@ -966,15 +978,17 @@ export default function App() {
           refreshVoices(undefined, true)
         }}
       />
-      {licenseBlocked && localeReady && (
-        <LicensePage
-          status={licenseStatus || EMPTY_LICENSE}
-          gate
-          onStatusChange={setLicenseStatus}
-        />
-      )}
+      {/* Reload page data after activation: startup reads may have been denied. */}
+      <div className="app-workspace" key={licenseStatus?.valid ? 'active' : 'inactive'}
+        onClickCapture={requireActivation}
+        onPointerDownCapture={requireActivation}
+        onKeyDownCapture={requireActivation}
+        onSubmitCapture={requireActivation}
+        onDropCapture={requireActivation}
+        onDragOverCapture={licenseBlocked ? (event) => event.preventDefault() : undefined}
+      >
       <Suspense fallback={<div className="page-loading" role="status">Đang tải…</div>}>
-      {appUsable && !licenseBlocked ? (
+      {appUsable ? (
       <RetainedPages active={appMode} transient={['clone', 'live-preview', 'license']}>
       {(appMode, visible) => appMode === 'tts' ? (
         <TtsPage
@@ -991,7 +1005,7 @@ export default function App() {
           }}
           onOpenChat={() => navigateToMode('chat')}
         />
-      ) : appMode === 'license' && !licenseBlocked ? (
+      ) : appMode === 'license' ? (
         <LicensePage status={licenseStatus || EMPTY_LICENSE} onStatusChange={setLicenseStatus} />
       ) : appMode === 'download' ? (
         <DownloadPage
@@ -1269,6 +1283,7 @@ export default function App() {
       }</RetainedPages>
       ) : null}
       </Suspense>
+      </div>
       {appUsable && !licenseBlocked && <BackgroundTasks currentMode={appMode} onOpen={navigateToMode}
         project={projectId ? { id: projectId, running: status.running, progress: status.progress, message: status.message } : undefined} />}
       <Toaster position="bottom-right" theme={dark ? 'dark' : 'light'} richColors closeButton />

@@ -58,6 +58,7 @@ const MESSAGES = {
   'header.computeMode': { vi: 'Chọn CPU hoặc GPU', en: 'Choose CPU or GPU' },
   'header.unlimited': { vi: 'Không giới hạn', en: 'Unlimited' },
   'header.daysLeft': { vi: '{count} ngày còn lại', en: '{count} days left' },
+  'header.activate': { vi: 'Kích hoạt APP', en: 'Activate APP' },
   'header.expires': { vi: 'Hết hạn: {date}', en: 'Expires: {date}' },
   'header.switchLight': { vi: 'Chuyển sang giao diện sáng', en: 'Switch to light mode' },
   'header.switchDark': { vi: 'Chuyển sang giao diện tối', en: 'Switch to dark mode' },
