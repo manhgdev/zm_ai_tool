@@ -170,7 +170,7 @@ Khởi động lại backend sau khi bổ sung model, rồi chạy lại bước
 - **Web dev:** `npm run dev` chạy Vite + backend Web để phát triển/thử nghiệm.
   Mặc định mở `http://localhost:5173`, tự tăng lên 5174… nếu bận; API ở
   `127.0.0.1:8787`. `Ctrl+C` dừng cả hai.
-- **Web production:** `npm start` tự type-check/build frontend rồi chạy backend phục vụ
+- **Web production:** chạy `npm run build` thủ công, rồi `npm start` chạy backend phục vụ
   giao diện tĩnh từ `frontend/dist` tại `127.0.0.1:8787`, không khởi động Vite.
   Cổng đang bận sẽ báo lỗi; `Ctrl+C` dừng backend và worker.
 - **APP:** `bun run build:app` đóng gói ứng dụng desktop; launcher tự chọn backend
@@ -261,9 +261,10 @@ Mở rộng nhiều host cần cơ chế lập lịch worker.
   Google khi nghiệm thu; không dùng phiên giả để kết luận OAuth thật thành công.
 
 **Triển khai Web trên server:** cài môi trường, đặt origin HTTPS và Google
-credentials trong `.env`, rồi chạy (tự build frontend trước khi khởi động backend):
+credentials trong `.env`, rồi build frontend thủ công trước khi khởi động backend:
 
 ```sh
+npm run build
 npm start
 ```
 
@@ -280,6 +281,7 @@ và Google Client ID/Secret; không đưa secret vào `pm2.start.json`.
 
 ```sh
 npm run setup                 # Lần đầu hoặc khi dependency thay đổi
+npm run build
 # Chờ job đang chạy hoàn tất trước khi dừng/restart.
 pm2 startOrRestart pm2.start.json --only zm_ai_tool --update-env
 curl --fail http://127.0.0.1:8787/api/health
@@ -289,12 +291,12 @@ pm2 save
 ```
 
 Health phải trả `"mode":"web"`; mở domain HTTPS để kiểm tra giao diện và đăng nhập.
-PM2 gọi `npm run start`, tự type-check/build frontend rồi backend phục vụ
-`frontend/dist`, không chạy Vite dev server. Nếu build lỗi, backend không khởi động. `.env` được
+PM2 gọi `npm run start`, backend phục vụ `frontend/dist` đã build sẵn;
+không tự build và không chạy Vite dev server. `.env` được
 đọc mỗi lần khởi động; cổng mặc định 8787, có thể đổi bằng `ZM_AI_TOOL_PORT`.
 Nginx phải dùng cùng cổng. Lần đầu cấu hình tự chạy sau reboot bằng `pm2 startup`,
 chạy đúng lệnh mà PM2 in ra rồi `pm2 save`. Các lần cập nhật sau dùng
-`pm2 restart pm2.start.json --only zm_ai_tool --update-env`.
+`npm run build && pm2 restart pm2.start.json --only zm_ai_tool --update-env`.
 
 Nếu trang quản lý đọc được danh sách nhưng mọi thao tác thêm/sửa/xóa trả
 `403 WEB_ORIGIN_REJECTED`, kiểm tra dòng `Web →` trong log: origin phải là
@@ -317,7 +319,7 @@ trong `.env` của server; không đưa secret vào log hay chat.
 |---|---|
 | `npm run setup` | Cài dependency và chuẩn bị môi trường. |
 | `npm run dev` | Web development: Vite + backend xác thực Google. |
-| `npm start` | Web production: tự type-check/build frontend, rồi phục vụ giao diện tĩnh; không chạy Vite dev server. |
+| `npm start` | Web production: phục vụ giao diện đã build; không tự build và không chạy Vite dev server. |
 | `npm run build` | Type-check TypeScript và build frontend. |
 | `npm run test:i18n` | Kiểm tra catalog Việt/Anh. |
 | `npm run build:app` | Đóng gói desktop; macOS cài đè `~/Applications`. Tăng patch: `BUMP_VERSION=1`. |

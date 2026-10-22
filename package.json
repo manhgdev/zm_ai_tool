@@ -1,7 +1,7 @@
 {
   "name": "zm-ai-tool",
   "private": true,
-  "version": "8.6.86",
+  "version": "8.6.87",
   "type": "module",
   "scripts": {
     "setup": "node scripts/setup.mjs",
@@ -14,7 +14,6 @@
     "build:release:windows": "node build_app/build.mjs",
     "build:installer": "node build_app/build_installer.mjs",
     "check:build": "node build_app/check_build.mjs",
-    "prestart": "npm run build",
     "start": "node scripts/dev.mjs --production",
     "release": "npm version && git push && git push --tags"
   },

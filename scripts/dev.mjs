@@ -70,7 +70,7 @@ async function requireFreePort(port) {
 try {
   if (!python || (!production && !existsSync(vite))) throw new Error('Chạy npm run setup trước. / Run npm run setup first.')
   if (production && !existsSync(path.join(root, 'frontend/dist/index.html'))) {
-    throw new Error('Chạy npm start để tự build giao diện và khởi động. / Run npm start to build the frontend and start the server.')
+    throw new Error('Chạy npm run build trước npm start. / Run npm run build before npm start.')
   }
   if (!Number.isInteger(apiPort) || apiPort < 1 || apiPort > 65535) {
     throw new Error('Cổng API phải từ 1 đến 65535. / API port must be between 1 and 65535.')

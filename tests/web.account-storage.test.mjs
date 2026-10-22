@@ -9,9 +9,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { accountStorage } from '../frontend/src/app/appSettings.ts'
 
-test('PM2 production uses npm start with automatic build, one instance and no desktop mode', () => {
+test('PM2 production uses npm start without rebuilding, with one instance and no desktop mode', () => {
   const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(scripts.prestart, 'npm run build')
+  assert.equal(scripts.prestart, undefined)
   assert.equal(scripts.start, 'node scripts/dev.mjs --production')
   const { apps } = JSON.parse(readFileSync(new URL('../pm2.start.json', import.meta.url), 'utf8'))
   assert.equal(apps.length, 1)

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from pipeline.core.desktop_window import request_desktop_foreground
 from pipeline.core.license import activate_license, deactivate_license, license_status, start_desktop_login, finish_desktop_login
 
 router = APIRouter(tags=["license"])
@@ -50,6 +51,7 @@ def desktop_start(request: Request):
 def desktop_callback(state: str = '', code: str = ''):
     try:
         finish_desktop_login(state, code)
+        request_desktop_foreground()
         return HTMLResponse('<html lang="vi"><meta charset="utf-8"><title>ZM AI TOOL</title><p>Đã đăng nhập. Bạn có thể quay lại ứng dụng. / Signed in. You can return to the app.</p></html>', headers={'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store'})
     except Exception:
         return HTMLResponse('<html lang="vi"><meta charset="utf-8"><title>ZM AI TOOL</title><p>Đăng nhập chưa hoàn tất. Hãy thử lại trong ứng dụng. / Sign-in failed. Please try again in the app.</p></html>', status_code=400, headers={'Cache-Control': 'no-store'})

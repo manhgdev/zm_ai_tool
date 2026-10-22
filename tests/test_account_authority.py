@@ -529,13 +529,19 @@ def test_app_account_and_key_are_exclusive_and_late_callback_cannot_replace_key(
 def test_app_http_google_callback_installs_access_seen_by_status_poll(store, desktop):
     from api.app import create_app
     uid = create(store, 'desktop@example.com', term=DAY)['id']
-    with TestClient(create_app(), base_url='http://127.0.0.1:34567') as client:
+    focused_statuses = []
+    with patch('api.routes.license.request_desktop_foreground', side_effect=lambda: focused_statuses.append(desktop._read()['status'])) as foreground, TestClient(create_app(), base_url='http://127.0.0.1:34567') as client:
         login = parse_qs(urlsplit(client.post('/api/auth/desktop/start').json()['authorizationUrl']).query)
         with store.connect(write=True) as db:
             db.execute('INSERT INTO desktop_codes VALUES(?,?,?,?,?)',
                        (store.digest('callback-code'), uid, login['challenge'][0], login['redirect_uri'][0], time.time() + 60))
         callback = client.get('/api/auth/desktop/callback', params={'state': login['state'][0], 'code': 'callback-code'})
         assert callback.status_code == 200
+        foreground.assert_called_once_with()
+        assert focused_statuses[0]['mode'] == 'account' and focused_statuses[0]['valid']
+        replay = client.get('/api/auth/desktop/callback', params={'state': login['state'][0], 'code': 'callback-code'})
+        assert replay.status_code == 400
+        foreground.assert_called_once_with()
         response = client.get('/api/license/status')
         assert response.headers['Cache-Control'] == 'no-store'
         status = response.json()
@@ -551,7 +557,7 @@ def test_app_http_google_callback_installs_access_seen_by_status_poll(store, des
 ])
 def test_app_callback_failure_reaches_status_and_retry_clears_it(desktop, error, expected):
     from api.app import create_app
-    with TestClient(create_app(), base_url='http://127.0.0.1:34567') as client:
+    with patch('api.routes.license.request_desktop_foreground') as foreground, TestClient(create_app(), base_url='http://127.0.0.1:34567') as client:
         login = parse_qs(urlsplit(client.post('/api/auth/desktop/start').json()['authorizationUrl']).query)
         with patch.object(desktop, '_request', side_effect=error):
             callback = client.get('/api/auth/desktop/callback', params={'state': login['state'][0], 'code': 'callback-code'})
@@ -565,6 +571,7 @@ def test_app_callback_failure_reaches_status_and_retry_clears_it(desktop, error,
         client.get('/api/auth/desktop/callback', params={'state': 'wrong-state', 'code': 'wrong-code'})
         assert not client.get('/api/license/status').json()['loginError']
         assert desktop._pending
+        foreground.assert_not_called()
 
 
 @pytest.mark.parametrize('action', ['activate', 'exchange'])
