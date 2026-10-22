@@ -42,6 +42,7 @@ for (const paths of [
   ['features/project/TranslationReview.tsx'],
   ['features/project/ScriptTranslationReview.tsx', 'features/studio/CloneBatchSettingsPanel.tsx', 'features/project/ProjectSidebar.tsx', 'features/editor/EditorProjectPanel.tsx', 'features/editor/EditorPropertiesPanel.tsx'],
   ['features/project/useTranslationProviders.ts'],
+  ['features/studio/ReviewSettingsPanel.tsx'],
 ]) {
   test(`inline Vietnamese/English pairs are complete: ${paths.join(', ')}`, () => {
     for (const path of paths) {
@@ -63,6 +64,25 @@ for (const paths of [
     }
   })
 }
+
+test('OpenCode model presets and setup guidance are bilingual', () => {
+  let presets
+  visit(parse('features/configuration/configModal.helpers.ts'), node => {
+    if (ts.isPropertyAssignment(node) && node.name.getText() === 'opencode' && ts.isArrayLiteralExpression(node.initializer)) presets = node.initializer
+  })
+  assert.ok(presets?.elements.length)
+  for (const model of presets.elements) {
+    const values = Object.fromEntries(model.properties.map(prop => [prop.name.getText(), literal(prop.initializer)]))
+    assert.ok(values.id && values.labelVi && values.labelEn)
+    assert.notEqual(values.labelVi, values.labelEn)
+  }
+  const pairs = new Map()
+  visit(parse('features/configuration/ConfigModal.tsx'), node => {
+    if (ts.isCallExpression(node) && node.expression.getText() === 't') pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
+  })
+  assert.equal(pairs.get('Lấy API key tại '), 'Get an API key from ')
+  assert.ok(pairs.get('Danh sách chỉ gồm model dùng Chat Completions. Quyền dùng model free phụ thuộc chính sách OpenCode và tài khoản của bạn.'))
+})
 
 test('application key copy feedback is bilingual', () => {
   const pairs = new Map()

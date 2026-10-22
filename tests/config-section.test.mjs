@@ -9,7 +9,34 @@ const source = read('features/configuration/configModal.helpers.ts')
 const code = ts.transpileModule(source.replace(/^import .*$/gm, '').replace(/^export /gm, ''), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText
-const load = localStorage => vm.runInNewContext(`${code}; ({ loadConfigSection, persistConfigSection })`, { localStorage })
+const load = localStorage => vm.runInNewContext(`${code}; ({ loadConfigSection, persistConfigSection, PROVIDERS, emptyCloud, PROVIDER_PRESET_MODELS })`, { localStorage })
+
+test('OpenCode is configured next to OpenRouter with a valid default model', () => {
+  const { PROVIDERS, emptyCloud, PROVIDER_PRESET_MODELS } = load({})
+  assert.equal(PROVIDERS[PROVIDERS.indexOf('openrouter') + 1], 'opencode')
+  const config = emptyCloud().opencode
+  assert.equal(config.label, 'OpenCode')
+  assert.equal(config.baseUrl, 'https://opencode.ai/zen/v1')
+  assert.equal(config.apiKeySet, false)
+  assert.ok(PROVIDER_PRESET_MODELS.opencode.some(model => model.id === config.model))
+})
+
+test('shared translation and AI review pickers retain OpenCode after saving settings', () => {
+  const values = new Map()
+  const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }
+  const settingsCode = ts.transpileModule(read('app/appSettings.ts').replace(/^import .*$/gm, '').replace(/^export /gm, ''), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const settings = vm.runInNewContext(`${settingsCode}; ({ translatorOptions, translationReviewOptions, defaultSettings, persistSettings, loadSettings })`, { localStorage: storage })
+  for (const engine of ['whisper', 'paddleocr', 'subtitle']) {
+    const options = settings.translatorOptions(engine)
+    assert.equal(options[options.findIndex(item => item.id === 'openrouter') + 1].id, 'opencode')
+  }
+  assert.ok(settings.translationReviewOptions().some(item => item.id === 'opencode' && item.label === 'OpenCode'))
+  settings.persistSettings({ ...settings.defaultSettings, engine: 'whisper', translator: 'opencode', translationReviewTranslator: 'opencode' })
+  assert.equal(settings.loadSettings().translator, 'opencode')
+  assert.equal(settings.loadSettings().translationReviewTranslator, 'opencode')
+})
 
 test('all configuration sections survive a fresh instance through localStorage', () => {
   const values = new Map()

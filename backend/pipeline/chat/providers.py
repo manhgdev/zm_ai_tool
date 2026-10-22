@@ -185,9 +185,9 @@ def normalize_model(provider: str, raw: Any) -> dict[str, Any]:
         or model_id == "test"
         or (model_id.startswith("qwen") and model_id != "qwen3.8-max")
     ):
-        # OpenCode's catalogue mixes Chat Completions with Responses,
-        # Messages, generateContent and System One endpoints. Only expose
-        # models supported by this adapter: https://opencode.ai/docs/zen/
+        # ponytail: reuse Chat Completions; these model families require
+        # Responses, Messages, generateContent or System One. Add native
+        # protocol routing before exposing them: https://opencode.ai/docs/zen/
         capabilities = []
     # Gemini Flash families are multimodal even when models.list omits the
     # modality metadata; keep audio/image preflight useful for SRT workflows.
