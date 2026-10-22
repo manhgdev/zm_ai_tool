@@ -34,6 +34,7 @@ export const LocaleContext = createContext<LocaleContextValue>({ locale: 'vi', s
 
 const MESSAGES = {
   'brand.tagline': { vi: 'Studio Dịch Thuật & Ghép & Lồng Tiếng AI', en: 'AI Translation, Video Cloning & Dubbing Studio' },
+  'nav.home': { vi: 'Trang chủ', en: 'Home' },
   'nav.clone': { vi: 'Clone / Review', en: 'Clone / Review' },
   'nav.cloneVideo': { vi: 'Clone Video', en: 'Clone Video' },
   'nav.review': { vi: 'Review Phim', en: 'Movie Review' },

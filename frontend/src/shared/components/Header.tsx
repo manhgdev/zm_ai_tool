@@ -152,12 +152,11 @@ export default function Header({
             <IconMenu size={22} />
           </button>
         )}
-        <button
-          type="button"
+        <a
+          href="/?landing=1"
           className="brand-home"
-          onClick={() => onModeChange?.('clone')}
-          title={t('nav.clone')}
-          aria-label={t('nav.clone')}
+          title={t('nav.home')}
+          aria-label={t('nav.home')}
         >
           <span className="header-logo-wrap" aria-hidden="true">
             <IconLogo />
@@ -166,7 +165,7 @@ export default function Header({
             <strong>ZM AI TOOL</strong>
             <span>{t('brand.tagline')}</span>
           </span>
-        </button>
+        </a>
       </div>
       <nav className="nav" aria-label="Chính">
         {NAV.map((item) => {

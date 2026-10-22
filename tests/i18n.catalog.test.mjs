@@ -6,6 +6,12 @@ import { explainFlowError, explainFlowEvent } from '../frontend/src/features/flo
 
 const read = path => readFileSync(new URL(`../frontend/src/${path}`, import.meta.url), 'utf8')
 const parse = path => ts.createSourceFile(path, read(path), ts.ScriptTarget.Latest, true)
+test('header logo links to the explicit landing page with bilingual home labels', () => {
+  const header = read('shared/components/Header.tsx')
+  assert.match(header, /<a\s+href="\/\?landing=1"\s+className="brand-home"/)
+  assert.match(header, /aria-label=\{t\('nav.home'\)\}/)
+  assert.match(read('app/i18n.tsx'), /'nav.home': \{ vi: 'Trang chủ', en: 'Home' \}/)
+})
 test('Flow automatic headed fallback has Vietnamese and English event labels', () => {
   const label = explainFlowEvent('browser_headed_fallback')
   assert.match(label.titleVi, /Chrome.*ngoài màn hình/)
