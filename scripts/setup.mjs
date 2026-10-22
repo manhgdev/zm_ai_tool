@@ -151,4 +151,4 @@ run(venvPython, [
   'import sys; from pathlib import Path; sys.path.insert(0, "backend"); from pipeline.asr.speaker import ensure_diarization_models; ensure_diarization_models(Path("backend/data/models/pyannote"), log=print)',
 ],)
 
-console.log('\nĐã cài xong. Dev: npm run dev. Production: npm run build && npm run start. / Setup complete. Dev: npm run dev. Production: npm run build && npm run start.')
+console.log('\nĐã cài xong. Dev: npm run dev. Production: npm start (tự build). / Setup complete. Dev: npm run dev. Production: npm start (builds automatically).')

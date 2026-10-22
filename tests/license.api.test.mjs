@@ -9,8 +9,8 @@ const code = ts.transpileModule(source.replace(/^import .*$/gm, '').replace(/^ex
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText
 
-test('activation and deactivation wait for stale status polls, including failed polls', async () => {
-  for (const action of ['activate', 'deactivate']) for (const fail of [false, true]) {
+test('activation, deactivation and Google sign-in wait for stale status polls, including failed polls', async () => {
+  for (const action of ['activate', 'deactivate', 'login']) for (const fail of [false, true]) {
     const calls = []
     let resolve, reject
     const previous = new Promise((a, b) => { resolve = a; reject = b })
@@ -25,8 +25,9 @@ test('activation and deactivation wait for stale status polls, including failed 
     else resolve({ configured: true })
     await poll
     assert.equal((await changed).configured, action === 'activate')
-    assert.equal(calls[1].url, `/api/license/${action}`)
+    assert.equal(calls[1].url, action === 'login' ? '/api/auth/desktop/start' : `/api/license/${action}`)
     assert.equal(calls[1].options.method, 'POST')
+    assert.equal(calls[0].options.cache, 'no-store')
     if (action === 'activate') assert.deepEqual(JSON.parse(calls[1].options.body), { key: 'ZMAI-TEST' })
   }
 })

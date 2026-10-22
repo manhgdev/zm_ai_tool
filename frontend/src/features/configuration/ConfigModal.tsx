@@ -40,7 +40,8 @@ type DiscoveredModel = {
 type Props = {
   open: boolean
   onClose: () => void
-  initialSection?: Section
+  section: Section
+  onSectionChange: (section: Section) => void
   forceSetup?: boolean
   onSetupReady?: () => void
   onSaved?: () => void
@@ -51,7 +52,8 @@ type Props = {
 export default function ConfigModal({
   open,
   onClose,
-  initialSection = 'cloud',
+  section,
+  onSectionChange: setSection,
   forceSetup = false,
   onSetupReady,
   onSaved,
@@ -63,7 +65,6 @@ export default function ConfigModal({
   localeRef.current = locale
   const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
   const packageName = (kind: string) => installLabel(kind, locale)
-  const [section, setSection] = useState<Section>(initialSection)
   const [draft, setDraft] = useState<CloudDraft>(emptyCloud)
   /** Mỗi ô 1 key; savedIndex tham chiếu key cũ trên server, value là key mới người dùng nhập */
   const [elSlots, setElSlots] = useState<ElKeySlot[]>([{ savedIndex: null, value: '', visible: false, edited: false }])
@@ -436,7 +437,6 @@ export default function ConfigModal({
 
   useEffect(() => {
     if (!open) return
-    setSection(initialSection)
     // Load current outputRoot from /api/ui-preferences and resolved default from /api/config
     if (!licenseStatus?.valid) return
     api.getLocalePreference().then((p) => {
@@ -447,7 +447,7 @@ export default function ConfigModal({
     api.getConfig().then((cfg) => {
       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
     }).catch(() => { })
-  }, [open, initialSection, licenseStatus?.valid])
+  }, [open, licenseStatus?.valid])
 
   useEffect(() => {
     if (!open) return

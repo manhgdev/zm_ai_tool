@@ -18,6 +18,7 @@ import PipelineStepper from '@/features/project/PipelineStepper'
 import SegmentList from '@/features/project/SegmentList'
 import { ScriptTranslationReview } from '@/features/project/ScriptTranslationReview'
 import ConfigModal from '@/features/configuration/ConfigModal'
+import { loadConfigSection, persistConfigSection, type Section } from '@/features/configuration/configModal.helpers'
 import { DEFAULT_CAPCUT_VOICE } from '@/features/tts/ttsSettings'
 
 // Hai màn nặng nhất (editor + TTS studio) tải theo nhu cầu — bundle chính
@@ -111,9 +112,10 @@ export default function App() {
   const voicesRequestRef = useRef<Promise<void> | null>(null)
   const [settings, setSettings] = useState(loadSettings)
   const [configOpen, setConfigOpen] = useState(false)
-  const [configSection, setConfigSection] = useState<'setup' | 'cloud' | 'tts' | 'license'>(() =>
-    loadSetupGate() ? 'cloud' : 'setup',
+  const [configSection, setConfigSection] = useState<Section>(() =>
+    loadSetupGate() ? loadConfigSection() : 'setup',
   )
+  useEffect(() => { persistConfigSection(configSection) }, [configSection])
   const [setupGatePassed, setSetupGatePassed] = useState(loadSetupGate)
   /** Backend checks done once — không chặn UI sau khi đã qua cổng thiết lập. */
   const [setupChecked, setSetupChecked] = useState(false)
@@ -944,14 +946,14 @@ export default function App() {
           setConfigOpen(true)
         }}
         onOpenConfig={() => {
-          if (setupGatePassed) setConfigSection('cloud')
           setConfigOpen(true)
         }}
       />
       )}
       <ConfigModal
         open={configModalOpen && localeReady}
-        initialSection={configSection}
+        section={configSection}
+        onSectionChange={setConfigSection}
         forceSetup={firstRunBlocked}
         onSetupReady={passSetupGate}
         onSaved={() => refreshVoices(undefined, true)}

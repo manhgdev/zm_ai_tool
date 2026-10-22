@@ -367,6 +367,16 @@ test('APP shows detected hardware without manual selection and keeps bilingual r
   assert.ok(!read('pages/AdminPage.tsx').includes('form.max_devices'))
 })
 
+test('APP Google callback failures stop waiting with bilingual errors and refresh on return', () => {
+  const source = read('features/license/LicensePage.tsx')
+  assert.match(source, /waiting && status\.loginError[^]*setWaiting\(false\); setError\(webErrorText\(status\.loginError, locale\)\)/)
+  assert.ok(source.includes("window.addEventListener('focus', resumed)"))
+  assert.ok(source.includes("document.addEventListener('visibilitychange', resumed)"))
+  assert.ok(source.includes("window.removeEventListener('focus', resumed)"))
+  assert.ok(source.includes("document.removeEventListener('visibilitychange', resumed)"))
+  assert.match(read('app/WebSession.tsx'), /AUTH_SERVER_UPDATE_REQUIRED: t\('[^']+', '[^']+'\)/)
+})
+
 
 test('header locale switch collapses to a bilingual toggle on small screens', () => {
   const source = read('shared/components/LocaleSwitch.tsx')

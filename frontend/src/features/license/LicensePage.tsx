@@ -17,13 +17,23 @@ export default function LicensePage({ status, gate = false, embedded = false, on
   const [error, setError] = useState('')
   useEffect(() => { if (status.configured) setWaiting(false) }, [status.configured])
   useEffect(() => {
+    if (waiting && status.loginError) { setWaiting(false); setError(webErrorText(status.loginError, locale)) }
+  }, [waiting, status.loginError, locale])
+  useEffect(() => {
     if (user || busy) return
     let disposed = false
     const refresh = () => licenseApi.status().then(next => { if (!disposed) onStatusChange(next) }).catch(() => {})
+    const resumed = () => { if (!document.hidden) void refresh() }
     const timer = window.setInterval(refresh, waiting ? 2000 : 30_000)
-    const deadline = window.setTimeout(() => setWaiting(false), 600_000)
-    return () => { disposed = true; clearInterval(timer); clearTimeout(deadline) }
+    window.addEventListener('focus', resumed)
+    document.addEventListener('visibilitychange', resumed)
+    return () => { disposed = true; clearInterval(timer); window.removeEventListener('focus', resumed); document.removeEventListener('visibilitychange', resumed) }
   }, [user, busy, waiting, onStatusChange])
+  useEffect(() => {
+    if (!waiting) return
+    const deadline = window.setTimeout(() => { setWaiting(false); setError(webErrorText('DESKTOP_CODE_INVALID', locale)) }, 600_000)
+    return () => clearTimeout(deadline)
+  }, [waiting, locale])
   async function perform(action: () => Promise<void>) {
     setBusy(true); setError('')
     try { await action() }
@@ -62,7 +72,7 @@ export default function LicensePage({ status, gate = false, embedded = false, on
       </> : <>
       <p className="license-method-hint">{t('Chọn một cách để kích hoạt APP: tài khoản Google đã được cấp quyền hoặc key ứng dụng. Hai phương thức không cộng dồn thời hạn.', 'Choose one way to activate the APP: an authorized Google account or an application key. Their access periods are not combined.')}</p>
       {status.installationId && <p className="license-machine" title={status.installationId}>{deviceTypeText(status.deviceType, locale)} · {t('Mã máy: ', 'Machine ID: ')}<code>{status.installationId.slice(0, 16).toUpperCase()}</code></p>}
-      <button type="button" className="license-google" disabled={busy || waiting || !status.installationId} onClick={() => void perform(async () => { await licenseApi.login(); setWaiting(true) })}><IconGoogle />{waiting ? t('Đang chờ đăng nhập trên trình duyệt…', 'Waiting for browser sign-in…') : t('Đăng nhập bằng Google', 'Sign in with Google')}</button>
+      <button type="button" className="license-google" disabled={busy || waiting || !status.installationId} onClick={() => void perform(async () => { await licenseApi.login(); onStatusChange(await licenseApi.status()); setWaiting(true) })}><IconGoogle />{waiting ? t('Đang chờ đăng nhập trên trình duyệt…', 'Waiting for browser sign-in…') : t('Đăng nhập bằng Google', 'Sign in with Google')}</button>
       {waiting && <button type="button" className="license-deactivate" onClick={() => setWaiting(false)}>{t('Thử đăng nhập lại', 'Try sign-in again')}</button>}
       <p className="license-divider">{t('Hoặc kích hoạt bằng key mới được cấp cho ứng dụng.', 'Or activate with a new application key.')}</p>
       <form className="license-form" onSubmit={e => { e.preventDefault(); void perform(async () => { onStatusChange(await licenseApi.activate(key.trim())); setKey('') }) }}>

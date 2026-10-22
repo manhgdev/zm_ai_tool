@@ -14,6 +14,7 @@
     "build:release:windows": "node build_app/build.mjs",
     "build:installer": "node build_app/build_installer.mjs",
     "check:build": "node build_app/check_build.mjs",
+    "prestart": "npm run build",
     "start": "node scripts/dev.mjs --production",
     "release": "npm version && git push && git push --tags"
   },

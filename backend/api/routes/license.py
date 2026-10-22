@@ -1,7 +1,7 @@
 """License endpoints available before the main app is unlocked."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -15,7 +15,8 @@ class ActivateIn(BaseModel):
 
 
 @router.get("/api/license/status")
-def get_license_status(force: bool = False) -> dict:
+def get_license_status(response: Response, force: bool = False) -> dict:
+    response.headers['Cache-Control'] = 'no-store'
     return license_status(force=force)
 
 

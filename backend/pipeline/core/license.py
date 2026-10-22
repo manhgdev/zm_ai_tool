@@ -6,6 +6,7 @@ import contextvars
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import platform
@@ -33,6 +34,7 @@ _request_lock = threading.Lock()
 _cache = None
 _checked_at = 0.0
 _pending = {}
+_login_error = ''
 _continuations = set()
 _admitted = contextvars.ContextVar('admitted_job', default=False)
 _monitor_started = False
@@ -79,6 +81,8 @@ def _request(action, body):
         response = client.post(server_url() + '/api/desktop/' + action, json=body)
     if response.status_code in (400, 401, 403, 404, 409, 422):
         detail = response.json().get('detail', 'DEVICE_REVOKED')
+        if action in ('activate', 'exchange') and detail == 'INVALID_FIELDS':
+            raise ValueError('AUTH_SERVER_UPDATE_REQUIRED')
         raise ValueError(detail if isinstance(detail, str) else 'INVALID_FIELDS')
     response.raise_for_status()
     result = response.json()
@@ -91,6 +95,7 @@ def _empty(code='ACCESS_PENDING', configured=False):
     result = {'valid': False, 'configured': configured, 'mode': 'account', 'keyMasked': '', 'remainingDay': 0,
               'expiresAt': None, 'activationLimit': 0, 'message': '', 'code': code, 'state': 'pending'}
     if os.environ.get('ZM_AI_TOOL_WEB_WORKER') != '1':
+        result['loginError'] = _login_error
         try:
             result.update(installationId=machine_id(), deviceType=desktop_device_type())
         except ValueError:
@@ -247,6 +252,7 @@ def deactivate_license():
 
 
 def start_desktop_login(port):
+    global _login_error
     with _request_lock, _lock:
         device_type = desktop_device_type()
         data = installation()
@@ -255,6 +261,7 @@ def start_desktop_login(port):
         state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
         redirect = f'http://127.0.0.1:{port}/api/auth/desktop/callback'
         _pending.clear()
+        _login_error = ''
         _pending[state] = {'verifier': verifier, 'redirectUri': redirect, 'expires': time.time() + 600,
                            'deviceType': device_type}
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
@@ -264,16 +271,26 @@ def start_desktop_login(port):
 
 
 def finish_desktop_login(state, code):
+    global _login_error
     with _request_lock, _lock:
         pending = _pending.pop(state, None)
-        if not pending or pending['expires'] <= time.time():
+        if not pending:
             raise ValueError('DESKTOP_CODE_INVALID')
-        data = installation()
-        if data.get('device_token') and data.get('authority') == server_url():
-            raise ValueError('DEVICE_ALREADY_CONFIGURED')
-        result = _request('exchange', {**{k: v for k, v in pending.items() if k != 'expires'}, 'code': code,
-                                      'installationId': data['installation_id'], 'name': platform.node()[:200]})
-        _install(result, data, mode='account', device_type=pending['deviceType'])
+        try:
+            if pending['expires'] <= time.time():
+                raise ValueError('DESKTOP_CODE_INVALID')
+            data = installation()
+            if data.get('device_token') and data.get('authority') == server_url():
+                raise ValueError('DEVICE_ALREADY_CONFIGURED')
+            result = _request('exchange', {**{k: v for k, v in pending.items() if k != 'expires'}, 'code': code,
+                                          'installationId': data['installation_id'], 'name': platform.node()[:200]})
+            _install(result, data, mode='account', device_type=pending['deviceType'])
+            _login_error = ''
+        except Exception as exc:
+            # Keep only stable identifiers, never an exception containing URLs or credentials.
+            _login_error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) and str(exc).isupper() and str(exc).replace('_', '').isalpha() else 'LICENSE_SERVER_UNAVAILABLE'
+            logging.getLogger(__name__).warning('APP Google sign-in failed: %s', _login_error)
+            raise
 
 
 def license_cached_valid():

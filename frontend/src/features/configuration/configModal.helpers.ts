@@ -81,6 +81,20 @@ export function nextAutoInstall(checks: SystemChecks): InstallKind | null {
 }
 
 export type Section = 'setup' | 'cloud' | 'tts' | 'output' | 'cleanup' | 'license' | 'logs' | 'computer'
+const CONFIG_SECTION_LS = 'zm_ai_tool.configSection'
+
+export function loadConfigSection(): Section {
+  try {
+    const saved = localStorage.getItem(CONFIG_SECTION_LS)
+    if (saved && ['setup', 'cloud', 'tts', 'output', 'cleanup', 'license', 'logs', 'computer'].includes(saved)) return saved as Section
+  } catch { /* Storage may be disabled. */ }
+  return 'cloud'
+}
+
+export function persistConfigSection(section: Section): void {
+  try { localStorage.setItem(CONFIG_SECTION_LS, section) } catch { /* Storage may be disabled. */ }
+}
+
 export type CloudTab = CloudProviderId
 export type UpdateDialog = {
   kind: 'available' | 'info' | 'downloading' | 'cancelling' | 'ready' | 'applying' | 'error' | 'complete'

@@ -135,6 +135,7 @@ export function webErrorText(code: string, locale: AppLocale) {
     TERM_REPLACE_REQUIRED: t('Hãy đặt lại thời hạn cho mục chưa bắt đầu hoặc đang vĩnh viễn.', 'Replace the term for an unstarted or lifetime item.'),
     DEVICE_LIMIT_BELOW_ACTIVE: t('Hãy thu hồi bớt thiết bị trước khi giảm giới hạn.', 'Revoke devices before reducing the limit.'),
     LICENSE_SERVER_UNAVAILABLE: t('Không kết nối được máy chủ xác thực.', 'Cannot reach the access server.'),
+    AUTH_SERVER_UPDATE_REQUIRED: t('Máy chủ xác thực chưa tương thích với APP này. Quản trị viên cần cập nhật server rồi thử lại.', 'The access server is not compatible with this APP. An administrator must update the server before you retry.'),
     RATE_LIMITED: t('Quá nhiều yêu cầu. Hãy thử lại sau một phút.', 'Too many requests. Try again in one minute.'),
     TIMEZONE_REQUIRED: t('Ngày giờ phải có múi giờ.', 'Dates must include a time zone.'),
     ACCOUNT_DELETED: t('Tài khoản đã bị xóa.', 'The account was deleted.'),

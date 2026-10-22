@@ -450,6 +450,7 @@ def desktop(store, tmp_path, monkeypatch):
     monkeypatch.setattr(licensing, '_cache', None)
     monkeypatch.setattr(licensing, '_checked_at', 0)
     monkeypatch.setattr(licensing, '_pending', {})
+    monkeypatch.setattr(licensing, '_login_error', '')
     monkeypatch.setattr(licensing, 'machine_id', machine)
     monkeypatch.setattr(licensing, 'desktop_device_type', lambda: 'pc')
     monkeypatch.setattr(licensing, 'start_license_monitor', lambda: None)
@@ -523,6 +524,58 @@ def test_app_account_and_key_are_exclusive_and_late_callback_cannot_replace_key(
     with pytest.raises(ValueError, match='DESKTOP_CODE_INVALID'):
         desktop.finish_desktop_login(pending['state'][0], 'late-code')
     assert desktop.license_status()['mode'] == 'key'
+
+
+def test_app_http_google_callback_installs_access_seen_by_status_poll(store, desktop):
+    from api.app import create_app
+    uid = create(store, 'desktop@example.com', term=DAY)['id']
+    with TestClient(create_app(), base_url='http://127.0.0.1:34567') as client:
+        login = parse_qs(urlsplit(client.post('/api/auth/desktop/start').json()['authorizationUrl']).query)
+        with store.connect(write=True) as db:
+            db.execute('INSERT INTO desktop_codes VALUES(?,?,?,?,?)',
+                       (store.digest('callback-code'), uid, login['challenge'][0], login['redirect_uri'][0], time.time() + 60))
+        callback = client.get('/api/auth/desktop/callback', params={'state': login['state'][0], 'code': 'callback-code'})
+        assert callback.status_code == 200
+        response = client.get('/api/license/status')
+        assert response.headers['Cache-Control'] == 'no-store'
+        status = response.json()
+        assert status['configured'] and status['valid'] and status['mode'] == 'account'
+        assert status['user']['email'] == 'desktop@example.com'
+        assert not status.get('loginError')
+
+
+@pytest.mark.parametrize('error,expected', [
+    (ValueError('AUTH_SERVER_UPDATE_REQUIRED'), 'AUTH_SERVER_UPDATE_REQUIRED'),
+    (ValueError('DESKTOP_CODE_INVALID'), 'DESKTOP_CODE_INVALID'),
+    (OSError('https://example.com/?private=do-not-expose'), 'LICENSE_SERVER_UNAVAILABLE'),
+])
+def test_app_callback_failure_reaches_status_and_retry_clears_it(desktop, error, expected):
+    from api.app import create_app
+    with TestClient(create_app(), base_url='http://127.0.0.1:34567') as client:
+        login = parse_qs(urlsplit(client.post('/api/auth/desktop/start').json()['authorizationUrl']).query)
+        with patch.object(desktop, '_request', side_effect=error):
+            callback = client.get('/api/auth/desktop/callback', params={'state': login['state'][0], 'code': 'callback-code'})
+        assert callback.status_code == 400
+        status = client.get('/api/license/status').json()
+        assert not status['configured'] and status['loginError'] == expected
+        assert 'private=' not in json.dumps(status)
+        client.post('/api/auth/desktop/start')
+        assert not client.get('/api/license/status').json()['loginError']
+        # A stale/forged callback must not poison the current sign-in attempt.
+        client.get('/api/auth/desktop/callback', params={'state': 'wrong-state', 'code': 'wrong-code'})
+        assert not client.get('/api/license/status').json()['loginError']
+        assert desktop._pending
+
+
+@pytest.mark.parametrize('action', ['activate', 'exchange'])
+def test_app_reports_authority_rejecting_current_activation_protocol(action):
+    from pipeline.core import license as licensing
+    with patch.object(licensing.httpx, 'Client') as client:
+        response = client.return_value.__enter__.return_value.post.return_value
+        response.status_code = 422
+        response.json.return_value = {'detail': 'INVALID_FIELDS'}
+        with pytest.raises(ValueError, match='AUTH_SERVER_UPDATE_REQUIRED'):
+            licensing._request(action, {'deviceType': 'laptop'})
 
 
 def test_app_deactivation_preserves_offline_credentials_but_clears_revoked_device(store, desktop):

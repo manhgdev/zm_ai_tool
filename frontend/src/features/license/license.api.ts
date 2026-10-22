@@ -18,24 +18,25 @@ export type LicenseStatus = {
   activationCount?: number
   message: string
   transient?: boolean
+  loginError?: string
 }
 
 let statusInFlight: Promise<LicenseStatus> | null = null
 function getStatus(force = false): Promise<LicenseStatus> {
   if (statusInFlight) return statusInFlight
-  statusInFlight = fetchJson<LicenseStatus>('/api/license/status' + (force ? '?force=true' : ''), undefined, 35_000)
+  statusInFlight = fetchJson<LicenseStatus>('/api/license/status' + (force ? '?force=true' : ''), { cache: 'no-store' }, 35_000)
     .finally(() => { statusInFlight = null })
   return statusInFlight
 }
 
-async function changeAccess(request: () => Promise<LicenseStatus>) {
+async function changeAccess<T>(request: () => Promise<T>) {
   // Finish an older poll before changing credentials so it cannot restore stale UI state.
   if (statusInFlight) await statusInFlight.catch(() => {})
   return request()
 }
 
 export const licenseApi = {
-  login: () => fetchJson<{ authorizationUrl: string }>('/api/auth/desktop/start', { method: 'POST' }),
+  login: () => changeAccess(() => fetchJson<{ authorizationUrl: string }>('/api/auth/desktop/start', { method: 'POST' })),
   status: (force = false) => getStatus(force),
   activate: (key: string) =>
     changeAccess(() => fetchJson<LicenseStatus>('/api/license/activate', {
