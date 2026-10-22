@@ -194,7 +194,7 @@ class ChatService:
             # blocking the whole Chat tab while still allowing a normal API
             # round trip on slower networks.
             records = self._api_provider(pid).model_records(timeout=8.0)
-            models = [self._public_model(item, provider=pid) for item in records]
+            models = [self._public_model(item, provider=pid) for item in records if item.get("available", True)]
             if not include_paid:
                 models = [item for item in models if item.get("free")]
             verified = _VERIFIED_CHAT_MODELS.get(pid)

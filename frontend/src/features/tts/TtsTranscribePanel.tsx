@@ -41,7 +41,7 @@ type Props = {
 
 type TranslationModel = { id: string; label: string; free: boolean }
 const NON_TRANSLATION_MODEL_MARKERS = ['prompt-guard', 'safeguard', 'content-safety', 'nemoguard', 'embedding', 'moderation', 'whisper', 'orpheus', 'audio', 'speech', 'tts']
-const CLOUD_TRANSLATORS = ['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral']
+const CLOUD_TRANSLATORS = ['openai', 'gemini', 'deepseek', 'openrouter', 'opencode', 'grok', 'groq', 'nvidia', 'mistral']
 
 export default function TtsTranscribePanel({
   file,

@@ -225,6 +225,23 @@ def create_app(*, dependencies: list | None = None) -> FastAPI:
         # và tự hiện LicensePage. Không gate → webview chỉ thấy 403 JSON.
         if not path.startswith("/api/"):
             return await call_next(request)
+        if path.startswith("/api/chat/"):
+            return await call_next(request)
+        if request.method == "GET" and (path == "/api/drawing/hands" or path.startswith("/api/drawing/hands/")):
+            return await call_next(request)
+        render_parts = path.split("/")
+        if request.method == "GET" and (
+            path in {"/api/voices", "/api/tts/status"}
+            or (len(render_parts) == 6 and render_parts[1:4] == ["api", "tts", "voices"]
+                and render_parts[4] and render_parts[5] == "preview")
+        ):
+            return await call_next(request)
+        if request.method == "GET" and (
+            path == "/api/renders"
+            or (len(render_parts) == 5 and render_parts[1:3] == ["api", "renders"]
+                and render_parts[3] and render_parts[4] in {"video", "text", "thumbnail"})
+        ):
+            return await call_next(request)
         setup_paths = ("/api/license", "/api/system", "/api/config", "/api/hardware")
         if path.startswith("/api/auth/desktop/") or path == "/api/health" or (path in {"/api/ui-locale", "/api/auth/session"} and request.method == "GET") or path.startswith(setup_paths):
             return await call_next(request)

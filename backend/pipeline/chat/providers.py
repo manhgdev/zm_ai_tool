@@ -19,13 +19,14 @@ class ProviderError(RuntimeError):
         return self.message.replace(secret, "[REDACTED]") if secret else self.message
 
 
-API_PROVIDER_IDS = ("openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia", "mistral")
+API_PROVIDER_IDS = ("openai", "gemini", "deepseek", "openrouter", "opencode", "grok", "groq", "nvidia", "mistral")
 LOCAL_PROVIDER_IDS = ("ollama",)
 PROVIDER_LABELS = {
     "openai": "OpenAI API",
     "gemini": "Gemini",
     "deepseek": "DeepSeek",
     "openrouter": "OpenRouter",
+    "opencode": "OpenCode",
     "grok": "Grok (xAI)",
     "groq": "Groq",
     "nvidia": "NVIDIA NIM",
@@ -121,6 +122,10 @@ def _is_free(provider: str, model_id: str, raw: dict[str, Any]) -> tuple[bool, s
         if _zero_price(pricing.get("prompt")) and _zero_price(pricing.get("completion")):
             return True, "Zero-priced model metadata"
         return False, "OpenRouter model is not marked free"
+    if provider == "opencode":
+        if model_id.casefold() == "big-pickle" or model_id.casefold().endswith("-free"):
+            return True, "OpenCode free model variant"
+        return False, "OpenCode model is not marked free"
     if provider == "groq":
         # Groq's authenticated /v1/models catalogue is the entitlement
         # boundary; pricing metadata and model ids change independently of
@@ -175,6 +180,15 @@ def normalize_model(provider: str, raw: Any) -> dict[str, Any]:
     item = raw if isinstance(raw, dict) else {}
     free, reason = _is_free(pid, model_id, item)
     capabilities = _capabilities(item)
+    if pid == "opencode" and (
+        model_id.startswith(("gpt-", "claude-", "gemini-", "grok-", "muse-", "jev-"))
+        or model_id == "test"
+        or (model_id.startswith("qwen") and model_id != "qwen3.8-max")
+    ):
+        # OpenCode's catalogue mixes Chat Completions with Responses,
+        # Messages, generateContent and System One endpoints. Only expose
+        # models supported by this adapter: https://opencode.ai/docs/zen/
+        capabilities = []
     # Gemini Flash families are multimodal even when models.list omits the
     # modality metadata; keep audio/image preflight useful for SRT workflows.
     if pid == "gemini" and "flash" in model_id.lower():
@@ -186,7 +200,7 @@ def normalize_model(provider: str, raw: Any) -> dict[str, Any]:
         "provider": pid,
         "free": free,
         "capabilities": capabilities,
-        "available": bool(model_id),
+        "available": bool(model_id) and (pid != "opencode" or "text" in capabilities),
         "reason": reason,
     }
 

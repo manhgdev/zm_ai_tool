@@ -153,7 +153,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig, onBack, active: 
     const detail = code.replace(/^Error:\s*/i, '').replace(/\s+/g, ' ').slice(0, 320)
     const providerLabel = ({
       chatgpt_web: t('ChatGPT Codex', 'ChatGPT Codex'), openai: t('OpenAI API', 'OpenAI API'),
-      gemini: 'Gemini', deepseek: 'DeepSeek', openrouter: 'OpenRouter', grok: 'Grok (xAI)', groq: 'Groq', nvidia: t('NVIDIA NIM', 'NVIDIA NIM'),
+      gemini: 'Gemini', deepseek: 'DeepSeek', openrouter: 'OpenRouter', opencode: 'OpenCode', grok: 'Grok (xAI)', groq: 'Groq', nvidia: t('NVIDIA NIM', 'NVIDIA NIM'),
     } as Record<string, string>)[provider] || t('provider AI', 'AI provider')
     return detail
       ? t(`Không thể xử lý yêu cầu với ${providerLabel}. Chi tiết: ${detail}`, `Could not process the request with ${providerLabel}. Details: ${detail}`)
@@ -539,7 +539,7 @@ export default function ChatPage({ onOpenConfig: _onOpenConfig, onBack, active: 
   const modelSelection = `${provider}::${model}`
   const providerName = (id: string) => ({
     chatgpt_web: t('ChatGPT Codex', 'ChatGPT Codex'), ollama: t('Ollama (local)', 'Ollama (local)'), openai: t('OpenAI API', 'OpenAI API'), gemini: 'Gemini',
-    deepseek: 'DeepSeek', openrouter: 'OpenRouter', grok: 'Grok (xAI)', groq: 'Groq', nvidia: t('NVIDIA NIM', 'NVIDIA NIM'),
+    deepseek: 'DeepSeek', openrouter: 'OpenRouter', opencode: 'OpenCode', grok: 'Grok (xAI)', groq: 'Groq', nvidia: t('NVIDIA NIM', 'NVIDIA NIM'),
   } as Record<string, string>)[id] || id
   const selectModel = (value: string) => {
     const separator = value.indexOf('::')

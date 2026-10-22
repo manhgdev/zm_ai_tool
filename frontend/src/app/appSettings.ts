@@ -63,7 +63,7 @@ export const ENGINE_DEFAULTS = {
 
 export const TRANSLATORS = [
   'google', 'mymemory', 'tiktok', 'capcut', 'ollama', 'openai', 'gemini',
-  'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral',
+  'deepseek', 'openrouter', 'opencode', 'grok', 'groq', 'nvidia', 'mistral',
 ] as const
 
 const TRANSLATOR_LABELS: Record<(typeof TRANSLATORS)[number], string> = {
@@ -76,12 +76,13 @@ const TRANSLATOR_LABELS: Record<(typeof TRANSLATORS)[number], string> = {
   gemini: 'Gemini',
   deepseek: 'DeepSeek',
   openrouter: 'OpenRouter',
+  opencode: 'OpenCode',
   grok: 'Grok (xAI)',
   groq: 'Groq',
   nvidia: 'NVIDIA NIM',
   mistral: 'Mistral',
 }
-export const AI_REVIEW_TRANSLATORS = ['ollama', 'openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral'] as const
+export const AI_REVIEW_TRANSLATORS = ['ollama', 'openai', 'gemini', 'deepseek', 'openrouter', 'opencode', 'grok', 'groq', 'nvidia', 'mistral'] as const
 export const TRANSLATION_REVIEW_BASE_TRANSLATORS = ['google', 'mymemory', 'tiktok', 'capcut'] as const
 
 export function canReviewTranslatedDraft(translator: ProjectSettings['translator']) {

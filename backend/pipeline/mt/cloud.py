@@ -455,7 +455,7 @@ def translate_cloud(
     workers: int = 2,
     model_override: str | None = None,
 ) -> list[str]:
-    """OpenAI / DeepSeek / OpenRouter (chat) hoặc Gemini generateContent."""
+    """OpenAI / DeepSeek / OpenRouter / OpenCode (chat) hoặc Gemini generateContent."""
     from pipeline.core.app_config import provider_credentials, provider_api_keys
 
     pid = (provider or "").lower().strip()
@@ -485,6 +485,7 @@ def translate_cloud(
         "gemini": "Gemini",
         "deepseek": "DeepSeek",
         "openrouter": "OpenRouter",
+        "opencode": "OpenCode",
         "grok": "Grok",
         "groq": "Groq",
         "nvidia": "NVIDIA NIM",

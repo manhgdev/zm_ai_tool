@@ -28,12 +28,13 @@ test('only result-producing requests are tasks; navigation, settings and polling
     '/api/flow/series/s/episodes/e/scenes/c/generate', '/api/flow/series/s/run',
     '/api/download/jobs', '/api/cleaner/jobs', '/api/media-compose/jobs',
     '/api/srt-export/jobs', '/api/drawing/jobs/batch', '/api/drawing/jobs/start',
-    '/api/chat/conversations', '/api/chat/conversations/c/messages',
-    '/api/chat/conversations/c/messages/m/retry', '/api/automation/jobs',
+    '/api/automation/jobs',
     '/api/automation/suggest-topics', '/api/automation/jobs/j/resume',
   ]) assert.equal(isTaskRequest(path, { method: 'POST' }), true, path)
   for (const path of [
     '/api/tts/studio/history', '/api/flow/accounts', '/api/chat/models',
+    '/api/chat/conversations', '/api/chat/conversations/c/messages',
+    '/api/chat/conversations/c/messages/m/retry',
     '/api/license/status', '/api/resources', '/api/system/pick-videos', '/api/upload',
     '/api/projects/p/settings', '/api/flow/assets', '/api/chat/accounts/a/login/p/poll',
     '/api/flow/jobs/j/cancel', '/api/system/update/check', '/api/system/update/install',

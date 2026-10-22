@@ -243,7 +243,7 @@ export default function AutomationPage({ onOpenCompose }: { onOpenCompose?: (job
   const [files, setFiles] = useState<Record<string, File | null>>({ script: null, audio: null, srt: null, prompts: null, watermark: null })
   const providerName = (id: string) => ({
     chatgpt_web: t('ChatGPT Codex', 'ChatGPT Codex'), openai: t('OpenAI API', 'OpenAI API'), gemini: 'Gemini',
-    deepseek: 'DeepSeek', openrouter: 'OpenRouter', grok: 'Grok (xAI)', groq: 'Groq', nvidia: t('NVIDIA NIM', 'NVIDIA NIM'),
+    deepseek: 'DeepSeek', openrouter: 'OpenRouter', opencode: 'OpenCode', grok: 'Grok (xAI)', groq: 'Groq', nvidia: t('NVIDIA NIM', 'NVIDIA NIM'),
   } as Record<string, string>)[id] || id
   const refresh = useCallback(async () => {
     try {

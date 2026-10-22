@@ -139,7 +139,7 @@ export type ProjectSettings = {
   subtitleSource?: string
   sourceLang: string
   targetLang: string
-  /** google | mymemory | tiktok | capcut | ollama | openai | gemini | deepseek | openrouter | grok | groq | nvidia */
+  /** google | mymemory | tiktok | capcut | ollama | openai | gemini | deepseek | openrouter | opencode | grok | groq | nvidia */
   translator:
     | 'google'
     | 'mymemory'
@@ -150,6 +150,7 @@ export type ProjectSettings = {
     | 'gemini'
     | 'deepseek'
     | 'openrouter'
+    | 'opencode'
     | 'grok'
     | 'groq'
     | 'nvidia'
@@ -304,7 +305,7 @@ export type TimelineLayer = {
   keyframes?: Array<{ at: number; x?: number; y?: number; scaleX?: number; scaleY?: number; rotation?: number; opacity?: number }>
 }
 
-export type CloudProviderId = 'openai' | 'gemini' | 'deepseek' | 'openrouter' | 'grok' | 'groq' | 'nvidia' | 'mistral'
+export type CloudProviderId = 'openai' | 'gemini' | 'deepseek' | 'openrouter' | 'opencode' | 'grok' | 'groq' | 'nvidia' | 'mistral'
 
 export type CloudProviderConfig = {
   apiKey: string

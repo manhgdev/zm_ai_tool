@@ -337,7 +337,7 @@ class Workers:
             for key in list(env):
                 if key.startswith("ZM_AI_TOOL_GOOGLE_") or key in {
                     "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY",
-                    "OPENROUTER_API_KEY", "XAI_API_KEY", "GROQ_API_KEY", "NVIDIA_API_KEY",
+                    "OPENROUTER_API_KEY", "OPENCODE_API_KEY", "XAI_API_KEY", "GROQ_API_KEY", "NVIDIA_API_KEY",
                     "MISTRAL_API_KEY", "ELEVENLABS_API_KEYS", "ELEVENLABS_API_KEY",
                 }:
                     env.pop(key)

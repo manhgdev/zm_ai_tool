@@ -37,6 +37,12 @@ PROVIDERS: dict[str, dict[str, str]] = {
         "model": "google/gemini-2.5-flash",
         "label": "OpenRouter",
     },
+    "opencode": {
+        "env": "OPENCODE_API_KEY",
+        "base": "https://opencode.ai/zen/v1",
+        "model": "big-pickle",
+        "label": "OpenCode",
+    },
     "grok": {
         "env": "XAI_API_KEY",
         "base": "https://api.x.ai/v1",

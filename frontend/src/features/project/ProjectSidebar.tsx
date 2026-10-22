@@ -7,7 +7,7 @@ import { useTranslationProviders } from '@/features/project/useTranslationProvid
 
 type AnalysisRegion = { x: number; y: number; w: number; h: number }
 type LiveTranslationModel = { id: string; label: string; free: boolean }
-const CLOUD_TRANSLATORS = new Set(['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral'])
+const CLOUD_TRANSLATORS = new Set(['openai', 'gemini', 'deepseek', 'openrouter', 'opencode', 'grok', 'groq', 'nvidia', 'mistral'])
 const NON_TRANSLATION_MODEL_MARKERS = ['prompt-guard', 'safeguard', 'content-safety', 'nemoguard', 'embedding', 'moderation', 'whisper', 'orpheus', 'audio', 'speech', 'tts']
 
 const DEFAULT_ANALYSIS_REGION: AnalysisRegion = { x: 0.05, y: 0.55, w: 0.9, h: 0.28 }

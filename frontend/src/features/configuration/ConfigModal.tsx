@@ -1414,6 +1414,11 @@ export default function ConfigModal({
             <button type="button" className="cfg-el-add" onClick={addCloudKeySlot}>
               {t('+ Thêm key', '+ Add key')}
             </button>
+            {tab === 'opencode' && <p className="cfg-hint">
+              {t('Lấy API key tại ', 'Get an API key from ')}
+              <a href="https://opencode.ai/auth" target="_blank" rel="noreferrer">OpenCode</a>.
+              {' '}{t('Danh sách chỉ gồm model dùng Chat Completions. Quyền dùng model free phụ thuộc chính sách OpenCode và tài khoản của bạn.', 'Only Chat Completions models are listed. Free model access depends on OpenCode policy and your account.')}
+            </p>}
 
             <div className="cfg-cloud-panels">
               <section className="cfg-cloud-panel">

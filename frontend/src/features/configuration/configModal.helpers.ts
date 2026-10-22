@@ -1,7 +1,7 @@
 import { localize, type AppLocale } from '@/app/i18n'
 import type { CloudProviderId, SystemChecks } from '@/features/project/project.types'
 
-export const PROVIDERS: CloudProviderId[] = ['openai', 'gemini', 'deepseek', 'openrouter', 'grok', 'groq', 'nvidia', 'mistral']
+export const PROVIDERS: CloudProviderId[] = ['openai', 'gemini', 'deepseek', 'openrouter', 'opencode', 'grok', 'groq', 'nvidia', 'mistral']
 
 export type InstallKind = 'ai_runtime' | 'ai_runtime_ocr' | 'ai_runtime_vieneu' | 'whisper' | 'ocr' | 'diarization' | 'vieneu' | 'demucs' | 'moss_tts_nano_runtime' | 'ocr_cuda' | 'demucs_cuda' | 'nvm'
 
@@ -112,6 +112,7 @@ export function emptyCloud(): CloudDraft {
     gemini:     { apiKey: '', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-3.1-flash-lite', apiKeySet: false, label: 'Gemini' },
     deepseek:   { apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', apiKeySet: false, label: 'DeepSeek' },
     openrouter: { apiKey: '', baseUrl: 'https://openrouter.ai/api/v1', model: 'google/gemini-2.5-flash', apiKeySet: false, label: 'OpenRouter' },
+    opencode:   { apiKey: '', baseUrl: 'https://opencode.ai/zen/v1', model: 'big-pickle', apiKeySet: false, label: 'OpenCode' },
     grok:       { apiKey: '', baseUrl: 'https://api.x.ai/v1', model: 'grok-3-mini', apiKeySet: false, label: 'Grok' },
     groq:       { apiKey: '', baseUrl: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-20b', apiKeySet: false, label: 'Groq' },
     nvidia:     { apiKey: '', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'nvidia/riva-translate-4b-instruct-v2', apiKeySet: false, label: 'NVIDIA NIM' },
@@ -174,6 +175,12 @@ export const PROVIDER_PRESET_MODELS: Record<CloudProviderId, ModelPreset[]> = {
     { id: 'anthropic/claude-3.5-sonnet', labelVi: 'anthropic/claude-3.5-sonnet (Chất lượng cao)', labelEn: 'anthropic/claude-3.5-sonnet (High quality)' },
     { id: 'meta-llama/llama-3.3-70b-instruct', labelVi: 'meta-llama/llama-3.3-70b-instruct (Mã nguồn mở)', labelEn: 'meta-llama/llama-3.3-70b-instruct (Open source)' },
     { id: 'openai/gpt-4o-mini', labelVi: 'openai/gpt-4o-mini (Nhanh & tiết kiệm)', labelEn: 'openai/gpt-4o-mini (Fast & cost-effective)' },
+  ],
+  opencode: [
+    { id: 'big-pickle', labelVi: 'Big Pickle (Miễn phí)', labelEn: 'Big Pickle (Free)' },
+    { id: 'glm-5.3-flash-free', labelVi: 'GLM 5.3 Flash (Miễn phí)', labelEn: 'GLM 5.3 Flash (Free)' },
+    { id: 'deepseek-v4.1-flash-free', labelVi: 'DeepSeek V4.1 Flash (Miễn phí)', labelEn: 'DeepSeek V4.1 Flash (Free)' },
+    { id: 'mimo-v2.6-flash-free', labelVi: 'MiMo V2.6 Flash (Miễn phí)', labelEn: 'MiMo V2.6 Flash (Free)' },
   ],
   grok: [
     { id: 'grok-3-mini', labelVi: 'grok-3-mini (Mặc định — nhanh & rẻ)', labelEn: 'grok-3-mini (Default — fast & cheap)' },

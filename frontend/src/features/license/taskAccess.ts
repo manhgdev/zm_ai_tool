@@ -16,7 +16,6 @@ export function isTaskRequest(url: string, init?: RequestInit): boolean {
     || /^\/api\/tts\/studio\/(?:synthesize|transcribe|clone)$/.test(path)
     || /^\/api\/projects\/[^/]+\/(?:run|dub|export|ocr-translate|rebake-speed|review-script|audio\/no-vocals|segments\/(?:retranscribe-range|compound)|segments\/[^/]+\/(?:preview-tts|retranslate|review-translation))$/.test(path)
     || /^\/api\/review\/generate$/.test(path)
-    || /^\/api\/chat\/conversations(?:\/[^/]+\/messages(?:\/[^/]+\/retry)?)?$/.test(path)
     || /^\/api\/automation\/(?:suggest-topics|youtube\/rewrite|jobs\/[^/]+\/(?:resume|retry|select-topic))$/.test(path)
     || /^\/api\/flow\/(?:jobs\/(?:[^/]+\/retry|batch-retry)|series\/(?:draft|[^/]+\/(?:draft-more|merge|run|anchors\/generate|episodes\/[^/]+\/(?:merge|scenes\/[^/]+\/generate))))$/.test(path)
 }

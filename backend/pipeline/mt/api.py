@@ -31,7 +31,7 @@ def translate_segments(
     durations: list[float] | None = None,
     translation_model: str | None = None,
 ) -> list[str]:
-    """google | mymemory | tiktok | ollama | openai | gemini | deepseek | openrouter | grok | groq | nvidia.
+    """google | mymemory | tiktok | ollama | openai | gemini | deepseek | openrouter | opencode | grok | groq | nvidia.
 
     Free MT fallback cứng: Google → TikTok → MyMemory (bỏ engine đã thử).
     """
@@ -150,7 +150,7 @@ def translate_segments(
         return list(texts)
 
     # Cloud provider is an explicit user choice: retry/rotate only inside it.
-    if eng in ("openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia", "mistral"):
+    if eng in ("openai", "gemini", "deepseek", "openrouter", "opencode", "grok", "groq", "nvidia", "mistral"):
         raw = translate_cloud(
             texts,
             target_lang,

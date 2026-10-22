@@ -18,7 +18,7 @@ from .ollama import _ollama_model
 from .text import _clean_burn_text
 
 AI_REVIEW_PROVIDERS = frozenset({
-    "ollama", "openai", "gemini", "deepseek", "openrouter", "grok", "groq", "nvidia", "mistral",
+    "ollama", "openai", "gemini", "deepseek", "openrouter", "opencode", "grok", "groq", "nvidia", "mistral",
 })
 REVIEW_BASE_TRANSLATORS = frozenset({"google", "mymemory", "tiktok", "capcut"})
 _LANG_NAMES = {"vi": "Vietnamese", "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean"}

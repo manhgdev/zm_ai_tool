@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { localize, useLocale } from '@/app/i18n'
+import { translationReviewOptions } from '@/app/appSettings'
 import { api } from '@/features/project/project.api'
+import { useTranslationProviders } from '@/features/project/useTranslationProviders'
 import {
   GENRES, KEEP_SKIP_PRESETS, loadPacks, savePacks,
   type CaptionMode, type Pack, type ReviewCloudProvider, type ReviewSettings,
@@ -247,6 +249,7 @@ export function ReviewRightPanel({
 }) {
   const { locale } = useLocale()
   const t = (vi: string, en: string) => localize(locale, vi, en)
+  const { isAvailable, providerLabel } = useTranslationProviders()
   const [packs, setPacks] = useState<Pack[]>(loadPacks)
   const [packOpen, setPackOpen] = useState(false)
   const [packEdit, setPackEdit] = useState<Pack | null>(null)
@@ -393,14 +396,9 @@ export function ReviewRightPanel({
                 const provider = e.target.value as ReviewCloudProvider
                 onChange({ reviewProvider: provider, reviewCloudModel: '' })
               }}>
-                <option value="gemini">Gemini</option>
-                <option value="grok">Grok</option>
-                <option value="openai">OpenAI</option>
-                <option value="deepseek">DeepSeek</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="groq">Groq</option>
-                <option value="nvidia">NVIDIA NIM</option>
-                <option value="mistral">Mistral</option>
+                {translationReviewOptions().filter(({ id }) => id !== 'ollama').map(({ id, label }) => (
+                  <option key={id} value={id} disabled={!isAvailable(id)}>{providerLabel(id, label)}</option>
+                ))}
               </select>
             </label>
             <label className="rv-field">
