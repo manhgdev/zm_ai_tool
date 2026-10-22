@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
-  type SyntheticEvent,
 } from 'react'
 import { Toaster, toast } from 'sonner'
 import Header, { type AppMode } from '@/shared/components/Header'
@@ -39,6 +38,7 @@ import ChatPage from '@/pages/ChatPage'
 import AutomationPage from '@/pages/AutomationPage'
 import LicensePage from '@/features/license/LicensePage'
 import { licenseApi, type LicenseStatus } from '@/features/license/license.api'
+import { TASK_ACCESS_REQUIRED, watchTaskAccess } from '@/features/license/taskAccess'
 import { ExportSuccessModal } from '@/features/editor/ExportSuccessModal'
 import { api, prepareAiResources, recognitionResources, type ResourceInstallStatus } from '@/features/project/project.api'
 import { runtimeErrorText, runtimeStatusText } from '@/features/configuration/runtimeStatus'
@@ -124,6 +124,20 @@ export default function App() {
   // Never treat a session cache as authorization for background API streams.
   // The first status must come from the backend that will gate those requests.
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null)
+  useEffect(() => {
+    const originalFetch = window.fetch
+    const watchedFetch = watchTaskAccess(originalFetch.bind(window))
+    const activate = () => {
+      setConfigSection('license')
+      setConfigOpen(true)
+    }
+    window.fetch = watchedFetch
+    window.addEventListener(TASK_ACCESS_REQUIRED, activate)
+    return () => {
+      if (window.fetch === watchedFetch) window.fetch = originalFetch
+      window.removeEventListener(TASK_ACCESS_REQUIRED, activate)
+    }
+  }, [])
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth)
   const sidebarWidthRef = useRef(sidebarWidth)
   const sidebarDrag = useRef<{ startX: number; startW: number } | null>(null)
@@ -899,12 +913,6 @@ export default function App() {
     setConfigSection('license')
     setConfigOpen(true)
   }
-  const requireActivation = (event: SyntheticEvent) => {
-    if (!licenseBlocked || appMode === 'license') return
-    event.preventDefault()
-    event.stopPropagation()
-    openActivation()
-  }
 
   return (
     <RealtimeProvider enabled={Boolean(appUsable && licenseStatus?.valid)}>
@@ -930,10 +938,7 @@ export default function App() {
         onMenuClick={
           appMode === 'tts' ? () => setTtsSideOpen((o) => !o) : undefined
         }
-        onModeChange={(mode) => {
-          navigateToMode(mode)
-          if (licenseBlocked && mode !== 'license') openActivation()
-        }}
+        onModeChange={navigateToMode}
         onHardwareChange={async (mode) => {
           try { setHw(await api.hardwareMode(mode)) }
           catch (error) {
@@ -978,15 +983,6 @@ export default function App() {
           refreshVoices(undefined, true)
         }}
       />
-      {/* Reload page data after activation: startup reads may have been denied. */}
-      <div className="app-workspace" key={licenseStatus?.valid ? 'active' : 'inactive'}
-        onClickCapture={requireActivation}
-        onPointerDownCapture={requireActivation}
-        onKeyDownCapture={requireActivation}
-        onSubmitCapture={requireActivation}
-        onDropCapture={requireActivation}
-        onDragOverCapture={licenseBlocked ? (event) => event.preventDefault() : undefined}
-      >
       <Suspense fallback={<div className="page-loading" role="status">Đang tải…</div>}>
       {appUsable ? (
       <RetainedPages active={appMode} transient={['clone', 'live-preview', 'license']}>
@@ -1283,7 +1279,6 @@ export default function App() {
       }</RetainedPages>
       ) : null}
       </Suspense>
-      </div>
       {appUsable && !licenseBlocked && <BackgroundTasks currentMode={appMode} onOpen={navigateToMode}
         project={projectId ? { id: projectId, running: status.running, progress: status.progress, message: status.message } : undefined} />}
       <Toaster position="bottom-right" theme={dark ? 'dark' : 'light'} richColors closeButton />
