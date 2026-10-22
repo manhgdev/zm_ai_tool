@@ -6,6 +6,9 @@ import LandingPage from './pages/LandingPage'
 import WebSession from './app/WebSession'
 import AdminPage from './pages/AdminPage'
 import './index.css'
+import { recoverPreloadError } from './app/preloadRecovery'
+
+window.addEventListener('vite:preloadError', recoverPreloadError)
 
 // WKWebView may omit the usual "Mac OS X" token. Check every platform hint so
 // the shared macOS form sizing is also enabled in packaged desktop builds.

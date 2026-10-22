@@ -72,6 +72,21 @@ def signed_in(app, sub="user-a"):
     return client, user, token
 
 
+def test_frontend_html_is_not_cached_across_deployments(tmp_path, monkeypatch):
+    import web
+
+    dist = tmp_path / "frontend" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>Test</title>")
+    monkeypatch.setattr(web, "BACKEND", tmp_path / "backend")
+    app = create_web_app(tmp_path / "web")
+    with TestClient(app) as client:
+        for path in ("/", "/index.html", "/text-to-speech", "/?landing=1"):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-store"
+
+
 def test_no_google_config_fails_closed_and_private_routes_require_session(web_app):
     with TestClient(web_app) as client:
         assert client.get("/api/health").json()["mode"] == "web"

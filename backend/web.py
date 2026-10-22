@@ -530,9 +530,9 @@ def create_web_app(root: Path | None = None) -> FastAPI:
     def frontend(path: str):
         candidate = (dist / path).resolve()
         if candidate.is_relative_to(dist.resolve()) and candidate.is_file():
-            return FileResponse(candidate)
+            return FileResponse(candidate, headers={"Cache-Control": "no-store"} if candidate.suffix == ".html" else None)
         if (dist / "index.html").is_file():
-            return FileResponse(dist / "index.html")
+            return FileResponse(dist / "index.html", headers={"Cache-Control": "no-store"})
         raise HTTPException(503, "WEB_FRONTEND_NOT_BUILT")
 
     return app
