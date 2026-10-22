@@ -11,7 +11,6 @@ import type {
   ProjectMediaAsset,
 } from '@/features/project/project.types'
 import { fetchJson } from '@/shared/api/fetchJson'
-import { requireTaskAccess } from '@/features/license/taskAccess'
 
 const base = '/api'
 
@@ -64,7 +63,6 @@ let resourcePreparation: Promise<void> = Promise.resolve()
 let resourceRestartRequired = false
 
 export async function prepareAiResources(ids: AiResourceId[]): Promise<void> {
-  await requireTaskAccess()
   if (!ids.length) return Promise.resolve()
   const work = resourcePreparation.catch(() => undefined).then(async () => {
     if (resourceRestartRequired) throw new Error('RUNTIME_RESTART_REQUIRED')
@@ -119,7 +117,6 @@ export function audioResources(settings: { processOriginalAudio?: unknown; origi
 }
 
 export async function prepareVoiceResources(voice: string, lang = 'auto'): Promise<void> {
-  await requireTaskAccess()
   if (!voice || /^(cc:|el:|win:|espeak:)/.test(voice) || voice === 'system') return
   const selected = (await api.voices(lang)).find(item => item.id === voice)
   if (selected?.engine === 'moss_tts_nano' || /^(moss:|zmt:)/.test(voice)) await prepareAiResources(['moss_tts_nano'])

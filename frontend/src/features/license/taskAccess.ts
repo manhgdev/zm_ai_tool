@@ -1,5 +1,3 @@
-import { licenseApi } from './license.api'
-
 export const TASK_ACCESS_REQUIRED = 'zm-task-access-required'
 
 /** Only requests that create results, never navigation, polling or autosaves. */
@@ -31,14 +29,5 @@ export function watchTaskAccess(fetcher: typeof fetch): typeof fetch {
       if (body?.detail === 'ACCESS_REQUIRED') window.dispatchEvent(new Event(TASK_ACCESS_REQUIRED))
     }
     return response
-  }
-}
-
-// Task preparation can fail on a GET before the actual run request is sent.
-export async function requireTaskAccess(): Promise<void> {
-  const status = await licenseApi.status()
-  if (!status.valid) {
-    window.dispatchEvent(new Event(TASK_ACCESS_REQUIRED))
-    throw new Error('ACCESS_REQUIRED')
   }
 }

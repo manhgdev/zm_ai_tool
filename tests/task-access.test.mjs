@@ -5,15 +5,15 @@ import vm from 'node:vm'
 import ts from 'typescript'
 
 const source = readFileSync(new URL('../frontend/src/features/license/taskAccess.ts', import.meta.url), 'utf8')
-const code = ts.transpile(source.replace("import { licenseApi } from './license.api'", ''), {
+const code = ts.transpile(source, {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 })
-function harness(valid = false) {
+function harness() {
   const events = []
   const exports = {}
   vm.runInNewContext(code, { exports, Request, URL, Event, window: {
     location: new URL('http://localhost:5173/tts'), dispatchEvent: event => events.push(event.type),
-  }, licenseApi: { status: async () => ({ valid }) } })
+  } })
   return { ...exports, events }
 }
 
@@ -64,11 +64,9 @@ test('only ACCESS_REQUIRED on a task opens activation and preserves the response
   assert.equal(events.length, 1)
 })
 
-test('resource preparation requests activation only when an actual task starts without access', async () => {
-  const blocked = harness()
-  await assert.rejects(blocked.requireTaskAccess(), /ACCESS_REQUIRED/)
-  assert.deepEqual(blocked.events, ['zm-task-access-required'])
-  const active = harness(true)
-  await active.requireTaskAccess()
-  assert.deepEqual(active.events, [])
+test('package preparation does not require activation; synthesis remains task-gated', () => {
+  const projectApi = readFileSync(new URL('../frontend/src/features/project/project.api.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(projectApi, /requireTaskAccess/)
+  assert.equal(harness().isTaskRequest('/api/resources/whisper/install', { method: 'POST' }), false)
+  assert.equal(harness().isTaskRequest('/api/tts/studio/synthesize', { method: 'POST' }), true)
 })
