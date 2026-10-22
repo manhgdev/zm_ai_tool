@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import unicodedata
@@ -18,7 +19,8 @@ CACHE_DIR = VIENEU_ROOT / "cache"
 VOICES_JSON = VIENEU_ROOT / "voices.json"
 # SDK embeddings/codes — never overwrite the app clone registry
 SDK_VOICES_JSON = VIENEU_ROOT / "sdk_voices.json"
-REFERENCE_ROOT = SERVER_ROOT / "resources" / "voice-ref"
+SHARED_REFERENCE_ROOT = SERVER_ROOT / "resources" / "voice-ref"
+REFERENCE_ROOT = (DATA / "voice-ref") if os.environ.get("ZM_AI_TOOL_WEB_WORKER") == "1" else SHARED_REFERENCE_ROOT
 REFERENCE_VOICES_JSON = REFERENCE_ROOT / "voices.json"
 TTS_OUTPUT = PUBLIC_DATA / "tts_output"
 TTS_TEMP = DATA / "tts_temp"
@@ -219,28 +221,34 @@ def load_cloned() -> list[dict[str, Any]]:
     return items
 
 
-def _read_reference_raw() -> list[dict[str, Any]]:
+def _read_reference_file(path: Path) -> list[dict[str, Any]]:
     try:
-        data = json.loads(REFERENCE_VOICES_JSON.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
     if not isinstance(data, list):
         return []
     out = [item for item in data if isinstance(item, dict) and item.get("id")]
-    dirty = False
     for item in out:
         item["tags"] = normalize_voice_tags(item.get("tags"))
-        if _canonicalize_language_field(item):
-            dirty = True
-    if dirty:
-        try:
-            save_reference_voices(out)
-        except Exception:
-            pass
+        _canonicalize_language_field(item)
+    return out
+
+
+def _read_reference_raw() -> list[dict[str, Any]]:
+    out = _read_reference_file(REFERENCE_VOICES_JSON)
+    if REFERENCE_ROOT != SHARED_REFERENCE_ROOT:
+        # Read the shared library on every request, including existing accounts.
+        # Account uploads/metadata remain private; never snapshot the library.
+        shared = _read_reference_file(SHARED_REFERENCE_ROOT / "voices.json")
+        out = list({item["id"]: item for item in [*shared, *out]}.values())
     return out
 
 
 def save_reference_voices(items: list[dict[str, Any]]) -> None:
+    if REFERENCE_ROOT != SHARED_REFERENCE_ROOT:
+        shared = {item["id"]: item for item in _read_reference_file(SHARED_REFERENCE_ROOT / "voices.json")}
+        items = [item for item in items if item != shared.get(item.get("id"))]
     REFERENCE_ROOT.mkdir(parents=True, exist_ok=True)
     REFERENCE_VOICES_JSON.write_text(
         json.dumps(items, ensure_ascii=False, indent=2) + "\n",
@@ -265,7 +273,12 @@ def get_reference_voice(voice_id: str) -> dict[str, Any] | None:
 
 
 def reference_path(item: dict[str, Any]) -> Path:
-    return REFERENCE_ROOT / str(item.get("ref_file") or "")
+    path = REFERENCE_ROOT / str(item.get("ref_file") or "")
+    if REFERENCE_ROOT != SHARED_REFERENCE_ROOT and not path.is_file():
+        for shared in _read_reference_file(SHARED_REFERENCE_ROOT / "voices.json"):
+            if shared["id"] == item.get("id") and shared.get("ref_file") == item.get("ref_file"):
+                return SHARED_REFERENCE_ROOT / str(shared.get("ref_file") or "")
+    return path
 
 
 def replace_voice_audio(voice_id: str, source_wav: Path) -> dict[str, Any]:

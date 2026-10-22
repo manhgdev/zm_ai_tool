@@ -19,8 +19,9 @@ additional release downloads.
 
 The full CI audit runs on manual workflow dispatch with `security_audit`
 enabled. Ordinary releases only verify release hashes;
-they must not be described as Defender-scanned. The explicit audit scans
-EXE/payload and Setup before publishing. A missing scanner,
+they must not be described as Defender-scanned. The explicit audit checks
+exclusions for the bundle, every native binary, Setup and bundled PowerShell
+scripts, then scans EXE/payload and Setup before publishing. A missing scanner,
 nonzero result, new threat detection, deleted file or changed hash blocks the
 release. A pass covers those bytes with that engine/signature version only;
 it does not guarantee later runtime behavior or every antivirus verdict.
@@ -32,17 +33,16 @@ separate `windows-2022` job with read-only repository access; the build and
 publication job is skipped. It downloads the original Setup, verifies its
 GitHub SHA-256 digest, scans it, installs silently into the runner's temporary
 directory, inventories/scans the installed payload, and runs the packaged
-runtime-import and yt-dlp checks. Repository credentials are removed before
+runtime-import, yt-dlp and native desktop startup checks. Repository credentials are removed before
 executing Setup. Quarantined files are not restored.
 
 GitHub's Windows image excludes both `C:\` and `D:\` and disables archive
 scanning ([image configuration](https://github.com/actions/runner-images/blob/main/images/windows/scripts/build/Configure-WindowsDefender.ps1)).
-Only on the disposable GitHub-hosted diagnostic VM, the workflow attempts to
-remove these two blanket exclusions and enable archive scanning. Preferences
-before/after and any preparation error are saved. The diagnostic still verifies
-the actual Setup/payload exclusion status and stops if they remain excluded.
-It does not add exclusions or disable protection. Real-time settings remain as
-provided by the runner and are reported separately.
+On the disposable GitHub-hosted VM, both diagnostics and explicit build audits
+attempt to remove these two blanket exclusions and enable archive scanning and
+real-time protection. Preferences before/after and any preparation error are
+saved. The actual exclusion coverage and effective engine protection state are
+checked separately. Excluded scan targets block the audit.
 
 The `windows-release-diagnostic` Actions artifact is saved even on failure.
 `diagnosis.json` records stages, hashes, signature/publisher information,
@@ -54,13 +54,80 @@ engine/signature versions and the Setup log are saved separately when available.
 `detected` means Defender recorded a threat. None is a clean-scan verdict.
 The runner's real-time protection state is recorded separately. On-demand scans
 can run with real-time protection disabled, but cannot establish whether a user's
-PC will quarantine the app during normal use. A signature-update failure retains
+PC will quarantine the app during normal use. `desktop-startup.json` separately
+records a normal native-window launch using the existing updater readiness
+handshake, a 10-second observation, the EXE hash, version and effective real-time
+protection state. New builds also synthesize system TTS through the packaged EXE,
+verify nonempty, nonsilent WAV samples, and retain `system-tts.json` and the WAV.
+New builds also install the app's pinned VieNeu CPU runtime into an isolated
+temporary home and synthesize a v3turbo preset through the frozen app's real
+worker path. `vieneu-tts.json`, its progress log and WAV record that result. The
+runtime directory is cleaned after the worker shuts down and is not uploaded.
+The original-release diagnostic does not run TTS because earlier launchers lack
+those checks. The audit also runs the SDK's PyTorch path on CPU, including the
+pinned MOSS codec, and retains `vieneu-pytorch.json` and a separate WAV. The
+hosted runner has no NVIDIA GPU and does not test CUDA inference. These CLI
+TTS checks run before normal GUI bootstrap; native startup is checked separately.
+They do not prove that React rendered successfully or that TTS ran through the UI.
+A signature-update failure retains
 the recorded definitions and is explicitly recorded in the report.
 
 For a new build, leave `audit_release` empty. Manual builds save a separate
 `windows-test-build` Actions artifact and smoke-test the executable; a manual
 run on a branch does not publish a GitHub release. Tests without `security_audit`
 do not establish a Defender verdict for the new bytes.
+
+## VieNeu startup and model code
+
+Opening `TtsStudio` calls `/api/tts/warm` without requiring a first synthesis.
+The endpoint starts `vieneu.warm()` in the background. In a frozen Windows app,
+this probes a persistent external runtime Python worker. `accel.py` selects
+PyTorch/CUDA when usable; otherwise it selects ONNX/CPU. The saved CPU mode and
+explicit backend override also apply. Nano always uses ONNX/CPU. All VieNeu
+presets, references and clones use the same worker and UTF-8 JSON stdin protocol;
+text, voice and file paths do not become Python or PowerShell program text.
+The normal Windows launcher wraps `Popen` with `external_process_dll_search` to
+prevent an external Python from inheriting PyInstaller's incompatible DLL path.
+
+VieNeu 3.2.0's PyTorch engine loads its MOSS codec using
+`AutoModel.from_pretrained(..., trust_remote_code=True)` without a revision.
+That loads executable Python from a moving Hub branch. The app now uses the
+SDK's existing `moss_tokenizer` argument to pass a local snapshot pinned to
+`6aa02b01e445cc585582cf0ba480bc3ea6c8dd68`, including the codec's configuration,
+Python source and safetensors weights. Both the frozen worker and direct loader
+use this helper. A missing pinned snapshot remains an error; it never retries
+the moving branch. ONNX does not fetch this PyTorch codec, including after CUDA
+fallback. This fixes a dependency code provenance gap; it does not identify
+what Microsoft's classifier flagged on a particular PC.
+
+Reviewed codec source:
+[configuration](https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano/blob/6aa02b01e445cc585582cf0ba480bc3ea6c8dd68/configuration_moss_audio_tokenizer.py),
+[model](https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano/blob/6aa02b01e445cc585582cf0ba480bc3ea6c8dd68/modeling_moss_audio_tokenizer.py).
+
+## Windows system TTS
+
+The system voice engine previously inserted text, voice and output paths into a
+PowerShell program, escaping only ASCII apostrophes. PowerShell also treats curly
+single quotes as delimiters: a TTS input with such a quote could change the
+program. All three values now travel as ASCII-escaped JSON on stdin, and the
+PowerShell program is fixed. Unicode and long text no longer depend on shell
+quoting or the Windows command-line length limit. Synthesis errors remain failures
+and the speech synthesizer is disposed in `finally`.
+
+This is a confirmed input/code boundary bug in system TTS. It does not establish
+the cause of a particular Defender detection, nor does it apply to CapCut,
+ElevenLabs or the JSON-based VieNeu worker.
+
+## Driver repair launch
+
+The opt-in NVIDIA repair runs the fixed bundled `nvidia_driver_update.ps1` with
+`-File` and `RemoteSigned`, using the same policy as the app updater. Callback,
+token, operation ID and accepted EULA fingerprint are validated script parameters.
+It no longer builds a script in memory or launches elevated `-EncodedCommand`.
+The worker continues to use Windows Update and the existing explicit UAC/EULA flow.
+This removes an unnecessary encoded-command launch pattern; it does not prove
+that this function caused a particular `Bearfoos` detection. A source diff alone
+cannot establish which bytes or behavior Microsoft's classifier flagged.
 
 For a report from a user's PC, collect:
 

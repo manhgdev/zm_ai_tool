@@ -7,6 +7,7 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Any
+from pipeline.core.resource_lock import shared_resource_lock
 
 
 SEGMENTATION_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
@@ -139,6 +140,7 @@ def _download_file(url: str, dest: Path, log=None, progress=None) -> None:
     )
 
 
+@shared_resource_lock("diarization")
 def ensure_diarization_models(model_dir: Path, log=None, progress=None) -> tuple[Path, Path]:
     """Download the two official Sherpa models once, with atomic destination writes."""
     model_dir.mkdir(parents=True, exist_ok=True)

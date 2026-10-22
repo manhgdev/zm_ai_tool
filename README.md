@@ -149,10 +149,10 @@ Ghép ảnh/video với audio và phụ đề, phù hợp để tạo video theo
 git clone https://github.com/manhgdev/zm_ai_tool.git
 cd zm_ai_tool
 npm run setup
-npm run dev:all
+bun run dev
 ```
 
-- Web UI: `http://127.0.0.1:5173`
+- Web UI: `http://localhost:5173` (hoặc origin local đã đặt trong `.env`)
 - API: `http://127.0.0.1:8787`
 - API docs: `http://127.0.0.1:8787/docs`
 
@@ -165,15 +165,94 @@ backend/.venv/bin/python scripts/lama_smoke.py
 
 Khởi động lại backend sau khi bổ sung model, rồi chạy lại bước xóa logo trên file gốc.
 
-`npm run dev:all` chỉ quản lý hai cổng 5173 và 8787 của project. Dừng lệnh bằng `Ctrl+C` để tắt cả Vite và API.
+### Chỉ có hai bản: Web và APP
+
+- **Web:** `bun run dev` và `bun run start` là hai tên cho cùng một luồng chạy
+  Vite + backend Web để phát triển/thử nghiệm. Mặc định mở `http://localhost:5173`,
+  API ở `127.0.0.1:8787`. `Ctrl+C` dừng cả hai. Cổng đang bận sẽ báo lỗi.
+- **APP:** `bun run build:app` đóng gói ứng dụng desktop; launcher tự chọn backend
+  APP. `bun run build` chỉ build giao diện dùng chung cho Web/APP.
+
+Cài môi trường một lần bằng `bun run setup`. Để cấu hình Google, tạo `.env`
+ở gốc repository theo `.env.example`:
+
+```dotenv
+ZM_AI_TOOL_GOOGLE_CLIENT_ID=your-google-web-client-id
+ZM_AI_TOOL_GOOGLE_CLIENT_SECRET=your-google-web-client-secret
+# Khi đưa lên server, thêm:
+# ZM_AI_TOOL_WEB_ORIGIN=https://zmaitool.com
+```
+
+Google Cloud → Google Auth platform → Clients → tạo **Web application**.
+Đăng ký callback `https://zmaitool.com/api/auth/google/callback`; nếu thử local,
+đăng ký thêm `http://localhost:5173/api/auth/google/callback`.
+Nếu `.env` đã có origin local khác (ví dụ `http://localhost:18787`), dev/start dùng
+cổng đó cho Vite và giữ nguyên callback đã đăng ký. Client ID/Secret có thể để trống
+để xem giao diện; API dữ liệu riêng vẫn yêu cầu đăng nhập.
+
+Mỗi tài khoản Google có project, job, cấu hình, kết quả và cache UI riêng.
+Dữ liệu lưu ở `backend/web-data`, tách khỏi APP. Có thể đặt
+`ZM_AI_TOOL_WEB_DATA=/srv/zm-ai-data` để dùng thư mục bền vững trên server.
+Web chỉ dùng quyền tài khoản; không nhập key. Tài khoản mới chờ quản trị viên cấp thời hạn.
+Web dùng một tiến trình API riêng cho mỗi tài khoản để tái sử dụng store/queue
+hiện có; tối đa `ZM_AI_TOOL_WEB_MAX_WORKERS` (mặc định 8) tài khoản có worker trong
+một lần chạy. Hiện máy chủ Web hỗ trợ Linux/macOS; trình duyệt dùng được mọi OS.
+Mở rộng nhiều host cần cơ chế lập lịch worker.
+
+**Tài khoản, key và quản trị:**
+
+- `.env` thêm `ZM_AI_TOOL_OWNER_EMAILS=nguyenmanhict@gmail.com,manhgdev@gmail.com`.
+  Lần khởi tạo đầu tạo hai hồ sơ Chủ vĩnh viễn; chỉ liên kết sau khi Google xác minh
+  đúng email. Sau đó database giữ vai trò, không tự nâng lại quyền khi restart.
+- `/admin/accounts`: thêm theo email Google, cấp/gia hạn thời gian, phân quyền,
+  giao đại lý, khóa, thu hồi phiên, xóa/khôi phục. Tài khoản đã liên kết giữ ID và workspace.
+- `/admin/keys`: tạo key `ZMAI-…` mới, thời hạn, số thiết bị (mặc định 1), gia hạn,
+  khóa, tạo lại, thu hồi thiết bị và xóa/khôi phục. Key đầy đủ hiển thị một lần;
+  database chỉ lưu băm. Key cũ từ `api.zm.io.vn` không dùng trong APP cập nhật.
+- Chủ quản lý tất cả. Admin chỉ sửa/cấp Đại lý và User. Đại lý chỉ quản lý User/key
+  được giao, trong số chỗ và thời hạn cho phép; mặc định hạn mức bằng 0.
+  Chỗ đã lên lịch và key chưa kích hoạt vẫn tính hạn mức. Đại lý hết hạn/khóa mất
+  quyền quản lý; quyền riêng của khách đã cấp vẫn giữ nguyên.
+- Thời hạn: giờ/ngày/tháng/năm, ngày giờ cụ thể hoặc vĩnh viễn tường minh. Key bắt
+  đầu ngay, theo lịch hoặc lần kích hoạt đầu. Lưu UTC, quản trị hiển thị UTC+7.
+  Gia hạn tính từ hạn cũ còn hiệu lực hoặc thời điểm hiện tại nếu đã hết hạn.
+- SQLite `accounts.sqlite3` có phiên bản migration, bản sao trước migration
+  `accounts.before-management.sqlite3`, lịch sử quản lý và xóa mềm. Sao lưu khi
+  đã dừng gateway/worker để SQLite và workspace nhất quán; giữ cả WAL nếu copy nóng.
+- APP đăng nhập Google qua trình duyệt hệ thống, callback loopback, state/PKCE/mã
+  một lần theo [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252.html); Secret ở gateway.
+  Mặc định APP gọi `https://zmaitool.com`. Để thử APP local, đặt biến môi trường
+  `ZM_AI_TOOL_AUTH_SERVER_URL=http://localhost:18787` **khi mở APP**; APP không đọc `.env`
+  Web. Không đổi cấu hình production trong mã nguồn để chạy thử.
+- APP xác minh lúc mở và mỗi 5 phút; sau 15 phút kể từ lần xác minh server hợp lệ
+  cuối cùng sẽ chặn job mới. Cache không gia hạn thời gian, không vượt ngày hết hạn.
+  Khóa/thu hồi có hiệu lực ngay khi APP nhận phản hồi. Web đọc SQLite tại lúc nhận việc.
+  Job đã chạy hoàn tất; job chờ chuyển sang tạm dừng/yêu cầu thao tác, cần tiếp tục
+  thủ công sau khi gia hạn.
+- Local hiện tại: `http://localhost:18787`, callback Google phải đăng ký chính xác
+  `http://localhost:18787/api/auth/google/callback`. Người dùng tự chọn/xác minh
+  Google khi nghiệm thu; không dùng phiên giả để kết luận OAuth thật thành công.
+
+**Triển khai Web trên server:** cài môi trường, build bằng `bun run build`, đặt
+origin HTTPS và Google credentials trong `.env`, rồi chạy chính entry backend:
+
+```sh
+backend/.venv/bin/python backend/main.py
+```
+
+Reverse proxy HTTPS của `zmaitool.com` về `127.0.0.1:8787`, giữ header `Origin`,
+hỗ trợ upload/video Range, tắt buffering cho SSE và đặt read timeout dài.
+Không log query callback OAuth; không public cổng worker riêng.
+Chạy một gateway, không bật reload hoặc nhiều Uvicorn worker khi chạy job thật.
+Biến môi trường của service/shell ưu tiên hơn `.env`; secret chỉ nằm ở backend.
+Sao lưu toàn bộ `WEB_DATA` gồm SQLite và dữ liệu các tài khoản.
 
 ### Các lệnh thường dùng
 
 | Lệnh | Mục đích |
 |---|---|
 | `npm run setup` | Cài dependency và chuẩn bị môi trường. |
-| `npm run dev:all` / `npm start` | Chạy Vite + FastAPI. |
-| `npm run dev` | Chạy riêng Vite. |
+| `bun run dev` / `bun run start` | Cùng chạy bản Web: Vite + backend xác thực Google. |
 | `npm run build` | Type-check TypeScript và build frontend. |
 | `npm run test:i18n` | Kiểm tra catalog Việt/Anh. |
 | `npm run build:app` | Đóng gói desktop; macOS cài đè `~/Applications`. Tăng patch: `BUMP_VERSION=1`. |
@@ -185,17 +264,9 @@ Khởi động lại backend sau khi bổ sung model, rồi chạy lại bước
 
 ## Cấu hình cloud tùy chọn
 
-Nhập key ở **Cấu hình**, hoặc tạo `backend/.env` từ `backend/.env.example`:
-
-```env
-OPENAI_API_KEY=...
-GEMINI_API_KEY=...
-DEEPSEEK_API_KEY=...
-OPENROUTER_API_KEY=...
-ELEVENLABS_API_KEYS=key_1,key_2
-```
-
-Không commit file `.env` hoặc API key vào Git.
+Nhập key ở **Cấu hình** trong Web hoặc APP. Web lưu API key riêng theo tài khoản;
+worker không kế thừa API key cloud từ môi trường chung của server.
+File `.env` dùng cấu hình đăng nhập/địa chỉ Web; không commit file này hoặc API key vào Git.
 
 ## Đóng gói và phát hành
 
@@ -229,7 +300,7 @@ PYTHONPATH=backend backend/.venv/bin/python -m pytest tests/backend
 
 ## Dữ liệu
 
-- Chạy từ source: project media/cache nằm trong `backend/public/<project_id>/`.
+- Web: project/job/media nằm trong `backend/web-data/users/<account-id>/`; cache trình duyệt có namespace theo tài khoản.
 - Desktop app dùng thư mục dữ liệu ứng dụng của hệ điều hành.
 - Xóa project hoặc asset từ UI phải xóa dữ liệu backend tương ứng; asset đang được timeline sử dụng sẽ không được xóa.
 - Video gốc, export và voice clone có thể chiếm nhiều dung lượng; dọn chúng trong quản lý project/cache.

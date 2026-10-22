@@ -1,6 +1,8 @@
 """Domain API routes."""
 from __future__ import annotations
 
+from pipeline.core.license import can_start_job, admitted_job
+
 import json
 import logging
 import math
@@ -38,7 +40,7 @@ from api.deps import (
 )
 from api.job_spawn import spawn
 from api.video_serve import serve_video_file
-from pipeline.core.config import DATA
+from pipeline.core.config import DATA, RESOURCE_DATA
 from pipeline.core.jobs import request_cancel
 from pipeline.core.media import ffprobe_duration
 from pipeline.tts.text_split import normalize_tts_text
@@ -177,47 +179,50 @@ def api_tts_studio_synth(body: StudioSynthIn):
     def _run() -> None:
         jid = ""
         try:
-            if srt_text:
-                result = synth_srt_job(
-                    srt_text=srt_text,
-                    voice=selected_voice,
-                    lang=body.lang or "vi",
-                    speed=float(body.speed or 1.0),
-                    volume=float(body.volume or 1.0),
-                    pitch=float(body.pitch or 0.0),
-                    style=body.style or "tu_nhien",
-                    match_duration=body.matchDuration or "natural",
-                    keep_timeline=bool(body.keepTimeline),
-                    title=body.title or "",
-                    gap_ms=int(body.gapMs or 0),
-                    normalize=bool(body.normalize),
-                    trim_silence=bool(body.trimSilence),
-                    job_id=job_id,
-                )
-            else:
-                result = synth_text_job(
-                    text=text,
-                    voice=selected_voice,
-                    lang=body.lang or "vi",
-                    speed=float(body.speed or 1.0),
-                    volume=float(body.volume or 1.0),
-                    pitch=float(body.pitch or 0.0),
-                    style=body.style or "tu_nhien",
-                    match_duration=body.matchDuration or "none",
-                    title=body.title or "",
-                    auto_split=bool(body.autoSplit),
-                    gap_ms=int(body.gapMs or 0),
-                    normalize=bool(body.normalize),
-                    trim_silence=bool(body.trimSilence),
-                    job_id=job_id,
-                )
-            jid = result.get("id") or result.get("job_id")
-            if jid:
-                from pipeline.tts.studio import publish_job_outputs
-                publish_job_outputs(str(jid), body.outputDir, body.outputFormat)
-            # Cache hits return an older completed job id. The browser still
-            # polls the new request id, so publish its terminal state too.
-            set_job_complete(job_id, result_job_id=str(jid or job_id))
+            if not can_start_job():
+                raise PermissionError("ACCESS_REQUIRED")
+            with admitted_job():
+                if srt_text:
+                    result = synth_srt_job(
+                        srt_text=srt_text,
+                        voice=selected_voice,
+                        lang=body.lang or "vi",
+                        speed=float(body.speed or 1.0),
+                        volume=float(body.volume or 1.0),
+                        pitch=float(body.pitch or 0.0),
+                        style=body.style or "tu_nhien",
+                        match_duration=body.matchDuration or "natural",
+                        keep_timeline=bool(body.keepTimeline),
+                        title=body.title or "",
+                        gap_ms=int(body.gapMs or 0),
+                        normalize=bool(body.normalize),
+                        trim_silence=bool(body.trimSilence),
+                        job_id=job_id,
+                    )
+                else:
+                    result = synth_text_job(
+                        text=text,
+                        voice=selected_voice,
+                        lang=body.lang or "vi",
+                        speed=float(body.speed or 1.0),
+                        volume=float(body.volume or 1.0),
+                        pitch=float(body.pitch or 0.0),
+                        style=body.style or "tu_nhien",
+                        match_duration=body.matchDuration or "none",
+                        title=body.title or "",
+                        auto_split=bool(body.autoSplit),
+                        gap_ms=int(body.gapMs or 0),
+                        normalize=bool(body.normalize),
+                        trim_silence=bool(body.trimSilence),
+                        job_id=job_id,
+                    )
+                jid = result.get("id") or result.get("job_id")
+                if jid:
+                    from pipeline.tts.studio import publish_job_outputs
+                    publish_job_outputs(str(jid), body.outputDir, body.outputFormat)
+                # Cache hits return an older completed job id. The browser still
+                # polls the new request id, so publish its terminal state too.
+                set_job_complete(job_id, result_job_id=str(jid or job_id))
         except Exception as e:
             cancelled = type(e).__name__ == "Cancelled" or str(e).strip().lower() in {
                 "job đã hủy",
@@ -304,115 +309,118 @@ async def api_tts_studio_transcribe(
         with _jobs_lock:
             _running[job_id] = True
         try:
-            rows: list = []
-            if eng == "subtitle":
-                phase = "read_subtitle"
-                set_job_progress_pct(job_id, 20, "Đang đọc phụ đề…")
-                from pipeline.subtitles import subtitle_segments
+            if not can_start_job():
+                raise PermissionError("ACCESS_REQUIRED")
+            with admitted_job():
+                rows: list = []
+                if eng == "subtitle":
+                    phase = "read_subtitle"
+                    set_job_progress_pct(job_id, 20, "Đang đọc phụ đề…")
+                    from pipeline.subtitles import subtitle_segments
 
-                rows = subtitle_segments(raw_path)
-            elif eng == "capcut":
-                phase = "capcut_transcribe"
-                set_job_progress_pct(job_id, 5, "CapCut: đang chuẩn bị nhận dạng…")
-                from pipeline.capcut_stt import transcribe_and_translate
-                cap_progress = 5
+                    rows = subtitle_segments(raw_path)
+                elif eng == "capcut":
+                    phase = "capcut_transcribe"
+                    set_job_progress_pct(job_id, 5, "CapCut: đang chuẩn bị nhận dạng…")
+                    from pipeline.capcut_stt import transcribe_and_translate
+                    cap_progress = 5
 
-                def _cap_progress(message: str) -> None:
-                    nonlocal cap_progress
-                    cap_progress = min(70, cap_progress + 4)
-                    set_job_progress_pct(job_id, cap_progress, message or "CapCut: đang nhận dạng…")
+                    def _cap_progress(message: str) -> None:
+                        nonlocal cap_progress
+                        cap_progress = min(70, cap_progress + 4)
+                        set_job_progress_pct(job_id, cap_progress, message or "CapCut: đang nhận dạng…")
 
-                source_rows, _translated = transcribe_and_translate(
-                    raw_path,
-                    source_lang,
-                    "vi",
-                    require_translation=False,
-                    force_refresh=True,
-                    progress=_cap_progress,
-                )
-                # Preserve timed cues as returned; a cue is not necessarily
-                # a sentence. Splitting inside one requires word timestamps.
-                rows = source_rows
-            elif eng == "paddleocr":
-                phase = "paddleocr"
-                set_job_progress_pct(job_id, 15, "Đang OCR chữ trên màn…")
-                from pipeline.ocr.extract import asr_paddleocr
-
-                rows = asr_paddleocr(
-                    raw_path,
-                    None,
-                    reuse_frames=False,
-                    tag=f"tts_{job_id}",
-                    workers=0,
-                    source_lang=source_lang,
-                )
-            else:
-                phase = "whisper_extract_audio"
-                set_job_progress_pct(job_id, 8, "Đang chuẩn bị âm thanh…")
-                extract_audio(raw_path, wav_path)
-                phase = "whisper_transcribe"
-                set_job_progress_pct(job_id, 20, "Đang nhận dạng (Whisper)…")
-                from pipeline.asr import asr_whisper
-
-                rows = asr_whisper(wav_path, source_lang, workers=0)
-
-            speaker_warning = None
-            speakers = []
-            if speaker_diarization and eng in {"whisper", "capcut"}:
-                phase = "speaker_diarization"
-                try:
-                    from pipeline.asr.speaker import assign_speakers, default_speaker_role, diarize_audio
-                    diarize_wav = wav_path
-                    if eng == "capcut":
-                        extract_audio(raw_path, diarize_wav)
-                    turns = diarize_audio(diarize_wav, DATA / "speaker_models", int(speaker_count or 0))
-                    assign_speakers(rows, turns)
-                    ids = sorted({str(row.get("speaker")) for row in rows if row.get("speaker")})
-                    speakers = [{"id": value, "label": default_speaker_role(i), "voice": ""} for i, value in enumerate(ids)]
-                except Exception as exc:
-                    logger.exception(
-                        "tts_studio_transcribe speaker diarization fallback "
-                        "job_id=%s engine=%s phase=%s exception=%s: %s",
-                        job_id, eng, phase, type(exc).__name__, exc,
+                    source_rows, _translated = transcribe_and_translate(
+                        raw_path,
+                        source_lang,
+                        "vi",
+                        require_translation=False,
+                        force_refresh=True,
+                        progress=_cap_progress,
                     )
-                    speaker_warning = f"Không tách được người nói; đang dùng một giọng chung. / Speaker separation unavailable; using one voice. ({exc})"
-            elif speaker_diarization:
-                speaker_warning = "Nguồn này không có audio để tách người nói. / This source has no audio for speaker separation."
-            phase = "serialize_transcript"
-            text = _transcript_rows_to_text(rows, separator="\n")
-            set_job_progress_pct(job_id, 85, "Đang chuẩn hóa các câu chép lời…")
-            srt = _transcript_rows_to_srt(rows)
-            if not text:
-                raise RuntimeError("Không nhận dạng được lời thoại trong file")
-            payload = {"text": text, "srt": srt}
-            payload["speaker_cues"] = [
-                {"start": float(row.get("start") or 0), "end": float(row.get("end") or 0),
-                 "text": str(row.get("source") or row.get("text") or ""), "speaker": row.get("speaker")}
-                for row in rows
-            ]
-            payload["speakers"] = speakers
-            payload["speaker_warning"] = speaker_warning
-            if eng == "whisper":
-                payload["srt_styles"] = _transcript_word_styles(rows)
-            if translate:
-                phase = "translate_transcript"
-                try:
-                    from pipeline.mt.api import translate_segments
-                    source_rows = [dict(row) for row in rows if normalize_tts_text(str(row.get("source") or row.get("text") or "")).strip()]
-                    source_texts = [normalize_tts_text(str(row.get("source") or row.get("text") or "")).strip() for row in source_rows]
-                    translated = translate_segments(source_texts, target_lang or "vi", source_lang=source_lang, translator=translator or "google", translation_model=translation_model or None, workers=2)
-                    payload["translated_text"] = "\n".join(normalize_tts_text(str(value)).strip() for value in translated if str(value).strip()).strip()
-                    payload["translated_srt"] = _transcript_rows_to_srt([dict(row, source=value) for row, value in zip(source_rows, translated)])
-                except Exception as translation_error:
-                    logger.exception(
-                        "tts_studio_transcribe translation fallback "
-                        "job_id=%s engine=%s source_lang=%s target_lang=%s "
-                        "translator=%s exception=%s: %s",
-                        job_id, eng, source_lang, target_lang, translator,
-                        type(translation_error).__name__, translation_error,
+                    # Preserve timed cues as returned; a cue is not necessarily
+                    # a sentence. Splitting inside one requires word timestamps.
+                    rows = source_rows
+                elif eng == "paddleocr":
+                    phase = "paddleocr"
+                    set_job_progress_pct(job_id, 15, "Đang OCR chữ trên màn…")
+                    from pipeline.ocr.extract import asr_paddleocr
+
+                    rows = asr_paddleocr(
+                        raw_path,
+                        None,
+                        reuse_frames=False,
+                        tag=f"tts_{job_id}",
+                        workers=0,
+                        source_lang=source_lang,
                     )
-                    payload["translation_error"] = str(translation_error)
-            set_job_complete(job_id, "Đã chép lời xong.", **payload)
+                else:
+                    phase = "whisper_extract_audio"
+                    set_job_progress_pct(job_id, 8, "Đang chuẩn bị âm thanh…")
+                    extract_audio(raw_path, wav_path)
+                    phase = "whisper_transcribe"
+                    set_job_progress_pct(job_id, 20, "Đang nhận dạng (Whisper)…")
+                    from pipeline.asr import asr_whisper
+
+                    rows = asr_whisper(wav_path, source_lang, workers=0)
+
+                speaker_warning = None
+                speakers = []
+                if speaker_diarization and eng in {"whisper", "capcut"}:
+                    phase = "speaker_diarization"
+                    try:
+                        from pipeline.asr.speaker import assign_speakers, default_speaker_role, diarize_audio
+                        diarize_wav = wav_path
+                        if eng == "capcut":
+                            extract_audio(raw_path, diarize_wav)
+                        turns = diarize_audio(diarize_wav, RESOURCE_DATA / "models" / "pyannote", int(speaker_count or 0))
+                        assign_speakers(rows, turns)
+                        ids = sorted({str(row.get("speaker")) for row in rows if row.get("speaker")})
+                        speakers = [{"id": value, "label": default_speaker_role(i), "voice": ""} for i, value in enumerate(ids)]
+                    except Exception as exc:
+                        logger.exception(
+                            "tts_studio_transcribe speaker diarization fallback "
+                            "job_id=%s engine=%s phase=%s exception=%s: %s",
+                            job_id, eng, phase, type(exc).__name__, exc,
+                        )
+                        speaker_warning = f"Không tách được người nói; đang dùng một giọng chung. / Speaker separation unavailable; using one voice. ({exc})"
+                elif speaker_diarization:
+                    speaker_warning = "Nguồn này không có audio để tách người nói. / This source has no audio for speaker separation."
+                phase = "serialize_transcript"
+                text = _transcript_rows_to_text(rows, separator="\n")
+                set_job_progress_pct(job_id, 85, "Đang chuẩn hóa các câu chép lời…")
+                srt = _transcript_rows_to_srt(rows)
+                if not text:
+                    raise RuntimeError("Không nhận dạng được lời thoại trong file")
+                payload = {"text": text, "srt": srt}
+                payload["speaker_cues"] = [
+                    {"start": float(row.get("start") or 0), "end": float(row.get("end") or 0),
+                     "text": str(row.get("source") or row.get("text") or ""), "speaker": row.get("speaker")}
+                    for row in rows
+                ]
+                payload["speakers"] = speakers
+                payload["speaker_warning"] = speaker_warning
+                if eng == "whisper":
+                    payload["srt_styles"] = _transcript_word_styles(rows)
+                if translate:
+                    phase = "translate_transcript"
+                    try:
+                        from pipeline.mt.api import translate_segments
+                        source_rows = [dict(row) for row in rows if normalize_tts_text(str(row.get("source") or row.get("text") or "")).strip()]
+                        source_texts = [normalize_tts_text(str(row.get("source") or row.get("text") or "")).strip() for row in source_rows]
+                        translated = translate_segments(source_texts, target_lang or "vi", source_lang=source_lang, translator=translator or "google", translation_model=translation_model or None, workers=2)
+                        payload["translated_text"] = "\n".join(normalize_tts_text(str(value)).strip() for value in translated if str(value).strip()).strip()
+                        payload["translated_srt"] = _transcript_rows_to_srt([dict(row, source=value) for row, value in zip(source_rows, translated)])
+                    except Exception as translation_error:
+                        logger.exception(
+                            "tts_studio_transcribe translation fallback "
+                            "job_id=%s engine=%s source_lang=%s target_lang=%s "
+                            "translator=%s exception=%s: %s",
+                            job_id, eng, source_lang, target_lang, translator,
+                            type(translation_error).__name__, translation_error,
+                        )
+                        payload["translation_error"] = str(translation_error)
+                set_job_complete(job_id, "Đã chép lời xong.", **payload)
         except Exception as e:
             set_job_error(job_id, e, message="Chép lời thất bại.")
             logger.exception(

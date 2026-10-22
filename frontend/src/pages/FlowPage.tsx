@@ -1090,6 +1090,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     return statusText(job.status);
   };
   const jobErrorText = (error: string) => {
+    if (error === 'ACCESS_REQUIRED') return t('Quyền sử dụng chưa có hiệu lực. Hãy tiếp tục job sau khi được cấp lại quyền.', 'Access is not active. Resume the job after access is restored.')
     const explained = formatFlowExplain(explainFlowError(error), t);
     return `${explained.title}. ${explained.action}`;
   };

@@ -59,6 +59,15 @@ class AutomationService:
         self._deleted_jobs: set[str] = set()
         self._lock = threading.RLock()
         self._chat_gate = threading.Lock()
+        from pipeline.core.license import watch_pending_jobs
+        watch_pending_jobs(self._pause_unstarted)
+
+    def _pause_unstarted(self):
+        with self._lock:
+            for job_id, future in self._futures.items():
+                if not future.done() and future.cancel():
+                    self.store.update_job(job_id, status='paused', error={'code': 'ACCESS_REQUIRED', 'message': 'ACCESS_REQUIRED'})
+                    self._cancel.pop(job_id, None)
 
     def get_settings(self) -> dict[str, Any]:
         defaults: dict[str, Any] = {
@@ -503,7 +512,10 @@ class AutomationService:
 
     def _execute(self, job_id: str) -> None:
         try:
-            self._runner(job_id)
+            from pipeline.core.license import can_start_job, run_admitted
+            if not can_start_job():
+                raise PermissionError('ACCESS_REQUIRED')
+            run_admitted(self._runner, job_id)
             job = self.store.get_job(job_id)
             if job and job["status"] == "running":
                 self.store.update_job(job_id, status="completed", stage="done", progress=100, error=None)

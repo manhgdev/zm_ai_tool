@@ -13,6 +13,9 @@ SERVER_ROOT = Path(
 REPO_ROOT = SERVER_ROOT.parent
 # Private: API keys, clone references, temporary uploads.
 DATA = Path(os.environ.get("ZM_AI_TOOL_DATA") or SERVER_ROOT / "data")
+# Installed resources are shared by Web workers; account data stays private.
+# Desktop keeps its existing layout when no shared root is configured.
+RESOURCE_DATA = Path(os.environ.get("ZM_AI_TOOL_RESOURCE_DATA") or DATA)
 # Public: project video/audio and completed TTS jobs (Vite/static at /data/*).
 PUBLIC_DATA = Path(
     os.environ.get("ZM_AI_TOOL_PUBLIC_DATA")

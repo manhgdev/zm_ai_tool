@@ -410,6 +410,20 @@ export type SystemCheckItem = {
   installLabel?: string
 }
 
+export type SystemInfo = {
+  collectedAt: string
+  sections: Array<{
+    id: string
+    name?: string | number | null
+    rows: Array<{
+      id: string
+      name?: string
+      value: string | number | boolean | null
+      unit?: 'bytes' | 'seconds' | 'percent' | 'mhz'
+    }>
+  }>
+}
+
 export type SystemChecks = {
   loading?: boolean
   ok: boolean

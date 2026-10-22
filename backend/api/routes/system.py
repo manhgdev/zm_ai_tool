@@ -1036,7 +1036,10 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
         _sc._install_progress_fn = _set_install_progress
         try:
             _raise_if_install_cancelled()
-            result = fn()
+            from pipeline.core.resource_lock import shared_resource_lock
+            with shared_resource_lock("packages"):
+                _raise_if_install_cancelled()
+                result = fn()
             _raise_if_install_cancelled()
             changed = "Đã cài" in str(result.get("message", ""))
             desktop = os.environ.get("ZM_AI_TOOL_DESKTOP")
@@ -1515,6 +1518,13 @@ def api_save_ui_preferences(body: UiPreferencesIn):
     return save_ui_preferences(locale=body.locale, storage=body.storage, output_root=output_root)
 
 
+@router.get("/api/system/info")
+def api_system_info():
+    from pipeline.core.system_info import system_info
+
+    return system_info()
+
+
 @router.get("/api/system/checks")
 def api_system_checks(refresh: bool = False, deep: bool = False):
     """Dependency checklist. Trả loading:true ngay nếu cache chưa có — không block request."""
@@ -1547,10 +1557,10 @@ def api_system_checks(refresh: bool = False, deep: bool = False):
 def api_resources():
     """Unified view for optional AI runtimes/models; no project media here."""
     from importlib.util import find_spec
-    from pipeline.core.config import DATA
+    from pipeline.core.config import RESOURCE_DATA
     from pipeline.core.accel import local_ai_runtime_profile
 
-    diarization = Path(DATA) / "models" / "pyannote"
+    diarization = RESOURCE_DATA / "models" / "pyannote"
     runtime = local_ai_runtime_profile()
 
     # Frozen app: sherpa_onnx nằm trong .venv-runtime → find_spec() không thấy.

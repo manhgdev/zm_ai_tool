@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -11,7 +12,7 @@ from ._models import FlowConfig
 # Paths
 # ---------------------------------------------------------------------------
 
-STORAGE_ROOT = Path.home() / ".flow-py"
+STORAGE_ROOT = (Path(os.environ["ZM_AI_TOOL_WEB_WORKSPACE"]) / "flow-sdk") if os.environ.get("ZM_AI_TOOL_WEB_WORKER") == "1" else Path.home() / ".flow-py"
 PROFILE_DIR   = STORAGE_ROOT / "browser-profile"   # Playwright persistent context
 CONFIG_FILE   = STORAGE_ROOT / "config.json"
 PROJECTS_FILE = STORAGE_ROOT / "projects.json"

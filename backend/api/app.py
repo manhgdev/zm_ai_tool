@@ -55,7 +55,7 @@ def _allowed_origins() -> list[str]:
     return [o for o in origins if not (o in seen or seen.add(o))]
 
 
-def create_app() -> FastAPI:
+def create_app(*, dependencies: list | None = None) -> FastAPI:
     # Install before starting any background worker so uncaught thread errors
     # are captured by the app logger instead of printing an unhandled traceback.
     try:
@@ -162,6 +162,8 @@ def create_app() -> FastAPI:
         # Do not block /api/health on Flow/automation module import.
         threading.Thread(target=_start_flow, name="flow-start", daemon=True).start()
         threading.Thread(target=_start_automation, name="automation-start", daemon=True).start()
+        from pipeline.core.license import start_license_monitor
+        start_license_monitor()
         yield
         # Shutdown: không để ffmpeg/yt-dlp/Chrome/worker mồ côi chạy nền.
         try:
@@ -171,7 +173,7 @@ def create_app() -> FastAPI:
         except Exception:
             pass
 
-    app = FastAPI(title="ZM AI TOOL Local", lifespan=lifespan)
+    app = FastAPI(title="ZM AI TOOL Local", lifespan=lifespan, dependencies=dependencies)
     # API local không có auth → chỉ nhận origin của chính app (Vite dev / webview).
     # allow_origins=["*"] cho phép mọi trang web user đang mở gọi API (xóa
     # project, đọc file). Thêm origin khác qua ZM_AI_TOOL_ALLOW_ORIGINS.
@@ -181,6 +183,14 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def protect_desktop_credentials(request, call_next):
+        if request.method == 'POST' and (request.url.path.startswith('/api/license/') or request.url.path == '/api/auth/desktop/start'):
+            origin = request.headers.get('origin')
+            if origin and origin not in _allowed_origins():
+                return JSONResponse({'detail': 'WEB_ORIGIN_REJECTED'}, status_code=403)
+        return await call_next(request)
 
     @app.middleware("http")
     async def driver_maintenance(request, call_next):
@@ -216,16 +226,22 @@ def create_app() -> FastAPI:
         if not path.startswith("/api/"):
             return await call_next(request)
         setup_paths = ("/api/license", "/api/system", "/api/config", "/api/hardware")
-        if path == "/api/health" or (path == "/api/ui-locale" and request.method == "GET") or path.startswith(setup_paths):
+        if path.startswith("/api/auth/desktop/") or path == "/api/health" or (path in {"/api/ui-locale", "/api/auth/session"} and request.method == "GET") or path.startswith(setup_paths):
+            return await call_next(request)
+        if os.environ.get("ZM_AI_TOOL_WEB_WORKER") == "1" and path == "/api/ui-preferences":
             return await call_next(request)
         from pipeline.core.license import license_cached_valid
 
         if not await anyio.to_thread.run_sync(license_cached_valid):
             return JSONResponse(
                 status_code=403,
-                content={"detail": "Cần kích hoạt key ZM Tool để sử dụng ứng dụng"},
+                content={"detail": "ACCESS_REQUIRED"},
             )
         return await call_next(request)
+
+    @app.get("/api/auth/session")
+    def desktop_session():
+        return {"mode": "desktop", "configured": False, "user": None}
 
     @app.get("/api/health")
     def api_health() -> dict[str, object]:

@@ -96,10 +96,74 @@ def packaged_ytdlp_version_check(report: Path) -> int:
         return 1
 
 
+def packaged_tts_check(report: Path, engine: str = "system", backend: str = "onnx") -> int:
+    """Exercise a packaged Windows TTS engine and retain a real WAV for CI."""
+    import tempfile
+    import wave
+
+    result = {"ok": False, "engine": engine, "platform": sys.platform}
+    runtime = None
+    vieneu = None
+    try:
+        if sys.platform != "win32":
+            raise RuntimeError("Packaged TTS check requires Windows")
+        output = report.with_name(f"{engine}{'-pytorch' if backend == 'pytorch' else ''} tiếng Việt ‘quote’ & (test).wav")
+        if engine == "vieneu":
+            runtime = tempfile.TemporaryDirectory(prefix="zm-vieneu-check-", ignore_cleanup_errors=True)
+            os.environ.update(ZM_AI_TOOL_HOME=runtime.name, ZM_AI_TOOL_DATA=str(Path(runtime.name) / "data"),
+                              HF_HOME=str(Path(runtime.name) / "huggingface"), VIENEU_MODE="v3turbo",
+                              VIENEU_BACKEND="pytorch-cpu" if backend == "pytorch" else "onnx")
+            from pipeline.core.runtime_install import install_runtime
+            from pipeline.tts.engines import vieneu
+
+            def progress(value, message, details):
+                with report.with_suffix(".progress.log").open("a", encoding="utf-8") as log:
+                    log.write(f"{value}: {details.get('stage', '')} {details.get('currentPackage', '')}\n")
+
+            result["stage"] = "runtime-install"
+            install_runtime(progress, compute_mode="cpu", features=("vieneu",))
+            presets = vieneu.list_preset_from_assets()
+            if not presets:
+                raise RuntimeError("Installed VieNeu SDK has no preset voices")
+            result.update(stage="synthesis", mode="v3turbo", backend=backend, device="cpu", voice=presets[0]["id"])
+            vieneu.synthesize("Xin chào, đây là bài kiểm tra tạo giọng nói trên Windows.", f"vn:{presets[0]['id']}", output)
+            from pipeline.tts.engines import vieneu_frozen
+
+            if vieneu_frozen.resolve_backend() != (backend, "cpu"):
+                raise RuntimeError("Packaged VieNeu loaded a different backend than requested")
+        else:
+            from pipeline.tts.engines.system import synthesize
+
+            synthesize("Xin chào. It's fine: ‘hello’, “world”.\nHello, Windows.", "system", output, lang="en")
+        with wave.open(str(output), "rb") as audio:
+            frames = audio.getnframes()
+            rate = audio.getframerate()
+            if not frames or rate <= 0 or len(set(audio.readframes(frames))) < 2:
+                raise RuntimeError("TTS returned empty or silent audio")
+            result.update(ok=True, frames=frames, sampleRate=rate, duration=frames / rate)
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        if getattr(exc, "diagnostics", ""):
+            result["diagnostics"] = exc.diagnostics
+    finally:
+        if runtime is not None:
+            if vieneu is not None:
+                vieneu.reset_client()
+            runtime.cleanup()
+    report.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    return 0 if result["ok"] else 1
+
+
 if len(sys.argv) == 3 and sys.argv[1] == "--runtime-import-check":
     raise SystemExit(packaged_runtime_import_check(Path(sys.argv[2])))
 if len(sys.argv) == 3 and sys.argv[1] == "--yt-dlp-version-check":
     raise SystemExit(packaged_ytdlp_version_check(Path(sys.argv[2])))
+if len(sys.argv) == 3 and sys.argv[1] == "--system-tts-check":
+    raise SystemExit(packaged_tts_check(Path(sys.argv[2])))
+if len(sys.argv) == 3 and sys.argv[1] == "--vieneu-tts-check":
+    raise SystemExit(packaged_tts_check(Path(sys.argv[2]), "vieneu"))
+if len(sys.argv) == 3 and sys.argv[1] == "--vieneu-pytorch-check":
+    raise SystemExit(packaged_tts_check(Path(sys.argv[2]), "vieneu", "pytorch"))
 if sys.argv[1:] == ["--yt-dlp-cli", "--version"]:
     from yt_dlp import main as _ytdlp_version_main
 
@@ -221,7 +285,7 @@ else:
             )
 
             _mac_app = macos_app_bundle_for_executable(Path(sys.executable))
-            if _mac_app is not None:
+            if _mac_app is not None and _mac_app.parent in {Path("/Applications"), Path.home() / "Applications"}:
                 remove_stale_macos_app_duplicates(_mac_app)
         except Exception:
             pass

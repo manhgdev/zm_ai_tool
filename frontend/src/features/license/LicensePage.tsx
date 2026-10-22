@@ -1,120 +1,59 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { licenseApi, type LicenseStatus } from './license.api'
 import { localize, useLocale } from '@/app/i18n'
+import { accessText, useWebUser, webErrorText } from '@/app/WebSession'
+import { IconGoogle, IconKey, IconLogo, IconUser } from '@/shared/components/Icons'
 import './LicensePage.css'
 
-type Props = {
-  status: LicenseStatus
-  gate?: boolean
-  embedded?: boolean
-  onStatusChange: (status: LicenseStatus) => void
-}
-
-function errorText(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error)
-  try {
-    const parsed = JSON.parse(raw)
-    return parsed.detail || parsed.message || raw
-  } catch {
-    return raw
-  }
-}
+type Props = { status: LicenseStatus; gate?: boolean; embedded?: boolean; onStatusChange: (status: LicenseStatus) => void }
 
 export default function LicensePage({ status, gate = false, embedded = false, onStatusChange }: Props) {
   const { locale } = useLocale()
-  const t = (vietnamese: string, english: string) => localize(locale, vietnamese, english)
+  const user = useWebUser()
+  const t = (vi: string, en: string) => localize(locale, vi, en)
   const [key, setKey] = useState('')
   const [busy, setBusy] = useState(false)
+  const [waiting, setWaiting] = useState(false)
   const [error, setError] = useState('')
-  const inputRef = useRef<HTMLInputElement>(null)
-
   useEffect(() => {
-    if (busy) return
-    const timer = window.setTimeout(() => inputRef.current?.focus(), 80)
-    return () => window.clearTimeout(timer)
-  }, [busy, gate])
-
-  async function activate() {
-    if (!key.trim() || busy) return
-    setBusy(true)
-    setError('')
-    try {
-      const next = await licenseApi.activate(key.trim())
-      onStatusChange(next)
-      setKey('')
-    } catch (exc) {
-      setError(errorText(exc))
-    } finally {
-      setBusy(false)
-    }
+    if (user) return
+    let disposed = false
+    const refresh = () => licenseApi.status().then(next => { if (!disposed) onStatusChange(next) }).catch(() => {})
+    const timer = window.setInterval(refresh, waiting ? 2000 : 30_000)
+    const deadline = window.setTimeout(() => setWaiting(false), 600_000)
+    return () => { disposed = true; clearInterval(timer); clearTimeout(deadline) }
+  }, [user, waiting, onStatusChange])
+  async function perform(action: () => Promise<void>) {
+    setBusy(true); setError('')
+    try { await action() }
+    catch (e) { setError(webErrorText(e instanceof Error ? e.message : '', locale)) }
+    finally { setBusy(false) }
   }
-
-  async function deactivate() {
-    if (busy || !status.configured) return
-    if (!window.confirm(t('Huỷ kích hoạt key trên máy này?', 'Deactivate this key on this computer?'))) return
-    setBusy(true)
-    setError('')
-    try {
-      onStatusChange(await licenseApi.deactivate())
-    } catch (exc) {
-      setError(errorText(exc))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const expiry = status.expiresAt
-    ? new Date(status.expiresAt).toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US')
-    : status.remainingDay === -1 ? t('Không giới hạn', 'Unlimited') : '—'
-  const stateTitle = status.valid ? t('Đã kích hoạt', 'Activated') : t('Chưa kích hoạt', 'Not activated')
-  const stateMessage = status.message.trim() === stateTitle ? '' : status.message.trim()
-
-  return (
-    <main className={`license-page${gate ? ' license-gate' : ''}${embedded ? ' license-embedded' : ''}`}>
-      <section className="license-card">
-        <div className="license-brand">
-          <strong>ZM AI TOOL</strong>
-          <span>{t('Kích hoạt bản quyền sử dụng', 'Activate your license')}</span>
-        </div>
-        <div className={`license-state${status.valid ? ' is-valid' : ' is-invalid'}`}>
-          <strong>{stateTitle}</strong>
-          {stateMessage && <span>{stateMessage}</span>}
-        </div>
-        {status.configured && (
-          <dl className="license-details">
-            <div><dt>Key</dt><dd>{status.keyMasked}</dd></div>
-            <div><dt>{t('Thời hạn', 'Term')}</dt><dd>{status.remainingDay === -1 ? t('Không giới hạn', 'Unlimited') : t(`Còn ${status.remainingDay} ngày`, `${status.remainingDay} days remaining`)}</dd></div>
-            <div><dt>{t('Hết hạn', 'Expires')}</dt><dd>{expiry}</dd></div>
-            <div><dt>{t('Lượt kích hoạt còn lại', 'Activations remaining')}</dt><dd>{status.activationLimit}</dd></div>
-          </dl>
-        )}
-        <label className="license-input-label" htmlFor="license-key">
-          {status.valid ? t('Nhập key khác', 'Enter another key') : t('Nhập key ZM Tool để tiếp tục', 'Enter your ZM Tool key to continue')}
-        </label>
-        <div className="license-form">
-          <input
-            id="license-key"
-            ref={inputRef}
-            value={key}
-            onChange={(event) => setKey(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') void activate() }}
-            placeholder={t('Nhập key kích hoạt', 'Enter activation key')}
-            autoComplete="off"
-            autoFocus
-            tabIndex={0}
-            disabled={busy}
-          />
-          <button type="button" onClick={() => void activate()} disabled={busy || !key.trim()}>
-            {busy ? t('Đang kiểm tra…', 'Checking…') : t('Kích hoạt', 'Activate')}
-          </button>
-        </div>
-        {status.configured && (
-          <button type="button" className="license-deactivate" onClick={() => void deactivate()} disabled={busy}>
-            {t('Huỷ kích hoạt key hiện tại', 'Deactivate current key')}
-          </button>
-        )}
-        {error && <p className="license-error">{error}</p>}
-      </section>
-    </main>
-  )
+  const date = (value?: string | null) => value ? new Date(value).toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US', { timeZone: 'Asia/Ho_Chi_Minh' }) : '—'
+  return <main className={`license-page${gate ? ' license-gate' : ''}${embedded ? ' license-embedded' : ''}`}><section className="license-card">
+    <div className="license-card-head"><span className="license-emblem" aria-hidden="true">{gate ? <IconLogo size={36} /> : status.mode === 'key' ? <IconKey size={22} /> : <IconUser size={22} />}</span><div className="license-brand"><strong>{gate ? 'ZM AI TOOL' : t('Quyền sử dụng', 'Access')}</strong><span>{t('Tài khoản và quyền sử dụng', 'Account and access')}</span></div></div>
+    <div className={`license-state${status.valid ? ' is-valid' : ' is-invalid'}`} role="status"><strong>{accessText(status.state || (status.valid ? 'active' : 'pending'), locale)}</strong>
+      {status.code && status.code !== 'ACCESS_' + status.state?.toUpperCase() && <span>{webErrorText(status.code, locale)}</span>}
+    </div>
+    {status.configured && <dl className="license-details">
+      <div><dt>{status.mode === 'key' ? t('Key ứng dụng', 'Application key') : t('Tài khoản', 'Account')}</dt><dd>{status.mode === 'key' ? status.keyMasked : user?.email || status.user?.email || '—'}</dd></div>
+      <div><dt>{t('Bắt đầu · Giờ Việt Nam', 'Starts · Vietnam time')}</dt><dd>{date(status.startsAt)}</dd></div>
+      <div><dt>{t('Hết hạn · Giờ Việt Nam', 'Expires · Vietnam time')}</dt><dd>{status.lifetime || status.remainingDay === -1 ? t('Vĩnh viễn', 'Lifetime') : date(status.expiresAt)}</dd></div>
+      {status.mode === 'key' && <div><dt>{t('Số thiết bị tối đa', 'Maximum devices')}</dt><dd>{status.activationLimit}</dd></div>}
+    </dl>}
+    {user ? <a className="license-deactivate" href="/account">{t('Thông tin tài khoản và đăng xuất', 'Account details and sign out')}</a> : <>
+      <button type="button" className="license-google" disabled={busy || waiting} onClick={() => void perform(async () => { await licenseApi.login(); setWaiting(true) })}><IconGoogle />{waiting ? t('Đang chờ đăng nhập trên trình duyệt…', 'Waiting for browser sign-in…') : t('Đăng nhập bằng Google', 'Sign in with Google')}</button>
+      {waiting && <button type="button" className="license-deactivate" onClick={() => setWaiting(false)}>{t('Thử đăng nhập lại', 'Try sign-in again')}</button>}
+      <p className="license-divider">{t('Hoặc kích hoạt bằng key mới được cấp cho ứng dụng.', 'Or activate with a new application key.')}</p>
+      <form className="license-form" onSubmit={e => { e.preventDefault(); void perform(async () => { onStatusChange(await licenseApi.activate(key.trim())); setKey('') }) }}>
+        <label className="license-input-label" htmlFor="license-key">{t('Key ứng dụng', 'Application key')}</label>
+        <input id="license-key" value={key} onChange={e => setKey(e.target.value)} placeholder="ZMAI-…" autoComplete="off" disabled={busy} required />
+        <button type="submit" disabled={busy || !key.trim()}>{busy ? t('Đang kiểm tra…', 'Checking…') : t('Kích hoạt', 'Activate')}</button>
+      </form>
+      {status.configured && <button className="license-deactivate" type="button" disabled={busy} onClick={() => {
+        if (window.confirm(t('Đăng xuất hoặc hủy kích hoạt trên thiết bị này?', 'Sign out or deactivate on this device?'))) void perform(async () => { onStatusChange(await licenseApi.deactivate()); setWaiting(false) })
+      }}>{status.mode === 'key' ? t('Hủy kích hoạt thiết bị', 'Deactivate device') : t('Đăng xuất', 'Sign out')}</button>}
+    </>}
+    {error && <p className="license-error" role="alert">{error}</p>}
+  </section></main>
 }

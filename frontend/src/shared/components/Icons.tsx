@@ -42,6 +42,22 @@ export function IconLogo({ size = 28 }: Props) {
   )
 }
 
+export function IconGoogle({ size = 20 }: Props) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285f4" d="M21.6 12.23c0-.71-.06-1.39-.18-2.05H12v3.88h5.38a4.6 4.6 0 0 1-2 3.01v2.5h3.24c1.9-1.75 2.98-4.33 2.98-7.34Z"/><path fill="#34a853" d="M12 22c2.7 0 4.96-.9 6.62-2.43l-3.24-2.5c-.9.6-2.05.97-3.38.97-2.6 0-4.8-1.76-5.59-4.12H3.06v2.59A10 10 0 0 0 12 22Z"/><path fill="#fbbc05" d="M6.41 13.92A6 6 0 0 1 6.1 12c0-.67.12-1.32.31-1.92V7.49H3.06A10 10 0 0 0 2 12c0 1.61.38 3.14 1.06 4.51l3.35-2.59Z"/><path fill="#ea4335" d="M12 5.96c1.47 0 2.79.5 3.83 1.5l2.87-2.87A9.6 9.6 0 0 0 12 2a10 10 0 0 0-8.94 5.49l3.35 2.59A5.99 5.99 0 0 1 12 5.96Z"/></svg>
+}
+
+export function IconUser(p: Props) {
+  return <Svg {...p}><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a7 7 0 0 1 7-7h2a7 7 0 0 1 7 7v2"/></Svg>
+}
+
+export function IconKey(p: Props) {
+  return <Svg {...p}><circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-3-3 3-3m-6 0 3-3"/></Svg>
+}
+
+export function IconSearch(p: Props) {
+  return <Svg {...p}><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></Svg>
+}
+
 export function IconCam(p: Props) {
   return (
     <Svg {...p}>

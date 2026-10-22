@@ -27,8 +27,8 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:8787',
-      '/data': 'http://127.0.0.1:8787',
+      '/api': process.env.ZM_AI_TOOL_API_URL || 'http://127.0.0.1:8787',
+      '/data': process.env.ZM_AI_TOOL_API_URL || 'http://127.0.0.1:8787',
     },
     // ponytail: đừng watch data/venv/backup — Windows handle phình → Vite listen nhưng treo HTML
     watch: {

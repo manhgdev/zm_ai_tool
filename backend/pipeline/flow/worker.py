@@ -126,6 +126,12 @@ class FlowWorkerMixin:
                 or self._session_warmup_wait(account_id)
                 or self._account_suspended(account_id, *current_job_model())
             ):
+                from pipeline.core.license import can_start_job, continuation
+                if not continuation('flow', job_id) and not can_start_job():
+                    store.patch_row('jobs', job_id, {'status': 'action_required', 'stage': 'action_required', 'error': 'ACCESS_REQUIRED', 'updatedAt': time.time()})
+                    self._running_jobs.discard(job_id)
+                    self._account_condition.notify_all()
+                    return
                 job_kind, job_model = current_job_model()
                 # Long daily/monthly quota: fail the queue. Short rate-limit
                 # cooldowns wait here until suspendedUntil elapses.
@@ -179,6 +185,13 @@ class FlowWorkerMixin:
                 self._account_condition.notify_all()
                 self._running_jobs.discard(job_id)
                 return
+            from pipeline.core.license import can_start_job, continuation, continue_job
+            if not continuation('flow', job_id) and not can_start_job():
+                store.patch_row("jobs", job_id, {"status": "action_required", "stage": "action_required", "error": "ACCESS_REQUIRED", "updatedAt": time.time()})
+                self._running_jobs.discard(job_id)
+                self._account_condition.notify_all()
+                return
+            continue_job('flow', job_id)
             # Remove the admitted row from the queued set before another
             # waiter recalculates the first pending order.
             store.patch_row("jobs", job_id, {
@@ -621,6 +634,9 @@ class FlowWorkerMixin:
                         "recoveryNotice": None,
                         "updatedAt": time.time(),
                     })
+            if (store.get_row('jobs', job_id) or {}).get('status') in {'done', 'failed', 'cancelled', 'action_required'}:
+                from pipeline.core.license import end_continuation
+                end_continuation('flow', job_id)
             self._close_auto_session_if_idle(
                 account_id,
                 str(current_job.get("kind") or job.get("kind") or "video"),

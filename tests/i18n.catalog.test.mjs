@@ -28,9 +28,13 @@ function literal(node) {
 // Validate translation data, independent of quotes, whitespace, JSX layout or CSS.
 for (const paths of [
   ['app/App.tsx'],
+  ['app/WebSession.tsx'],
+  ['pages/AdminPage.tsx'],
+  ['features/license/LicensePage.tsx'],
+  ['pages/AutomationPage.tsx'],
   ['shared/components/BackgroundTasks.tsx'],
   ['features/tts/TtsStudio.tsx', 'features/tts/TtsTranscribePanel.tsx'],
-  ['features/configuration/ConfigModal.tsx', 'features/configuration/setupLabels.ts'],
+  ['features/configuration/ConfigModal.tsx', 'features/configuration/setupLabels.ts', 'features/configuration/SystemInfoPanel.tsx'],
   ['pages/FlowPage.tsx', 'pages/FlowSeriesPanel.tsx'],
   ['pages/VideoCleanerPage.tsx'],
   ['pages/RendersPage.tsx'],
@@ -60,9 +64,65 @@ for (const paths of [
   })
 }
 
+test('application key copy feedback is bilingual', () => {
+  const pairs = new Map()
+  visit(parse('pages/AdminPage.tsx'), node => {
+    if (ts.isCallExpression(node) && node.expression.getText() === 't') pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
+  })
+  for (const vi of ['Sao chép key', 'Nháy đúp để sao chép key', 'Đang sao chép…', 'Đã sao chép key.']) {
+    assert.ok(pairs.get(vi)?.trim(), vi)
+    assert.notEqual(pairs.get(vi), vi)
+  }
+  const admin = read('pages/AdminPage.tsx')
+  assert.ok(admin.includes("import { toast } from 'sonner'"))
+  assert.ok(admin.includes("toast.success(t('Đã lưu thay đổi.', 'Changes saved.'))"))
+  assert.ok(admin.includes('onDoubleClick={() => void copyListedKey(item)}'))
+  assert.ok(!admin.includes('admin-success') && !admin.includes('admin-error'))
+  assert.ok(!admin.includes('notify: false'))
+  assert.ok(!admin.includes('Key cũ chỉ lưu mã băm.'))
+  const frame = read('app/WebSession.tsx')
+  assert.ok(frame.includes('<Toaster position="bottom-right" theme={theme} richColors closeButton'))
+  for (const pair of ["localize(locale, 'Thông báo', 'Notifications')", "localize(locale, 'Đóng thông báo', 'Close notification')"]) assert.ok(frame.includes(pair), pair)
+})
+
+test('computer information report localizes identifiers and retains every section for copying', () => {
+  const tree = parse('features/configuration/SystemInfoPanel.tsx')
+  const pairs = new Map()
+  visit(tree, node => {
+    if (ts.isCallExpression(node) && node.expression.getText() === 't') pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
+  })
+  for (const vi of ['Thông tin máy tính', 'Sao chép toàn bộ', 'Làm mới', 'Báo cáo thông tin máy tính', 'Không có dữ liệu']) {
+    assert.ok(pairs.get(vi)?.trim(), vi)
+    assert.notEqual(pairs.get(vi), vi)
+  }
+  const fn = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name.text === 'formatSystemInfo')
+  const code = ts.transpileModule(fn.getText().replace('export ', ''), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const format = new Function('localize', `${code}; return formatSystemInfo`)((locale, vi, en) => locale === 'vi' ? vi : en)
+  const report = { collectedAt: '2026-10-22T10:00:00Z', sections: [
+    { id: 'cpu', rows: [{ id: 'physicalCores', value: 8 }, { id: 'usage', value: 0, unit: 'percent' }] },
+    { id: 'memory', rows: [{ id: 'total', value: 16 * 1024 ** 3, unit: 'bytes' }] },
+    { id: 'gpu', name: 0, rows: [{ id: 'model', value: 'Test GPU' }, { id: 'driver', value: null }] },
+    { id: 'app', rows: [{ id: 'packaged', value: false }] },
+    { id: 'pythonPackages', rows: [{ id: 'package', name: 'torch', value: '2.8.0' }] },
+  ] }
+  const vi = format(report, 'vi'), en = format(report, 'en')
+  assert.match(vi, /Số nhân vật lý: 8/)
+  assert.match(en, /Physical cores: 8/)
+  assert.match(vi, /Bản đóng gói: Không/)
+  assert.match(en, /Packaged build: No/)
+  assert.match(vi, /Phiên bản driver: Không có dữ liệu/)
+  assert.match(en, /Driver version: Unavailable/)
+  for (const text of [vi, en]) for (const value of ['16 GiB', 'Test GPU', 'torch: 2.8.0', '0%', '[GPU · 0]', report.collectedAt]) assert.ok(text.includes(value), value)
+  const source = read('features/configuration/SystemInfoPanel.tsx')
+  assert.match(source, /copyText\(report\)/)
+  assert.match(source, /value=\{report\}/)
+  const modal = read('features/configuration/ConfigModal.tsx')
+  assert.ok(modal.indexOf("onClick={() => setSection('computer')}") > modal.indexOf("onClick={() => setSection('logs')}"))
+})
+
 test('landing usage guide has bilingual navigation and all four topics', () => {
   const pairs = new Map()
-  visit(parse('pages/LandingPage.tsx'), node => {
+  for (const path of ['pages/LandingPage.tsx', 'app/WebSession.tsx']) visit(parse(path), node => {
     if (ts.isCallExpression(node) && node.expression.getText() === 't') {
       pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
     }
@@ -269,3 +329,32 @@ test('Flow folder header actions include bilingual Zip button between Cancel and
 
 
 
+
+
+test('account management and APP login keep bilingual access and term controls', () => {
+  const admin = read('pages/AdminPage.tsx')
+  for (const pair of ["t('Quản lý tài khoản', 'Account management')", "t('Quản lý key', 'Key management')", "t('Lần kích hoạt đầu tiên', 'First activation')", "t('Hạn mức đại lý', 'Reseller allowance')", "t('Vĩnh viễn', 'Lifetime')"]) assert.ok(admin.includes(pair), pair)
+  const login = read('features/license/LicensePage.tsx')
+  assert.ok(login.includes("t('Đăng nhập bằng Google', 'Sign in with Google')"))
+  assert.match(login, /user \? <a[^]*Thông tin tài khoản và đăng xuất/)
+  assert.match(read('app/WebSession.tsx'), /<WebHeader[^]*<WebFooter/)
+})
+
+test('account page layouts keep bilingual dialogs, actions and empty states', () => {
+  const admin = read('pages/AdminPage.tsx')
+  for (const pair of ["t('Sửa', 'Edit')", "t('Gia hạn', 'Renew')", "t('Thu hồi phiên', 'Revoke sessions')", "t('Xóa', 'Delete')", "t('Thông tin tài khoản', 'Account details')", "t('Thông tin key', 'Key details')", "t('Quyền sử dụng', 'Access')", "t('Thử thay đổi bộ lọc hoặc thêm một mục mới.', 'Try changing the filters or adding a new item.')"]) assert.ok(admin.includes(pair), pair)
+  assert.ok(admin.includes("localize(loadLocale(), 'Đóng', 'Close')"))
+  assert.ok(read('app/WebSession.tsx').includes("t('Bắt đầu · Giờ Việt Nam', 'Starts · Vietnam time')"))
+})
+
+
+test('header locale switch collapses to a bilingual toggle on small screens', () => {
+  const source = read('shared/components/LocaleSwitch.tsx')
+  assert.ok(read('shared/components/Header.tsx').includes('compactOnSmallScreen'))
+  assert.ok(source.includes("localize(locale, 'Chuyển sang tiếng Anh', 'Switch to Vietnamese')"))
+  assert.ok(source.includes("onChange(locale === 'vi' ? 'en' : 'vi')"))
+  assert.ok(source.includes('{locale.toUpperCase()}'))
+  const css = read('shared/components/LocaleSwitch.css')
+  assert.match(css, /@media \(max-width: 900px\)/)
+  assert.match(css, /\.locale-switch-responsive > \.locale-switch-toggle\s*\{\s*display: inline-block/)
+})

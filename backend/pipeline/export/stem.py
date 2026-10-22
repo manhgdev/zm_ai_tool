@@ -17,6 +17,7 @@ from typing import Any
 from ..core.jobs import kill_process_tree, register_process, run_cmd, unregister_process
 from ..core.media import _has_audio_stream, ffprobe_duration, h264_encoder_args
 from ..core.project import ensure_layout, out_final, set_status
+from ..core.resource_lock import shared_resource_lock
 
 # Per-project stem locks (mất khi tách file từ mux.py)
 _stem_locks: dict[str, threading.Lock] = {}
@@ -379,6 +380,7 @@ def _demucs_install_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+@shared_resource_lock("demucs")
 def _demucs_python(project_id: str | None = None, *, report: bool = True) -> str:
     """Python có demucs: Apple Silicon → demucs-mlx; NVIDIA → torch CUDA; khác → CPU."""
     wanted = _demucs_backend_wanted()

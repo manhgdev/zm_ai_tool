@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import importlib
+import io
+import json
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -257,6 +259,7 @@ def direct_client(monkeypatch):
         monkeypatch.setattr(f'{module}.{name}', lambda: None)
     snapshot = MagicMock()
     monkeypatch.setattr(vieneu_frozen, '_enable_onnx_snapshot_paths', snapshot)
+    monkeypatch.setattr(vieneu_frozen, '_pinned_moss_tokenizer', lambda: '/reviewed-codec')
     factory = MagicMock()
     monkeypatch.setitem(sys.modules, 'vieneu', ModuleType('vieneu'))
     sys.modules['vieneu'].Vieneu = factory
@@ -274,7 +277,55 @@ def test_direct_load_falls_back(direct_client, monkeypatch, phase):
     assert vieneu.get_client() is cpu
     assert factory.call_args.kwargs['device'] == 'cpu'
     assert factory.call_args.kwargs['backend'] == 'onnx'
+    assert 'moss_tokenizer' not in factory.call_args.kwargs
     snapshot.assert_called_once()
+
+
+def test_direct_load_uses_pinned_codec(direct_client, monkeypatch):
+    vieneu, factory, _ = direct_client
+    monkeypatch.setattr(vieneu, '_prepare_cuda_weight_load', lambda *_: None)
+    vieneu.get_client()
+    assert factory.call_args.kwargs['moss_tokenizer'] == '/reviewed-codec'
+
+
+@pytest.mark.parametrize('backend,download_error', [('onnx', False), ('pytorch', False), ('pytorch', True)])
+def test_worker_codec_revision_boundary(monkeypatch, tmp_path, backend, download_error):
+    from pipeline.tts.engines.vieneu_frozen import _WORKER_SCRIPT
+
+    snapshot = MagicMock(return_value=str(tmp_path / 'reviewed-codec'))
+    if download_error:
+        snapshot.side_effect = FileNotFoundError('pinned revision unavailable')
+    hub = ModuleType('huggingface_hub')
+    hub.snapshot_download = snapshot
+    sdk = ModuleType('vieneu')
+    model = SimpleNamespace(parameters=lambda: iter([SimpleNamespace(device='cpu')]))
+    sdk.Vieneu = MagicMock(return_value=SimpleNamespace(backend=backend, engine=SimpleNamespace(device='cpu', model=model)))
+    monkeypatch.setitem(sys.modules, 'huggingface_hub', hub)
+    monkeypatch.setitem(sys.modules, 'vieneu', sdk)
+    for name in ('TQDM_DISABLE', 'HF_HUB_DISABLE_PROGRESS_BARS', 'TRANSFORMERS_VERBOSITY', 'TOKENIZERS_PARALLELISM'):
+        monkeypatch.setenv(name, '')
+    namespace = {'__name__': 'worker_test'}
+    exec(_WORKER_SCRIPT, namespace)
+    replies = []
+    namespace['_out'] = replies.append
+    for name in ('_register', '_enable_torchaudio_soundfile_fallback', '_prepare_cuda_weight_load', '_enable_onnx_snapshot_paths'):
+        namespace[name] = lambda *_: None
+    request = json.dumps({'op': 'init', 'backend': backend, 'device': 'cpu'}) + '\n'
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(request.encode())))
+    namespace['main']()
+
+    assert len(replies) == 1 and replies[0]['ok'] is not download_error
+    if backend == 'onnx':
+        snapshot.assert_not_called()
+        assert 'moss_tokenizer' not in sdk.Vieneu.call_args.kwargs
+    else:
+        snapshot.assert_called_once()
+        assert snapshot.call_args.args == ('OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano',)
+        assert snapshot.call_args.kwargs['revision'] == '6aa02b01e445cc585582cf0ba480bc3ea6c8dd68'
+        if download_error:
+            sdk.Vieneu.assert_not_called()  # Never retry unpinned main after a failed download.
+        else:
+            assert sdk.Vieneu.call_args.kwargs['moss_tokenizer'] == snapshot.return_value
 
 
 def test_direct_load_preserves_missing_file(direct_client, monkeypatch):

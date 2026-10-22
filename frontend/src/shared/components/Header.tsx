@@ -17,6 +17,7 @@ import {
 import { LocaleSwitch } from '@/shared/components/LocaleSwitch'
 import './Header.css'
 import { translate, type AppLocale } from '@/app/i18n'
+import { WebAccountMenu } from '@/app/WebSession'
 
 export type AppMode = 'clone' | 'live-preview' | 'tts' | 'download' | 'film' | 'batch' | 'flow' | 'chat' | 'automation' | 'renders' | 'cleaner' | 'srt-image' | 'srt-export' | 'drawing' | 'license'
 
@@ -260,7 +261,7 @@ export default function Header({
                   type="button"
                   className={mode === 'download' || mode === 'cleaner' || mode === 'srt-image' || mode === 'srt-export' || mode === 'drawing' || mode === 'chat'
                     ? 'active'
-                    : undefined}
+                    : mode === 'renders' ? 'active-compact' : undefined}
                   title={t(item.label)}
                   aria-haspopup="menu"
                   aria-expanded={openMenu === 'tools'}
@@ -271,6 +272,15 @@ export default function Header({
                 </button>
                 {openMenu === 'tools' ? (
                   <div className="nav-tools-menu" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={`nav-renders-compact${mode === 'renders' ? ' active' : ''}`}
+                      onClick={() => { setOpenMenu(null); onModeChange?.('renders') }}
+                    >
+                      <IconVideo size={16} />
+                      <span>{t('nav.renders')}</span>
+                    </button>
                     <button
                       type="button"
                       role="menuitem"
@@ -355,6 +365,7 @@ export default function Header({
             <button
               key={item.id}
               type="button"
+              data-nav={item.id}
               className={active ? 'active' : undefined}
               title={t(item.label)}
               onClick={() => {
@@ -371,8 +382,10 @@ export default function Header({
           )
         })}
       </nav>
-      <div className="hw" title={hardwareDisplay}>
+      <div className="hw">
+        <WebAccountMenu locale={locale} />
         <LocaleSwitch
+          compactOnSmallScreen
           locale={locale}
           onChange={onLocaleChange}
           ariaLabel={t('header.interfaceLanguage')}
@@ -380,11 +393,12 @@ export default function Header({
         {licenseStatus && (
           <button
             type="button"
-            className={`license-expiry${licenseStatus.remainingDay !== -1 && licenseStatus.remainingDay <= 7 ? ' is-warning' : ''}`}
+            className={`license-expiry${licenseStatus.remainingDay === -1 ? ' is-unlimited' : licenseStatus.remainingDay <= 7 ? ' is-warning' : ''}`}
             onClick={onOpenLicense}
-            title={licenseStatus.expiresAt ? t('header.expires', { date: new Date(licenseStatus.expiresAt).toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US') }) : undefined}
+            aria-label={licenseStatus.remainingDay === -1 ? t('header.unlimited') : t('header.daysLeft', { count: licenseStatus.remainingDay })}
+            title={licenseStatus.remainingDay === -1 ? t('header.unlimited') : licenseStatus.expiresAt ? t('header.expires', { date: new Date(licenseStatus.expiresAt).toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US') }) : undefined}
           >
-            {licenseStatus.remainingDay === -1 ? t('header.unlimited') : t('header.daysLeft', { count: licenseStatus.remainingDay })}
+            {licenseStatus.remainingDay === -1 ? <span aria-hidden="true">∞</span> : t('header.daysLeft', { count: licenseStatus.remainingDay })}
           </button>
         )}
         <span className="dot" aria-hidden="true" />

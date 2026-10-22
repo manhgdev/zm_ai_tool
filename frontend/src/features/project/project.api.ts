@@ -6,6 +6,7 @@ import type {
   RenderedVideo,
   Segment,
   SystemChecks,
+  SystemInfo,
   TextOverlay,
   ProjectMediaAsset,
 } from '@/features/project/project.types'
@@ -221,6 +222,8 @@ export const api = {
     return hardware
   },
   hardwareUsage: () => fetchJson<import('./project.types').HardwareUsage>(`${base}/hardware/usage`, undefined, 5_000),
+
+  systemInfo: (signal?: AbortSignal) => fetchJson<SystemInfo>(`${base}/system/info`, { signal, cache: 'no-store' }, 40_000),
 
   systemChecks: (refresh = false, _deep = false) =>
     fetchJson<SystemChecks>(

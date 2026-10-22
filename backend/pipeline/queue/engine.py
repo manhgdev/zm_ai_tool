@@ -350,6 +350,12 @@ class QueueEngine:
         return max(1, cap)
 
     def _schedule(self) -> None:
+        from pipeline.core.license import can_start_job
+        if not can_start_job():
+            for job in store.load_all():
+                if job.get('status') == 'queued':
+                    store.mutate(job['id'], {'status': 'paused', 'error': 'ACCESS_REQUIRED', 'errorType': 'ACCESS_REQUIRED'})
+            return
         if self._pause_all:
             return
         with self._guard:
@@ -393,6 +399,15 @@ class QueueEngine:
                 live_sources.add(source_key)
 
     def _run_job(self, job_id: str) -> None:
+        from pipeline.core.license import can_start_job, run_admitted
+        if not can_start_job():
+            store.mutate(job_id, {"status": "paused", "error": "ACCESS_REQUIRED", "errorType": "ACCESS_REQUIRED"})
+            with self._guard:
+                self._active.pop(job_id, None)
+            return
+        return run_admitted(self._run_admitted_job, job_id)
+
+    def _run_admitted_job(self, job_id: str) -> None:
         begin_job(job_id)
         set_job_context(job_id)
         job = store.get(job_id) or {}

@@ -19,6 +19,7 @@ from typing import Callable
 import urllib.request
 import wave
 import zipfile
+from pipeline.core.resource_lock import shared_resource_lock
 
 SOURCE_REVISION = "8b7bcc9341b3b4ef3a3a58ba1338a7d85ff133eb"
 SOURCE_URL = f"https://github.com/OpenMOSS/MOSS-TTS-Nano/archive/{SOURCE_REVISION}.zip"
@@ -29,22 +30,22 @@ _log = logging.getLogger(__name__)
 
 
 def _paths() -> tuple[Path, Path, Path]:
-    from pipeline.core.config import DATA
-    root = DATA / "moss_tts_nano"
+    from pipeline.core.config import DATA, RESOURCE_DATA
+    root = RESOURCE_DATA / "moss_tts_nano"
     return tuple(Path(os.environ.get(key, str(default))).expanduser().resolve() for key, default in (
         ("MOSS_TTS_NANO_RUNTIME_DIR", root / "source"),
         ("MOSS_TTS_NANO_MODEL_DIR", root / "models"),
-        ("MOSS_TTS_NANO_VOICES_DIR", root / "references"),
+        ("MOSS_TTS_NANO_VOICES_DIR", DATA / "moss_tts_nano" / "references"),
     ))
 
 
 def _python() -> Path:
-    from pipeline.core.config import DATA
+    from pipeline.core.config import RESOURCE_DATA
     # Keep the venv launcher path itself.  Resolving it follows the symlink to
     # Homebrew/system Python, which makes pip target the externally-managed
     # interpreter instead of the isolated MOSS environment.
     configured = Path(os.environ.get("MOSS_TTS_NANO_PYTHON", str(
-        DATA / "moss_tts_nano" / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        RESOURCE_DATA / "moss_tts_nano" / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     ))).expanduser()
     return Path(os.path.abspath(configured))
 
@@ -97,7 +98,9 @@ def _run(command: list[str], *, timeout: int = 1800, cancel_check=None, progress
 
 def install(progress: Callable | None = None) -> dict:
     """Install pinned upstream source, CPU dependencies and both ONNX models."""
-    with _lock:
+    with _lock, shared_resource_lock("moss"):
+        if available():
+            return {"message": "MOSS-TTS-Nano đã cài / installed", "needsRestart": False}
         source, model, refs = _paths()
         def report(pct, message):
             _log.info("MOSS-TTS-Nano: %s", message)
@@ -185,7 +188,7 @@ def reference_path(voice: str) -> Path:
     entry = voice_store.get_reference_voice(name)
     if entry:
         path = voice_store.reference_path(entry).resolve()
-        if voice_store.REFERENCE_ROOT.resolve() not in path.parents or not path.is_file():
+        if not any(root.resolve() in path.parents for root in (voice_store.REFERENCE_ROOT, voice_store.SHARED_REFERENCE_ROOT)) or not path.is_file():
             raise ValueError("MOSS: audio mẫu không hợp lệ / invalid reference audio")
         return path
     if name.startswith("vn:clone:"):

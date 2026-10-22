@@ -351,7 +351,15 @@ class SeriesRunner:
             if count_progress:
                 run.mark_done()
 
-    def _orchestrate(
+    def _orchestrate(self, run: _Run, *args, **kwargs) -> None:
+        from pipeline.core.license import can_start_job, run_admitted
+        if not can_start_job():
+            run.add_error('', 'ACCESS_REQUIRED')
+            run.finish('failed')
+            return
+        return run_admitted(self._orchestrate_admitted, run, *args, **kwargs)
+
+    def _orchestrate_admitted(
         self,
         run: _Run,
         series_id: str,

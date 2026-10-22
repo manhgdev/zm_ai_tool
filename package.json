@@ -1,11 +1,11 @@
 {
   "name": "zm-ai-tool",
   "private": true,
-  "version": "8.6.83",
+  "version": "8.6.84",
   "type": "module",
   "scripts": {
     "setup": "node scripts/setup.mjs",
-    "dev": "vite --config frontend/vite.config.ts",
+    "dev": "node scripts/dev.mjs",
     "build": "tsc -b frontend/tsconfig.json && vite build --config frontend/vite.config.ts",
     "test:frontend": "node --test tests/*.test.mjs",
     "test:i18n": "node --test tests/i18n.catalog.test.mjs",
@@ -14,9 +14,6 @@
     "build:release:windows": "node build_app/build.mjs",
     "build:installer": "node build_app/build_installer.mjs",
     "check:build": "node build_app/check_build.mjs",
-    "preview": "vite preview --config frontend/vite.config.ts",
-    "server": "cd backend && .venv/Scripts/python.exe -m uvicorn main:app --reload --reload-dir api --reload-dir pipeline --port 8787",
-    "dev:all": "node scripts/dev.mjs",
     "start": "node scripts/dev.mjs",
     "release": "npm version && git push && git push --tags"
   },

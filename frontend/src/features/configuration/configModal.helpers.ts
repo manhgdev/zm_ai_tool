@@ -9,15 +9,15 @@ export type InstallKind = 'ai_runtime' | 'ai_runtime_ocr' | 'ai_runtime_vieneu' 
 const INSTALL_PROGRESS_NAMES: Record<string, [string, string]> = {
   ai_runtime: ['gói AI', 'AI packages'],
   ai_runtime_ocr: ['gói AI', 'AI packages'],
-  ai_runtime_vieneu: ['VieNeu Local', 'VieNeu Local'],
+  ai_runtime_vieneu: ['zmAI Local', 'zmAI Local'],
   whisper: ['Whisper', 'Whisper'],
   whisper_runtime: ['Whisper', 'Whisper'],
   ocr: ['OCR', 'OCR'],
   ocr_runtime: ['OCR', 'OCR'],
   diarization: ['Sherpa-ONNX', 'Sherpa-ONNX'],
   diarization_runtime: ['Sherpa-ONNX', 'Sherpa-ONNX'],
-  vieneu: ['VieNeu Local', 'VieNeu Local'],
-  vieneu_runtime: ['VieNeu Local', 'VieNeu Local'],
+  vieneu: ['zmAI Local', 'zmAI Local'],
+  vieneu_runtime: ['zmAI Local', 'zmAI Local'],
   demucs: ['Demucs', 'Demucs'],
   demucs_runtime: ['Demucs', 'Demucs'],
   moss_tts_nano_runtime: ['MOSS-TTS-Nano', 'MOSS-TTS-Nano'],
@@ -60,8 +60,8 @@ export function packageInstallBusy(
 }
 
 export const INSTALL_LABELS: Record<InstallKind, string> = {
-  ai_runtime: 'gói AI', ai_runtime_ocr: 'gói AI', ai_runtime_vieneu: 'VieNeu Local',
-  whisper: 'Whisper', ocr: 'OCR', diarization: 'Sherpa-ONNX', vieneu: 'VieNeu Local', demucs: 'Demucs',
+  ai_runtime: 'gói AI', ai_runtime_ocr: 'gói AI', ai_runtime_vieneu: 'zmAI Local',
+  whisper: 'Whisper', ocr: 'OCR', diarization: 'Sherpa-ONNX', vieneu: 'zmAI Local', demucs: 'Demucs',
   moss_tts_nano_runtime: 'MOSS-TTS-Nano', ocr_cuda: 'OCR CUDA', demucs_cuda: 'Demucs', nvm: 'NVM + Node.js LTS',
 }
 
@@ -80,7 +80,7 @@ export function nextAutoInstall(checks: SystemChecks): InstallKind | null {
   return null
 }
 
-export type Section = 'setup' | 'cloud' | 'tts' | 'output' | 'cleanup' | 'license' | 'logs'
+export type Section = 'setup' | 'cloud' | 'tts' | 'output' | 'cleanup' | 'license' | 'logs' | 'computer'
 export type CloudTab = CloudProviderId
 export type UpdateDialog = {
   kind: 'available' | 'info' | 'downloading' | 'cancelling' | 'ready' | 'applying' | 'error' | 'complete'

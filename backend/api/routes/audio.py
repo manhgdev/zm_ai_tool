@@ -1,6 +1,8 @@
 """Domain API routes."""
 from __future__ import annotations
 
+from pipeline.core.license import can_start_job, admitted_job
+
 import json
 import math
 import re
@@ -108,7 +110,10 @@ def api_prepare_no_vocals(project_id: str):
     # ponytail: chạy nền — Demucs mất 5–30 phút, không thể block uvicorn thread
     def _run() -> None:
         try:
-            separate_no_vocals(project_id, video, report=True)
+            if not can_start_job():
+                raise PermissionError("ACCESS_REQUIRED")
+            with admitted_job():
+                separate_no_vocals(project_id, video, report=True)
         except Exception as e:
             from pipeline.core.jobs import short_cmd_error
             set_status(project_id, step="stem", progress=0,

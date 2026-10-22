@@ -43,7 +43,7 @@ def _invalidate_checks_cache() -> None:
 
 
 def _ai_runtime_detail(*, torch_cuda: bool | None = None) -> str:
-    base = "Whisper · OCR · Tách người nói · zmAI · VieNeu Local"
+    base = "Whisper · OCR · Tách người nói · zmAI · zmAI Local"
     if _nvidia_present():
         cuda = torch_cuda if torch_cuda is not None else _torch_cuda_ready_cached()
         if cuda:
@@ -342,10 +342,10 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
 
     # Nhóm 1b — Sherpa-ONNX + hai model offline. Hiển thị riêng để người dùng
     # biết rõ vì sao công tắc «Tách người nói» có/không sẵn sàng.
-    from ..config import DATA
+    from ..config import RESOURCE_DATA
     from pipeline.asr.speaker import diarization_provider_for_device
 
-    diarization_dir = Path(DATA) / "models" / "pyannote"
+    diarization_dir = RESOURCE_DATA / "models" / "pyannote"
     segmentation_model = diarization_dir / "model.int8.onnx"
     embedding_model = diarization_dir / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
     # find_spec() vẫn trả true khi native dylib của Sherpa bị thiếu. Riêng mục
@@ -407,7 +407,7 @@ def _system_checks_uncached(*, fast: bool = True) -> dict[str, Any]:
     items.append(
         _item(
             id="ai_runtime_vieneu",
-            name="zmAI + VieNeu Local",
+            name="zmAI Local",
             ok=not _vieneu_missing and not _vieneu_torch_bad,
             required=False,
             detail=(

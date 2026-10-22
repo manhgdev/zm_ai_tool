@@ -453,6 +453,9 @@ class FlowQueueMixin:
                 series.register_job(job)
             self._log("info", "job_queued", job_id=job["id"], account_id=job["accountId"], details={"kind": job["kind"], "inputIndex": job["inputIndex"]})
             created.append(job)
+            from pipeline.core.license import is_admitted, continue_job
+            if is_admitted():
+                continue_job('flow', job['id'])
             threading.Thread(target=self._run_sync, args=(job["id"],), daemon=True, name=f"flow-job-{job['id']}").start()
         return created
 

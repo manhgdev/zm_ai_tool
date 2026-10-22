@@ -18,7 +18,22 @@ from pathlib import Path
 _CUDA_READY: bool | None = None
 
 # Shared with in-process VieNeu; worker Python cannot import the frozen app.
-_ONNX_CACHE_SCRIPT = r"""
+_MODEL_CACHE_SCRIPT = r"""
+def _pinned_moss_tokenizer():
+    from huggingface_hub import snapshot_download
+
+    # ponytail: the SDK accepts a local codec path but no revision. Use its
+    # loader with this reviewed snapshot until it exposes revision directly.
+    # The codec contains Python executed by transformers, not just weights.
+    return snapshot_download(
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano",
+        revision="6aa02b01e445cc585582cf0ba480bc3ea6c8dd68",
+        allow_patterns=("__init__.py", "configuration_moss_audio_tokenizer.py",
+                        "modeling_moss_audio_tokenizer.py", "config.json",
+                        "model.safetensors.index.json", "model-00001-of-00001.safetensors"),
+    )
+
+
 def _materialize_onnx_files(directory, filenames):
     import hashlib, os, shutil, tempfile
     from pathlib import Path
@@ -73,10 +88,10 @@ def _enable_onnx_snapshot_paths():
     fetch._zm_ai_onnx_paths = True
     OnnxV3LiteEngine._fetch = staticmethod(fetch)
 """
-exec(_ONNX_CACHE_SCRIPT)
+exec(_MODEL_CACHE_SCRIPT)
 
 # Worker: 1 dòng JSON request → 1 dòng JSON response; model load 1 lần
-_WORKER_SCRIPT = _ONNX_CACHE_SCRIPT + r"""
+_WORKER_SCRIPT = _MODEL_CACHE_SCRIPT + r"""
 import json, os, sys, traceback
 from pathlib import Path
 
@@ -188,9 +203,12 @@ def main():
                     actual_backend = "onnx"
                     actual_device = "cpu"
                 else:
+                    kwargs = {}
                     if backend == "onnx":
                         _enable_onnx_snapshot_paths()
-                    client = Vieneu(mode="v3turbo", backend=backend, device=device)
+                    else:
+                        kwargs["moss_tokenizer"] = _pinned_moss_tokenizer()
+                    client = Vieneu(mode="v3turbo", backend=backend, device=device, **kwargs)
                     actual_backend = str(client.backend)
                     actual_device = str(getattr(client.engine.device, "type", client.engine.device))
                     if actual_backend != backend or actual_device.split(':')[0] != device.split(':')[0]:

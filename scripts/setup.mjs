@@ -151,4 +151,4 @@ run(venvPython, [
   'import sys; from pathlib import Path; sys.path.insert(0, "backend"); from pipeline.asr.speaker import ensure_diarization_models; ensure_diarization_models(Path("backend/data/models/pyannote"), log=print)',
 ],)
 
-console.log('\nĐã cài xong. Chạy: npm run dev:all')
+console.log('\nĐã cài xong. Chạy Web: bun run dev (hoặc bun run start). / Setup complete. Start Web: bun run dev (or bun run start).')

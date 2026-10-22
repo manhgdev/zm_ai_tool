@@ -1,331 +1,324 @@
-"""ZM Tool license check and local activation state."""
+"""APP account/key credentials and bounded access cache; Web worker admission state."""
 from __future__ import annotations
 
+import base64
+import contextvars
 import hashlib
 import hmac
 import json
+import os
+import platform
+import secrets
+import sqlite3
 import threading
 import time
+import uuid
+import webbrowser
+import weakref
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 
 from pipeline.core.config import DATA, ensure_data_dirs
 
-API_BASE = "https://api.zm.io.vn/key"
-APP_PATH = "zm_tool"
-LICENSE_FILE = DATA / "license.json"
-_CACHE_SECONDS = 30 * 60.0
-# Offline cache tối đa 72h: sau đó phải verify lại với server dù server có down.
-_OFFLINE_MAX_SECONDS = 72 * 3600.0
-_cache_lock = threading.Lock()
+LICENSE_FILE = DATA / 'license.json'
+_CACHE_SECONDS = 300
+_OFFLINE_MAX_SECONDS = 900
+_lock = threading.RLock()
 _request_lock = threading.Lock()
-_cache_at = 0.0
-_cache: dict[str, Any] | None = None
-
-# ponytail: HMAC key gắn với machine node (MAC address) để license.json
-# không thể copy từ máy này sang máy khác. uuid.getnode() = stdlib, no deps.
-def _machine_sig_key() -> bytes:
-    import uuid
-    node = uuid.getnode()
-    return f"zm-tool-license-{node}-2025".encode()
-
-
-_SIG_KEY = _machine_sig_key()
+_cache = None
+_checked_at = 0.0
+_pending = {}
+_continuations = set()
+_admitted = contextvars.ContextVar('admitted_job', default=False)
+_monitor_started = False
+_pending_watchers = []
+_SIG_KEY = f'zm-tool-license-{uuid.getnode()}-2025'.encode()
 
 
-def _sign(payload: dict[str, Any]) -> str:
-    """Tính HMAC-SHA256 của canonical JSON để phát hiện tamper."""
-    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-    return hmac.new(_SIG_KEY, canonical.encode(), hashlib.sha256).hexdigest()
+def _sign(payload):
+    return hmac.new(_SIG_KEY, json.dumps(payload, sort_keys=True, ensure_ascii=False).encode(), hashlib.sha256).hexdigest()
 
 
-def _verify_sig(data: dict[str, Any]) -> bool:
-    sig = data.pop("_sig", None)
-    if not sig:
-        return False
-    expected = _sign(data)
-    data["_sig"] = sig  # restore
-    return hmac.compare_digest(sig, expected)
-
-
-def _preload_cache_from_disk() -> None:
-    """Đọc last_valid từ disk ngay khi module load — tránh flap window lúc startup."""
-    global _cache, _cache_at
+def _read():
     try:
-        data = json.loads((DATA / "license.json").read_text(encoding="utf-8"))
-        # Kiểm signature trước khi tin tưởng disk cache
-        if not _verify_sig(dict(data)):
-            return
-        lv = data.get("last_valid")
-        if isinstance(lv, dict) and lv.get("valid"):
-            # Kiểm TTL: offline cache không dùng quá _OFFLINE_MAX_SECONDS
-            saved_at = float(lv.get("saved_at") or 0)
-            if saved_at > 0 and time.time() - saved_at > _OFFLINE_MAX_SECONDS:
-                return  # cache quá cũ, không load
-            _cache = dict(lv)
-            # TTL ngắn hơn (15 phút) để sớm verify lại với server
-            _cache_at = time.monotonic() - _CACHE_SECONDS / 2
-    except Exception:
-        pass
-
-
-_preload_cache_from_disk()
-
-
-def _masked(key: str) -> str:
-    if len(key) <= 6:
-        return "•" * len(key)
-    return f"{key[:3]}{'•' * min(8, len(key) - 6)}{key[-3:]}"
-
-
-def _read_key() -> str:
-    try:
-        data = json.loads(LICENSE_FILE.read_text(encoding="utf-8"))
-        return str(data.get("key") or "").strip()
+        data = json.loads(LICENSE_FILE.read_text(encoding='utf-8'))
+        signature = data.pop('_sig', '')
+        if not hmac.compare_digest(str(signature), _sign(data)):
+            return {}
+        return data
     except (OSError, ValueError, TypeError):
-        return ""
+        return {}
 
 
-def _read_last_valid() -> dict[str, Any] | None:
-    """Return last known-valid status from disk (used when API server is down).
-
-    Reject nếu:
-    - Không có HMAC signature (bị sửa tay)
-    - Đã quá _OFFLINE_MAX_SECONDS kể từ lần verify thực tế cuối
-    - key expiresAt đã qua
-    """
-    try:
-        data = json.loads(LICENSE_FILE.read_text(encoding="utf-8"))
-        # Verify signature
-        if not _verify_sig(dict(data)):
-            return None
-        lv = data.get("last_valid")
-        if not isinstance(lv, dict) or not lv.get("valid"):
-            return None
-        # Kiểm TTL offline
-        saved_at = float(lv.get("saved_at") or 0)
-        if saved_at > 0 and time.time() - saved_at > _OFFLINE_MAX_SECONDS:
-            return None
-        # Kiểm expiresAt nếu có (key hết hạn thì không dùng offline cache)
-        expires_at = lv.get("expiresAt")
-        if expires_at:
-            try:
-                import datetime
-                exp = datetime.datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-                if exp.timestamp() < time.time():
-                    return None
-            except Exception:
-                pass
-        return lv
-    except (OSError, ValueError, TypeError):
-        pass
-    return None
-
-
-def _save_key(key: str, last_valid: dict[str, Any] | None = None) -> None:
+def _save(data):
     ensure_data_dirs()
-    payload: dict[str, Any] = {"key": key}
-    if last_valid:
-        # Ghi timestamp để tính tuổi offline cache
-        lv_with_ts = {**last_valid, "saved_at": time.time()}
-        payload["last_valid"] = lv_with_ts
-    else:
-        # Preserve existing last_valid if already saved
-        try:
-            existing = json.loads(LICENSE_FILE.read_text(encoding="utf-8"))
-            if existing.get("last_valid"):
-                payload["last_valid"] = existing["last_valid"]
-        except (OSError, ValueError, TypeError):
-            pass
-    # Ký payload trước khi lưu
-    payload["_sig"] = _sign({k: v for k, v in payload.items() if k != "_sig"})
-    tmp = Path(f"{LICENSE_FILE}.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(LICENSE_FILE)
+    payload = {**data, '_sig': _sign(data)}
+    temporary = LICENSE_FILE.with_suffix('.tmp')
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    temporary.chmod(0o600)
+    temporary.replace(LICENSE_FILE)
 
 
-def _clear_disk_cache(key: str) -> None:
-    """Xoá last_valid khỏi disk khi server xác nhận key không hợp lệ.
-    Giữ lại key để UI vẫn hiện thông báo lỗi đúng.
-    """
-    try:
-        payload: dict[str, Any] = {"key": key}
-        payload["_sig"] = _sign(payload)
-        tmp = Path(f"{LICENSE_FILE}.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(LICENSE_FILE)
-    except OSError:
-        pass
+def server_url():
+    raw = os.environ.get('ZM_AI_TOOL_AUTH_SERVER_URL', 'https://zmaitool.com').rstrip('/')
+    parsed = urlsplit(raw)
+    if (parsed.scheme not in ('https', 'http') or not parsed.hostname or parsed.username or parsed.password
+            or parsed.path or parsed.query or parsed.fragment
+            or parsed.scheme == 'http' and parsed.hostname not in ('localhost', '127.0.0.1')):
+        raise ValueError('INVALID_AUTH_SERVER_URL')
+    return raw
 
 
-def _request(action: str, key: str, retries: int = 3) -> dict[str, Any]:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ZM-Tool/1.0",
-        "Origin": "https://zm.io.vn",
-        "Referer": "https://zm.io.vn/",
-    }
-    # httpx có thể parse NO_PROXY chứa IPv6 trần ``::1`` thành port ``:1``.
-    # License API là HTTPS cố định nên kết nối trực tiếp, không phụ thuộc proxy máy.
-    last_exc: Exception | None = None
-    for attempt in range(max(1, retries)):
-        try:
-            with httpx.Client(trust_env=False, timeout=15.0) as client:
-                response = client.post(
-                    f"{API_BASE}/{action}", json={"key": key}, headers=headers
-                )
-            response.raise_for_status()
-            payload = response.json()
-            if payload.get("error"):
-                detail = payload.get("data") or payload.get("message") or "Key không hợp lệ"
-                raise RuntimeError(str(detail))
-            if isinstance(payload.get("data"), dict) and payload["data"].get("apps") is not None:
-                return payload["data"]
-            return payload
-        except RuntimeError:
-            raise  # lỗi logic (key sai) — không retry
-        except Exception as exc:
-            last_exc = exc
-            if attempt < retries - 1:
-                time.sleep(1.0)
-    raise last_exc  # type: ignore[misc]
-
-
-def status_from_payload(payload: dict[str, Any], key: str = "") -> dict[str, Any]:
-    apps = payload.get("apps") if isinstance(payload.get("apps"), list) else []
-    app = next((item for item in apps if item.get("path") == APP_PATH), None)
-    if not payload.get("status"):
-        message = "Key đã bị khóa"
-    elif not app:
-        message = "Key không có quyền sử dụng ZM Tool"
-    elif not app.get("status"):
-        message = "Quyền sử dụng ZM Tool đã bị khóa"
-    else:
-        remaining = int(app.get("remaining_day") or 0)
-        message = "Đã kích hoạt" if remaining == -1 or remaining > 0 else "Key đã hết hạn"
-
-    remaining = int(app.get("remaining_day") or 0) if app else 0
-    valid = bool(
-        payload.get("status")
-        and app
-        and app.get("status")
-        and (remaining == -1 or remaining > 0)
-    )
-    return {
-        "valid": valid,
-        "configured": bool(key),
-        "keyMasked": _masked(key) if key else "",
-        "remainingDay": remaining,
-        "expiresAt": app.get("expires_at") if app else None,
-        "activationLimit": int(app.get("activation_limit") or 0) if app else 0,
-        "message": message,
-    }
-
-
-def license_status(*, force: bool = False) -> dict[str, Any]:
-    global _cache, _cache_at
-    key = _read_key()
-    if not key:
-        return {
-            "valid": False,
-            "configured": False,
-            "keyMasked": "",
-            "remainingDay": 0,
-            "expiresAt": None,
-            "activationLimit": 0,
-            "message": "Chưa nhập key kích hoạt",
-        }
-    with _cache_lock:
-        if not force and _cache and time.monotonic() - _cache_at < _CACHE_SECONDS:
-            return dict(_cache)
-    with _request_lock:
-        # React StrictMode/F5 can issue two status calls together; the second one
-        # reuses the result created by the first instead of hitting the key API.
-        with _cache_lock:
-            if not force and _cache and time.monotonic() - _cache_at < _CACHE_SECONDS:
-                return dict(_cache)
-        try:
-            result = status_from_payload(_request("checkkey", key), key)
-            if result.get("valid"):
-                # Key hợp lệ: lưu disk cache
-                _save_key(key, result)
-            else:
-                # Server xác nhận key INVALID (revoke, hết hạn, bị khoá)
-                # → xoá last_valid khỏi disk ngay để tránh offline bypass
-                _clear_disk_cache(key)
-        except Exception as exc:
-            # Network/server lỗi — nếu cache RAM còn valid thì giữ
-            with _cache_lock:
-                if _cache and _cache.get("valid"):
-                    _cache_at = time.monotonic()
-                    return dict(_cache)
-            # Không có cache RAM — thử lấy last_valid từ disk
-            disk_valid = _read_last_valid()
-            if disk_valid:
-                disk_valid = dict(disk_valid)
-                disk_valid["message"] = disk_valid.get("message", "") + " (offline cache)"
-                with _cache_lock:
-                    _cache = disk_valid
-                    _cache_at = time.monotonic()
-                return disk_valid
-            result = {
-                "valid": False,
-                "configured": True,
-                "keyMasked": _masked(key),
-                "remainingDay": 0,
-                "expiresAt": None,
-                "activationLimit": 0,
-                "message": f"Không thể kiểm tra key: {exc}",
-                # Transient server/network failures must never become a
-                # cached "not activated" result.
-                "transient": True,
-            }
-        if not result.get("transient"):
-            with _cache_lock:
-                _cache = dict(result)
-                _cache_at = time.monotonic()
+def _request(action, body):
+    with httpx.Client(timeout=8, trust_env=False) as client:
+        response = client.post(server_url() + '/api/desktop/' + action, json=body)
+    if response.status_code in (400, 401, 403, 404, 409, 422):
+        detail = response.json().get('detail', 'DEVICE_REVOKED')
+        raise ValueError(detail if isinstance(detail, str) else 'INVALID_FIELDS')
+    response.raise_for_status()
+    result = response.json()
+    if not isinstance(result, dict):
+        raise RuntimeError('INVALID_LICENSE_RESPONSE')
     return result
 
 
-def activate_license(key: str) -> dict[str, Any]:
-    global _cache, _cache_at
-    key = key.strip()
-    if not key:
-        raise ValueError("Vui lòng nhập key")
-    if key == _read_key():
-        current = license_status(force=True)
-        if current["valid"]:
-            return current
-
-    checked = status_from_payload(_request("checkkey", key), key)
-    if not checked["valid"]:
-        raise ValueError(checked["message"])
-    if checked["activationLimit"] <= 0:
-        raise ValueError("Key đã hết lượt kích hoạt")
-
-    activated = status_from_payload(_request("activate", key), key)
-    if not activated["valid"]:
-        raise ValueError(activated["message"])
-    _save_key(key, activated)
-    with _cache_lock:
-        _cache = dict(activated)
-        _cache_at = time.monotonic()
-    return activated
+def _empty(code='ACCESS_PENDING', configured=False):
+    return {'valid': False, 'configured': configured, 'mode': 'account', 'keyMasked': '', 'remainingDay': 0,
+            'expiresAt': None, 'activationLimit': 0, 'message': '', 'code': code, 'state': code.removeprefix('ACCESS_').lower()}
 
 
-def deactivate_license() -> dict[str, Any]:
-    """Remove this computer's saved key without changing the key server."""
-    global _cache, _cache_at
+def _current(status, verified_at):
+    result = dict(status)
+    now = time.time()
+    begins = result.get('startsAt')
+    if begins:
+        try:
+            if datetime.fromisoformat(begins.replace('Z', '+00:00')).timestamp() > now:
+                result.update(valid=False, code='ACCESS_SCHEDULED', state='scheduled')
+        except (ValueError, TypeError):
+            result.update(valid=False, code='INVALID_LICENSE_RESPONSE')
+    expiry = result.get('expiresAt')
+    if expiry:
+        try:
+            if datetime.fromisoformat(expiry.replace('Z', '+00:00')).timestamp() <= now:
+                result.update(valid=False, code='ACCESS_EXPIRED', state='expired')
+        except (ValueError, TypeError):
+            result.update(valid=False, code='INVALID_LICENSE_RESPONSE')
+    if result.get('valid') and (not verified_at or now - verified_at >= _OFFLINE_MAX_SECONDS or verified_at > now + 60):
+        result.update(valid=False, code='LICENSE_CHECK_REQUIRED', transient=True)
+    return result
+
+
+def _install(result, previous=None):
+    global _cache, _checked_at
+    if not isinstance(result.get('deviceToken'), str) or not isinstance(result.get('valid'), bool):
+        raise ValueError('INVALID_LICENSE_RESPONSE')
+    if result.get('mode') not in ('account', 'key') or result.get('state') not in ('active', 'pending', 'blocked', 'scheduled', 'expired', 'deleted', 'unactivated') or result['valid'] != (result['state'] == 'active') or type(result.get('lifetime')) is not bool:
+        raise RuntimeError('INVALID_LICENSE_RESPONSE')
+    if result['valid']:
+        if not result.get('startsAt') or not result['lifetime'] and not result.get('expiresAt'):
+            raise RuntimeError('INVALID_LICENSE_RESPONSE')
+        for field in ('startsAt', 'expiresAt'):
+            if result.get(field):
+                try:
+                    parsed = datetime.fromisoformat(result[field].replace('Z', '+00:00'))
+                    if parsed.tzinfo is None:
+                        raise ValueError()
+                except (ValueError, TypeError, AttributeError):
+                    raise RuntimeError('INVALID_LICENSE_RESPONSE') from None
+    data = previous or _read()
+    token = result['deviceToken']
+    status = {k: v for k, v in result.items() if k != 'deviceToken'}
+    status.update(configured=True, message='')
+    data.update(device_token=token, status=status, verified_at=time.time(), authority=server_url())
+    _save(data)
+    _cache, _checked_at = data, time.monotonic()
+    return _current(status, data['verified_at'])
+
+
+def installation():
+    data = _read()
+    if not data.get('installation_id'):
+        data['installation_id'] = secrets.token_hex(16)
+        _save(data)
+    return data
+
+
+def license_status(*, force=False):
+    global _cache, _checked_at
+    if os.environ.get('ZM_AI_TOOL_WEB_WORKER') == '1':
+        # SQLite is the same authority used by the gateway; admission sees revocation immediately.
+        from accounts import license_status as account_status
+        try:
+            with sqlite3.connect('file:' + os.environ['ZM_AI_TOOL_WEB_AUTH_DB'] + '?mode=ro', uri=True, timeout=5) as db:
+                db.row_factory = sqlite3.Row
+                row = db.execute('SELECT * FROM users WHERE id=?', (os.environ['ZM_AI_TOOL_WEB_USER_ID'],)).fetchone()
+                return account_status(dict(row)) if row else _empty('ACCOUNT_DELETED', True)
+        except (KeyError, sqlite3.Error):
+            return _empty('LICENSE_CHECK_REQUIRED', True)
+    with _request_lock:
+        with _lock:
+            data = _cache or _read()
+            token = data.get('device_token')
+            if not token or data.get('authority') != server_url():
+                return _empty()
+            if not force and _checked_at and time.monotonic() - _checked_at < _CACHE_SECONDS:
+                return _current(data.get('status') or _empty(), data.get('verified_at', 0))
+        try:
+            result = _request('status', {'deviceToken': token})
+            if not isinstance(result.get('valid'), bool):
+                raise RuntimeError('INVALID_LICENSE_RESPONSE')
+            return _install({**result, 'deviceToken': token}, data)
+        except ValueError as exc:
+            status = {**(data.get('status') or _empty()), 'valid': False, 'configured': True, 'code': str(exc), 'state': 'blocked'}
+            data.update(status=status, verified_at=0)
+            with _lock:
+                _save(data)
+                _cache, _checked_at = data, time.monotonic()
+            return data['status']
+        except Exception:
+            with _lock:
+                # Do not move verified_at on a network failure, including RAM cache hits.
+                _cache, _checked_at = data, time.monotonic()
+            result = _current(data.get('status') or _empty('LICENSE_CHECK_REQUIRED', True), data.get('verified_at', 0))
+            result['transient'] = True
+            return result
+
+
+def activate_license(key):
+    if not isinstance(key, str) or not key.strip().startswith('ZMAI-'):
+        raise ValueError('KEY_INVALID')
+    with _request_lock, _lock:
+        data = installation()
+        result = _request('activate', {'key': key.strip(), 'installationId': data['installation_id'], 'name': platform.node()[:200]})
+        old = data.get('device_token')
+        status = _install(result, data)
+        if old and old != result['deviceToken']:
+            try:
+                _request('logout', {'deviceToken': old})
+            except Exception:
+                pass
+        return status
+
+
+def deactivate_license():
+    global _cache, _checked_at
+    with _request_lock, _lock:
+        data = installation()
+        if data.get('device_token'):
+            try:
+                _request('logout', {'deviceToken': data['device_token']})
+            except Exception:
+                # Keep the credential so an offline sign-out can be retried without losing the device slot.
+                raise ValueError('LOGOUT_NETWORK_REQUIRED') from None
+        _save({'installation_id': data['installation_id']})
+        _cache, _checked_at = None, 0
+    return _empty()
+
+
+def start_desktop_login(port):
+    with _lock:
+        state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
+        redirect = f'http://127.0.0.1:{port}/api/auth/desktop/callback'
+        _pending.clear()
+        _pending[state] = {'verifier': verifier, 'redirectUri': redirect, 'expires': time.time() + 600}
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+        url = server_url() + '/api/desktop/authorize?' + urlencode({'state': state, 'challenge': challenge, 'redirect_uri': redirect})
+    webbrowser.open(url)
+    return {'authorizationUrl': url}
+
+
+def finish_desktop_login(state, code):
+    with _request_lock, _lock:
+        pending = _pending.pop(state, None)
+        if not pending or pending['expires'] <= time.time():
+            raise ValueError('DESKTOP_CODE_INVALID')
+        data = installation()
+        result = _request('exchange', {**{k: v for k, v in pending.items() if k != 'expires'}, 'code': code,
+                                      'installationId': data['installation_id'], 'name': platform.node()[:200]})
+        previous = data.get('device_token')
+        _install(result, data)
+        if previous and previous != result['deviceToken']:
+            try:
+                _request('logout', {'deviceToken': previous})
+            except Exception:
+                pass
+
+
+def license_cached_valid():
+    return bool(license_status().get('valid'))
+
+
+def is_admitted():
+    return _admitted.get() or os.environ.get('ZM_AI_TOOL_ADMITTED_JOB') == '1'
+
+
+def continue_job(kind, uid):
+    with _lock:
+        _continuations.add((kind, uid))
+
+
+def continuation(kind, uid):
+    with _lock:
+        return (kind, uid) in _continuations
+
+
+def end_continuation(kind, uid):
+    with _lock:
+        _continuations.discard((kind, uid))
+
+
+def can_start_job():
+    if is_admitted():
+        return True
+    # Standalone scripts/tests without a hosted runtime retain their normal behavior.
+    if os.environ.get('ZM_AI_TOOL_WEB_WORKER') != '1' and os.environ.get('ZM_AI_TOOL_DESKTOP') != '1':
+        return True
+    return license_cached_valid()
+
+
+@contextmanager
+def admitted_job():
+    token = _admitted.set(True)
     try:
-        LICENSE_FILE.unlink(missing_ok=True)
-    except OSError as exc:
-        raise RuntimeError(f"Không thể xoá key đã lưu: {exc}") from exc
-    with _cache_lock:
-        _cache = None
-        _cache_at = 0.0
-    return license_status(force=True)
+        yield
+    finally:
+        _admitted.reset(token)
 
 
-def license_cached_valid() -> bool:
-    return bool(license_status().get("valid"))
+def run_admitted(fn, *args, **kwargs):
+    with admitted_job():
+        return fn(*args, **kwargs)
+
+
+def watch_pending_jobs(callback):
+    _pending_watchers.append(weakref.WeakMethod(callback))
+
+
+def pause_pending_jobs():
+    for reference in list(_pending_watchers):
+        callback = reference()
+        if callback is None:
+            _pending_watchers.remove(reference)
+        else:
+            callback()
+
+
+def start_license_monitor():
+    global _monitor_started
+    if _monitor_started or not (os.environ.get('ZM_AI_TOOL_DESKTOP') == '1' or os.environ.get('ZM_AI_TOOL_WEB_WORKER') == '1'):
+        return
+    _monitor_started = True
+    def loop():
+        while True:
+            try:
+                if not license_status().get("valid"):
+                    pause_pending_jobs()
+            except Exception:
+                pass
+            time.sleep(1)
+    threading.Thread(target=loop, name='account-access', daemon=True).start()

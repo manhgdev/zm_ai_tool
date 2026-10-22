@@ -6,7 +6,7 @@ import type { Voice } from '../tts.types'
 export function engineOf(voiceId: string) {
   if (!voiceId) return '—'
   if (voiceId.startsWith('vn:clone:')) return 'Clone'
-  if (voiceId.startsWith('vn:')) return 'VieNeu Local'
+  if (voiceId.startsWith('vn:')) return 'zmAI Local'
   if (voiceId.startsWith('cc:')) return 'CapCut TTS'
   if (voiceId.startsWith('el:')) return 'ElevenLabs'
   if (voiceId.startsWith('win:') || voiceId === 'system' || voiceId.startsWith('espeak:')) return 'System'
@@ -14,7 +14,7 @@ export function engineOf(voiceId: string) {
   return 'zmAI'
 }
 
-/** Bucket rõ ràng — clone không lẫn VieNeu Local / zmAI. */
+/** Bucket rõ ràng — clone không lẫn zmAI Local / zmAI. */
 export function voiceEngineBucket(v: Voice): TtsEngine {
   if (v.engine === 'moss_tts_nano' || v.type === 'MOSS-TTS-Nano') return 'zmai'
   if (v.type === 'zmAI' || v.engine === 'zmai') return 'zmai'
@@ -66,7 +66,7 @@ export function voiceMetadata(v: Voice): { description: string; tags: VoiceTag[]
   const bucket = voiceEngineBucket(v)
   const source =
     bucket === 'zmai' ? 'zmAI' :
-      bucket === 'vieneu' ? 'VieNeu Local' :
+      bucket === 'vieneu' ? 'zmAI Local' :
         bucket === 'clone' ? 'Clone' :
           bucket === 'capcut' ? 'CapCut' :
             bucket === 'eleven' ? 'ElevenLabs' : 'Hệ thống'
@@ -104,7 +104,7 @@ export function engineLabel(engine?: string, voiceId?: string) {
     // meta cũ gộp hết vào vieneu — suy ra đúng bucket từ voice id
     if (voiceId?.startsWith('vn:clone:')) return 'Clone'
     if (voiceId && !voiceId.startsWith('vn:')) return 'zmAI'
-    return 'VieNeu Local'
+    return 'zmAI Local'
   }
   if (e === 'capcut' || e === 'cc') return 'CapCut TTS'
   if (e === 'elevenlabs' || e === 'eleven' || e === 'el') return 'ElevenLabs'

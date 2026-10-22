@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { RealtimeEvent, RealtimeHandler, RealtimeStatus } from './types'
+import { currentWebAccountId } from '@/app/WebSession'
 
 type RealtimeContextValue = {
   status: RealtimeStatus
@@ -39,6 +40,8 @@ export function RealtimeProvider({ children, enabled = true }: { children: React
     sourceRef.current?.close()
     const topics = [...topicsRef.current]
     const params = new URLSearchParams()
+    const accountId = currentWebAccountId()
+    if (accountId) params.set('web_account', accountId)
     if (topics.length) params.set('topics', topics.join(','))
     if (lastIdRef.current) params.set('after', lastIdRef.current)
     const query = params.toString() ? `?${params.toString()}` : ''

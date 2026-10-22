@@ -1,4 +1,4 @@
-"""TTS: VieNeu Local + CapCut + ElevenLabs + system (say/espeak)."""
+"""TTS: zmAI Local + CapCut + ElevenLabs + system (say/espeak)."""
 from __future__ import annotations
 
 from .eleven import EL_MODEL, EL_TTS_VER, _el_lang_code, _el_voice_id

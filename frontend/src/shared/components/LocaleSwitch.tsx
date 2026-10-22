@@ -1,4 +1,4 @@
-import type { AppLocale } from '@/app/i18n'
+import { localize, type AppLocale } from '@/app/i18n'
 import { cn } from '@/shared/lib/cn'
 import './LocaleSwitch.css'
 
@@ -7,12 +7,22 @@ type Props = {
   onChange: (locale: AppLocale) => void
   ariaLabel: string
   className?: string
+  compactOnSmallScreen?: boolean
 }
 
-/** Always shows both VI and EN side by side. */
-export function LocaleSwitch({ locale, onChange, ariaLabel, className }: Props) {
+export function LocaleSwitch({ locale, onChange, ariaLabel, className, compactOnSmallScreen = false }: Props) {
   return (
-    <div className={cn('locale-switch', className)} role="group" aria-label={ariaLabel}>
+    <div className={cn('locale-switch', compactOnSmallScreen && 'locale-switch-responsive', className)} role="group" aria-label={ariaLabel}>
+      {compactOnSmallScreen && (
+        <button
+          type="button"
+          className="locale-switch-btn locale-switch-toggle is-active"
+          aria-label={localize(locale, 'Chuyển sang tiếng Anh', 'Switch to Vietnamese')}
+          onClick={() => onChange(locale === 'vi' ? 'en' : 'vi')}
+        >
+          {locale.toUpperCase()}
+        </button>
+      )}
       <button
         type="button"
         className={cn('locale-switch-btn', locale === 'vi' && 'is-active')}

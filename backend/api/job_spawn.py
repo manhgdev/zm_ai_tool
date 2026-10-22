@@ -7,6 +7,8 @@ import sys
 import threading
 import traceback
 
+from pipeline.core.license import can_start_job, run_admitted, is_admitted
+
 _JOB_WORKER = """# vc-job-worker
 import json, sys
 from pathlib import Path
@@ -76,6 +78,7 @@ def _worker_environment(backend) -> dict[str, str]:  # noqa: ANN001
         path_parts.insert(0, str(meipass))
         env["ZM_AI_TOOL_MEIPASS"] = str(meipass)
     env["PYTHONPATH"] = os.pathsep.join(path_parts + [env.get("PYTHONPATH", "")])
+    env["ZM_AI_TOOL_ADMITTED_JOB"] = "1"
     return env
 
 
@@ -120,7 +123,9 @@ def _run_in_thread(fn, args) -> None:
     time.sleep(0.2)
     job = getattr(fn, "__name__", "job")
     try:
-        fn(*args)
+        if not can_start_job():
+            raise PermissionError("ACCESS_REQUIRED")
+        run_admitted(fn, *args)
     except BaseException as e:
         try:
             from pipeline.core.jobs import Cancelled
@@ -148,6 +153,9 @@ def _run_in_subprocess(fn, args) -> None:
     time.sleep(0.2)
     job = getattr(fn, "__name__", "job")
     project_id = args[0] if args else None
+    if not can_start_job():
+        _mark_job_error(project_id, job, "ACCESS_REQUIRED")
+        return
     try:
         py = _job_python()
     except RuntimeError as e:
@@ -232,6 +240,11 @@ def _run_in_subprocess(fn, args) -> None:
 def spawn(fn, *args) -> None:
     """Windows: job process. CUDA crash chỉ giết worker, API :8787 còn sống."""
     target = _run_in_subprocess if sys.platform == "win32" else _run_in_thread
+    # ContextVars do not cross thread boundaries. Only a running parent may pass admission.
+    from pipeline.core.license import run_admitted
+    if is_admitted():
+        original = target
+        target = lambda *values: run_admitted(original, *values)
     threading.Thread(
         target=target,
         args=(fn, args),

@@ -2,7 +2,7 @@
   display: grid;
   /* Keep the navigation track shrinkable so it cannot paint underneath the
      status controls when the window is narrower than the desktop layout. */
-  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: stretch;
   gap: 12px;
   padding: 0 20px;
@@ -84,7 +84,8 @@
 .header > .nav,
 .header > .hw,
 .nav > button,
-.nav > .nav-tools {
+.nav > .nav-tools,
+.nav > .nav-tools > button {
   min-width: 0;
 }
 
@@ -161,6 +162,10 @@
   background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
+.nav .nav-renders-compact {
+  display: none;
+}
+
 .hw {
   display: flex;
   align-items: center;
@@ -211,6 +216,12 @@
 }
 
 .license-expiry:hover { text-decoration: underline; }
+
+.license-expiry.is-unlimited {
+  min-width: 28px;
+  font-size: 1.35rem;
+  line-height: 1;
+}
 
 .license-expiry.is-warning {
   color: var(--warning, #d97706);
@@ -275,12 +286,19 @@
 
 @media (max-width: 1300px) {
   .header {
-    grid-template-columns: minmax(180px, 220px) minmax(0, 1fr) auto;
     gap: 8px;
     padding-inline: 14px;
   }
-  .nav {
-    justify-content: flex-start;
+  .nav > [data-nav="renders"] {
+    display: none;
+  }
+  .nav .nav-renders-compact {
+    display: inline-flex;
+  }
+  .nav button.active-compact {
+    color: var(--primary);
+    font-weight: 650;
+    border-bottom-color: var(--primary);
   }
   .nav > button,
   .nav > .nav-tools > button {
@@ -305,7 +323,6 @@
   /* Keep tab names visible on compact windows; only menu items may be
      nested under a button, so do not hide their labels with a broad selector. */
   .header {
-    grid-template-columns: minmax(130px, 165px) minmax(0, 1fr) auto;
     gap: 6px;
     padding-inline: 12px;
   }
@@ -316,7 +333,6 @@
     white-space: nowrap;
   }
   .nav {
-    justify-content: flex-start;
     min-width: 0;
   }
   .nav-tools { min-width: 0; }
@@ -343,6 +359,9 @@
   .hw {
     gap: 5px;
     font-size: .7rem;
+  }
+  .header .web-account-menu summary > :not(.web-menu-avatar) {
+    display: none;
   }
   .license-expiry {
     max-width: 9ch;

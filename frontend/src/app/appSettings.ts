@@ -369,3 +369,18 @@ export function persistSession(projectId: string | null) {
     /* ignore */
   }
 }
+
+/** Scope existing UI caches without migrating desktop data into a web account. */
+export function accountStorage(storage: Storage, userId: string): Storage {
+  const prefix = `zm-web:${userId}:`
+  const keys = () => Array.from({ length: storage.length }, (_, i) => storage.key(i))
+    .filter((key): key is string => key !== null && key.startsWith(prefix))
+  return {
+    get length() { return keys().length },
+    key: (index: number) => keys()[index]?.slice(prefix.length) ?? null,
+    getItem: (key: string) => storage.getItem(prefix + key),
+    setItem: (key: string, value: string) => storage.setItem(prefix + key, value),
+    removeItem: (key: string) => storage.removeItem(prefix + key),
+    clear: () => keys().forEach(key => storage.removeItem(key)),
+  }
+}

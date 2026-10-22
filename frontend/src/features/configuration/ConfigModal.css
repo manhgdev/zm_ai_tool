@@ -297,6 +297,7 @@
 
 .cfg-section-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 0;
   padding: 0 12px;
   border-bottom: 1px solid var(--line);
@@ -1077,6 +1078,16 @@
 .cfg-log-pre::-webkit-scrollbar-track { background: #0f172a; }
 .cfg-log-pre::-webkit-scrollbar-thumb { background: #64748b; border-radius: 6px; border: 2px solid #0f172a; }
 .cfg-log-pre::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+.cfg-system-report {
+  width: 100%;
+  resize: vertical;
+}
+
+.cfg-system-report:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
 
 .cfg-log-actions {
   display: flex;

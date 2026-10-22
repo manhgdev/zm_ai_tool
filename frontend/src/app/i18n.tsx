@@ -62,6 +62,16 @@ const MESSAGES = {
   'header.switchLight': { vi: 'Chuyển sang giao diện sáng', en: 'Switch to light mode' },
   'header.switchDark': { vi: 'Chuyển sang giao diện tối', en: 'Switch to dark mode' },
   'header.back': { vi: 'Quay lại', en: 'Back' },
+  'header.signOut': { vi: 'Đăng xuất', en: 'Sign out' },
+  'header.signOutFailed': { vi: 'Không thể đăng xuất. Vui lòng thử lại.', en: 'Could not sign out. Please try again.' },
+  'error.web.loginRequired': { vi: 'Vui lòng đăng nhập Google để tiếp tục.', en: 'Please sign in with Google to continue.' },
+  'error.web.accountChanged': { vi: 'Tài khoản đã thay đổi. Vui lòng mở lại phiên đăng nhập.', en: 'The account changed. Please reopen your session.' },
+  'error.web.capacity': { vi: 'Máy chủ đã đạt giới hạn tài khoản đang hoạt động. Vui lòng thử lại sau.', en: 'The server has reached its active account limit. Please try again later.' },
+  'error.web.workerFailed': { vi: 'Không kết nối được tiến trình xử lý của tài khoản. Vui lòng thử lại.', en: 'Cannot reach your account worker. Please try again.' },
+  'error.web.serverPlatform': { vi: 'Máy chủ Web cần chạy trên Linux hoặc macOS.', en: 'The web server requires Linux or macOS.' },
+  'error.web.privatePath': { vi: 'Chỉ được dùng file và thư mục thuộc tài khoản của bạn.', en: 'Only files and folders belonging to your account are allowed.' },
+  'error.web.origin': { vi: 'Địa chỉ Web chưa khớp cấu hình máy chủ.', en: 'The web address does not match the server configuration.' },
+  'error.web.desktopOnly': { vi: 'Thao tác này chỉ có trên bản APP. Trên Web, hãy tải file về máy.', en: 'This action is available in the desktop app. On the web, download the file instead.' },
   'error.cloud.apiKeyMissing': { vi: '{provider}: chưa có API key. Mở Cấu hình → API dịch cloud.', en: '{provider}: no API key is configured. Open Settings → Cloud translation APIs.' },
   'error.cloud.authFailed': { vi: '{provider}: API key bị từ chối hoặc không có quyền dùng model.', en: '{provider}: the API key was rejected or cannot access this model.' },
   'error.cloud.rateLimited': { vi: '{provider}: hết quota hoặc đang bị giới hạn tốc độ. Thử lại sau hoặc thêm key khác.', en: '{provider}: quota is exhausted or rate-limited. Retry later or add another key.' },
@@ -169,6 +179,7 @@ export function localize(locale: AppLocale, vietnamese: string, english: string)
 
 /** Backend job messages include dynamic counts, so they cannot use the static catalog. */
 export function localizePipelineMessage(locale: AppLocale, message: string): string {
+  if (message.includes('ACCESS_REQUIRED')) return localize(locale, 'Quyền sử dụng chưa có hiệu lực. Sau khi được cấp lại quyền, hãy tiếp tục job thủ công.', 'Access is not active. Resume the job manually after access is restored.')
   if (message === 'CAPCUT_TTS_TIMEOUT') {
     return localize(locale, 'CapCut không hoàn tất trong thời gian cho phép. Yêu cầu đã dừng; hãy thử lại.', 'CapCut did not finish within the time limit. The request stopped; please retry.')
   }

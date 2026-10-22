@@ -5,7 +5,6 @@ no privileged worker writes to a caller-supplied path or executes downloaded cod
 """
 from __future__ import annotations
 
-import base64
 import contextlib
 import ctypes
 import hashlib
@@ -204,8 +203,14 @@ def _boot_id() -> str:
     return result.stdout.strip()
 
 
-def _elevate(source: str):
+def _elevate(config: dict):
     """ShellExecuteEx retains the actual elevated process handle (no kill timeout)."""
+    worker = Path(__file__).with_name('nvidia_driver_update.ps1').resolve(strict=True)
+    command = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File', str(worker),
+               '-Callback', config['callback'], '-Token', config['token'],
+               '-OperationId', config['operationId']]
+    if config['acceptedFingerprint']:
+        command += ['-AcceptedFingerprint', config['acceptedFingerprint']]
     from ctypes import wintypes
     class ExecuteInfo(ctypes.Structure):
         _fields_ = [('cbSize', wintypes.DWORD), ('fMask', ctypes.c_ulong), ('hwnd', wintypes.HWND),
@@ -220,8 +225,7 @@ def _elevate(source: str):
     info.cbSize = ctypes.sizeof(info)
     info.fMask = 0x40 | 0x100  # NOCLOSEPROCESS | NOASYNC
     info.lpVerb, info.lpFile, info.nShow = 'runas', _powershell(), 0
-    encoded = base64.b64encode(source.encode('utf-16le')).decode('ascii')
-    info.lpParameters = '-NoProfile -NonInteractive -EncodedCommand ' + encoded
+    info.lpParameters = subprocess.list2cmdline(command)
     from .runtime_site import external_process_dll_search
     with external_process_dll_search(info.lpFile):
         launched = shell.ShellExecuteExW(ctypes.byref(info))
@@ -271,12 +275,9 @@ def _run_worker(state: dict, emit) -> dict:
     thread.start()
     config = {'callback': f'http://127.0.0.1:{server.server_port}/progress', 'token': token,
               'operationId': state['operationId'], 'acceptedFingerprint': state.pop('acceptedFingerprint', '')}
-    encoded = base64.b64encode(json.dumps(config).encode('utf-8')).decode('ascii')
-    source = "$config = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + encoded + "')) | ConvertFrom-Json\n"
-    source += Path(__file__).with_name('nvidia_driver_update.ps1').read_text(encoding='utf-8')
     handle = None
     try:
-        handle = _elevate(source)
+        handle = _elevate(config)
         from ctypes import wintypes
         kernel = ctypes.WinDLL('kernel32', use_last_error=True)
         kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]

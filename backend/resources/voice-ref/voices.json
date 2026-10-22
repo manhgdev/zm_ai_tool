@@ -47,7 +47,7 @@
     "language": "vi",
     "ref_file": "manh_dung.wav",
     "ref_text": "",
-    "hidden": true,
+    "hidden": false,
     "favorite": false,
     "tags": []
   },
@@ -75,7 +75,7 @@
     "language": "vi",
     "ref_file": "Ngọc_Huyền_2_0.wav",
     "ref_text": "",
-    "hidden": true,
+    "hidden": false,
     "favorite": false,
     "tags": []
   },
@@ -105,7 +105,7 @@
     "language": "vi",
     "ref_file": "ngoc_huyen_vbbe_2.wav",
     "ref_text": "",
-    "hidden": true,
+    "hidden": false,
     "favorite": false,
     "tags": []
   },

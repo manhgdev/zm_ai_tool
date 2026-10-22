@@ -42,3 +42,17 @@ html.platform-macos .locale-switch-btn {
   padding: 0 7px;
   font-size: 12px;
 }
+
+.locale-switch-toggle {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .locale-switch-responsive > .locale-switch-btn {
+    display: none;
+  }
+
+  .locale-switch-responsive > .locale-switch-toggle {
+    display: inline-block;
+  }
+}

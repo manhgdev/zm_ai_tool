@@ -7,7 +7,7 @@ Thank you for your interest in contributing! We welcome bug reports, feature sug
 ## 🛠️ Development Setup
 
 ### Prerequisites
-- **Node.js**: 18+ (Node 20+ recommended)
+- **Node.js**: 24 (Bun can run the package scripts)
 - **Python**: 3.10 – 3.12 (Python 3.12 recommended)
 - **FFmpeg & FFprobe**: Available in system `PATH`
 - **Git**
@@ -28,9 +28,9 @@ Thank you for your interest in contributing! We welcome bug reports, feature sug
 
 3. **Start the development servers**:
    ```bash
-   npm run dev:all
+   bun run dev
    ```
-   - Frontend: `http://127.0.0.1:5173`
+   - Frontend: `http://localhost:5173`
    - Backend API: `http://127.0.0.1:8787`
 
 ---

@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { appModePath, loadAppMode } from '../app/appMode'
 import { localize } from '../app/i18n'
 import { api } from '../features/project/project.api'
-import { IconArrowRight, IconBatch, IconCheck, IconDownload, IconFilm, IconGlobe, IconLayers, IconLogo, IconMic, IconPlay } from '../shared/components/Icons'
+import { IconArrowRight, IconBatch, IconCheck, IconDownload, IconFilm, IconGlobe, IconLayers, IconMic, IconPlay } from '../shared/components/Icons'
 import './LandingPage.css'
+import { WebHeader, WebFooter } from '../app/WebSession'
 
 type DownloadKey = 'windows' | 'macos-arm64' | 'macos-x64'
 type DesktopDownloads = { version: string; downloads: Partial<Record<DownloadKey, { url: string; name: string }>> }
@@ -259,19 +260,7 @@ export default function LandingPage() {
 
   return <div className="landing" data-theme={theme} lang={locale}>
     <a className="lp-skip" href="#main">{t('Đến nội dung chính', 'Skip to content')}</a>
-    <header className="lp-nav">
-      <div className="lp-container lp-nav-inner">
-        <a className="lp-brand" href={inApp ? '/?landing=1' : '/'}><IconLogo size={34} /><span>ZM AI TOOL</span></a>
-        <nav className="lp-nav-links" aria-label={t('Điều hướng chính', 'Main navigation')}>
-          <a href="#product">{t('Công cụ AI', 'AI tools')}</a><a href="#workflow">{t('Quy trình', 'Workflow')}</a><a href="#guide">{t('Hướng dẫn', 'Guide')}</a><a href="#faq">{t('Hỏi đáp', 'FAQ')}</a>
-        </nav>
-        <div className="lp-nav-actions">
-          <button className="lp-icon-button" type="button" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label={theme === 'light' ? t('Chuyển sang giao diện tối', 'Switch to dark theme') : t('Chuyển sang giao diện sáng', 'Switch to light theme')}><span aria-hidden="true">{theme === 'light' ? '☾' : '☼'}</span></button>
-          <button className="lp-locale" type="button" onClick={() => setLocale(locale === 'vi' ? 'en' : 'vi')} aria-label={t('Switch to English', 'Chuyển sang tiếng Việt')}>{locale === 'vi' ? 'EN' : 'VI'}</button>
-          {primaryCta()}
-        </div>
-      </div>
-    </header>
+    <WebHeader locale={locale} theme={theme} onLocale={() => setLocale(locale === 'vi' ? 'en' : 'vi')} onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')} action={primaryCta()} home={inApp ? '/?landing=1' : '/'} />
 
     {updatePhase !== 'idle' ? (
       <div className="lp-update-banner" role="status">
@@ -409,6 +398,6 @@ export default function LandingPage() {
       <section className="lp-section lp-container lp-faq" id="faq"><div><div className="lp-eyebrow">{t('MỘT VÀI ĐIỀU BẠN CẦN BIẾT', 'A FEW THINGS TO KNOW')}</div><h2>{t('Bạn hỏi.', 'Your questions.')}<br /><span>{t('Chúng tôi trả lời.', 'Answered.')}</span></h2></div><div>{faqs.map(([question, answer]) => <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}</div></section>
     </main>
 
-    <footer className="lp-footer"><div className="lp-container"><div><a className="lp-brand" href={inApp ? '/?landing=1' : '/'}><IconLogo size={30} /><span>ZM AI TOOL</span></a><p>{t('Một workspace cho mọi nhịp sáng tạo.', 'One workspace for every creative moment.')}</p></div><nav aria-label={t('Liên kết cuối trang', 'Footer links')}><a href="#product">{t('Công cụ AI', 'AI tools')}</a><a href="#guide">{t('Hướng dẫn', 'Guide')}</a>{!inApp ? <a href="#download">{t('Tải về', 'Download')}</a> : null}<a href="#faq">{t('Hỏi đáp', 'FAQ')}</a><a href={workspaceHref}>{t('Mở workspace', 'Open workspace')}</a></nav><span>© {new Date().getFullYear()} ZM AI TOOL</span></div></footer>
+    <WebFooter locale={locale} workspaceHref={workspaceHref} home={inApp ? '/?landing=1' : '/'} showDownload={!inApp} />
   </div>
 }

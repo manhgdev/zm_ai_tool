@@ -936,9 +936,9 @@ def _install_native_optional_feature(feature: str) -> dict[str, Any]:
     _runtime_pip_install("--no-deps", sdk, timeout=900, progress=(80, 94, label))
     if feature == "diarization":
         from pipeline.asr.speaker import ensure_diarization_models
-        from pipeline.core.config import DATA
+        from pipeline.core.config import RESOURCE_DATA
 
-        ensure_diarization_models(DATA / "models" / "pyannote", log=_install_log_fn)
+        ensure_diarization_models(RESOURCE_DATA / "models" / "pyannote", log=_install_log_fn)
     install_runtime_meta_path()
     bootstrap_ai_runtime()
     _invalidate_checks_cache()
@@ -967,8 +967,8 @@ def install_diarization_runtime() -> dict[str, Any]:
         from ..runtime_install import install_runtime
         result = install_runtime(lambda value, message, fields: _report_install(value, message, **fields), features=("diarization",))
         from pipeline.asr.speaker import ensure_diarization_models
-        from pipeline.core.config import DATA
-        ensure_diarization_models(DATA / "models" / "pyannote", log=_install_log_fn)
+        from pipeline.core.config import RESOURCE_DATA
+        ensure_diarization_models(RESOURCE_DATA / "models" / "pyannote", log=_install_log_fn)
         return result
     return _install_native_optional_feature("diarization")
 
@@ -990,7 +990,7 @@ def install_ai_runtime() -> dict[str, Any]:
         )
 
     from pipeline.asr.speaker import ensure_diarization_models
-    from pipeline.core.config import DATA
+    from pipeline.core.config import RESOURCE_DATA
 
     _report_install(2, "Đang kiểm tra model tách người nói… / Checking speaker models…")
 
@@ -1011,7 +1011,7 @@ def install_ai_runtime() -> dict[str, Any]:
         _report_install(value, f"Đang tải {name}{size}")
 
     ensure_diarization_models(
-        DATA / "models" / "pyannote",
+        RESOURCE_DATA / "models" / "pyannote",
         log=_install_log_fn,
         progress=model_progress,
     )
@@ -1229,7 +1229,7 @@ def install_ai_runtime() -> dict[str, Any]:
         # VieNeu package
         if _need_install("vieneu"):
             if _install_log_fn:
-                _install_log_fn("\n=== VieNeu Local ===\n")
+                _install_log_fn("\n=== zmAI Local ===\n")
             proc_v = _pip_stream([sys.executable, "-m", "pip", "install", "--no-deps", _VIENEU_PACKAGE])
             if proc_v.returncode:
                 raise RuntimeError("[VieNeu] " + (proc_v.stderr or proc_v.stdout)[-2000:])

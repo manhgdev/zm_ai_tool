@@ -1,6 +1,13 @@
 # Fixed, bundled worker. No downloaded script, command, executable or path is accepted.
+param(
+    [Parameter(Mandatory=$true)][ValidatePattern('^http://127\.0\.0\.1:[1-9][0-9]{0,4}/progress$')][string]$Callback,
+    [Parameter(Mandatory=$true)][ValidatePattern('^[A-Za-z0-9_-]{43}$')][string]$Token,
+    [Parameter(Mandatory=$true)][guid]$OperationId,
+    [ValidatePattern('^(?:[0-9a-f]{64})?$')][string]$AcceptedFingerprint = ''
+)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$config = @{ callback = $Callback; token = $Token; operationId = $OperationId.ToString(); acceptedFingerprint = $AcceptedFingerprint }
 $mutex = $null
 $held = $false
 function Send-State($phase, $extra = @{}) {

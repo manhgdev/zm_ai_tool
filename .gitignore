@@ -33,3 +33,4 @@ capcut_device.json
 *.log
 references/
 backend/pipeline/assets/lama_fp32.onnx
+backend/web-data/

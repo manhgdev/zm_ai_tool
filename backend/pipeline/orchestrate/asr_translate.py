@@ -13,7 +13,7 @@ from typing import Any
 
 from pipeline.asr import asr_paddleocr, hybrid_asr, asr_whisper
 from pipeline.export.burn import cover_and_burn
-from pipeline.core.config import DATA, PUBLIC_DATA
+from pipeline.core.config import RESOURCE_DATA, PUBLIC_DATA
 from pipeline.core.jobs import Cancelled, begin_job, check_cancel, clear_job, short_cmd_error
 from pipeline.core.media import (
     crop_export_aspect,
@@ -85,7 +85,7 @@ def _attach_project_speakers(project_id, video, segments, settings, meta, asr_ke
         if not wav.exists() or wav.stat().st_mtime < video.stat().st_mtime:
             extract_audio(video, wav, project_id=project_id)
         provider_info: dict[str, str] = {}
-        turns = diarize_audio(wav, DATA / "models" / "pyannote",
+        turns = diarize_audio(wav, RESOURCE_DATA / "models" / "pyannote",
                               int(settings.get("speakerCount") or 0), provider_out=provider_info)
         check_cancel(project_id)
         meta["speakerTurns"] = turns

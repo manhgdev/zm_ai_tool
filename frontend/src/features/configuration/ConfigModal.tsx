@@ -5,6 +5,7 @@ import { api, InstallCancelledError, type InstallStatus } from '@/features/proje
 import ProgressPopup from '@/shared/components/ProgressPopup'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
 import LicensePage from '@/features/license/LicensePage'
+import SystemInfoPanel from './SystemInfoPanel'
 import type { LicenseStatus } from '@/features/license/license.api'
 import { localize, useLocale } from '@/app/i18n'
 import { copyText } from '@/shared/lib/clipboard'
@@ -1149,7 +1150,7 @@ export default function ConfigModal({
                 className={section === 'license' ? 'active' : undefined}
                 onClick={() => setSection('license')}
               >
-                {t('Kích hoạt', 'Activate')}
+                {t('Quyền sử dụng', 'Access')}
               </button>
             </>
           ) : null}
@@ -1159,6 +1160,13 @@ export default function ConfigModal({
             onClick={() => setSection('logs')}
           >
             {licenseStatus?.valid ? t('Log', 'Log') : t('Log cài đặt', 'Install log')}
+          </button>
+          <button
+            type="button"
+            className={section === 'computer' ? 'active' : undefined}
+            onClick={() => setSection('computer')}
+          >
+            {t('Thông tin máy tính', 'Computer information')}
           </button>
         </div>
 
@@ -1178,7 +1186,7 @@ export default function ConfigModal({
           </div>
         )}
 
-        {loading && section !== 'setup' && section !== 'logs' ? (
+        {loading && section !== 'setup' && section !== 'logs' && section !== 'computer' ? (
           <p className="cfg-msg">Đang tải…</p>
         ) : section === 'setup' ? (
           <div className="cfg-body cfg-setup">
@@ -1720,6 +1728,8 @@ export default function ConfigModal({
           </div>
         ) : section === 'license' ? (
           licenseStatus && onLicenseStatusChange ? <LicensePage status={licenseStatus} embedded onStatusChange={onLicenseStatusChange} /> : null
+        ) : section === 'computer' ? (
+          <SystemInfoPanel />
         ) : section === 'logs' ? (
           <div className="cfg-log-panel">
             <h3>{showPackageLog ? t('Log cài đặt package', 'Package installation log') : t('Log lỗi hệ thống', 'System error log')}</h3>
@@ -1761,7 +1771,7 @@ export default function ConfigModal({
           </div>
         ) : null}
 
-        {msg && section !== 'logs' && section !== 'setup' ? <p className="cfg-msg">{msg}</p> : null}
+        {msg && section !== 'logs' && section !== 'setup' && section !== 'computer' ? <p className="cfg-msg">{msg}</p> : null}
 
         <footer className="cfg-foot">
           {section === 'setup' ? (
@@ -1795,7 +1805,7 @@ export default function ConfigModal({
                 {checks?.ok ? t('Bắt đầu', 'Start') : checksLoading ? t('Đang chuẩn bị…', 'Preparing…') : t('Thử lại', 'Retry')}
               </button>
             </>
-          ) : section === 'logs' || section === 'license' || section === 'output' || section === 'cleanup' ? (
+          ) : section === 'logs' || section === 'computer' || section === 'license' || section === 'output' || section === 'cleanup' ? (
             <button type="button" className="cfg-secondary" onClick={tryClose} disabled={!canClose}>
               {t('Đóng', 'Close')}
             </button>

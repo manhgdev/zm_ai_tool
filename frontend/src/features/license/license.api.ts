@@ -1,6 +1,12 @@
 import { fetchJson } from '@/shared/api/fetchJson'
 
 export type LicenseStatus = {
+  mode?: 'account' | 'key'
+  state?: string
+  code?: string
+  startsAt?: string | null
+  lifetime?: boolean
+  user?: { email: string; name: string }
   valid: boolean
   configured: boolean
   keyMasked: string
@@ -11,47 +17,23 @@ export type LicenseStatus = {
   transient?: boolean
 }
 
-const STATUS_CACHE_KEY = 'zm_ai_tool.license.status.v1'
-const STATUS_CACHE_MS = 5 * 60 * 1000
 let statusInFlight: Promise<LicenseStatus> | null = null
-
-export function readCachedStatus(): LicenseStatus | null {
-  try {
-    const cached = JSON.parse(sessionStorage.getItem(STATUS_CACHE_KEY) || 'null')
-    return cached && Date.now() - Number(cached.at || 0) < STATUS_CACHE_MS
-      ? cached.status as LicenseStatus
-      : null
-  } catch {
-    return null
-  }
-}
-
-function cacheStatus(status: LicenseStatus): LicenseStatus {
-  if (status.transient) return status
-  try { sessionStorage.setItem(STATUS_CACHE_KEY, JSON.stringify({ at: Date.now(), status })) } catch {}
-  return status
-}
-
 function getStatus(force = false): Promise<LicenseStatus> {
-  if (!force) {
-    const cached = readCachedStatus()
-    if (cached) return Promise.resolve(cached)
-  }
   if (statusInFlight) return statusInFlight
-  statusInFlight = fetchJson<LicenseStatus>('/api/license/status', undefined, 35_000)
-    .then(cacheStatus)
+  statusInFlight = fetchJson<LicenseStatus>('/api/license/status' + (force ? '?force=true' : ''), undefined, 35_000)
     .finally(() => { statusInFlight = null })
   return statusInFlight
 }
 
 export const licenseApi = {
+  login: () => fetchJson<{ authorizationUrl: string }>('/api/auth/desktop/start', { method: 'POST' }),
   status: (force = false) => getStatus(force),
   activate: (key: string) =>
     fetchJson<LicenseStatus>('/api/license/activate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key }),
-    }, 65_000).then(cacheStatus),
+    }, 65_000),
   deactivate: () =>
-    fetchJson<LicenseStatus>('/api/license/deactivate', { method: 'POST' }, 15_000).then(cacheStatus),
+    fetchJson<LicenseStatus>('/api/license/deactivate', { method: 'POST' }, 15_000),
 }

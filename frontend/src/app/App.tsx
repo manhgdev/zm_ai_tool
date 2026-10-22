@@ -89,7 +89,7 @@ const EMPTY_LICENSE: LicenseStatus = {
   message: 'Đang kiểm tra bản quyền…',
 }
 
-const RESOURCE_NAMES = { whisper: 'Whisper', ocr: 'OCR', diarization: 'Sherpa-ONNX', demucs: 'Demucs', vieneu: 'VieNeu Local', moss_tts_nano: 'MOSS-TTS-Nano' }
+const RESOURCE_NAMES = { whisper: 'Whisper', ocr: 'OCR', diarization: 'Sherpa-ONNX', demucs: 'Demucs', vieneu: 'zmAI Local', moss_tts_nano: 'MOSS-TTS-Nano' }
 
 export default function App() {
   const [locale, setLocale] = useState<AppLocale>(loadLocale)
@@ -358,18 +358,19 @@ export default function App() {
     let cancelled = false
     const refresh = () => licenseApi.status(true)
       .then((next) => { if (!cancelled) setLicenseStatus(next) })
-      .catch((error) => {
+      .catch(() => {
         if (!cancelled) setLicenseStatus({
           ...EMPTY_LICENSE,
           transient: true,
-          message: error instanceof Error ? error.message : 'Không thể kiểm tra key',
+          message: '',
+          code: 'LICENSE_CHECK_REQUIRED',
         })
         // A 502 is transient: retry shortly and never persist the error as
         // an "not activated" license state.
         if (!cancelled) window.setTimeout(refresh, 5_000)
       })
     void refresh()
-    const timer = window.setInterval(refresh, 10 * 60 * 1000)
+    const timer = window.setInterval(refresh, 5 * 60 * 1000)
     return () => {
       cancelled = true
       window.clearInterval(timer)

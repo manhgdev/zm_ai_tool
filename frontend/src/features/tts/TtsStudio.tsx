@@ -748,7 +748,7 @@ export default function TtsStudio({
             : {
                 vieneu: {
                   id: 'vieneu',
-                  name: 'VieNeu Local',
+                  name: 'zmAI Local',
                   installed: false,
                   ready: false,
                   loadState: 'error',
@@ -1869,8 +1869,8 @@ export default function TtsStudio({
 
         <div className="tts-engine-card">
           <div className="top">
-            <h4>{vieneu?.name || 'VieNeu Local'}</h4>
-            <span className="tts-pill-local">Local</span>
+            <h4>{t('zmAI Local', 'zmAI Local')}</h4>
+            <span className="tts-pill-local">{t('TTS', 'TTS')}</span>
           </div>
           <div className="meta">
             <div className="meta-row">
@@ -2117,7 +2117,7 @@ export default function TtsStudio({
                   >
                     <option value="all">{t('Tất cả', 'All')}</option>
                     <option value="zmai">zmAI</option>
-                    <option value="vieneu">VieNeu Local</option>
+                    <option value="vieneu">{t('zmAI Local', 'zmAI Local')}</option>
                     <option value="clone">Clone{cloneCount > 0 ? ` (${cloneCount})` : ''}</option>
                     <option value="capcut">CapCut TTS</option>
                     <option value="eleven">ElevenLabs</option>
@@ -2366,7 +2366,7 @@ export default function TtsStudio({
                   >
                     <option value="all">{t('Tất cả', 'All')}</option>
                     <option value="zmai">zmAI</option>
-                    <option value="vieneu">VieNeu Local</option>
+                    <option value="vieneu">{t('zmAI Local', 'zmAI Local')}</option>
                     <option value="clone">
                       Clone{cloneCount > 0 ? ` (${cloneCount})` : ''}
                     </option>
@@ -2908,7 +2908,7 @@ export default function TtsStudio({
         active={Boolean(vieneuInstall)}
         minimized={installMinimized}
         running={vieneuInstall?.running}
-        title={t('Cài VieNeu Local', 'Install VieNeu Local')}
+        title={t('Cài zmAI Local', 'Install zmAI Local')}
         message={vieneuInstall?.needsRestart
           ? t('Đã cài VieNeu. Khởi động lại rồi bấm Tạo giọng; nội dung đã được giữ lại.', 'VieNeu is installed. Restart, then click Create voice; your input has been kept.')
           : vieneuInstall?.error ? runtimeErrorText(vieneuInstall, locale) : runtimeStatusText(vieneuInstall || { running: false }, locale)}

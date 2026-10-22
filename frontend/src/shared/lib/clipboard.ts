@@ -38,7 +38,10 @@ export async function copyText(text: string, options?: CopyTextOptions | string)
     textarea.style.position = 'fixed'
     textarea.style.inset = '0 auto auto -9999px'
     textarea.style.opacity = '0'
-    document.body.appendChild(textarea)
+    const previous = document.activeElement as HTMLElement | null
+    // A modal makes the rest of the document inert, so its copy target must stay inside it.
+    const container = previous?.closest('dialog[open]') || document.querySelector('dialog[open]') || document.body
+    container.appendChild(textarea)
     try {
       textarea.focus()
       textarea.select()
@@ -49,6 +52,7 @@ export async function copyText(text: string, options?: CopyTextOptions | string)
       }
     } finally {
       textarea.remove()
+      previous?.focus()
     }
   } catch (err) {
     if (shouldNotify) {
