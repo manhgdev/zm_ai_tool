@@ -21,7 +21,7 @@ __pycache__/
 *.bk[0-9]
 *.bk[0-9][0-9]
 .DS_Store
-.env
+# .env
 capcut_device.json
 # *.wav
 !backend/resources/voice-ref/ngoc-huyen.wav
