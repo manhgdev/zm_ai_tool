@@ -236,6 +236,10 @@ Mở rộng nhiều host cần cơ chế lập lịch worker.
   Khóa/thu hồi có hiệu lực ngay khi APP nhận phản hồi. Web đọc SQLite tại lúc nhận việc.
   Job đã chạy hoàn tất; job chờ chuyển sang tạm dừng/yêu cầu thao tác, cần tiếp tục
   thủ công sau khi gia hạn.
+- Mỗi APP dùng một phương thức tại một thời điểm: tài khoản Google **hoặc** key,
+  không cộng dồn thời hạn. Trong **Cấu hình → Quyền sử dụng**, xem phương thức,
+  hạn dùng và số thiết bị/giới hạn theo server; dùng **Kiểm tra lại quyền** sau khi
+  quản trị thay đổi cấu hình. Đăng xuất/hủy kích hoạt trước khi đổi tài khoản hoặc key.
 - Dev dùng URL được in ở dòng `Web →`; callback Google phải đăng ký chính xác
   `<URL đó>/api/auth/google/callback`. Người dùng tự chọn/xác minh
   Google khi nghiệm thu; không dùng phiên giả để kết luận OAuth thật thành công.

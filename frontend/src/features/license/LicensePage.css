@@ -29,6 +29,10 @@
 .license-page button { appearance: none; }
 .license-deactivate { display: inline-flex; margin-top: 18px; padding: 4px 0; border: 0; background: transparent; color: var(--muted-foreground); font: inherit; font-size: 12px; cursor: pointer; }
 .license-deactivate:hover:not(:disabled) { color: var(--destructive); text-decoration: underline; }
+.license-deactivate.license-danger { color: var(--destructive); font-weight: 600; }
+.license-method-hint { margin: 0 0 16px; color: var(--muted-foreground); line-height: 1.7; }
+.license-actions { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.license-actions .license-deactivate { margin-top: 0; }
 .license-card .license-error { margin: 16px 0 0; padding: 10px 12px; border-radius: 7px; background: color-mix(in srgb, var(--destructive) 6%, var(--surface)); color: var(--destructive); font-size: 12px; line-height: 1.6; }
 .license-page.license-embedded { display: block; padding: 24px; background: transparent; }
 .license-embedded .license-card { width: min(100%, 580px); margin-inline: auto; padding: 22px; box-shadow: none; }

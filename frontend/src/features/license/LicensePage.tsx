@@ -15,14 +15,15 @@ export default function LicensePage({ status, gate = false, embedded = false, on
   const [busy, setBusy] = useState(false)
   const [waiting, setWaiting] = useState(false)
   const [error, setError] = useState('')
+  useEffect(() => { if (status.configured) setWaiting(false) }, [status.configured])
   useEffect(() => {
-    if (user) return
+    if (user || busy) return
     let disposed = false
     const refresh = () => licenseApi.status().then(next => { if (!disposed) onStatusChange(next) }).catch(() => {})
     const timer = window.setInterval(refresh, waiting ? 2000 : 30_000)
     const deadline = window.setTimeout(() => setWaiting(false), 600_000)
     return () => { disposed = true; clearInterval(timer); clearTimeout(deadline) }
-  }, [user, waiting, onStatusChange])
+  }, [user, busy, waiting, onStatusChange])
   async function perform(action: () => Promise<void>) {
     setBusy(true); setError('')
     try { await action() }
@@ -36,23 +37,35 @@ export default function LicensePage({ status, gate = false, embedded = false, on
       {status.code && status.code !== 'ACCESS_' + status.state?.toUpperCase() && <span>{webErrorText(status.code, locale)}</span>}
     </div>
     {status.configured && <dl className="license-details">
+      <div><dt>{user ? t('Phương thức đăng nhập', 'Sign-in method') : t('Phương thức kích hoạt APP', 'APP activation method')}</dt><dd>{status.mode === 'key' ? t('Key ứng dụng', 'Application key') : t('Tài khoản Google', 'Google account')}</dd></div>
       <div><dt>{status.mode === 'key' ? t('Key ứng dụng', 'Application key') : t('Tài khoản', 'Account')}</dt><dd>{status.mode === 'key' ? status.keyMasked : user?.email || status.user?.email || '—'}</dd></div>
       <div><dt>{t('Bắt đầu · Giờ Việt Nam', 'Starts · Vietnam time')}</dt><dd>{date(status.startsAt)}</dd></div>
       <div><dt>{t('Hết hạn · Giờ Việt Nam', 'Expires · Vietnam time')}</dt><dd>{status.lifetime || status.remainingDay === -1 ? t('Vĩnh viễn', 'Lifetime') : date(status.expiresAt)}</dd></div>
-      {status.mode === 'key' && <div><dt>{t('Số thiết bị tối đa', 'Maximum devices')}</dt><dd>{status.activationLimit}</dd></div>}
+      {status.mode === 'key' && <div><dt>{t('Thiết bị đang kích hoạt / giới hạn', 'Active devices / limit')}</dt><dd>{status.activationCount ?? '—'} / {status.activationLimit}</dd></div>}
     </dl>}
     {user ? <a className="license-deactivate" href="/account">{t('Thông tin tài khoản và đăng xuất', 'Account details and sign out')}</a> : <>
+      {status.configured ? <>
+        <p className="license-method-hint">{t('APP đang dùng quyền của phương thức trên. Muốn đổi tài khoản hoặc key, hãy đăng xuất hoặc hủy kích hoạt thiết bị trước.', 'The APP uses the access shown above. To switch accounts or keys, sign out or deactivate this device first.')}</p>
+        <div className="license-actions">
+          <button className="license-deactivate" type="button" disabled={busy} onClick={() => void perform(async () => onStatusChange(await licenseApi.status(true)))}>{t('Kiểm tra lại quyền', 'Refresh access')}</button>
+          <button className="license-deactivate license-danger" type="button" disabled={busy} onClick={() => {
+            const question = status.mode === 'key'
+              ? t('Hủy kích hoạt thiết bị này và trả lại lượt thiết bị cho key?', 'Deactivate this device and release its key device slot?')
+              : t('Đăng xuất tài khoản khỏi APP trên thiết bị này?', 'Sign out of this account in the APP on this device?')
+            if (window.confirm(question)) void perform(async () => { onStatusChange(await licenseApi.deactivate()); setWaiting(false) })
+          }}>{status.mode === 'key' ? t('Hủy kích hoạt thiết bị', 'Deactivate device') : t('Đăng xuất', 'Sign out')}</button>
+        </div>
+      </> : <>
+      <p className="license-method-hint">{t('Chọn một cách để kích hoạt APP: tài khoản Google đã được cấp quyền hoặc key ứng dụng. Hai phương thức không cộng dồn thời hạn.', 'Choose one way to activate the APP: an authorized Google account or an application key. Their access periods are not combined.')}</p>
       <button type="button" className="license-google" disabled={busy || waiting} onClick={() => void perform(async () => { await licenseApi.login(); setWaiting(true) })}><IconGoogle />{waiting ? t('Đang chờ đăng nhập trên trình duyệt…', 'Waiting for browser sign-in…') : t('Đăng nhập bằng Google', 'Sign in with Google')}</button>
       {waiting && <button type="button" className="license-deactivate" onClick={() => setWaiting(false)}>{t('Thử đăng nhập lại', 'Try sign-in again')}</button>}
       <p className="license-divider">{t('Hoặc kích hoạt bằng key mới được cấp cho ứng dụng.', 'Or activate with a new application key.')}</p>
       <form className="license-form" onSubmit={e => { e.preventDefault(); void perform(async () => { onStatusChange(await licenseApi.activate(key.trim())); setKey('') }) }}>
         <label className="license-input-label" htmlFor="license-key">{t('Key ứng dụng', 'Application key')}</label>
-        <input id="license-key" value={key} onChange={e => setKey(e.target.value)} placeholder="ZMAI-…" autoComplete="off" disabled={busy} required />
-        <button type="submit" disabled={busy || !key.trim()}>{busy ? t('Đang kiểm tra…', 'Checking…') : t('Kích hoạt', 'Activate')}</button>
+        <input id="license-key" value={key} onChange={e => setKey(e.target.value)} placeholder="ZMAI-…" autoComplete="off" disabled={busy || waiting} required />
+        <button type="submit" disabled={busy || waiting || !key.trim()}>{busy ? t('Đang kiểm tra…', 'Checking…') : t('Kích hoạt', 'Activate')}</button>
       </form>
-      {status.configured && <button className="license-deactivate" type="button" disabled={busy} onClick={() => {
-        if (window.confirm(t('Đăng xuất hoặc hủy kích hoạt trên thiết bị này?', 'Sign out or deactivate on this device?'))) void perform(async () => { onStatusChange(await licenseApi.deactivate()); setWaiting(false) })
-      }}>{status.mode === 'key' ? t('Hủy kích hoạt thiết bị', 'Deactivate device') : t('Đăng xuất', 'Sign out')}</button>}
+      </>}
     </>}
     {error && <p className="license-error" role="alert">{error}</p>}
   </section></main>

@@ -39,7 +39,10 @@ def deactivate() -> dict:
 
 @router.post('/api/auth/desktop/start')
 def desktop_start(request: Request):
-    return start_desktop_login(request.url.port or 8787)
+    try:
+        return start_desktop_login(request.url.port or 8787)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get('/api/auth/desktop/callback')

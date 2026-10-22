@@ -306,6 +306,11 @@ class Workers:
             "HF_ASSETS_CACHE": os.environ.get("HF_ASSETS_CACHE") or str(hf_home / "assets"),
             "TORCH_HOME": os.environ.get("TORCH_HOME") or str(cache / "torch"),
         }.items()}
+        # Browser binaries are server resources; profiles/cookies remain private.
+        self.browser_cache_env = {key: str(Path(value).expanduser().resolve()) for key, value in {
+            "PUPPETEER_CACHE_DIR": os.environ.get("PUPPETEER_CACHE_DIR") or str(cache / "puppeteer"),
+            "PLAYWRIGHT_BROWSERS_PATH": os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or str(cache / "ms-playwright"),
+        }.items()}
         self.items: dict[str, Worker] = {}
         self.lock = asyncio.Lock()
         self.limit = int(os.environ.get("ZM_AI_TOOL_WEB_MAX_WORKERS", "8"))
@@ -338,6 +343,7 @@ class Workers:
                     env.pop(key)
             env.update({
                 **self.model_cache_env,
+                **self.browser_cache_env,
                 "PYTHONPATH": str(BACKEND) + os.pathsep + env.get("PYTHONPATH", ""),
                 "ZM_AI_TOOL_DESKTOP": "0", "ZM_AI_TOOL_WEB_WORKER": "1",
                 "ZM_AI_TOOL_WEB_WORKSPACE": str(root), "ZM_AI_TOOL_WEB_WORKER_SECRET": secret,

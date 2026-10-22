@@ -136,6 +136,7 @@ export function webErrorText(code: string, locale: AppLocale) {
     INVALID_LICENSE_RESPONSE: t('Phản hồi xác thực không hợp lệ.', 'Invalid access server response.'),
     DEVICE_LIMIT_REACHED: t('Key đã đủ số thiết bị. Hãy thu hồi thiết bị cũ.', 'The key device limit is reached. Revoke an old device.'),
     DEVICE_REVOKED: t('Phiên thiết bị đã bị thu hồi. Hãy đăng nhập hoặc kích hoạt lại.', 'Device access was revoked. Sign in or activate again.'),
+    DEVICE_ALREADY_CONFIGURED: t('Hãy đăng xuất hoặc hủy kích hoạt thiết bị trước khi đổi phương thức.', 'Sign out or deactivate this device before switching access methods.'),
     KEY_INVALID: t('Key không hợp lệ. Hãy dùng key mới bắt đầu bằng ZMAI-.', 'Invalid key. Use a new key starting with ZMAI-.'),
     KEY_COPY_FAILED: t('Không thể sao chép tự động. Chọn key rồi nhấn Ctrl+C (Mac: ⌘C) để sao chép.', 'Could not copy automatically. Select the key and press Ctrl+C (Mac: ⌘C) to copy.'),
     KEY_COPY_UNAVAILABLE: t('Không thể lấy lại giá trị đầy đủ của key này.', 'The full value of this key cannot be recovered.'),

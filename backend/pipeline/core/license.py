@@ -6,6 +6,7 @@ import contextvars
 import hashlib
 import hmac
 import json
+import math
 import os
 import platform
 import secrets
@@ -104,19 +105,25 @@ def _current(status, verified_at):
     expiry = result.get('expiresAt')
     if expiry:
         try:
-            if datetime.fromisoformat(expiry.replace('Z', '+00:00')).timestamp() <= now:
+            remaining = datetime.fromisoformat(expiry.replace('Z', '+00:00')).timestamp() - now
+            result['remainingDay'] = max(0, math.ceil(remaining / 86400))
+            if remaining <= 0:
                 result.update(valid=False, code='ACCESS_EXPIRED', state='expired')
         except (ValueError, TypeError):
             result.update(valid=False, code='INVALID_LICENSE_RESPONSE')
+    if result.get('lifetime'):
+        result['remainingDay'] = -1
     if result.get('valid') and (not verified_at or now - verified_at >= _OFFLINE_MAX_SECONDS or verified_at > now + 60):
         result.update(valid=False, code='LICENSE_CHECK_REQUIRED', transient=True)
     return result
 
 
-def _install(result, previous=None):
+def _install(result, previous=None, *, mode=None):
     global _cache, _checked_at
-    if not isinstance(result.get('deviceToken'), str) or not isinstance(result.get('valid'), bool):
-        raise ValueError('INVALID_LICENSE_RESPONSE')
+    if not isinstance(result.get('deviceToken'), str) or not result['deviceToken'] or not isinstance(result.get('valid'), bool):
+        raise RuntimeError('INVALID_LICENSE_RESPONSE')
+    if mode and result.get('mode') != mode:
+        raise RuntimeError('INVALID_LICENSE_RESPONSE')
     if result.get('mode') not in ('account', 'key') or result.get('state') not in ('active', 'pending', 'blocked', 'scheduled', 'expired', 'deleted', 'unactivated') or result['valid'] != (result['state'] == 'active') or type(result.get('lifetime')) is not bool:
         raise RuntimeError('INVALID_LICENSE_RESPONSE')
     if result['valid']:
@@ -172,7 +179,7 @@ def license_status(*, force=False):
             result = _request('status', {'deviceToken': token})
             if not isinstance(result.get('valid'), bool):
                 raise RuntimeError('INVALID_LICENSE_RESPONSE')
-            return _install({**result, 'deviceToken': token}, data)
+            return _install({**result, 'deviceToken': token}, data, mode=data.get('status', {}).get('mode'))
         except ValueError as exc:
             status = {**(data.get('status') or _empty()), 'valid': False, 'configured': True, 'code': str(exc), 'state': 'blocked'}
             data.update(status=status, verified_at=0)
@@ -194,14 +201,11 @@ def activate_license(key):
         raise ValueError('KEY_INVALID')
     with _request_lock, _lock:
         data = installation()
+        if data.get('device_token') and data.get('authority') == server_url():
+            raise ValueError('DEVICE_ALREADY_CONFIGURED')
         result = _request('activate', {'key': key.strip(), 'installationId': data['installation_id'], 'name': platform.node()[:200]})
-        old = data.get('device_token')
-        status = _install(result, data)
-        if old and old != result['deviceToken']:
-            try:
-                _request('logout', {'deviceToken': old})
-            except Exception:
-                pass
+        status = _install(result, data, mode='key')
+        _pending.clear()  # A late browser callback must not replace the chosen key.
         return status
 
 
@@ -212,16 +216,23 @@ def deactivate_license():
         if data.get('device_token'):
             try:
                 _request('logout', {'deviceToken': data['device_token']})
+            except ValueError as exc:
+                if str(exc) != 'DEVICE_REVOKED':
+                    raise ValueError('LOGOUT_NETWORK_REQUIRED') from None
             except Exception:
                 # Keep the credential so an offline sign-out can be retried without losing the device slot.
                 raise ValueError('LOGOUT_NETWORK_REQUIRED') from None
         _save({'installation_id': data['installation_id']})
+        _pending.clear()
         _cache, _checked_at = None, 0
     return _empty()
 
 
 def start_desktop_login(port):
     with _lock:
+        data = _read()
+        if data.get('device_token') and data.get('authority') == server_url():
+            raise ValueError('DEVICE_ALREADY_CONFIGURED')
         state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
         redirect = f'http://127.0.0.1:{port}/api/auth/desktop/callback'
         _pending.clear()
@@ -238,15 +249,11 @@ def finish_desktop_login(state, code):
         if not pending or pending['expires'] <= time.time():
             raise ValueError('DESKTOP_CODE_INVALID')
         data = installation()
+        if data.get('device_token') and data.get('authority') == server_url():
+            raise ValueError('DEVICE_ALREADY_CONFIGURED')
         result = _request('exchange', {**{k: v for k, v in pending.items() if k != 'expires'}, 'code': code,
                                       'installationId': data['installation_id'], 'name': platform.node()[:200]})
-        previous = data.get('device_token')
-        _install(result, data)
-        if previous and previous != result['deviceToken']:
-            try:
-                _request('logout', {'deviceToken': previous})
-            except Exception:
-                pass
+        _install(result, data, mode='account')
 
 
 def license_cached_valid():

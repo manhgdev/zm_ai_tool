@@ -479,7 +479,9 @@ class Accounts:
         else:
             db.execute(f'INSERT INTO devices(id,installation_id,{field},token_hash,name,created_at,last_seen) VALUES(?,?,?,?,?,?,?)',
                        (secrets.token_hex(16), installation, row['id'], self.digest(token), name, now, now))
-        return {'deviceToken': token, **license_status(row, kind), 'user': self.public(row) if kind == 'account' else None}
+        count = db.execute(f'SELECT count(*) FROM devices WHERE {field}=? AND enabled=1', (row['id'],)).fetchone()[0]
+        return {'deviceToken': token, **license_status(row, kind), 'activationCount': count,
+                'user': self.public(row) if kind == 'account' else None}
 
     def activate(self, body):
         if set(body) - {'key', 'installationId', 'name'} or not isinstance(body.get('key'), str):
@@ -514,7 +516,10 @@ class Accounts:
             field, mode = ('keys', 'key') if device['key_id'] else ('users', 'account')
             row = dict(db.execute(f'SELECT * FROM {field} WHERE id=?', (device['key_id'] or device['user_id'],)).fetchone())
             db.execute('UPDATE devices SET last_seen=? WHERE id=?', (time.time(), device['id']))
-            return {**license_status(row, mode), 'user': self.public(row) if mode == 'account' else None}
+            subject = 'key_id' if mode == 'key' else 'user_id'
+            count = db.execute(f'SELECT count(*) FROM devices WHERE {subject}=? AND enabled=1', (row['id'],)).fetchone()[0]
+            return {**license_status(row, mode), 'activationCount': count,
+                    'user': self.public(row) if mode == 'account' else None}
 
     @staticmethod
     def desktop_redirect(value):

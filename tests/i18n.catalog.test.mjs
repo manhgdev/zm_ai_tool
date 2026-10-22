@@ -347,6 +347,14 @@ test('account page layouts keep bilingual dialogs, actions and empty states', ()
   assert.ok(read('app/WebSession.tsx').includes("t('Bắt đầu · Giờ Việt Nam', 'Starts · Vietnam time')"))
 })
 
+test('APP activation identifies one method and exposes a red destructive action', () => {
+  const source = read('features/license/LicensePage.tsx')
+  for (const pair of ["t('Phương thức kích hoạt APP', 'APP activation method')", "t('Tài khoản Google', 'Google account')", "t('Thiết bị đang kích hoạt / giới hạn', 'Active devices / limit')", "t('Kiểm tra lại quyền', 'Refresh access')", "t('Hủy kích hoạt thiết bị', 'Deactivate device')"]) assert.ok(source.includes(pair), pair)
+  assert.match(source, /status\.configured \? <>/)
+  assert.match(source, /disabled=\{busy \|\| waiting \|\| !key\.trim\(\)\}/)
+  assert.match(read('features/license/LicensePage.css'), /\.license-deactivate\.license-danger\s*\{[^}]*color: var\(--destructive\)/)
+})
+
 
 test('header locale switch collapses to a bilingual toggle on small screens', () => {
   const source = read('shared/components/LocaleSwitch.tsx')

@@ -2195,13 +2195,13 @@ html.dark .tts-wave-box {
 }
 
 /* Màn hình vừa: Clone có tab riêng, dành trọn hàng đầu cho ba ô tạo giọng. */
-@media (max-width: 1500px) {
+@media (max-width: 1700px) {
   .tts-dash-item[data-dash-id="clone"] {
     display: none;
   }
 }
 
-@media (min-width: 901px) and (max-width: 1500px) {
+@media (min-width: 901px) and (max-width: 1700px) {
   .tts-dash-item[data-dash-id="input"] {
     grid-column: 1 / span 8 !important;
   }

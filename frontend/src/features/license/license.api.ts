@@ -6,13 +6,14 @@ export type LicenseStatus = {
   code?: string
   startsAt?: string | null
   lifetime?: boolean
-  user?: { email: string; name: string }
+  user?: { email: string; name: string } | null
   valid: boolean
   configured: boolean
   keyMasked: string
   remainingDay: number
   expiresAt: string | null
   activationLimit: number
+  activationCount?: number
   message: string
   transient?: boolean
 }
@@ -25,15 +26,21 @@ function getStatus(force = false): Promise<LicenseStatus> {
   return statusInFlight
 }
 
+async function changeAccess(request: () => Promise<LicenseStatus>) {
+  // Finish an older poll before changing credentials so it cannot restore stale UI state.
+  if (statusInFlight) await statusInFlight.catch(() => {})
+  return request()
+}
+
 export const licenseApi = {
   login: () => fetchJson<{ authorizationUrl: string }>('/api/auth/desktop/start', { method: 'POST' }),
   status: (force = false) => getStatus(force),
   activate: (key: string) =>
-    fetchJson<LicenseStatus>('/api/license/activate', {
+    changeAccess(() => fetchJson<LicenseStatus>('/api/license/activate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key }),
-    }, 65_000),
+    }, 65_000)),
   deactivate: () =>
-    fetchJson<LicenseStatus>('/api/license/deactivate', { method: 'POST' }, 15_000),
+    changeAccess(() => fetchJson<LicenseStatus>('/api/license/deactivate', { method: 'POST' }, 15_000)),
 }

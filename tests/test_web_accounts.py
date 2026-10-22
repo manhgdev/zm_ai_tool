@@ -21,6 +21,34 @@ from web import (SESSION_COOKIE, STATE_COOKIE, WebAuth, check_web_paths,
 ORIGIN = "http://localhost:5173"
 
 
+@pytest.mark.parametrize("custom", [False, True])
+def test_workers_share_browser_binaries_with_private_caches(tmp_path, monkeypatch, custom):
+    from web import Workers
+    from pipeline.flow.browser import BrowserManager, chrome_executable
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    cache = tmp_path / "server-cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    for key, folder in (("PUPPETEER_CACHE_DIR", "puppeteer"), ("PLAYWRIGHT_BROWSERS_PATH", "ms-playwright")):
+        monkeypatch.setenv(key, str(tmp_path / folder) if custom else "")
+    workers = Workers(tmp_path / "web")
+    binary = Path(workers.browser_cache_env["PUPPETEER_CACHE_DIR"]) / "chrome/linux-147/chrome-linux64/chrome"
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+    binary.chmod(0o755)
+    monkeypatch.setattr("pipeline.flow.browser.shutil.which", lambda _: None)
+    monkeypatch.setattr(Path, "is_file", lambda path: path == binary)
+    profiles = []
+    for user in ("a", "b"):
+        root = workers.root / "users" / user
+        monkeypatch.setenv("XDG_CACHE_HOME", str(root / "cache"))
+        for key, value in workers.browser_cache_env.items():
+            monkeypatch.setenv(key, value)
+        assert chrome_executable() == binary
+        profiles.append(BrowserManager(profile_dir=root / "flow").profile_dir)
+    assert profiles[0] != profiles[1]
+
+
 @pytest.fixture
 def web_app(tmp_path, monkeypatch):
     monkeypatch.setenv("ZM_AI_TOOL_WEB_ORIGIN", ORIGIN)

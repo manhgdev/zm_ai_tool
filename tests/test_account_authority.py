@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi import HTTPException
@@ -423,3 +424,97 @@ def test_local_app_rejects_cross_site_signout():
         assert response.json()['detail'] == 'WEB_ORIGIN_REJECTED'
     finally:
         client.close()
+
+
+@pytest.fixture
+def desktop(store, tmp_path, monkeypatch):
+    from pipeline.core import license as licensing
+    monkeypatch.setenv('ZM_AI_TOOL_DESKTOP', '1')
+    monkeypatch.setenv('ZM_AI_TOOL_AUTH_SERVER_URL', 'https://authority.example')
+    monkeypatch.delenv('ZM_AI_TOOL_WEB_WORKER', raising=False)
+    monkeypatch.setattr(licensing, 'LICENSE_FILE', tmp_path / 'desktop-license.json')
+    monkeypatch.setattr(licensing, 'ensure_data_dirs', lambda: None)
+    monkeypatch.setattr(licensing, '_cache', None)
+    monkeypatch.setattr(licensing, '_checked_at', 0)
+    monkeypatch.setattr(licensing, '_pending', {})
+    monkeypatch.setattr(licensing.webbrowser, 'open', lambda _: True)
+    def request(action, body):
+        try:
+            if action == 'activate':
+                return store.activate(body)
+            if action == 'exchange':
+                return store.exchange(body)
+            return store.device_status(body['deviceToken'], logout=action == 'logout')
+        except HTTPException as exc:
+            raise ValueError(exc.detail) from None
+    monkeypatch.setattr(licensing, '_request', request)
+    return licensing
+
+
+def test_app_key_status_matches_authority_configuration_and_releases_slot(store, desktop):
+    from api.app import create_app
+    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY, 'max_devices': 2})
+    with TestClient(create_app()) as client:
+        status = client.post('/api/license/activate', json={'key': key['key']}).json()
+        assert status['valid'] and status['mode'] == 'key' and status['configured']
+        assert status['keyMasked'] == key['key_masked']
+        assert status['expiresAt'] == key['access']['expiresAt']
+        assert (status['activationCount'], status['activationLimit']) == (1, 2)
+        assert 'deviceToken' not in status and key['key'] not in json.dumps(status)
+        assert desktop._read()['authority'] == 'https://authority.example'
+        store.mutate(owner(store)['id'], 'keys', key['id'], {'max_devices': 3, 'term': LIFETIME})
+        refreshed = client.get('/api/license/status?force=true').json()
+        assert refreshed['activationLimit'] == 3 and refreshed['remainingDay'] == -1
+        assert client.post('/api/auth/desktop/start').json()['detail'] == 'DEVICE_ALREADY_CONFIGURED'
+        assert client.post('/api/license/activate', json={'key': key['key']}).json()['detail'] == 'DEVICE_ALREADY_CONFIGURED'
+        assert not client.post('/api/license/deactivate').json()['configured']
+        assert not store.device_list(owner(store)['id'], key['id'])[0]['enabled']
+        assert client.post('/api/license/activate', json={'key': key['key']}).json()['activationCount'] == 1
+
+
+def test_app_account_and_key_are_exclusive_and_late_callback_cannot_replace_key(store, desktop):
+    login = parse_qs(urlsplit(desktop.start_desktop_login(34567)['authorizationUrl']).query)
+    uid = create(store, 'desktop@example.com', term=DAY)['id']
+    with store.connect(write=True) as db:
+        db.execute('INSERT INTO desktop_codes VALUES(?,?,?,?,?)',
+                   (store.digest('account-code'), uid, login['challenge'][0], login['redirect_uri'][0], time.time() + 60))
+    desktop.finish_desktop_login(login['state'][0], 'account-code')
+    status = desktop.license_status()
+    assert status['mode'] == 'account' and status['user']['email'] == 'desktop@example.com'
+    with pytest.raises(ValueError, match='DEVICE_ALREADY_CONFIGURED'):
+        desktop.activate_license('ZMAI-TEST')
+    account_token = desktop._read()['device_token']
+    desktop.deactivate_license()
+    denied('DEVICE_REVOKED', store.device_status, account_token)
+    pending = parse_qs(urlsplit(desktop.start_desktop_login(34567)['authorizationUrl']).query)
+    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY})
+    desktop.activate_license(key['key'])
+    with pytest.raises(ValueError, match='DESKTOP_CODE_INVALID'):
+        desktop.finish_desktop_login(pending['state'][0], 'late-code')
+    assert desktop.license_status()['mode'] == 'key'
+
+
+def test_app_deactivation_preserves_offline_credentials_but_clears_revoked_device(store, desktop):
+    key = store.mutate(owner(store)['id'], 'keys', None, {'term': DAY})
+    desktop.activate_license(key['key'])
+    token = desktop._read()['device_token']
+    with patch.object(desktop, '_request', side_effect=OSError('offline')):
+        with pytest.raises(ValueError, match='LOGOUT_NETWORK_REQUIRED'):
+            desktop.deactivate_license()
+    assert desktop._read()['device_token'] == token
+    store.device_status(token, logout=True)
+    assert not desktop.deactivate_license()['configured']
+    assert 'device_token' not in desktop._read()
+
+
+def test_app_rejects_wrong_activation_method_without_installing_credentials(store, desktop):
+    with patch.object(desktop, '_request', return_value={'deviceToken': 'x' * 43, 'valid': True, 'mode': 'account'}):
+        with pytest.raises(RuntimeError, match='INVALID_LICENSE_RESPONSE'):
+            desktop.activate_license('ZMAI-TEST')
+    assert 'device_token' not in desktop._read()
+
+
+def test_app_cached_remaining_days_follow_expiry(desktop):
+    now = time.time()
+    status = {'valid': True, 'remainingDay': 9, 'expiresAt': datetime.fromtimestamp(now + 100, timezone.utc).isoformat()}
+    assert desktop._current(status, now)['remainingDay'] == 1
