@@ -51,7 +51,8 @@ test('web account UI caches stay separate and never consume desktop caches', () 
   assert.equal(b.getItem('zm_ai_tool.session'), 'project-b')
 })
 
-for (const production of [false, true]) test(`${production ? 'start serves built files' : 'dev runs Vite'}; auth, busy ports and shutdown remain safe`, { timeout: 45_000 }, async t => {
+for (const mode of ['dev', 'dev-busy', 'production']) test(`${mode}: origin, auth, busy ports and shutdown remain safe`, { timeout: 45_000 }, async t => {
+  const production = mode === 'production'
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const python = path.join(root, 'backend/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
   if (!existsSync(python)) return t.skip('Requires the backend environment from setup')
@@ -64,10 +65,20 @@ for (const production of [false, true]) test(`${production ? 'start serves built
   await Promise.all(listeners.map(server => once(server, 'listening')))
   const [apiPort, webPort] = listeners.map(server => server.address().port)
   await Promise.all(listeners.map(server => new Promise(resolve => server.close(resolve))))
+  const occupied = createServer()
+  if (mode === 'dev-busy') {
+    try {
+      occupied.listen(5173, '127.0.0.1')
+      await once(occupied, 'listening')
+    } catch (error) {
+      if (error.code !== 'EADDRINUSE') throw error // An existing listener already covers this case.
+    }
+  }
   const data = mkdtempSync(path.join(tmpdir(), 'zm-web-test-'))
   const env = { ...process.env, ZM_AI_TOOL_HOST: '127.0.0.1', ZM_AI_TOOL_PORT: String(apiPort),
-    ZM_AI_TOOL_WEB_ORIGIN: `http://localhost:${webPort}`, ZM_AI_TOOL_WEB_DATA: data,
-    ZM_AI_TOOL_GOOGLE_CLIENT_ID: '', ZM_AI_TOOL_GOOGLE_CLIENT_SECRET: '', ZM_AI_TOOL_DESKTOP: '1' }
+    ZM_AI_TOOL_WEB_ORIGIN: mode === 'dev-busy' ? 'http://localhost:18787' : 'https://zmaitool.com', ZM_AI_TOOL_WEB_DATA: data,
+    ZM_AI_TOOL_GOOGLE_CLIENT_ID: 'test-client', ZM_AI_TOOL_GOOGLE_CLIENT_SECRET: 'test-secret',
+    ZM_AI_TOOL_OWNER_EMAILS: '', ZM_AI_TOOL_DESKTOP: '1' }
   const args = ['scripts/dev.mjs', ...(production ? ['--production'] : [])]
   const child = spawn(process.execPath, args, { cwd: root, env, stdio: 'pipe' })
   const finished = once(child, 'exit')
@@ -75,19 +86,32 @@ for (const production of [false, true]) test(`${production ? 'start serves built
   child.stdout.on('data', chunk => { output += chunk })
   child.stderr.on('data', chunk => { output += chunk })
   const get = (port, route) => fetch(`http://127.0.0.1:${port}${route}`, { signal: AbortSignal.timeout(1000) })
-  const pagePort = production ? apiPort : webPort
+  let pagePort = production ? apiPort : null
+  let actualOrigin
   try {
     let response
     const deadline = Date.now() + 30_000
     while (Date.now() < deadline && child.exitCode === null) {
       try {
+        actualOrigin = output.match(/Web → (\S+)/)?.[1]
+        if (!production && actualOrigin) pagePort = Number(new URL(actualOrigin).port)
+        if (!pagePort || !actualOrigin) throw new Error('Waiting for runner URL')
         response = await get(pagePort, '/api/auth/session')
         if (response.ok) break
       } catch { /* Wait for API and Vite. */ }
       await new Promise(resolve => setTimeout(resolve, 100))
     }
     assert.ok(response?.ok, output)
-    assert.deepEqual(await response.json(), { mode: 'web', configured: false, user: null })
+    assert.deepEqual(await response.json(), { mode: 'web', configured: true, user: null })
+    assert.equal(actualOrigin, production ? 'https://zmaitool.com' : `http://localhost:${pagePort}`)
+    if (mode === 'dev-busy') assert.ok(pagePort > 5173 && pagePort < 18787, output)
+    if (!production) assert.ok(pagePort >= 5173 && pagePort < 18787, output)
+    const login = await fetch(`http://127.0.0.1:${pagePort}/api/auth/google`, { redirect: 'manual' })
+    assert.equal(login.status, 303)
+    assert.equal(new URL(login.headers.get('location')).searchParams.get('redirect_uri'), `${actualOrigin}/api/auth/google/callback`)
+    const logout = origin => fetch(`http://127.0.0.1:${pagePort}/api/auth/logout`, { method: 'POST', headers: { Origin: origin } })
+    assert.equal((await logout(actualOrigin)).status, 200)
+    assert.equal((await logout('https://other.example')).status, 403)
     assert.equal((await (await get(apiPort, '/api/health')).json()).mode, 'web')
     assert.equal((await get(pagePort, '/api/config')).status, 401)
     const html = await (await get(pagePort, '/login')).text()
@@ -103,7 +127,8 @@ for (const production of [false, true]) test(`${production ? 'start serves built
   } finally {
     child.kill('SIGTERM')
     await finished
+    if (occupied.listening) await new Promise(resolve => occupied.close(resolve))
     rmSync(data, { recursive: true, force: true })
   }
-  for (const port of [apiPort, webPort]) await assert.rejects(() => get(port, '/api/health'))
+  for (const port of new Set([apiPort, pagePort].filter(Boolean))) await assert.rejects(() => get(port, '/api/health'))
 })

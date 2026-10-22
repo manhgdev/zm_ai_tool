@@ -12,10 +12,7 @@ const backend = path.join(root, 'backend')
 const production = process.argv.includes('--production')
 const host = process.env.ZM_AI_TOOL_HOST || '127.0.0.1'
 const apiPort = Number(process.env.ZM_AI_TOOL_PORT || 8787)
-const origin = process.env.ZM_AI_TOOL_WEB_ORIGIN || `http://localhost:${production ? apiPort : 5173}`
-const originUrl = new URL(origin)
-const webPort = originUrl.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(originUrl.hostname)
-  ? Number(originUrl.port || 80) : 5173
+const origin = production ? process.env.ZM_AI_TOOL_WEB_ORIGIN || `http://localhost:${apiPort}` : ''
 const connectHost = host === '0.0.0.0' ? '127.0.0.1' : host.includes(':') ? `[${host === '::' ? '::1' : host}]` : host
 const apiUrl = `http://${connectHost}:${apiPort}`
 const env = { ...process.env, ZM_AI_TOOL_DESKTOP: '0', ZM_AI_TOOL_WEB_ORIGIN: origin,
@@ -25,12 +22,14 @@ const python = [path.join(backend, '.venv', process.platform === 'win32' ? 'Scri
   path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')].find(existsSync)
 const vite = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js')
 const children = []
+let web
 let stopping = false
 
 function stop(code = 0) {
   if (stopping) return
   stopping = true
   process.exitCode = code
+  void web?.close().catch(error => console.error(`[web] ${error.message}`))
   for (const child of children) {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
   }
@@ -73,12 +72,23 @@ try {
   if (production && !existsSync(path.join(root, 'frontend/dist/index.html'))) {
     throw new Error('Chạy npm run build trước npm run start. / Run npm run build before npm run start.')
   }
-  if (!(production ? [apiPort] : [apiPort, webPort]).every(port => Number.isInteger(port) && port > 0 && port <= 65535) || (!production && apiPort === webPort)) {
-    throw new Error('Cổng API và Web phải hợp lệ và khác nhau. / API and Web ports must be valid and different.')
+  if (!Number.isInteger(apiPort) || apiPort < 1 || apiPort > 65535) {
+    throw new Error('Cổng API phải từ 1 đến 65535. / API port must be between 1 and 65535.')
   }
   // Fail on occupied ports; never terminate an unrelated listener.
   await requireFreePort(apiPort)
-  if (!production) await requireFreePort(webPort)
+  if (!production) {
+    const { createServer: createViteServer } = await import('vite')
+    web = await createViteServer({
+      configFile: path.join(root, 'frontend/vite.config.ts'),
+      server: { host, strictPort: false, proxy: { '/api': apiUrl, '/data': apiUrl } },
+    })
+    await web.listen()
+    const webPort = web.httpServer.address().port
+    if (webPort === apiPort) throw new Error('Cổng Web trùng cổng API. / Web and API ports must differ.')
+    env.ZM_AI_TOOL_WEB_ORIGIN = `http://${host === '127.0.0.1' ? 'localhost' : connectHost}:${webPort}`
+    if (stopping) { await web.close(); throw new Error('Đã dừng / Stopped') }
+  }
   const api = start('api', python, ['main.py'], backend)
   let ready = false
   const deadline = Date.now() + 30_000
@@ -92,11 +102,7 @@ try {
   }
   if (!stopping) {
     if (!ready) throw new Error('API chưa sẵn sàng sau 30s. / API did not start within 30s.')
-    if (!production) {
-      start('web', process.execPath, [vite, '--config', path.join(root, 'frontend/vite.config.ts'),
-        '--strictPort', '--host', host, '--port', String(webPort)], root)
-    }
-    console.log(`Web → ${production ? apiUrl : `http://localhost:${webPort}`}\nAPI → ${apiUrl}\nCtrl+C để dừng / to stop.`)
+    console.log(`Web → ${env.ZM_AI_TOOL_WEB_ORIGIN}\nAPI → ${apiUrl}\nCtrl+C để dừng / to stop.`)
   }
 } catch (error) {
   console.error(`[web] ${error.message}`)

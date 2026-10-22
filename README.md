@@ -152,7 +152,7 @@ npm run setup
 bun run dev
 ```
 
-- Web UI: `http://localhost:5173` (hoặc origin local đã đặt trong `.env`)
+- Web UI: `http://localhost:5173` (Vite tự chọn cổng tiếp theo nếu bận)
 - API: `http://127.0.0.1:8787`
 - API docs: `http://127.0.0.1:8787/docs`
 
@@ -168,7 +168,8 @@ Khởi động lại backend sau khi bổ sung model, rồi chạy lại bước
 ### Chỉ có hai bản: Web và APP
 
 - **Web dev:** `npm run dev` chạy Vite + backend Web để phát triển/thử nghiệm.
-  Mặc định mở `http://localhost:5173`, API ở `127.0.0.1:8787`. `Ctrl+C` dừng cả hai.
+  Mặc định mở `http://localhost:5173`, tự tăng lên 5174… nếu bận; API ở
+  `127.0.0.1:8787`. `Ctrl+C` dừng cả hai.
 - **Web production:** `npm run build` rồi `npm run start` chạy backend phục vụ
   giao diện tĩnh từ `frontend/dist` tại `127.0.0.1:8787`, không khởi động Vite.
   Cổng đang bận sẽ báo lỗi; `Ctrl+C` dừng backend và worker.
@@ -188,9 +189,12 @@ ZM_AI_TOOL_GOOGLE_CLIENT_SECRET=your-google-web-client-secret
 Google Cloud → Google Auth platform → Clients → tạo **Web application**.
 Đăng ký callback `https://zmaitool.com/api/auth/google/callback`; nếu thử local,
 đăng ký thêm `http://localhost:5173/api/auth/google/callback`.
-Nếu `.env` đã có origin local khác (ví dụ `http://localhost:18787`), dev dùng
-cổng đó cho Vite. Với start, đặt `ZM_AI_TOOL_PORT=18787` nếu truy cập trực tiếp
-không qua reverse proxy để khớp origin/callback. Client ID/Secret có thể để trống
+`ZM_AI_TOOL_WEB_ORIGIN` trong `.env` dành cho **start/production**; dev bỏ qua
+giá trị này và truyền origin theo cổng Vite thực tế cho backend. Vì vậy có thể
+giữ `https://zmaitool.com` trong `.env` khi chạy dev. Nếu Vite nhảy sang 5174,
+cần đăng ký thêm `http://localhost:5174/api/auth/google/callback` trong Google Cloud;
+script không tự thay đổi cấu hình Google. `ZM_AI_TOOL_PORT` là cổng API dùng cho
+cả dev/start, mặc định 8787; không phải cổng Vite. Client ID/Secret có thể để trống
 để xem giao diện; API dữ liệu riêng vẫn yêu cầu đăng nhập.
 
 Mỗi tài khoản Google có project, job, cấu hình, kết quả và cache UI riêng.
@@ -232,8 +236,8 @@ Mở rộng nhiều host cần cơ chế lập lịch worker.
   Khóa/thu hồi có hiệu lực ngay khi APP nhận phản hồi. Web đọc SQLite tại lúc nhận việc.
   Job đã chạy hoàn tất; job chờ chuyển sang tạm dừng/yêu cầu thao tác, cần tiếp tục
   thủ công sau khi gia hạn.
-- Local hiện tại: `http://localhost:18787`, callback Google phải đăng ký chính xác
-  `http://localhost:18787/api/auth/google/callback`. Người dùng tự chọn/xác minh
+- Dev dùng URL được in ở dòng `Web →`; callback Google phải đăng ký chính xác
+  `<URL đó>/api/auth/google/callback`. Người dùng tự chọn/xác minh
   Google khi nghiệm thu; không dùng phiên giả để kết luận OAuth thật thành công.
 
 **Triển khai Web trên server:** cài môi trường, build bằng `bun run build`, đặt
