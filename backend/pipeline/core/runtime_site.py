@@ -20,6 +20,7 @@ from pathlib import Path
 # add_dll_directory() trả handle — phải giữ sống hoặc GC sẽ xóa dir khỏi DLL search path!
 _dll_handles: dict[str, object] = {}
 _dll_search_lock = threading.RLock()
+_cv2_import_lock = threading.RLock()
 
 
 @contextmanager
@@ -301,29 +302,26 @@ def is_windows_path_too_long_error(error: object) -> bool:
 
 
 def _purge_external_modules(site: Path) -> None:
-    site_s = str(site).replace("\\", "/")
-    for key in list(sys.modules):
-        root = key.split(".", 1)[0]
-        if root not in _PURGE_ROOTS:
-            continue
-        mod = sys.modules.get(key)
-        if mod is None:
+    with _cv2_import_lock:
+        site_s = str(site).replace("\\", "/")
+        # Native children such as cv2.dnn have no __file__. Preserve the whole
+        # loaded package, otherwise a later import replaces them with empty namespaces.
+        bundled_loaded = {
+            root for root in _BUNDLED_ROOTS
+            if getattr(sys.modules.get(root), "__file__", None)
+        }
+        for key in list(sys.modules):
+            root = key.split(".", 1)[0]
+            if root not in _PURGE_ROOTS or root in bundled_loaded:
+                continue
+            mod = sys.modules.get(key)
+            if mod is None:
+                sys.modules.pop(key, None)
+                continue
+            mod_file = (getattr(mod, "__file__", "") or "").replace("\\", "/")
+            if mod_file and site_s in mod_file:
+                continue
             sys.modules.pop(key, None)
-            continue
-        mod_file = (getattr(mod, "__file__", "") or "").replace("\\", "/")
-        if mod_file and site_s in mod_file:
-            continue
-        # ponytail: these are bundled for real (same pins as the runtime); re-importing a loaded C-extension
-        # package from the runtime venv crashes, so only hollow stubs (no __file__) are dropped.
-        if mod_file and root in _BUNDLED_ROOTS:
-            continue
-        sys.modules.pop(key, None)
-    # OpenCV leftover after failed/partial import
-    if hasattr(sys, "OpenCV_LOADER"):
-        try:
-            delattr(sys, "OpenCV_LOADER")
-        except Exception:
-            pass
 
 
 def _sanitize_cv2_sys_path() -> None:
@@ -351,57 +349,41 @@ def _sanitize_cv2_sys_path() -> None:
 
 def prepare_cv2_import_path(site: Path | None = None) -> str | None:
     """Force runtime site-packages to sys.path[0]; strip ocr/cv2 traps. Returns site str."""
-    root = site or runtime_site_packages()
-    _sanitize_cv2_sys_path()
-    if not root or not root.is_dir():
-        return None
-    site_s = str(root)
-    while site_s in sys.path:
-        sys.path.remove(site_s)
-    sys.path.insert(0, site_s)
-    _sanitize_cv2_sys_path()
-    return site_s
+    with _cv2_import_lock:
+        root = site or runtime_site_packages()
+        _sanitize_cv2_sys_path()
+        if not root or not root.is_dir():
+            return None
+        site_s = str(root)
+        while site_s in sys.path:
+            sys.path.remove(site_s)
+        sys.path.insert(0, site_s)
+        _sanitize_cv2_sys_path()
+        return site_s
 
 
 def ensure_cv2():
-    """Import OpenCV an toàn (frozen + dev). Trả module hoặc raise ImportError.
+    """Serialize OpenCV bootstrap and retain its native modules across retries."""
+    with _cv2_import_lock:
+        existing = sys.modules.get("cv2")
+        if existing is not None and getattr(existing, "VideoCapture", None):
+            return importlib.import_module("cv2")
 
-    OpenCV bootstrap re-import ``cv2`` khi path[0] là site khác (.venv-ocr)
-    hoặc khi ``.../site-packages/cv2`` nằm trên sys.path → recursion → APP tắt.
-    """
-    existing = sys.modules.get("cv2")
-    if existing is not None and getattr(existing, "VideoCapture", None):
-        return existing
-
-    root = runtime_site_packages()
-    # Dev: path sạch rồi import
-    if not getattr(sys, "frozen", False) or not root or not root.is_dir():
-        _sanitize_cv2_sys_path()
-        import cv2 as _cv2
-
-        return _cv2
-
-    prepare_cv2_import_path(root)
-
-    if hasattr(sys, "OpenCV_LOADER"):
+        prepare_cv2_import_path()
+        if (existing is not None and not getattr(existing, "__file__", None)
+                and not getattr(getattr(existing, "__spec__", None), "_initializing", False)):
+            sys.modules.pop("cv2", None)  # Drop a hollow stub, never native children.
         try:
-            delattr(sys, "OpenCV_LOADER")
-        except Exception:
-            pass
-    for key in list(sys.modules):
-        if key == "cv2" or key.startswith("cv2."):
-            sys.modules.pop(key, None)
-
-    # Re-assert path immediately before import (other code may mutate sys.path)
-    prepare_cv2_import_path(root)
-    import cv2 as _cv2  # noqa: F401
-
-    # OpenCV bootstrap có thể thêm site-packages/cv2 vào path; dọn lại.
-    _sanitize_cv2_sys_path()
-
-    if not getattr(_cv2, "VideoCapture", None):
-        raise ImportError("cv2 loaded without VideoCapture")
-    return _cv2
+            cv2 = importlib.import_module("cv2")
+            if not getattr(cv2, "VideoCapture", None):
+                raise ImportError("cv2 loaded without VideoCapture")
+            return cv2
+        finally:
+            # A failed bootstrap leaves this flag behind. Only its importing
+            # thread may clear it; keep native children so the next attempt can relink them.
+            if hasattr(sys, "OpenCV_LOADER"):
+                delattr(sys, "OpenCV_LOADER")
+            _sanitize_cv2_sys_path()
 
 
 def preload_cv2() -> None:

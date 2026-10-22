@@ -296,6 +296,21 @@ Nginx phải dùng cùng cổng. Lần đầu cấu hình tự chạy sau reboot
 chạy đúng lệnh mà PM2 in ra rồi `pm2 save`. Các lần cập nhật sau dùng
 `pm2 restart pm2.start.json --only zm_ai_tool --update-env`.
 
+Nếu trang quản lý đọc được danh sách nhưng mọi thao tác thêm/sửa/xóa trả
+`403 WEB_ORIGIN_REJECTED`, kiểm tra dòng `Web →` trong log: origin phải là
+`https://zmaitool.com`, không phải `http://localhost:8787`. `.env` trên máy local
+không tự chuyển sang Ubuntu; biến môi trường PM2 cũ cũng có thể ghi đè `.env`.
+Sau khi chờ các job hoàn tất, khởi động lại từ thư mục repository trên server:
+
+```sh
+ZM_AI_TOOL_WEB_ORIGIN=https://zmaitool.com pm2 restart pm2.start.json --only zm_ai_tool --update-env
+pm2 save
+```
+
+Giữ nguyên kiểm tra Origin; không bỏ kiểm tra CSRF để khắc phục lỗi cấu hình.
+Nếu `/api/auth/session` trả `configured: false`, kiểm tra cả Google Client ID/Secret
+trong `.env` của server; không đưa secret vào log hay chat.
+
 ### Các lệnh thường dùng
 
 | Lệnh | Mục đích |

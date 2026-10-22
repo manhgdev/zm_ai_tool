@@ -120,6 +120,7 @@ export function deviceTypeText(value: string | null | undefined, locale: AppLoca
 
 export function webErrorText(code: string, locale: AppLocale) {
   const t = (vi: string, en: string) => localize(locale, vi, en)
+  if (webErrors[code]) return translate(locale, webErrors[code])
   if (code.startsWith('ACCESS_')) return accessText(code.slice(7).toLowerCase(), locale)
   const errors: Record<string, string> = {
     ADMIN_FORBIDDEN: t('Bạn không có quyền thực hiện thao tác này.', 'You do not have permission for this action.'),

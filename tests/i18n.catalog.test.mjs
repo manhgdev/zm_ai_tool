@@ -85,6 +85,43 @@ test('application key copy feedback is bilingual', () => {
   for (const pair of ["localize(locale, 'Thông báo', 'Notifications')", "localize(locale, 'Đóng thông báo', 'Close notification')"]) assert.ok(frame.includes(pair), pair)
 })
 
+test('admin errors retain API codes and explain origin and account failures in both languages', async () => {
+  let request, errors, explain, messages
+  visit(parse('pages/AdminPage.tsx'), node => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'request') request = node.getText()
+  })
+  visit(parse('app/WebSession.tsx'), node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText() === 'webErrors') errors = node.getText()
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'webErrorText') explain = node.getText().replace(/^export /, '')
+  })
+  visit(parse('app/i18n.tsx'), node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText() === 'MESSAGES') messages = node.getText()
+  })
+  assert.ok(request && errors && explain && messages)
+  const compile = source => ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const catalog = new Function(`${compile(`const ${messages}`)}; return MESSAGES`)()
+  const errorText = new Function('localize', 'translate', `${compile(`const ${errors}; ${explain}`)}; return webErrorText`)(
+    (locale, vi, en) => locale === 'vi' ? vi : en,
+    (locale, key) => catalog[key][locale],
+  )
+  for (const [code, key] of [
+    ['WEB_ORIGIN_REJECTED', 'error.web.origin'],
+    ['WEB_ACCOUNT_CHANGED', 'error.web.accountChanged'],
+    ['WEB_LOGIN_REQUIRED', 'error.web.loginRequired'],
+  ]) for (const locale of ['vi', 'en']) {
+    for (const body of [{ detail: code }, { code, detail: catalog[key][locale] }]) {
+      const call = new Function('fetch', `${compile(request)}; return request`)(async () => ({ ok: false, json: async () => body }))
+      await assert.rejects(() => call('/api/admin/keys', 'POST', {}), error => {
+        assert.equal(error.message, code)
+        assert.equal(errorText(error.message, locale), catalog[key][locale])
+        return true
+      })
+    }
+  }
+  assert.equal(errorText('INVALID_FIELDS', 'vi'), 'Thông tin chưa hợp lệ.')
+  assert.equal(errorText('INVALID_FIELDS', 'en'), 'Invalid details.')
+})
+
 test('computer information report localizes identifiers and retains every section for copying', () => {
   const tree = parse('features/configuration/SystemInfoPanel.tsx')
   const pairs = new Map()

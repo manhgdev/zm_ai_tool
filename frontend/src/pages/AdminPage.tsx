@@ -68,7 +68,7 @@ export default function AdminPage() {
   async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
     const response = await fetch(path, { method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) })
     const data = await response.json()
-    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'INVALID_FIELDS')
+    if (!response.ok) throw new Error(typeof data.code === 'string' ? data.code : typeof data.detail === 'string' ? data.detail : 'INVALID_FIELDS')
     return data as T
   }
   function reportError(error: unknown) {

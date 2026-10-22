@@ -61,14 +61,15 @@ def prepare_pythonnet(root: Path) -> None:
 
 
 def packaged_runtime_import_check(report: Path) -> int:
-    """Verify the frozen stdlib and Windows GUI bridge without opening a window."""
+    """Verify frozen stdlib, imaging imports, and the GUI bridge without opening a window."""
     import importlib
     import json
 
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     if sys.platform == "win32":
         prepare_pythonnet(root)
-    modules = ["pdb", "bdb", "cmd", "code", "codeop", "multiprocessing.pool", "webview"]
+    modules = ["pdb", "bdb", "cmd", "code", "codeop", "multiprocessing.pool", "webview",
+               "pipeline.logo_remover", "cv2.typing"]
     if sys.platform == "win32":
         modules += ["clr", "webview.platforms.edgechromium"]
     failures = {}
