@@ -32,6 +32,11 @@
 .license-deactivate { display: inline-flex; margin-top: 18px; padding: 4px 0; border: 0; background: transparent; color: var(--muted-foreground); font: inherit; font-size: 12px; cursor: pointer; }
 .license-deactivate:hover:not(:disabled) { color: var(--destructive); text-decoration: underline; }
 .license-deactivate.license-danger { color: var(--destructive); font-weight: 600; }
+.license-card > a.license-deactivate, .license-deactivate.license-danger { align-items: center; justify-content: center; min-height: 40px; padding: 9px 14px; border: 1px solid currentColor; border-radius: 8px; font-size: 13px; font-weight: 600; line-height: 1.5; text-align: center; text-decoration: none; }
+.license-card > a.license-deactivate { color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, var(--surface)); }
+.license-card > a.license-deactivate:hover { color: var(--primary); background: color-mix(in srgb, var(--primary) 15%, var(--surface)); text-decoration: none; }
+.license-deactivate.license-danger { background: color-mix(in srgb, var(--destructive) 8%, var(--surface)); }
+.license-deactivate.license-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--destructive) 15%, var(--surface)); text-decoration: none; }
 .license-method-hint { margin: 0 0 16px; color: var(--muted-foreground); line-height: 1.7; }
 .license-actions { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .license-actions .license-deactivate { margin-top: 0; }

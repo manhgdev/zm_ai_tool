@@ -349,8 +349,10 @@ body.resizing-sidebar * { cursor: col-resize !important; }
 .web-profile-dates dd { margin: 0; font-size: 12px; font-weight: 600; }
 .web-login .web-login-notice { margin-bottom: 18px; padding: 12px 14px; background: var(--lp-soft); border-radius: 8px; }
 .web-account-signout { margin-top: 22px; text-align: center; }
-.web-account-signout button { border: 0; background: transparent; color: var(--lp-muted); font: inherit; font-size: 12px; cursor: pointer; padding: 5px 10px; }
-.web-account-signout button:hover { color: var(--web-danger); }
+.web-account-signout button { min-height: 40px; padding: 9px 20px; border: 1px solid currentColor; border-radius: 8px; background: color-mix(in srgb, var(--web-danger) 8%, var(--lp-surface)); color: var(--web-danger); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.web-account-signout button:hover:not(:disabled) { background: color-mix(in srgb, var(--web-danger) 15%, var(--lp-surface)); }
+.web-account-signout button:focus-visible { outline: 2px solid var(--web-danger); outline-offset: 3px; }
+.web-account-signout button:disabled { opacity: .5; cursor: not-allowed; }
 .web-account-menu { position: relative; flex-shrink: 0; min-width: 0; font-size: 12px; color: var(--lp-ink, var(--ink)); }
 .web-account-menu summary { display: flex; align-items: center; gap: 6px; max-width: 140px; padding: 4px; white-space: nowrap; cursor: pointer; list-style: none; border-radius: 8px; }
 .web-account-menu summary::-webkit-details-marker { display: none; }

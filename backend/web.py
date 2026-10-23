@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import secrets
 import socket
@@ -18,8 +19,9 @@ from urllib.parse import unquote, urlencode, urlsplit
 import anyio
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
+from starlette.requests import ClientDisconnect
 from starlette.staticfiles import StaticFiles
 from accounts import Accounts, access, license_status, management_routes
 
@@ -498,6 +500,12 @@ def create_web_app(root: Path | None = None) -> FastAPI:
         upstream = worker.client.build_request(request.method, path, headers=headers, content=request.stream())
         try:
             response = await worker.client.send(upstream, stream=True)
+        except ClientDisconnect:
+            # The caller aborted while sending its body; never replay a partial request.
+            logging.getLogger("uvicorn.error").info(
+                "event=web_client_disconnected method=%s path=%r", request.method, request.url.path,
+            )
+            return Response(status_code=499)
         except httpx.HTTPError:
             raise HTTPException(502, "WEB_WORKER_UNAVAILABLE") from None
         response_headers = {key: value for key, value in response.headers.items()

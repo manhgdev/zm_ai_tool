@@ -41,7 +41,7 @@ import {
 } from "@/features/flow/flow.types";
 import {
   DRAFT_VIDEO_KEY, DRAFT_IMAGE_KEY, DRAFT_LEGACY_KEY, SETTINGS_KEY,
-  WEB_AUTO_DOWNLOAD_DEFAULT_KEY, WEB_OUTPUT_ROOT_KEY, TAB_KEY, RAIL_KEY,
+  WEB_OUTPUT_ROOT_KEY, TAB_KEY, RAIL_KEY,
   ACCOUNTS_KEY, CREATE_KIND_KEY, ACTIVE_PANEL_KEY, IMAGE_MODE_KEY, VIDEO_MODE_KEY, COLLAPSED_FOLDERS_KEY,
   FLOW_VIDEO_MODELS, FLOW_IMAGE_MODELS, FLOW_OMNI_FLASH_DURATIONS,
   flowVideoGenerationCost,
@@ -861,16 +861,6 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [isDesktopApp, runtimeKnown]);
-  useEffect(() => {
-    if (!runtimeKnown || isDesktopApp) return;
-    try {
-      if (localStorage.getItem(WEB_AUTO_DOWNLOAD_DEFAULT_KEY)) return;
-      localStorage.setItem(WEB_AUTO_DOWNLOAD_DEFAULT_KEY, "1");
-      setSettings((current) => ({ ...current, autoDownload: true }));
-    } catch {
-      setSettings((current) => ({ ...current, autoDownload: true }));
-    }
   }, [isDesktopApp, runtimeKnown]);
   useEffect(() => {
     if (!backendReady || !runtimeKnown || isDesktopApp || !settings.autoDownload) return;

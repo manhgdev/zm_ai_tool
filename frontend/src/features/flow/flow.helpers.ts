@@ -9,7 +9,6 @@ export const DRAFT_VIDEO_KEY = "zm-flow-veo:draft-video:v1";
 export const DRAFT_IMAGE_KEY = "zm-flow-veo:draft-image:v1";
 export const DRAFT_LEGACY_KEY = "zm-flow-veo:draft:v1";
 export const SETTINGS_KEY = "zm-flow-veo:settings:v1";
-export const WEB_AUTO_DOWNLOAD_DEFAULT_KEY = "zm-flow-veo:web-auto-download:v1";
 export const WEB_OUTPUT_ROOT_KEY = "zm-flow-veo:web-output-root:v1";
 export const TAB_KEY = "zm-flow-veo:tab:v1";
 export const RAIL_KEY = "zm-flow-veo:rail:v1";
@@ -211,7 +210,7 @@ export function readSettings(): FlowSettings {
     videoAccount: "random",
     imageAccount: "random",
     outputDir: defaultFlowOutputFolder(), quality: "720p", resolution: "1K",
-    concurrency: "3", format: "JPG", filePrefix: "flow", referenceStrength: 70, autoDownload: true, headless: true,
+    concurrency: "3", format: "JPG", filePrefix: "flow", referenceStrength: 70, autoDownload: false, headless: true,
   };
   try {
     const { enhancePrompt: _ep, seed: _s, ...saved } = JSON.parse(

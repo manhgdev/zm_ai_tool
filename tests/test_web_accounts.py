@@ -1,14 +1,17 @@
 """Run: PYTHONPATH=backend backend/.venv/bin/python -m pytest -q tests/test_web_accounts.py"""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -70,6 +73,59 @@ def signed_in(app, sub="user-a"):
     user = client.get("/api/auth/session").json()["user"]
     client.headers.update({"Origin": ORIGIN, "X-ZM-Account": user["id"]})
     return client, user, token
+
+
+@pytest.mark.parametrize("cutoff", [0, 12])
+@pytest.mark.parametrize("kind", ["image", "video"])
+def test_proxy_handles_client_disconnect_without_replaying_request(web_app, monkeypatch, caplog, cutoff, kind):
+    client, user, token = signed_in(web_app)
+    client.close()
+    body = json.dumps({"prompts": ["synthetic-private-prompt"], "kind": kind,
+                       "mode": "text", "accountId": "flow-account"}).encode()
+    delivered = []
+
+    async def worker_request(request):
+        delivered.append(request.content)
+        result = json.dumps({"jobs": [{"id": "job-" + kind, "kind": kind}]}).encode()
+        return httpx.Response(200, stream=httpx.ByteStream(result))
+
+    async def exercise():
+        async with httpx.AsyncClient(base_url="http://worker", transport=httpx.MockTransport(worker_request)) as upstream:
+            monkeypatch.setattr(web_app.state.web_workers, "get", AsyncMock(return_value=SimpleNamespace(client=upstream)))
+            headers = {"host": "localhost:5173", "origin": ORIGIN, "x-zm-account": user["id"],
+                       "cookie": f"{SESSION_COOKIE}={token}", "content-type": "application/json",
+                       "content-length": str(len(body))}
+            scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+                     "http_version": "1.1", "method": "POST", "scheme": "http",
+                     "path": "/api/flow/jobs", "raw_path": b"/api/flow/jobs",
+                     "root_path": "", "query_string": b"",
+                     "headers": [(key.encode(), value.encode()) for key, value in headers.items()],
+                     "client": ("127.0.0.1", 1234), "server": ("localhost", 5173)}
+            messages = [{"type": "http.request", "body": body[:cutoff], "more_body": True}] if cutoff else []
+            messages.append({"type": "http.disconnect"})
+            sent = []
+
+            async def receive():
+                return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+            async def send(message):
+                sent.append(message)
+
+            await web_app(scope, receive, send)
+            assert next(message["status"] for message in sent if message["type"] == "http.response.start") == 499
+            assert delivered == []
+            # The shared client remains usable after an aborted request body.
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=web_app), base_url=ORIGIN) as browser:
+                response = await browser.post("/api/flow/jobs", content=body, headers=headers)
+            assert response.status_code == 200
+            assert response.json() == {"jobs": [{"id": "job-" + kind, "kind": kind}]}
+            assert delivered == [body]
+
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        asyncio.run(exercise())
+    assert "event=web_client_disconnected method=POST path='/api/flow/jobs'" in caplog.text
+    assert "synthetic-private-prompt" not in caplog.text
+    assert token not in caplog.text
 
 
 def test_frontend_html_is_not_cached_across_deployments(tmp_path, monkeypatch):
