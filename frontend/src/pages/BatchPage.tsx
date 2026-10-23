@@ -5,6 +5,7 @@ import { localize, useLocale } from '@/app/i18n'
 import type { ProjectSettings } from '@/features/project/project.types'
 import { CloneBatchSettingsPanel } from '@/features/studio/CloneBatchSettingsPanel'
 import { studioApi, type QueueJob } from '@/features/studio/studio.api'
+import { VideoSourcePicker } from '@/features/studio/VideoSourcePicker'
 import { AudioSlider, CaptionModePicker, ReviewLangFields, ReviewLeftPanel, ReviewRightPanel, useVoices } from '@/features/studio/ReviewSettingsPanel'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { OutputFolderField } from '@/shared/components/OutputFolderField'
@@ -123,6 +124,7 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
   const [pauseAll, setPauseAll] = useState(false)
   const [error, setError] = useState('')
   const [isDesktopApp, setIsDesktopApp] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const cloneVoices = useVoices(cloneSettings.targetLang === 'none' ? 'vi' : cloneSettings.targetLang)
   const voices = useVoices(reviewSettings.language)
   const tabJobs = tab === 'all' ? jobs : jobs.filter((job) => job.type === tab)
@@ -235,26 +237,8 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
   async function enqueueSources(selectedSources: string[]) {
     if (!selectedSources.length) return
     setError('')
-    try {
-      await studioApi.enqueue(tab === 'review' ? 'review' : 'clone', selectedSources, queueSettings(), recursive, false)
-      await refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  async function addFiles() {
-    const res = await studioApi.pickVideos()
-    const selected = [...new Set(res.paths || [])]
-    if (editingQueueJob) setSources(selected)
-    else await enqueueSources(selected)
-  }
-
-  async function addFolder() {
-    const res = await studioApi.pickFolder()
-    if (!res.path) return
-    if (editingQueueJob) setSources([res.path])
-    else await enqueueSources([res.path])
+    await studioApi.enqueue(tab === 'review' ? 'review' : 'clone', selectedSources, queueSettings(), recursive, false)
+    await refresh()
   }
 
   async function addToQueue() {
@@ -262,7 +246,7 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
     try {
       const settings = queueSettings()
       if (editingQueueJob) {
-        await studioApi.updateJobSettings(editingQueueJob.id, { ...settings, source: editingQueueJob.source })
+        await studioApi.updateJobSettings(editingQueueJob.id, { ...settings, source: sources[0] || editingQueueJob.source })
         setEditingQueueJob(null)
       } else await enqueueSources(sources)
       await refresh()
@@ -466,8 +450,10 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
       </> : <>
       <section className="studio-card">
         <div className="studio-actions">
-          <button type="button" onClick={() => void addFiles()}>{t('Thêm file', 'Add files')}</button>
-          <button type="button" onClick={() => void addFolder()}>{t('Thêm thư mục', 'Add folder')}</button>
+          <VideoSourcePicker isDesktopApp={isDesktopApp} multiple recursive={recursive} onSelect={async paths => {
+            if (editingQueueJob) setSources(paths)
+            else await enqueueSources(paths)
+          }} onError={setError} onBusyChange={setUploading} />
           <button
             type="button"
             className={`studio-settings-toggle${settingsOpen ? ' open' : ''}`}
@@ -481,7 +467,7 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
               : t('Cài đặt Clone hàng loạt', 'Clone batch settings')}
             <IconArrowRight size={15} className="studio-settings-chevron" />
           </button>
-          <button type="button" className="primary" disabled={!readyQueueJobs.length} onClick={() => void runQueueJobs()}>{t(`Chạy ${readyQueueJobs.length} job`, `Run ${readyQueueJobs.length} jobs`)}</button>
+          <button type="button" className="primary" disabled={uploading || !readyQueueJobs.length} onClick={() => void runQueueJobs()}>{t(`Chạy ${readyQueueJobs.length} job`, `Run ${readyQueueJobs.length} jobs`)}</button>
           {editingQueueJob ? <button type="button" className="primary" onClick={() => void addToQueue()}>{t('Lưu chỉnh sửa', 'Save changes')}</button> : null}
           {editingQueueJob ? <button type="button" onClick={() => setEditingQueueJob(null)}>{t('Hủy sửa', 'Cancel edit')}</button> : null}
         </div>

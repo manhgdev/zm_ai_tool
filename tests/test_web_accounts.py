@@ -358,6 +358,7 @@ def test_two_real_workers_keep_files_preferences_and_job_stores_separate(web_app
             supervisor.cookies.set(SESSION_COOKIE, token)
             supervisor.headers.update({"Origin": ORIGIN, "X-ZM-Account": user["id"]})
 
+        uploaded_sources = {}
         for user, token, marker in ((a, token_a, "A"), (b, token_b, "B")):
             select(user, token)
             root = web_app.state.web_auth.root / "users" / user["id"]
@@ -394,7 +395,35 @@ def test_two_real_workers_keep_files_preferences_and_job_stores_separate(web_app
             outside = supervisor.put("/api/ui-preferences", json={"outputRoot": str(root.parent / "other-account")})
             assert outside.status_code == 403, outside.text
             assert outside.json()["detail"] == "WEB_PATH_OUTSIDE_ACCOUNT"
+            video = marker.encode() * (2 * 1024 * 1024)
+            uploaded = supervisor.post("/api/queue/upload", files={"file": ("../Phim thử.MP4", video, "video/mp4")})
+            assert uploaded.status_code == 200, uploaded.text
+            source = Path(uploaded.json()["path"])
+            assert source.is_relative_to(root / "data" / "queue_inputs")
+            assert source.name == "Phim thử.mp4"
+            assert source.read_bytes() == video
+            uploaded_sources[user["id"]] = str(source)
+            for kind in ("clone", "review"):
+                staged = supervisor.post("/api/queue", json={"type": kind, "sources": [str(source)], "start_now": False})
+                assert staged.status_code == 200, staged.text
+                job = staged.json()["jobs"][0]
+                assert job["source"] == str(source)
+                assert job["type"] == kind and job["status"] == "paused"
         select(a, token_a)
+        assert supervisor.post("/api/queue", json={"sources": [uploaded_sources[b["id"]]], "start_now": False}).status_code == 403
+        duplicate = supervisor.post("/api/queue/upload", files={"file": ("Phim thử.MP4", b"new source", "video/mp4")})
+        assert duplicate.status_code == 200, duplicate.text
+        assert duplicate.json()["path"] != uploaded_sources[a["id"]]
+        assert Path(uploaded_sources[a["id"]]).stat().st_size == 2 * 1024 * 1024
+        input_root = Path(uploaded_sources[a["id"]]).parent.parent
+        before = set(input_root.iterdir())
+        for name, content, code in (("unsafe.txt", b"x", "VIDEO_UPLOAD_UNSUPPORTED"), ("empty.mp4", b"", "VIDEO_UPLOAD_EMPTY")):
+            rejected = supervisor.post("/api/queue/upload", files={"file": (name, content)})
+            assert rejected.status_code in {400, 422}
+            assert rejected.json()["detail"] == code
+        assert set(input_root.iterdir()) == before
+        assert supervisor.post("/api/system/pick-videos").status_code == 403
+        assert supervisor.post("/api/system/pick-folder").status_code == 403
         cleaned = supervisor.post("/api/system/cleanup", json={"targets": ["public_exports"]})
         assert cleaned.status_code == 200, cleaned.text
         assert cleaned.json()["ok"] is True

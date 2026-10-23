@@ -1,4 +1,11 @@
 node_modules/
+*.tsbuildinfo
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
 dist/
 build_app/.work/
 build_app/.build-home/

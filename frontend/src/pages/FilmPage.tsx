@@ -4,6 +4,7 @@ import { localize, useLocale } from '@/app/i18n'
 import { api } from '@/features/project/project.api'
 import type { HardwareInfo } from '@/features/project/project.types'
 import { studioApi, type QueueJob } from '@/features/studio/studio.api'
+import { VideoSourcePicker } from '@/features/studio/VideoSourcePicker'
 import { AudioSlider, CaptionModePicker, ReviewLangFields, ReviewLeftPanel, ReviewRightPanel, Stepper, useVoices } from '@/features/studio/ReviewSettingsPanel'
 import { DEFAULT_REVIEW_SETTINGS, STYLE_TO_PIPE, modeLabel, resolveBuildMode, type ReviewSettings } from '@/features/studio/reviewSettings'
 import { BackTitle } from '@/shared/components/BackTitle'
@@ -228,6 +229,7 @@ export default function FilmPage({ onBack, onOpenEditor }: Props) {
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [clearingLogs, setClearingLogs] = useState(false)
   const [logOpen, setLogOpen] = useState(true)
   const [partsOpen, setPartsOpen] = useState<Record<string, boolean>>({})
@@ -385,11 +387,6 @@ export default function FilmPage({ onBack, onOpenEditor }: Props) {
     setEditingJobId(edit ? from?.id || null : null)
     setView('create')
     setError('')
-  }
-
-  async function pickVideo() {
-    const res = await studioApi.pickVideos()
-    if (res.paths?.[0]) set({ source: res.paths[0] })
   }
 
   async function pickOut() {
@@ -686,7 +683,7 @@ export default function FilmPage({ onBack, onOpenEditor }: Props) {
         <div className="rv-top-actions">
           {!editingJobId && <button type="button" className="rv-draft" onClick={saveDraft}>🖫 {t('Lưu nháp', 'Save draft')}</button>}
           <button type="button" className="rv-draft" disabled={busy || clearingCache} onClick={askClearCache}>{t('Xóa cache', 'Clear cache')}</button>
-          <button type="button" className="rv-run" disabled={busy} onClick={() => void (editingJobId ? saveJobSettings() : createAndRun())}>
+          <button type="button" className="rv-run" disabled={busy || uploading} onClick={() => void (editingJobId ? saveJobSettings() : createAndRun())}>
             {editingJobId ? t('Lưu cài đặt', 'Save settings') : `+ ${t('Tạo & Chạy', 'Create & Run')}`}
           </button>
         </div>
@@ -702,7 +699,7 @@ export default function FilmPage({ onBack, onOpenEditor }: Props) {
             <div className="rv-combo rv-combo-peach">
               <span className="rv-combo-ico">📁</span>
               <input value={draft.source} onChange={(e) => set({ source: e.target.value })} placeholder={t('Dán link video (YouTube, TikTok, FB…) hoặc chọn video…', 'Paste a video link (YouTube, TikTok, FB…) or choose a file…')} />
-              <button type="button" className="rv-inbtn" onClick={() => void pickVideo()}>{t('Chọn', 'Choose')}</button>
+              <VideoSourcePicker isDesktopApp={isDesktopApp} className="rv-inbtn" disabled={busy} onSelect={paths => set({ source: paths[0] })} onError={setError} onBusyChange={setUploading} />
             </div>
           </label>
           <ReviewLangFields settings={draft} onChange={set} />

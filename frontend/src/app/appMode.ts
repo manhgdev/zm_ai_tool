@@ -49,7 +49,7 @@ export function parseAppMode(raw: string | null | undefined): AppMode {
 }
 
 export function loadAppMode(): AppMode {
-  // Direct deep links win. Desktop starts at `/` so storage restores the last tab.
+  // Direct deep links win. Desktop's `/app` entry restores the last tab from storage.
   if (typeof window !== 'undefined') {
     const path = window.location.pathname.replace(/\/+$/, '') || '/'
     if (path !== '/') {

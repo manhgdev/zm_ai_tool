@@ -50,6 +50,7 @@ for (const paths of [
   ['features/project/ScriptTranslationReview.tsx', 'features/studio/CloneBatchSettingsPanel.tsx', 'features/project/ProjectSidebar.tsx', 'features/editor/EditorProjectPanel.tsx', 'features/editor/EditorPropertiesPanel.tsx'],
   ['features/project/useTranslationProviders.ts'],
   ['features/studio/ReviewSettingsPanel.tsx'],
+  ['features/studio/VideoSourcePicker.tsx', 'pages/FilmPage.tsx', 'pages/BatchPage.tsx'],
 ]) {
   test(`inline Vietnamese/English pairs are complete: ${paths.join(', ')}`, () => {
     for (const path of paths) {

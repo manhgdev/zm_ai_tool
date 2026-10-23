@@ -1277,7 +1277,6 @@ export default function App() {
       </Suspense>
       {appUsable && <BackgroundTasks currentMode={appMode} onOpen={navigateToMode}
         project={projectId ? { id: projectId, running: status.running, progress: status.progress, message: status.message } : undefined} />}
-      <Toaster position="bottom-right" theme={dark ? 'dark' : 'light'} richColors closeButton />
       <ExportSuccessModal
         isOpen={exportSuccessOpen}
         onClose={() => setExportSuccessOpen(false)}
@@ -1380,6 +1379,8 @@ export default function App() {
         onCancel={status.running ? onCancel : undefined}
       />
     </div>
+    {/* Sonner's section must not create an implicit row during the setup-to-workspace transition. */}
+    <Toaster position="bottom-right" theme={dark ? 'dark' : 'light'} richColors closeButton />
     </LocaleContext.Provider>
     </RealtimeProvider>
   )

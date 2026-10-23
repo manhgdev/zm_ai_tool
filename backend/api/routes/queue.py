@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 from pathlib import Path
 from typing import Any
 import subprocess
 import sys
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -16,6 +17,7 @@ from pipeline.core.config import DATA, safe_child
 from pipeline.core.output_paths import selected_or_default
 from pipeline.queue.engine import ArtifactBusyError, enqueue, get_engine, job_action, list_jobs
 from pipeline.queue.store import get as get_job, mutate
+from pipeline.queue.paths import VIDEO_EXTS, sanitize_filename
 
 router = APIRouter()
 
@@ -156,6 +158,27 @@ def api_queue_enqueue(body: EnqueueIn):
         raise HTTPException(422, "Thiếu nguồn video")
     jobs = enqueue(body.type, body.sources, body.settings, recursive=body.recursive, start_now=body.start_now)
     return {"ok": True, "jobs": jobs}
+
+
+@router.post("/api/queue/upload")
+def api_queue_upload(file: UploadFile = File(...)):
+    name = Path((file.filename or "").replace("\\", "/")).name
+    suffix = Path(name).suffix.lower()
+    if suffix not in VIDEO_EXTS:
+        raise HTTPException(422, "VIDEO_UPLOAD_UNSUPPORTED")
+    root = DATA / "queue_inputs" / uuid.uuid4().hex
+    root.mkdir(parents=True)
+    target = root / (sanitize_filename(Path(name).stem) + suffix)
+    try:
+        with target.open("wb") as output:
+            shutil.copyfileobj(file.file, output, length=1 << 20)
+        if not target.stat().st_size:
+            raise HTTPException(400, "VIDEO_UPLOAD_EMPTY")
+    except Exception:
+        target.unlink(missing_ok=True)
+        root.rmdir()
+        raise
+    return {"ok": True, "path": str(target.resolve())}
 
 
 @router.post("/api/queue/start")

@@ -122,6 +122,11 @@ export const studioApi = {
     ),
   pickVideos: () => fetchJson<{ ok: boolean; paths: string[] }>('/api/system/pick-videos', { method: 'POST' }, 300_000),
   pickFolder: () => fetchJson<{ ok: boolean; path: string }>('/api/system/pick-folder', { method: 'POST' }, 300_000),
+  uploadVideo: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return fetchJson<{ ok: boolean; path: string }>('/api/queue/upload', { method: 'POST', body }, 600_000)
+  },
   fileUrl: (jobId: string, opts?: { part?: number; download?: boolean }) => {
     const q = new URLSearchParams()
     if (opts?.part != null) q.set('part', String(opts.part))

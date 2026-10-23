@@ -776,7 +776,7 @@ def workspace_page():
 
 # SPA routes — every header tab must serve index.html (not a static 404).
 for _spa_path in (
-    "/text-to-speech", "/video-clone", "/live-preview", "/renders", "/download-video",
+    "/app", "/text-to-speech", "/video-clone", "/live-preview", "/renders", "/download-video",
     "/video-cleaner", "/media-compose", "/subtitle-export", "/drawing", "/film",
     "/batch", "/flow-veo", "/chat", "/automation", "/license",
 ):
@@ -1005,9 +1005,9 @@ def run_desktop() -> int:
             return 1
         _boot_mark("api_ready")
         print(f"[desktop] API sẵn sàng tại {base}", flush=True)
-        # Open root so React restores the last header tab from ui-preferences /
-        # localStorage instead of always landing on Text-to-Speech.
-        page_url = f"{base}/?v={APP_VERSION}"
+        # A dedicated entry restores the last tab without waiting for pywebview's
+        # late JS bridge; opening / can render Landing before the bridge exists.
+        page_url = f"{base}/app?v={APP_VERSION}"
         win_w, win_h = 1440, 900
         x, y = centered_xy(win_w, win_h)
         icon = None
