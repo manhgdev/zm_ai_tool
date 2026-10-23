@@ -605,7 +605,7 @@ def detect_device() -> dict[str, Any]:
         },
         "rapidocr_onnxruntime": {
             "kind": "cmd",
-            "value": f"{pip} rapidocr-onnxruntime",
+            "value": f"{pip} --no-deps rapidocr-onnxruntime==1.4.4",
             "label": "Cài RapidOCR",
             "hint": "OCR hardsub / nhãn trên khung.",
         },
@@ -623,7 +623,7 @@ def detect_device() -> dict[str, Any]:
         },
         "cv2": {
             "kind": "cmd",
-            "value": f"{pip} opencv-python-headless",
+            "value": f"{pip} opencv-python-headless==4.12.0.88",
             "label": "Cài OpenCV",
             "hint": "Xử lý khung OCR.",
         },

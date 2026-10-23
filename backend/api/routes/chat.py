@@ -63,6 +63,8 @@ def oauth_login(account_id: str, open_browser: bool = True):
         raise HTTPException(404, _t("Không tìm thấy tài khoản.", "Account not found.")) from exc
     except Exception as exc:
         chrome_required = "CHAT_CHROME_REQUIRED" in str(exc)
+        if "CHATGPT_DEVICE_AUTH_UNAVAILABLE" in str(exc):
+            raise HTTPException(502, detail={"code": "CHATGPT_DEVICE_AUTH_UNAVAILABLE", "message": _t("Đăng nhập bằng mã thiết bị chưa khả dụng. Hãy bật tính năng này trong cài đặt bảo mật ChatGPT hoặc nhờ quản trị viên workspace bật quyền.", "Device code sign-in is unavailable. Enable it in ChatGPT security settings or ask your workspace administrator to allow it.")}) from exc
         raise HTTPException(502, detail={"code": "chatgpt_chrome_required" if chrome_required else "chatgpt_login_failed", "message": _t("Không tìm thấy Google Chrome. Hãy cài Google Chrome rồi đăng nhập lại.", "Google Chrome was not found. Install Google Chrome, then sign in again.") if chrome_required else _t("Không bắt đầu được đăng nhập ChatGPT Codex.", "Could not start ChatGPT Codex sign-in."), "reason": str(exc)}) from exc
 
 
@@ -75,10 +77,7 @@ def oauth_login_link(account_id: str):
 @router.post("/accounts/{account_id}/login/{login_id}/cancel")
 def oauth_cancel(account_id: str, login_id: str):
     auth = service.auth_for(account_id)
-    login = auth._pending.get(login_id)
-    if login is not None:
-        login.error = 'LOGIN_CANCELLED'
-        auth.poll(login_id)
+    auth.cancel_login(login_id)
     return {'ok': True}
 
 

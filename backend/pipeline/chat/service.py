@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import asyncio
 import time
@@ -394,6 +395,9 @@ class ChatService:
         account = self.store.get_account(account_id)
         if not account:
             raise KeyError(account_id)
+        web_worker = os.environ.get("ZM_AI_TOOL_WEB_WORKER") == "1"
+        if web_worker:
+            open_browser = False
         if open_browser and chrome_executable() is None:
             raise RuntimeError("CHAT_CHROME_REQUIRED: Google Chrome was not found. Install Google Chrome, then sign in again.")
 
@@ -417,13 +421,13 @@ class ChatService:
             raise RuntimeError("CHATGPT_LOGIN_IN_PROGRESS")
         try:
             auth = self.auth_for(account_id)
-            if account.get("status") == "connecting" and auth.login_pending:
+            if account.get("status") == "connecting" and auth.login_pending and not web_worker:
                 raise RuntimeError("CHATGPT_LOGIN_IN_PROGRESS")
             # An OAuth callback exists only in memory. After an app restart a
             # persisted ``connecting`` row is stale; retry with its existing
             # Chrome profile instead of creating a new account/profile.
             self.store.update_account(account_id, status="connecting", error="", error_code="")
-            result = auth.start_login(open_browser=open_browser)
+            result = auth.start_device_login() if web_worker else auth.start_login(open_browser=open_browser)
             return {"accountId": account_id, **result}
         except Exception:
             self.store.update_account(account_id, status="signed_out", error="", error_code="CHATGPT_LOGIN_FAILED")

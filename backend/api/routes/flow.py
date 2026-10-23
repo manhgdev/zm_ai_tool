@@ -257,7 +257,10 @@ def accounts_list():
 def accounts_create(body: AccountCreateIn):
     cookies = _labs_cookies(body.cookie.get_secret_value()) if body.cookie is not None else None
     account = service.save_account(body.model_dump(exclude={"cookie"}))
-    return service.connect(account["id"], cookies=cookies) if cookies else account
+    try:
+        return service.connect(account["id"], cookies=cookies) if cookies else account
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.put("/accounts/{account_id}")
@@ -266,7 +269,10 @@ def accounts_update(account_id: str, body: AccountUpdateIn):
         raise HTTPException(404, "Flow account not found")
     cookies = _labs_cookies(body.cookie.get_secret_value()) if body.cookie is not None else None
     account = service.save_account(body.model_dump(exclude={"cookie"}), account_id)
-    return service.connect(account_id, cookies=cookies) if cookies else account
+    try:
+        return service.connect(account_id, cookies=cookies) if cookies else account
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.delete("/accounts/{account_id}")

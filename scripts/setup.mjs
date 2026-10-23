@@ -127,6 +127,10 @@ if (!existsSync(venvPython) || !compatible(pythonVersion(venvPython))) {
 console.log('Cài backend dependencies...')
 run(venvPython, ['-m', 'pip', 'install', '--upgrade', 'pip'])
 run(venvPython, ['-m', 'pip', 'install', '-r', path.join(root, 'backend', 'requirements.txt')])
+run(venvPython, ['-c',
+  'import sys; sys.path.insert(0, "backend"); from pipeline.core.system_check.install import _repair_opencv_conflicts; _repair_opencv_conflicts()',
+])
+run(venvPython, ['-m', 'pip', 'install', '--no-deps', 'rapidocr-onnxruntime==1.4.4'])
 
 console.log('Chuẩn bị và kiểm tra model xóa logo LaMa... / Preparing and testing the LaMa logo removal model...')
 run(venvPython, [path.join(root, 'scripts', 'setup_lama.py')])

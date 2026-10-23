@@ -8,6 +8,7 @@ import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -19,8 +20,7 @@ from .constants import _SESSION_REFRESH_INTERVAL_S
 from .errors import _FlowSessionGenerationChanged, _session_needs_login
 from .models import _flow_headless
 from .profiles import (
-    _account_cookie_records,
-    _merge_cookie_records,
+    _cookies_for_fresh_profile,
     _wipe_profile_keep_login,
 )
 
@@ -203,14 +203,16 @@ class FlowSessionsMixin:
         *,
         open_ui_on_failure: bool = False,
         keep_running_jobs: bool = False,
+        cookies: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Clear Flow browsing state while preserving the Google login.
+        """Clear Flow browsing state; cookie imports also replace Google login.
 
-        The account row, project IDs, native cookie database and Google device
-        identity stay in place. The saved jar only bootstraps missing native auth.
+        The account row and project IDs stay in place. Without new cookies, the
+        native Google identity is retained and the saved jar bootstraps missing auth.
 
         ``keep_running_jobs``: processing jobs keep their runtime clones and
         shared project ids while the root profile is refreshed for new work.
+        Explicitly imported ``cookies`` replace native auth in a clean profile.
         """
         account = store.get_row("accounts", account_id)
         if not account:
@@ -224,7 +226,16 @@ class FlowSessionsMixin:
                 account_id,
                 open_ui_on_failure=open_ui_on_failure,
                 keep_running_jobs=keep_running_jobs,
+                cookies=cookies,
             )
+        except RuntimeError as exc:
+            current = store.get_row("accounts", account_id) or {}
+            if cookies is not None and current.get("resetState") == "draining":
+                store.patch_row("accounts", account_id, {
+                    "status": "reconnect", "resetState": "action_required",
+                    "error": str(exc), "updatedAt": time.time(),
+                })
+            raise
         finally:
             reset_lock.release()
 
@@ -234,10 +245,15 @@ class FlowSessionsMixin:
         *,
         open_ui_on_failure: bool = False,
         keep_running_jobs: bool = False,
+        cookies: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         account = store.get_row("accounts", account_id)
         if not account:
             return {}
+        if cookies is not None:
+            cookies = _cookies_for_fresh_profile(cookies)
+            if not cookies:
+                raise RuntimeError("FLOW_COOKIE_INVALID")
         self._reap_closed_account_sessions(account_id)
         self._close_auto_sessions(account_id)
         with self._guard:
@@ -253,7 +269,7 @@ class FlowSessionsMixin:
         now = time.time()
         store.patch_row("accounts", account_id, {
             "resetState": "draining", "sessionGeneration": generation,
-            "resetRequestedAt": now, "resetReason": "manual_or_auto",
+            "resetRequestedAt": now, "resetReason": "cookie_replacement" if cookies is not None else "manual_or_auto",
             "updatedAt": now,
         })
         # Make processing jobs explicitly recoverable.  Their submission and
@@ -295,29 +311,48 @@ class FlowSessionsMixin:
         # Only a verified live browser may export cookies. Old runtime DBs
         # contain profile-bound encrypted values and must never merge back.
         runtime_root = store.root() / "runtime-profiles" / account_id
-        for kind in ("image", "video"):
-            target = self._session_profile_dir(account_id, kind)
-            if target.is_dir():
-                shutil.rmtree(target, ignore_errors=True)
+        disposable = [self._session_profile_dir(account_id, kind) for kind in ("image", "video")]
+        live_ids = {
+            str(job.get("id") or "")
+            for job in self.jobs()
+            if job.get("accountId") == account_id and job.get("status") == "processing"
+        } if keep_running_jobs else set()
         if runtime_root.is_dir():
-            live_ids = {
-                str(job.get("id") or "")
-                for job in self.jobs()
-                if job.get("accountId") == account_id and job.get("status") == "processing"
-            } if keep_running_jobs else set()
-            for child in list(runtime_root.iterdir()):
-                if not child.is_dir():
-                    continue
-                if child.name not in live_ids:
-                    shutil.rmtree(child, ignore_errors=True)
-            if not keep_running_jobs or not any(runtime_root.iterdir()):
-                shutil.rmtree(runtime_root, ignore_errors=True)
-        profile = Path(store.profile_dir(account_id))
-        from .browser import profile_lock
-        with profile_lock(profile):
-            # A JSON cookie export cannot restore Chrome's Google device
-            # identity. Both manual and automatic reset retain that identity.
-            _wipe_profile_keep_login(profile)
+            disposable.extend(child for child in runtime_root.iterdir() if child.is_dir() and child.name not in live_ids)
+        with ExitStack() as locks:
+            if cookies is not None:
+                # Block new session reservations and acquire every closed profile
+                # before deleting anything. A partial/busy wipe must not mix jars.
+                locks.enter_context(self._guard)
+                if any(key in self._manual_sessions for key in self._account_session_keys(account_id)) or account_id in self._connecting_accounts or account_id in self._syncing_accounts:
+                    raise RuntimeError("FLOW_PROFILE_BUSY")
+                for target in [profile, *disposable]:
+                    lock = profile_lock(target)
+                    if not lock.acquire(blocking=False):
+                        raise RuntimeError("FLOW_PROFILE_BUSY")
+                    locks.callback(lock.release)
+                    if chrome_profile_running(target):
+                        BrowserManager(headless=True, profile_dir=target).kill_now()
+                        if chrome_profile_running(target):
+                            raise RuntimeError("FLOW_PROFILE_BUSY")
+            try:
+                for target in disposable:
+                    if target.is_dir():
+                        shutil.rmtree(target, ignore_errors=cookies is None)
+                if runtime_root.is_dir() and (not keep_running_jobs or not any(runtime_root.iterdir())):
+                    shutil.rmtree(runtime_root, ignore_errors=cookies is None)
+                if cookies is not None:
+                    # Replacing cookies is a new login, not a merge with the old
+                    # Google device identity, native cookie DB or site storage.
+                    shutil.rmtree(profile)
+                    store.patch_row("accounts", account_id, {"cookie": cookies})
+                else:
+                    with profile_lock(profile):
+                        _wipe_profile_keep_login(profile)
+            except OSError:
+                if cookies is not None:
+                    raise RuntimeError("FLOW_PROFILE_BUSY") from None
+                raise
         patch = {
             "status": "connecting", "error": None, "suspendedUntil": None, "suspendReason": None,
             "accessToken": None, "refreshToken": None,
@@ -328,7 +363,8 @@ class FlowSessionsMixin:
         self._clear_session_ready(account_id)
         self._log(
             "info", "account_session_reset", account_id=account_id,
-            message="Đã xoá dữ liệu Flow và giữ đăng nhập Google / Cleared Flow data and kept the Google login",
+            message=("Đã tạo hồ sơ Chrome sạch để nhập cookie mới / Created a clean Chrome profile for replacement cookies"
+                     if cookies is not None else "Đã xoá dữ liệu Flow và giữ đăng nhập Google / Cleared Flow data and kept the Google login"),
         )
         try:
             connect_kwargs: dict[str, Any] = {
@@ -517,6 +553,10 @@ class FlowSessionsMixin:
         account = store.get_row("accounts", account_id)
         if not account:
             raise KeyError(account_id)
+        if cookies is not None:
+            return self.reset_account_session(
+                account_id, cookies=cookies, open_ui_on_failure=open_ui_on_failure,
+            )
         self._reap_closed_account_sessions(account_id)
         auto_browser = None
         with self._guard:
@@ -535,12 +575,6 @@ class FlowSessionsMixin:
             self._connecting_started_at[account_id] = time.monotonic()
             patch = {"status": "connecting", "error": None, "updatedAt": time.time()}
             store.patch_row("accounts", account_id, patch)
-            if cookies:
-                # Keep the imported cookies so reset/reconnect can reuse them
-                # (never sent to clients). Merge only: never drop stored cookies.
-                store.patch_row("accounts", account_id, {"cookie": _merge_cookie_records(
-                    _account_cookie_records(account.get("cookie")), _account_cookie_records(cookies),
-                )})
         if auto_browser is not None:
             try:
                 auto_browser.kill_now()

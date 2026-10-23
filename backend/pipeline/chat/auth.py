@@ -9,7 +9,7 @@ import time
 import urllib.parse
 import uuid
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -110,6 +110,12 @@ class OAuthLogin:
     code: str = ""
     error: str = ""
     server: HTTPServer | None = None
+    redirect_uri: str = REDIRECT_URI
+    device_auth_id: str = ""
+    user_code: str = ""
+    interval: int = 5
+    next_poll_at: float = 0
+    poll_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class ChatGPTAuth:
@@ -181,6 +187,29 @@ class ChatGPTAuth:
             (self.browser_opener or webbrowser.open)(authorize_url)
         return {"loginId": login.id, "authorizationUrl": authorize_url, "expiresAt": login.expires_at}
 
+    def start_device_login(self) -> dict:
+        for login_id, pending in list(self._pending.items()):
+            if pending.error or time.time() >= pending.expires_at:
+                self.cancel_login(login_id)
+        login = next((pending for pending in self._pending.values() if pending.device_auth_id), None)
+        if login is None:
+            response = self.client.post(f"{ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CLIENT_ID})
+            if response.status_code == 404:
+                raise RuntimeError("CHATGPT_DEVICE_AUTH_UNAVAILABLE")
+            response.raise_for_status()
+            data = response.json()
+            device_id = data.get("device_auth_id")
+            user_code = data.get("user_code") or data.get("usercode")
+            if not isinstance(device_id, str) or not device_id.strip() or not isinstance(user_code, str) or not user_code.strip():
+                raise RuntimeError("Device sign-in response is incomplete")
+            login = OAuthLogin(uuid.uuid4().hex, "", "", time.time() + 900,
+                               redirect_uri=f"{ISSUER}/deviceauth/callback", device_auth_id=device_id,
+                               user_code=user_code, interval=max(1, int(data.get("interval") or 5)))
+            self._login_complete.clear()
+            self._pending[login.id] = login
+        return {"loginId": login.id, "authorizationUrl": f"{ISSUER}/codex/device", "userCode": login.user_code,
+                "pollInterval": login.interval, "expiresAt": login.expires_at}
+
     @staticmethod
     def _callback_server(login: OAuthLogin, login_complete: threading.Event) -> HTTPServer:
         class Handler(BaseHTTPRequestHandler):
@@ -216,7 +245,18 @@ class ChatGPTAuth:
     def poll(self, login_id: str) -> dict:
         login = self._pending.get(login_id)
         if not login:
+            status = self.status()
+            if status.get("configured"):
+                return {"status": "connected", "email": status.get("email", "")}
             raise KeyError(login_id)
+        if not login.poll_lock.acquire(blocking=False):
+            return {"status": "pending"}
+        try:
+            return self._poll(login_id, login)
+        finally:
+            login.poll_lock.release()
+
+    def _poll(self, login_id: str, login: OAuthLogin) -> dict:
         if time.time() >= login.expires_at:
             self._pending.pop(login_id, None)
             self._login_complete.set()
@@ -231,13 +271,30 @@ class ChatGPTAuth:
                 login.server.shutdown()
                 login.server.server_close()
             return {"status": "failed", "error": login.error}
-        if not login.code:
-            return {"status": "pending"}
         try:
-            token_response = self.client.post(f"{ISSUER}/oauth/token", data={"grant_type": "authorization_code", "client_id": CLIENT_ID, "code": login.code, "code_verifier": login.code_verifier, "redirect_uri": REDIRECT_URI}, headers={"Accept": "application/json"})
+            if login.device_auth_id and not login.code:
+                if time.time() < login.next_poll_at:
+                    return {"status": "pending"}
+                login.next_poll_at = time.time() + login.interval
+                response = self.client.post(f"{ISSUER}/api/accounts/deviceauth/token",
+                                            json={"device_auth_id": login.device_auth_id, "user_code": login.user_code})
+                if response.status_code in {403, 404}:
+                    return {"status": "pending"}
+                response.raise_for_status()
+                data = response.json()
+                code, verifier = data.get("authorization_code"), data.get("code_verifier")
+                if not isinstance(code, str) or not code or not isinstance(verifier, str) or not verifier:
+                    raise RuntimeError("Device sign-in confirmation is incomplete")
+                login.code, login.code_verifier = code, verifier
+            if not login.code:
+                return {"status": "pending"}
+            token_response = self.client.post(f"{ISSUER}/oauth/token", data={"grant_type": "authorization_code", "client_id": CLIENT_ID, "code": login.code, "code_verifier": login.code_verifier, "redirect_uri": login.redirect_uri}, headers={"Accept": "application/json"})
             token_response.raise_for_status()
             tokens = self._normalize_tokens(token_response.json())
-            self.store.save(tokens)
+            with self._refresh_lock:
+                if login.error or self._pending.get(login_id) is not login:
+                    return {"status": "failed", "error": login.error or "LOGIN_CANCELLED"}
+                self.store.save(tokens)
         except Exception:
             self._pending.pop(login_id, None)
             self._login_complete.set()
@@ -246,10 +303,21 @@ class ChatGPTAuth:
                 login.server.server_close()
             raise
         self._pending.pop(login_id, None)
+        self._login_complete.set()
         if login.server:
             login.server.server_close()
         status = self.status()
         return {"status": "connected", "email": status.get("email", "")}
+
+    def cancel_login(self, login_id: str) -> None:
+        with self._refresh_lock:
+            login = self._pending.pop(login_id, None)
+            if login:
+                login.error = "LOGIN_CANCELLED"
+                self._login_complete.set()
+        if login and login.server:
+            login.server.shutdown()
+            login.server.server_close()
 
     @staticmethod
     def _normalize_tokens(raw: dict, previous_refresh: str = "") -> dict:

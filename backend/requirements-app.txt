@@ -15,7 +15,8 @@ numpy==2.2.6
 pillow==12.0.0
 opencv-python-headless==4.12.0.88
 onnxruntime==1.20.1
-# rapidocr-onnxruntime is installed into the runtime venv only (it requires non-headless opencv-python).
+# RapidOCR is installed into the runtime venv with --no-deps; its cv2 calls use
+# the headless wheel above, without its declared opencv-python dependency.
 # Offline multi-speaker diarization (models live in data/models/pyannote).
 sherpa-onnx>=1.12.0
 sherpa-onnx-bin>=1.12.0

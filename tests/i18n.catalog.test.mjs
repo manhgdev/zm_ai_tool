@@ -38,6 +38,7 @@ for (const paths of [
   ['pages/AdminPage.tsx'],
   ['features/license/LicensePage.tsx'],
   ['pages/AutomationPage.tsx'],
+  ['pages/ChatPage.tsx'],
   ['shared/components/BackgroundTasks.tsx'],
   ['shared/components/ProgressPopup.tsx'],
   ['features/tts/TtsStudio.tsx', 'features/tts/TtsTranscribePanel.tsx'],
@@ -271,6 +272,7 @@ test('Flow cookie account inputs have Vietnamese and English labels', () => {
     }
   })
   for (const vi of ['Email Google', 'Cách kết nối', 'Dán Cookie Google Flow', 'Cookie Google Flow *', 'Lưu và kết nối', 'Mở phiên',
+    'Lưu để thay cookie và tạo lại hồ sơ Chrome sạch. ID tài khoản và lịch sử công việc được giữ.',
     'Đã lưu tài khoản Flow.', 'Không thể lưu tài khoản', 'Đã xóa tài khoản Flow.', 'Không thể xóa tài khoản']) {
     assert.ok(pairs.get(vi)?.trim(), `Missing English label for ${vi}`)
     assert.notEqual(pairs.get(vi), vi)

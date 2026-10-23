@@ -305,12 +305,12 @@ def _pip_stream(
     return subprocess.CompletedProcess(cmd, proc.returncode, output, "")
 
 
+_OPENCV_PACKAGE = "opencv-python-headless==4.12.0.88"
+
+# OCR uses the feature installer; RapidOCR must never enter this resolver.
 _AI_RUNTIME_PACKAGES = (
     "faster-whisper>=1.1.0",
     "av",
-    "rapidocr-onnxruntime>=1.3.20",
-    "pillow",
-    "opencv-python-headless",
     "huggingface-hub>=0.34",   # bỏ <1.0 — hub 1.x đang có, không cần downgrade
     "pyyaml",
     "sea-g2p",
@@ -324,10 +324,9 @@ _AI_RUNTIME_PACKAGES = (
     "transformers>=4.46.0",
 )
 
-# 3 nhóm riêng — mỗi nhóm cài 1 pip call với --no-deps, có header log riêng.
+# Native groups use --no-deps; OCR uses the shared feature installer below.
 _PKG_WHISPER = ("faster-whisper>=1.1.0", "av", "soundfile", "cffi", "pycparser", "soxr", "tokenizers")
 _PKG_DIARIZATION = ("sherpa-onnx>=1.12.0", "sherpa-onnx-bin>=1.12.0", "soundfile")
-_PKG_OCR     = ("rapidocr-onnxruntime>=1.3.20", "pillow", "opencv-python-headless<5.0")
 _PKG_VIENEU  = (
     "huggingface-hub>=0.34", "httpx", "pyyaml",
     "sea-g2p",
@@ -349,9 +348,6 @@ _SHERPA_CUDA_INDEX = "https://k2-fsa.github.io/sherpa/onnx/cuda.html"
 _FROZEN_PACKAGE_MODULES: dict[str, tuple[str, ...]] = {
     "faster-whisper>=1.1.0": ("faster_whisper",),
     "av": ("av",),
-    "rapidocr-onnxruntime>=1.3.20": ("rapidocr_onnxruntime",),
-    "pillow": ("PIL",),
-    "opencv-python-headless": ("cv2",),
     "huggingface-hub>=0.34": ("transformers", "vieneu"),
     "transformers>=4.46.0": ("transformers",),
     "tokenizers": ("transformers",),
@@ -486,7 +482,7 @@ _MODULE_TO_PACKAGE: dict[str, str] = {
     "av": "av",
     "rapidocr_onnxruntime": "rapidocr-onnxruntime>=1.3.20",
     "PIL": "pillow",
-    "cv2": "opencv-python-headless",
+    "cv2": _OPENCV_PACKAGE,
     "torch": "torch",
     "torchaudio": "torchaudio",
     "transformers": "transformers>=4.46.0",
@@ -649,6 +645,38 @@ def _runtime_pip_install(
     proc = _pip_stream(cmd, timeout=timeout, progress=progress)
     if proc.returncode:
         raise RuntimeError((proc.stderr or proc.stdout)[-2000:])
+
+
+def _repair_opencv_conflicts() -> None:
+    """Offline setup only: restore cv2 after removing overlapping wheel variants."""
+    from importlib.metadata import distributions
+    import sysconfig
+
+    if getattr(sys, "frozen", False):
+        from ..runtime_active import active_runtime_dir
+        site = _venv_site_packages(active_runtime_dir())
+    else:
+        site = Path(sysconfig.get_path("platlib"))
+    unwanted = {"opencv-python", "opencv-contrib-python", "opencv-contrib-python-headless"}
+    conflicts = sorted({
+        dist.metadata.get("Name", "").lower().replace("_", "-")
+        for dist in distributions(path=[str(site)])
+    } & unwanted)
+    if not conflicts:
+        return
+    if any(name in sys.modules for name in ("cv2", "numpy", "onnxruntime", "torch", "transformers")):
+        raise RuntimeError(
+            "AI_RUNTIME_BUSY: Dừng backend rồi chạy lại setup để sửa OpenCV. / "
+            "Stop the backend and rerun setup to repair OpenCV."
+        )
+    removed = _pip_stream(
+        _runtime_pip_uninstall_cmd(*conflicts, "opencv-python-headless"), timeout=300,
+    )
+    if removed.returncode:
+        raise RuntimeError((removed.stderr or removed.stdout)[-2000:])
+    # All four wheel variants own cv2; uninstalling one also removes shared files.
+    _runtime_pip_install("--force-reinstall", "--no-deps", _OPENCV_PACKAGE)
+    _invalidate_checks_cache()
 
 
 def _install_runtime_torch(*, accel: str | None = None) -> None:
@@ -921,7 +949,7 @@ def _install_native_optional_feature(feature: str) -> dict[str, Any]:
         names = common | {"setuptools", "ctranslate2", "av", "huggingface-hub", "pyyaml", "tokenizers"}
         sdk, module, label = "faster-whisper==1.2.1", "faster_whisper", "Whisper"
     elif feature == "ocr":
-        names = common | {"pillow", "opencv-python-headless", "pyclipper", "shapely"}
+        names = {"numpy", "pillow", "opencv-python-headless", "pyclipper", "shapely", "six", "pyyaml", "tqdm"}
         sdk, module, label = "rapidocr-onnxruntime==1.4.4", "rapidocr_onnxruntime", "OCR"
     elif feature == "diarization":
         # speaker.py decodes the input through soundfile before handing it to
@@ -931,16 +959,33 @@ def _install_native_optional_feature(feature: str) -> dict[str, Any]:
     else:
         raise ValueError(f"Unsupported optional feature: {feature}")
     provider = _ORT_GPU_PKG if _runtime_ort_accel() == "cuda" else _ORT_DIRECTML_PKG if _runtime_ort_accel() == "directml" else "onnxruntime==1.20.1"
-    _runtime_pip_install(*(specs[name] for name in sorted(names) if name in specs), provider,
-                         timeout=1800, progress=(20, 78, f"{label} dependencies"))
-    _runtime_pip_install("--no-deps", sdk, timeout=900, progress=(80, 94, label))
+    probe = _runtime_mod_ok if getattr(sys, "frozen", False) else _mod_ok
+    if feature == "ocr":
+        # Preserve working/cached modules. OCR must not upgrade the shared
+        # NumPy/ORT stack or HTTP/model packages underneath concurrent jobs.
+        aliases = {"pillow": "PIL", "opencv-python-headless": "cv2", "pyyaml": "yaml"}
+        modules = {name: aliases.get(name, name) for name in names}
+        status = _runtime_modules_batch_ok(list(modules.values()) + ["onnxruntime"]) if getattr(sys, "frozen", False) else {
+            module: _mod_ok(module) for module in (*modules.values(), "onnxruntime")
+        }
+        names = {name for name, module in modules.items() if not status[module][0]}
+        if status["onnxruntime"][0]:
+            provider = ""
+    dependencies = [specs[name] for name in sorted(names) if name in specs]
+    if provider:
+        dependencies.append(provider)
+    if dependencies:
+        _runtime_pip_install(*dependencies, timeout=1800, progress=(20, 78, f"{label} dependencies"))
+    if feature != "ocr" or not probe(module)[0]:
+        _runtime_pip_install("--no-deps", sdk, timeout=900, progress=(80, 94, label))
     if feature == "diarization":
         from pipeline.asr.speaker import ensure_diarization_models
         from pipeline.core.config import RESOURCE_DATA
 
         ensure_diarization_models(RESOURCE_DATA / "models" / "pyannote", log=_install_log_fn)
-    install_runtime_meta_path()
-    bootstrap_ai_runtime()
+    if feature != "ocr":
+        install_runtime_meta_path()
+        bootstrap_ai_runtime()
     _invalidate_checks_cache()
     ok, detail = _runtime_mod_ok(module) if getattr(sys, "frozen", False) else _mod_ok(module)
     if not ok:
@@ -1044,10 +1089,6 @@ def install_ai_runtime() -> dict[str, Any]:
                 "message": "Gói AI đã sẵn sàng",
                 "detail": detail,
             }
-        # Probe imports in the runtime venv.  A package that is installed and
-        # usable must not be upgraded just because its dist-info is unusual.
-        # ``missing`` and ``needs_torch`` were calculated above for this branch.
-        cv2_ok = "cv2" not in missing
     else:
         # Phát hiện torch bị corrupt (file mix version) — phải reinstall khi dừng backend.
         if _torch_broken():
@@ -1093,35 +1134,9 @@ def install_ai_runtime() -> dict[str, Any]:
                 raise RuntimeError("AI_RUNTIME_BUSY: Dừng job TTS trước khi cài / Stop TTS jobs before installing")
         vieneu_frozen.shutdown_all_workers()
 
-        # Windows: cv2.pyd bị lock khi đã preload → không thể xoá/thay thế.
-        # Bỏ opencv khỏi danh sách cài nếu cv2 đã load trong process hiện tại.
-        _cv2_locked = sys.platform == "win32" and "cv2" in sys.modules
-        if _cv2_locked:
-            _install_log_fn and _install_log_fn(
-                "cv2 đã load — bỏ qua opencv (sẽ cập nhật khi khởi động lại)\n"
-            )
-
-        # opencv-python + headless cùng lúc → đụng cv2; chỉ giữ headless.
-        if not _cv2_locked:
-            opencv_remove = ["opencv-python"] + ([] if cv2_ok else ["opencv-python-headless"])
-            try:
-                subprocess.run(
-                    [uv, "pip", "uninstall", "--python", str(py), *opencv_remove],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    env=_runtime_subprocess_env(),
-                )
-            except (OSError, subprocess.SubprocessError):
-                pass  # bỏ qua nếu file bị lock
-
-        # Lọc bỏ OpenCV nếu cv2.pyd đang bị lock.
+        # Reuse the OCR feature installer, which supplies its dependencies and
+        # installs RapidOCR with --no-deps instead of resolving another cv2 wheel.
         packages = _frozen_runtime_package_specs(missing)
-        if _cv2_locked:
-            packages = [
-                p for p in packages
-                if not p.startswith("opencv-python")
-            ]
         ort_accel = _runtime_ort_accel()
         if ort_accel == "cuda":
             packages.append(_ORT_GPU_PKG)
@@ -1192,8 +1207,6 @@ def install_ai_runtime() -> dict[str, Any]:
         _pip_group("Speaker diarization", *_PKG_DIARIZATION)
         _install_sherpa_cuda(sys.executable)
 
-        # Nhóm 2 — OCR
-        _pip_group("OCR", *_PKG_OCR)
         ort_accel = _runtime_ort_accel()
         if ort_accel == "cuda":
             if _install_log_fn:
@@ -1272,6 +1285,8 @@ def install_ai_runtime() -> dict[str, Any]:
                 )
                 if proc_provider.returncode:
                     raise RuntimeError((proc_provider.stderr or proc_provider.stdout)[-3000:])
+    if any(name in missing for name in ("rapidocr_onnxruntime", "cv2", "PIL")):
+        _install_native_optional_feature("ocr")
     if getattr(sys, "frozen", False):
         _install_sherpa_cuda(py, uv)
     if getattr(sys, "frozen", False) and ("vieneu" in missing or not _mod_ok("vieneu")[0]):

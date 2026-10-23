@@ -10,7 +10,7 @@ from urllib.parse import quote, urlsplit
 
 from . import store
 from .constants import _PROJECT_RE
-from .errors import _soft_retry_backoff_s
+from .errors import _FlowSessionGenerationChanged, _soft_retry_backoff_s
 from .models import _detect_plan
 from .profiles import (
     _account_cookie_records,
@@ -78,6 +78,13 @@ class FlowAuthMixin:
 
     async def _seed_browser_cookies(self, account: dict[str, Any], browser: Any) -> bool:
         """Restore missing/rejected native auth without replacing a live session."""
+        account_id = str(account.get("id") or "")
+        generation = getattr(browser, "_flow_session_generation", None)
+        if isinstance(generation, int) and generation != self._session_generation(account_id):
+            raise _FlowSessionGenerationChanged("FLOW_SESSION_GENERATION_CHANGED")
+        # A probe/job may have waited for Chrome after reading the account.
+        # Never seed that old snapshot over cookies replaced in the meantime.
+        account = store.get_row("accounts", account_id) or {}
         jar = _cookies_for_fresh_profile(account.get("cookie"))
         if not jar:
             return False

@@ -1639,6 +1639,8 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       const message = error instanceof Error ? error.message : String(error);
       const detail = message.includes("FLOW_COOKIE_INVALID")
         ? t("Cookie không hợp lệ. Hãy dán giá trị Cookie trong Request Headers (tối đa 32 KB).", "Invalid cookie. Paste the Cookie value from Request Headers (up to 32 KB).")
+        : message.includes("FLOW_PROFILE_BUSY")
+          ? t("Profile đang bận. Đóng Chrome hoặc chờ job hiện tại kết thúc rồi thử lại.", "The profile is busy. Close Chrome or wait for the current job to finish, then try again.")
         : message;
       setApiError(detail);
       toast.error(t("Không thể lưu tài khoản", "Could not save account") + ": " + detail);
@@ -2634,7 +2636,9 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
                       : t("Sửa tài khoản", "Edit account")}
                   </h3>
                   <p>{accountLoginMode === "cookie"
-                    ? t("Lưu để nhập cookie vào Chrome và xác minh tài khoản. Cookie hết hạn có thể cần đăng nhập lại.", "Save to import cookies into Chrome and verify the account. Expired cookies may require signing in again.")
+                    ? editingAccount === "new"
+                      ? t("Lưu để nhập cookie vào Chrome và xác minh tài khoản. Cookie hết hạn có thể cần đăng nhập lại.", "Save to import cookies into Chrome and verify the account. Expired cookies may require signing in again.")
+                      : t("Lưu để thay cookie và tạo lại hồ sơ Chrome sạch. ID tài khoản và lịch sử công việc được giữ.", "Save to replace cookies and create a clean Chrome profile. The account ID and job history are kept.")
                     : t("Sau khi lưu, bấm Kết nối để đăng nhập Google trong Chrome.", "After saving, select Connect to sign in to Google in Chrome.")}</p>
                 </div>
                 <label>
