@@ -1,6 +1,8 @@
 import sys
 import os
 import asyncio
+import io
+import socket
 import tempfile
 import unittest
 from contextlib import asynccontextmanager
@@ -241,7 +243,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
                 playwright = SimpleNamespace(
                     chromium=SimpleNamespace(connect_over_cdp=AsyncMock(return_value=cdp_browser)),
                     stop=AsyncMock())
-                fake_proc = Mock(poll=Mock(return_value=0))
+                fake_proc = Mock(poll=Mock(return_value=0), stderr=io.BytesIO())
                 executable = Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
                 with patch('sys.platform', platform), \
                      patch('pipeline.flow.browser.network_available', return_value=True), \
@@ -383,7 +385,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             chromium=SimpleNamespace(connect_over_cdp=connect, launch_persistent_context=launch),
             stop=AsyncMock(),
         )
-        fake_proc = Mock(poll=Mock(return_value=None), terminate=Mock(), kill=Mock(), wait=Mock())
+        fake_proc = Mock(poll=Mock(return_value=None), stderr=io.BytesIO(), terminate=Mock(), kill=Mock(), wait=Mock())
         with tempfile.TemporaryDirectory() as raw, \
              patch('pipeline.flow.browser.network_available', return_value=True), \
              patch('pipeline.flow.browser.chrome_executable', return_value=Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')), \
@@ -428,7 +430,7 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             ),
             stop=AsyncMock(),
         )
-        fake_proc = Mock(poll=Mock(return_value=0), terminate=Mock(), kill=Mock(), wait=Mock())
+        fake_proc = Mock(poll=Mock(return_value=0), stderr=io.BytesIO(), terminate=Mock(), kill=Mock(), wait=Mock())
         with tempfile.TemporaryDirectory() as raw, \
              patch('pipeline.flow.browser.network_available', return_value=True), \
              patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome')), \
@@ -442,6 +444,89 @@ class FlowBrowserSecurityTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('--no-startup-window', argv)
             self.assertFalse(any(arg.startswith('--user-agent=') for arg in argv))
             await manager.stop()
+
+    async def test_linux_launches_use_short_private_temp_for_chrome_sockets(self):
+        context = SimpleNamespace(pages=[], close=AsyncMock())
+        cdp_browser = SimpleNamespace(contexts=[context], new_browser_cdp_session=AsyncMock(
+            return_value=SimpleNamespace(send=AsyncMock())))
+        paths = []
+
+        def bind_chrome_socket(env):
+            # Exercise the actual Unix socket path limit, as Chrome does before CDP.
+            temporary = Path(env.get('TMPDIR', os.environ['TMPDIR']))
+            directory = tempfile.mkdtemp(prefix='.org.chromium.Chromium.', dir=temporary)
+            with socket.socket(socket.AF_UNIX) as sock:
+                sock.bind(str(Path(directory) / 'SingletonSocket'))
+            paths.append(temporary)
+            self.assertEqual(temporary.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(env['ZM_AI_TOOL_WEB_WORKSPACE'], str(root))
+
+        def spawn(*args, **kwargs):
+            bind_chrome_socket(kwargs.get('env', os.environ))
+            return Mock(poll=Mock(return_value=None), stderr=io.BytesIO(), wait=Mock())
+
+        def launch(*args, **kwargs):
+            bind_chrome_socket(kwargs.get('env', os.environ))
+            return context
+
+        playwright = SimpleNamespace(chromium=SimpleNamespace(
+            connect_over_cdp=AsyncMock(return_value=cdp_browser),
+            launch_persistent_context=AsyncMock(side_effect=launch)), stop=AsyncMock())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / ('long-workspace-' * 5) / 'users' / ('a' * 32)
+            worker_tmp = root / 'tmp'
+            worker_tmp.mkdir(parents=True)
+            managers = []
+            with patch('sys.platform', 'linux'), \
+                 patch.dict(os.environ, {'TMPDIR': str(worker_tmp), 'ZM_AI_TOOL_WEB_WORKSPACE': str(root)}), \
+                 patch('pipeline.flow.browser.network_available', return_value=True), \
+                 patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome')), \
+                 patch('pipeline.flow.browser._cdp_endpoint_ready', return_value=True), \
+                 patch('pipeline.flow.browser.subprocess.Popen', side_effect=spawn), \
+                 patch('pipeline.flow.browser.async_playwright', return_value=SimpleNamespace(start=AsyncMock(return_value=playwright))):
+                for index, port in enumerate((9333, None)):
+                    manager = BrowserManager(headless=True, profile_dir=root / f'profile-{index}', remote_debugging_port=port)
+                    managers.append(manager)
+                    try:
+                        await manager.start()
+                    except BaseException:
+                        for started in managers:
+                            with patch.object(started, 'kill_now'):
+                                await started.stop()
+                        raise
+                self.assertNotEqual(paths[0], paths[1])
+                self.assertTrue(all(path.is_dir() for path in paths))
+                self.assertEqual(os.environ['TMPDIR'], str(worker_tmp))
+                for index, manager in enumerate(managers):
+                    with patch.object(manager, 'kill_now'):
+                        await manager.stop()
+                    self.assertFalse(paths[index].exists())
+                    self.assertTrue(manager.profile_dir.is_dir())
+                self.assertTrue(worker_tmp.is_dir())
+
+    async def test_chrome_exit_fails_promptly_with_sanitized_startup_log_and_cleans_temp(self):
+        stderr = (b'Socket path too long: /private/SingletonSocket\n'
+                  b'Cookie: synthetic-cookie-secret\n'
+                  b'Authorization: Bearer synthetic-auth-secret\n'
+                  b'cookie=' + b'x' * 40000 + b'oversized-line-secret\n'
+                  b'Failed navigation https://example.test/private?key=synthetic-url-secret\n')
+        process = Mock(poll=Mock(return_value=21), stderr=io.BytesIO(stderr))
+        with tempfile.TemporaryDirectory() as raw, \
+             patch('sys.platform', 'linux'), \
+             patch('pipeline.flow.browser.network_available', return_value=True), \
+             patch('pipeline.flow.browser.chrome_executable', return_value=Path('chrome')), \
+             patch('pipeline.flow.browser._cdp_endpoint_ready', return_value=False), \
+             patch('pipeline.flow.browser.subprocess.Popen', return_value=process) as popen:
+            manager = BrowserManager(headless=True, profile_dir=Path(raw), remote_debugging_port=9333)
+            with patch.object(manager, 'kill_now'), self.assertRaisesRegex(RuntimeError, 'FLOW_CDP_TIMEOUT') as caught:
+                await asyncio.wait_for(manager.start(), timeout=2)
+            detail = str(caught.exception)
+            self.assertIn('Socket path too long', detail)
+            self.assertIn('exit=21', detail)
+            self.assertNotIn('secret', detail)
+            self.assertNotIn('https://', detail)
+            self.assertFalse(Path(popen.call_args.kwargs['env']['TMPDIR']).exists())
+            self.assertFalse(manager._profile_lock.locked())
 
     async def test_cdp_job_tab_isolated_and_closed_without_closing_chrome(self):
         flow_page = SimpleNamespace(
@@ -735,6 +820,7 @@ class SessionTests(unittest.TestCase):
 
     def test_cookie_bootstrap_does_not_replace_runtime_native_session(self):
         jar = [{"name": "SID", "value": "saved", "domain": ".google.com", "path": "/"}]
+        account = {"id": "account", "cookie": jar}
         for live, rejected in ((jar, False), (jar, True), ([], False)):
             with self.subTest(has_native_session=bool(live), rejected=rejected):
                 context = SimpleNamespace(cookies=AsyncMock(return_value=live),
@@ -742,7 +828,8 @@ class SessionTests(unittest.TestCase):
                 browser = SimpleNamespace(profile_dir=Path("runtime-profiles/account/job"), context=context,
                                           page=AsyncMock(return_value=SimpleNamespace(
                                               url="https://flow.google.com/about" if rejected else "https://flow.google.com/")))
-                seeded = asyncio.run(FlowService()._seed_browser_cookies({"cookie": jar}, browser))
+                with patch('pipeline.flow.auth.store.get_row', return_value=account):
+                    seeded = asyncio.run(FlowService()._seed_browser_cookies(account, browser))
                 self.assertEqual(seeded, not bool(live) or rejected)
                 context.clear_cookies.assert_not_awaited()
                 self.assertEqual(context.add_cookies.await_count, int(not bool(live) or rejected))
@@ -762,8 +849,9 @@ class SessionTests(unittest.TestCase):
 
         page.wait_for_url = AsyncMock(side_effect=wait_for_url)
         browser = SimpleNamespace(context=context, page=AsyncMock(return_value=page))
-        account = {"email": "account@example.com", "cookie": jar}
-        self.assertFalse(asyncio.run(FlowService()._seed_browser_cookies(account, browser)))
+        account = {"id": "account", "email": "account@example.com", "cookie": jar}
+        with patch('pipeline.flow.auth.store.get_row', return_value=account):
+            self.assertFalse(asyncio.run(FlowService()._seed_browser_cookies(account, browser)))
         self.assertIn("login_hint=account%40example.com", page.goto.call_args.args[0])
         context.add_cookies.assert_not_awaited()
         context.clear_cookies.assert_not_awaited()

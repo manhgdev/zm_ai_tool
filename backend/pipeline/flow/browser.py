@@ -15,7 +15,9 @@ import threading
 import sys
 import signal
 import shutil
+import tempfile
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -320,12 +322,14 @@ def _cdp_endpoint_ready(cdp_url: str) -> bool:
         return False
 
 
-async def _wait_cdp_endpoint(cdp_url: str, *, timeout_s: float = 30.0) -> None:
-    """Block until a spawned Chrome exposes its CDP HTTP endpoint."""
+async def _wait_cdp_endpoint(cdp_url: str, *, timeout_s: float = 30.0, process: Any = None) -> None:
+    """Wait for DevTools, failing promptly if the owned Chrome process exits."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if await asyncio.to_thread(_cdp_endpoint_ready, cdp_url):
             return
+        if process is not None and process.poll() is not None:
+            break
         await asyncio.sleep(0.15)
     raise RuntimeError(
         f"FLOW_CDP_TIMEOUT: Chrome remote debugging did not open at {cdp_url}"
@@ -379,6 +383,7 @@ class BrowserManager:
         # External from_cdp() attach leaves this False so user Chrome survives.
         self._owns_chrome_process = False
         self._chrome_proc: subprocess.Popen[Any] | None = None
+        self._chrome_tmp: tempfile.TemporaryDirectory | None = None
         # ponytail: captured only for on-screen windows; restored in stop().
         self._prior_app: Any = None
 
@@ -444,8 +449,10 @@ class BrowserManager:
                     str(executable.parents[2]), "--args", *argv[1:]]
         popen_kwargs: dict[str, Any] = {
             "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
+            "stderr": subprocess.PIPE,
         }
+        if self._chrome_tmp is not None:
+            popen_kwargs["env"] = {**os.environ, "TMPDIR": self._chrome_tmp.name}
         if sys.platform == "win32":
             # New process group so kill_now can signal the tree; keep the
             # window visible for headed cookie/connect sessions.
@@ -454,13 +461,48 @@ class BrowserManager:
             popen_kwargs["start_new_session"] = True
         self._chrome_proc = subprocess.Popen(argv, **popen_kwargs)
         self._owns_chrome_process = True
+        process = self._chrome_proc
+        # Drain throughout Chrome's lifetime so stderr cannot fill a pipe and
+        # stall startup. Keep only a bounded tail; no profile/cookie file is read.
+        stderr_tail: deque[bytes] = deque(maxlen=16)
+        def drain_stderr() -> None:
+            try:
+                if process.stderr is None:
+                    return
+                with process.stderr as stream:
+                    continued = False
+                    while chunk := stream.readline(2048):
+                        complete = chunk.endswith(b"\n") or len(chunk) < 2048
+                        # Skip oversized lines in full, including auth-bearing
+                        # suffixes whose prefix would fall outside this tail.
+                        if complete and not continued:
+                            stderr_tail.append(chunk)
+                        continued = not complete
+            except (OSError, ValueError):
+                pass
+        reader = threading.Thread(target=drain_stderr, daemon=True, name="flow-chrome-stderr")
+        reader.start()
         try:
-            await _wait_cdp_endpoint(self.cdp_url, timeout_s=45.0)
+            await _wait_cdp_endpoint(self.cdp_url, timeout_s=45.0, process=process)
             await self._attach_cdp_context(self.cdp_url)
-        except BaseException:
+        except BaseException as exc:
             self.kill_now()
             self._owns_chrome_process = False
             self._chrome_proc = None
+            await asyncio.to_thread(reader.join, 0.5)
+            if isinstance(exc, RuntimeError):
+                detail = b"".join(list(stderr_tail)).decode("utf-8", errors="replace")
+                # Startup may restore an old tab; strip URLs and auth-bearing
+                # lines before returning diagnostics to the account/log API.
+                detail = " ".join(line for line in detail.splitlines() if not re.search(
+                    r"(?i)cookie|authorization|bearer|password|token|sapisid|\bsid\b", line,
+                ))
+                detail = re.sub(r"(?:https?|wss?)://\S+", "[url]", detail)
+                detail = re.sub(r"[\x00-\x1f\x7f]", " ", detail).strip()[-2000:]
+                raise RuntimeError(
+                    f"{exc}; chrome={executable}; headless={self.headless}; "
+                    f"exit={process.poll()}; stderr={detail or '(empty)'}"
+                ) from None
             raise
 
     async def start(self) -> "BrowserManager":
@@ -517,6 +559,11 @@ class BrowserManager:
                 await asyncio.sleep(0.05)
             visible_launch_owned = True
         try:
+            if sys.platform.startswith("linux"):
+                # Web workers have long private TMPDIR paths. Chrome's Linux
+                # SingletonSocket must fit sun_path[108], otherwise it aborts
+                # before opening CDP. Keep browser temp private and short.
+                self._chrome_tmp = tempfile.TemporaryDirectory(prefix="zm-flow-", dir="/tmp")
             # Connect, manual sessions and workers use native Chrome + CDP.
             if self.remote_debugging_port or (show_window and self.window_position is not None):
                 await asyncio.wait_for(self._start_spawned_chrome(executable), timeout=60)
@@ -558,6 +605,8 @@ class BrowserManager:
                 "chromium_sandbox": sandbox,
                 "args": launch_args,
             }
+            if self._chrome_tmp is not None:
+                launch_kwargs["env"] = {**os.environ, "TMPDIR": self._chrome_tmp.name}
             if self._chromeless:
                 # Keep a stable viewport for request/layout calculations. The
                 # installed Chrome's native headless UA is left untouched.
@@ -644,6 +693,9 @@ class BrowserManager:
         if not self.headless and self._prior_app:
             _restore_active_window(self._prior_app)
             self._prior_app = None
+        temporary, self._chrome_tmp = self._chrome_tmp, None
+        if temporary is not None:
+            temporary.cleanup()
 
     def kill_now(self) -> None:
         """Synchronously terminate Chrome processes owned by this profile.
