@@ -179,7 +179,7 @@ def api_tts_studio_synth(body: StudioSynthIn):
     def _run() -> None:
         jid = ""
         try:
-            if not can_start_job():
+            if not can_start_job(activation_required=False):
                 raise PermissionError("ACCESS_REQUIRED")
             with admitted_job():
                 if srt_text:
@@ -217,7 +217,7 @@ def api_tts_studio_synth(body: StudioSynthIn):
                         job_id=job_id,
                     )
                 jid = result.get("id") or result.get("job_id")
-                if jid:
+                if jid and body.publishOutput:
                     from pipeline.tts.studio import publish_job_outputs
                     publish_job_outputs(str(jid), body.outputDir, body.outputFormat)
                 # Cache hits return an older completed job id. The browser still
@@ -309,7 +309,7 @@ async def api_tts_studio_transcribe(
         with _jobs_lock:
             _running[job_id] = True
         try:
-            if not can_start_job():
+            if not can_start_job(activation_required=False):
                 raise PermissionError("ACCESS_REQUIRED")
             with admitted_job():
                 rows: list = []

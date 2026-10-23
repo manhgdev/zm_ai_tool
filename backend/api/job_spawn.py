@@ -123,7 +123,7 @@ def _run_in_thread(fn, args) -> None:
     time.sleep(0.2)
     job = getattr(fn, "__name__", "job")
     try:
-        if not can_start_job():
+        if not can_start_job(activation_required=False):
             raise PermissionError("ACCESS_REQUIRED")
         run_admitted(fn, *args)
     except BaseException as e:
@@ -153,7 +153,7 @@ def _run_in_subprocess(fn, args) -> None:
     time.sleep(0.2)
     job = getattr(fn, "__name__", "job")
     project_id = args[0] if args else None
-    if not can_start_job():
+    if not can_start_job(activation_required=False):
         _mark_job_error(project_id, job, "ACCESS_REQUIRED")
         return
     try:

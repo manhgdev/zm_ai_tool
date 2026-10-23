@@ -22,8 +22,14 @@ export type LicenseStatus = {
 }
 
 let statusInFlight: Promise<LicenseStatus> | null = null
+let statusInFlightForced = false
 function getStatus(force = false): Promise<LicenseStatus> {
-  if (statusInFlight) return statusInFlight
+  if (statusInFlight) {
+    return force && !statusInFlightForced
+      ? statusInFlight.catch(() => {}).then(() => getStatus(true))
+      : statusInFlight
+  }
+  statusInFlightForced = force
   statusInFlight = fetchJson<LicenseStatus>('/api/license/status' + (force ? '?force=true' : ''), { cache: 'no-store' }, 35_000)
     .finally(() => { statusInFlight = null })
   return statusInFlight
@@ -31,7 +37,7 @@ function getStatus(force = false): Promise<LicenseStatus> {
 
 async function changeAccess<T>(request: () => Promise<T>) {
   // Finish an older poll before changing credentials so it cannot restore stale UI state.
-  if (statusInFlight) await statusInFlight.catch(() => {})
+  while (statusInFlight) await statusInFlight.catch(() => {})
   return request()
 }
 

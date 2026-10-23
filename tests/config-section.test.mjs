@@ -57,6 +57,39 @@ test('missing, corrupt or unavailable storage safely defaults to Cloud AI', () =
   assert.doesNotThrow(() => blocked.persistConfigSection('computer'))
 })
 
+test('output folders load before activation and retain the saved root', async () => {
+  const modal = read('features/configuration/ConfigModal.tsx')
+  const tree = ts.createSourceFile('ConfigModal.tsx', modal, ts.ScriptTarget.Latest, true)
+  let effect
+  const visit = node => {
+    if (ts.isCallExpression(node) && node.expression.getText(tree) === 'useEffect'
+      && node.arguments[0]?.getText(tree).includes('savedOutputRoot.current = saved')) effect = node.arguments[0]
+    ts.forEachChild(node, visit)
+  }
+  visit(tree)
+  assert.ok(effect)
+  const compiled = ts.transpileModule(`(${effect.getText(tree)})`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  for (const licenseStatus of [undefined, { valid: false }, { valid: true }]) {
+    const savedOutputRoot = { current: null }
+    let root, resolved
+    const context = {
+      open: true, licenseStatus, savedOutputRoot,
+      api: {
+        getLocalePreference: async () => ({ outputRoot: '/saved/exports' }),
+        getConfig: async () => ({ desktopOutputRoot: '/saved/exports' }),
+      },
+      setOutputRoot: value => { root = value },
+      setOutputRootDefault: value => { resolved = value },
+    }
+    await vm.runInNewContext(compiled, context)()
+    assert.equal(root, '/saved/exports')
+    assert.equal(savedOutputRoot.current, '/saved/exports')
+    assert.equal(resolved, '/saved/exports')
+  }
+})
+
 test('configuration navigation shares the persisted state without resetting on reopen or access refresh', () => {
   const app = read('app/App.tsx')
   const modal = read('features/configuration/ConfigModal.tsx')

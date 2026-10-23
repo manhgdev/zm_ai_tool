@@ -3,6 +3,7 @@ import { localize, localizePipelineMessage, useLocale } from '@/app/i18n'
 import { api, type InstallStatus } from '@/features/project/project.api'
 import { runtimeErrorText, runtimeStatusText } from '@/features/configuration/runtimeStatus'
 import ProgressPopup from '@/shared/components/ProgressPopup'
+import { diskSpaceError } from '@/shared/lib/diskSpace'
 import { IconHeadphones, IconHeart, IconMic, IconSpeaker } from '@/shared/components/Icons'
 import { BackTitle } from '@/shared/components/BackTitle'
 import { ConfirmDialog } from '@/shared/components/ConfirmDialog'
@@ -865,6 +866,10 @@ export default function TtsStudio({
     const key = JSON.stringify([vieneu.model, vieneu.mode, state, vieneu.device, detail])
     if (lastModelLogRef.current === key) return
     lastModelLogRef.current = key
+    if (state === 'error' && diskSpaceError(detail, vieneu)) {
+      setError(detail || 'DISK_FULL')
+      setProgressMinimized(false)
+    }
     const label = state === 'error' ? localize(locale, 'Lỗi nạp model', 'Model load error')
       : state === 'not-installed' ? localize(locale, 'Chưa cài model', 'Model not installed')
       : state === 'loading' ? localize(locale, 'Đang nạp model', 'Loading model')
@@ -1176,6 +1181,7 @@ export default function TtsStudio({
         normalize,
         trimSilence,
         title: 'Nghe thử',
+        publishOutput: false,
       })
       const jid = (res as { id?: string; job_id?: string }).id || requestJobId
       let resolvedJobId = jid
@@ -1531,6 +1537,7 @@ export default function TtsStudio({
           `Nghe thử · ${voiceDisplayName(v.id, voices, v.name)}`,
           `Preview · ${voiceDisplayName(v.id, voices, v.name)}`,
         ).slice(0, 80),
+        publishOutput: false,
       })
       const jid = (res as { id?: string; job_id?: string }).id || previewJobId
       let resolvedJobId = jid
@@ -2892,10 +2899,11 @@ export default function TtsStudio({
         minimized={progressMinimized}
         hideMinimized={busy && Boolean(activeJobIdRef.current)}
         running={busy}
-        title={busy ? busyTitle : error ? 'Lỗi TTS' : 'TTS'}
+        title={busy ? busyTitle : error ? t('Lỗi TTS', 'TTS error') : 'TTS'}
         message={busy ? localizePipelineMessage(locale, busyMessage || '') : error ? localizePipelineMessage(locale, error) : undefined}
         progress={busy ? busyProgress : error ? 0 : 100}
         error={!busy && error && error !== 'Đã hủy' ? localizePipelineMessage(locale, error) : null}
+        diskSpace={error && (error === vieneu?.error || error === 'DISK_FULL') ? vieneu : undefined}
         onMinimize={() => {
           setProgressMinimized(true)
           if (!busy && error) setError('')
@@ -2914,6 +2922,7 @@ export default function TtsStudio({
           : vieneuInstall?.error ? runtimeErrorText(vieneuInstall, locale) : runtimeStatusText(vieneuInstall || { running: false }, locale)}
         progress={vieneuInstall?.progress || 0}
         error={vieneuInstall?.error}
+        diskSpace={vieneuInstall || undefined}
         log={vieneuInstall?.log}
         onMinimize={() => { setInstallMinimized(true); if (!vieneuInstall?.running && !vieneuInstall?.needsRestart) { setVieneuInstall(null); setError('') } }}
         onRestore={() => setInstallMinimized(false)}
@@ -2935,6 +2944,7 @@ export default function TtsStudio({
           : featureInstall?.error ? runtimeErrorText(featureInstall, locale) : runtimeStatusText(featureInstall || { running: false }, locale)}
         progress={featureInstall?.progress || 0}
         error={featureInstall?.error}
+        diskSpace={featureInstall || undefined}
         log={featureInstall?.log}
         onMinimize={() => { setFeatureInstallMinimized(true); if (!featureInstall?.running && !featureInstall?.needsRestart) setFeatureInstall(null) }}
         onRestore={() => setFeatureInstallMinimized(false)}

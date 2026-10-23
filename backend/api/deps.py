@@ -11,6 +11,15 @@ from pydantic import BaseModel, Field
 from pipeline.core.media import video_size
 
 
+async def require_task_access() -> None:
+    """For multipart Run actions: check before saving uploads or creating jobs."""
+    import anyio
+    from pipeline.core.license import license_cached_valid
+
+    if not await anyio.to_thread.run_sync(license_cached_valid):
+        raise HTTPException(403, "ACCESS_REQUIRED")
+
+
 class Settings(BaseModel):
     workflow: str | None = None
     engine: str = "whisper"

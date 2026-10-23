@@ -39,6 +39,7 @@ for (const paths of [
   ['features/license/LicensePage.tsx'],
   ['pages/AutomationPage.tsx'],
   ['shared/components/BackgroundTasks.tsx'],
+  ['shared/components/ProgressPopup.tsx'],
   ['features/tts/TtsStudio.tsx', 'features/tts/TtsTranscribePanel.tsx'],
   ['features/configuration/ConfigModal.tsx', 'features/configuration/setupLabels.ts', 'features/configuration/SystemInfoPanel.tsx'],
   ['pages/FlowPage.tsx', 'pages/FlowSeriesPanel.tsx'],
@@ -88,6 +89,12 @@ test('OpenCode model presets and setup guidance are bilingual', () => {
   })
   assert.equal(pairs.get('Lấy API key tại '), 'Get an API key from ')
   assert.ok(pairs.get('Danh sách chỉ gồm model dùng Chat Completions. Quyền dùng model free phụ thuộc chính sách OpenCode và tài khoản của bạn.'))
+})
+
+test('access server verification has a bilingual accessible loading state', () => {
+  const page = read('features/license/LicensePage.tsx')
+  assert.ok(page.includes("t('Đang kết nối máy chủ để kiểm tra quyền…', 'Connecting to the server to verify access…')"))
+  assert.ok(page.includes('role="status" aria-busy={checking}'))
 })
 
 test('application key copy feedback is bilingual', () => {
@@ -262,7 +269,8 @@ test('Flow cookie account inputs have Vietnamese and English labels', () => {
       pairs.set(literal(node.arguments[0]), literal(node.arguments[1]))
     }
   })
-  for (const vi of ['Email Google', 'Cách kết nối', 'Dán Cookie Google Flow', 'Cookie Google Flow *', 'Lưu và kết nối', 'Mở phiên']) {
+  for (const vi of ['Email Google', 'Cách kết nối', 'Dán Cookie Google Flow', 'Cookie Google Flow *', 'Lưu và kết nối', 'Mở phiên',
+    'Đã lưu tài khoản Flow.', 'Không thể lưu tài khoản', 'Đã xóa tài khoản Flow.', 'Không thể xóa tài khoản']) {
     assert.ok(pairs.get(vi)?.trim(), `Missing English label for ${vi}`)
     assert.notEqual(pairs.get(vi), vi)
   }
@@ -414,7 +422,8 @@ test('APP activation identifies one method and exposes a red destructive action'
   const source = read('features/license/LicensePage.tsx')
   for (const pair of ["t('Phương thức kích hoạt APP', 'APP activation method')", "t('Tài khoản Google', 'Google account')", "t('Thiết bị đang kích hoạt / giới hạn', 'Active devices / limit')", "t('Kiểm tra lại quyền', 'Refresh access')", "t('Hủy kích hoạt thiết bị', 'Deactivate device')"]) assert.ok(source.includes(pair), pair)
   assert.match(source, /status\.configured \? <>/)
-  assert.match(source, /disabled=\{busy \|\| waiting \|\| !key\.trim\(\) \|\| !status\.installationId\}/)
+  assert.ok(source.includes('const pending = busy || checking'))
+  assert.match(source, /disabled=\{pending \|\| waiting \|\| !key\.trim\(\) \|\| !status\.installationId\}/)
   assert.match(read('features/license/LicensePage.css'), /\.license-deactivate\.license-danger\s*\{[^}]*color: var\(--destructive\)/)
 })
 
@@ -466,4 +475,11 @@ test('header locale switch collapses to a bilingual toggle on small screens', ()
   const css = read('shared/components/LocaleSwitch.css')
   assert.match(css, /@media \(max-width: 900px\)/)
   assert.match(css, /\.locale-switch-responsive > \.locale-switch-toggle\s*\{\s*display: inline-block/)
+})
+
+test('blocked task popup explains APP activation and continued editing in both languages', () => {
+  const source = read('features/license/LicensePage.tsx')
+  assert.match(source, /accessRequired && <p className="license-error" role="alert">\{t\('Thao tác này cần quyền sử dụng APP đang có hiệu lực\.[^']+', 'This action requires active APP access\.[^']+'\)\}/)
+  assert.match(source, /đóng cửa sổ này để xem, chỉnh sửa và cấu hình/)
+  assert.match(source, /close this window to keep browsing, editing and configuring/)
 })

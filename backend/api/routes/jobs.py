@@ -86,7 +86,9 @@ async def api_project_events(project_id: str, after: int = 0):
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# Editor preparation stays open; its Publish endpoint is the activation boundary.
 @router.post("/api/projects/{project_id}/run")
+@router.post("/api/projects/{project_id}/editor-run")
 def api_run(project_id: str, settings: Settings):
     meta = load_meta(project_id)
     if not meta:

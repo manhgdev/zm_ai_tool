@@ -354,7 +354,7 @@ export default function DrawingPage({ onBack }: { onBack: () => void }) {
         subtitleSize: 8, subtitleOffset: 0, subtitleFontFamily: 'system', subtitleMargin: 34, subtitleBackground: 'solid', subtitleColor: '#ffffff', subtitleBgColor: '#000000', subtitleOpacity: 55,
         drawing: { enabled: true, mode, tool, detail, thickness, strokeOrder, resolution },
       }))
-      const response = await fetch('/api/media-compose/jobs', { method: 'POST', body: form })
+      const response = await fetch('/api/drawing/timeline-render', { method: 'POST', body: form })
       if (!response.ok) throw new Error(await response.text())
       setRenderJob(await response.json() as RenderJob)
       toast.success(t('Đã bắt đầu render timeline.', 'Timeline rendering started.'))

@@ -996,7 +996,6 @@ def jobs_output_reveal(job_id: str, output_index: int):
 
 @router.post("/open-folder")
 def flow_open_folder(output_dir: str = "", kind: str = "video"):
-    service = FlowService()
     dummy_job = {"kind": kind or "video", "settings": {"outputDir": output_dir}}
     folder = service._output_folder(dummy_job, create=True)
     if sys.platform == "darwin":

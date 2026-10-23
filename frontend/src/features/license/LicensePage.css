@@ -8,6 +8,7 @@
 .license-brand strong { font-size: 18px; font-weight: 700; letter-spacing: -.3px; color: var(--ink); }
 .license-brand > span { color: var(--muted-foreground); font-size: 12px; }
 .license-state { display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--primary) 16%, var(--line)); border-radius: 8px; color: var(--muted-foreground); background: var(--background); line-height: 1.6; }
+.license-error + .license-state { margin-top: 16px; }
 .license-state > strong { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; }
 .license-state > strong::before { content: ''; flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .license-state.is-valid { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 18%, var(--line)); background: color-mix(in srgb, var(--ok) 5%, var(--surface)); }

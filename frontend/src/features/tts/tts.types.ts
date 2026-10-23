@@ -1,4 +1,5 @@
 /** Domain types dùng chung cho TTS Studio + các panel con. */
+import type { DiskSpaceInfo } from '@/shared/lib/diskSpace'
 
 export type Voice = {
   id: string
@@ -19,7 +20,7 @@ export type Voice = {
   favorite?: boolean
 }
 
-export type EngineStatus = {
+export type EngineStatus = DiskSpaceInfo & {
   id?: string
   name?: string
   local?: boolean

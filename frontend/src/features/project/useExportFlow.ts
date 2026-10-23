@@ -54,13 +54,23 @@ export function useExportFlow({
 
   async function onExport(exportSegments?: Segment[], exportEndSec?: number, exportStartSec?: number, renderName = '', settingsOverride?: Partial<ProjectSettings>, coverDataUrl?: string) {
     if (!projectId || status.running) return
+    const effectiveSettings = settingsOverride ? { ...settings, ...settingsOverride } : settings
+    const segs = Array.isArray(exportSegments) ? exportSegments : segments
+    const finalRenderName = renderName.trim() || `Render ${projectId}`
+    let res
+    try {
+      res = await api.export(projectId, effectiveSettings, segs, exportEndSec, exportStartSec, finalRenderName, coverDataUrl)
+    } catch (error) {
+      // Activation opens its own popup; keep the existing result and timeline intact.
+      if (!String(error).includes('ACCESS_REQUIRED')) setStatus(s => ({ ...s, running: false, error: String(error) }))
+      return
+    }
     setExportUrl(null)
     setExportPath(null)
     setViewExportSrc(null)
     setProgressMinimized(false)
     busyAt.current = Date.now()
     // Tính effectiveSettings trước để message phản ánh đúng loại xuất
-    const effectiveSettings = settingsOverride ? { ...settings, ...settingsOverride } : settings
     const doVideo = effectiveSettings.exportVideo !== false
     const doAudio = effectiveSettings.exportAudio === true
     const doSrt = effectiveSettings.exportSrt === true
@@ -97,12 +107,9 @@ export function useExportFlow({
       running: true,
       error: undefined,
     })
-    const segs = Array.isArray(exportSegments) ? exportSegments : segments
     if (Array.isArray(exportSegments)) {
       setSegments(exportSegments)
     }
-    const finalRenderName = renderName.trim() || `Render ${projectId}`
-    const res = await api.export(projectId, effectiveSettings, segs, exportEndSec, exportStartSec, finalRenderName, coverDataUrl)
     pendingExportUrl.current = res.url
     pendingExportPath.current = res.exports || res.path || null
     setStatus((s) => ({ ...s, running: true }))

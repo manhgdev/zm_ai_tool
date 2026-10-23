@@ -110,7 +110,7 @@ def api_prepare_no_vocals(project_id: str):
     # ponytail: chạy nền — Demucs mất 5–30 phút, không thể block uvicorn thread
     def _run() -> None:
         try:
-            if not can_start_job():
+            if not can_start_job(activation_required=False):
                 raise PermissionError("ACCESS_REQUIRED")
             with admitted_job():
                 separate_no_vocals(project_id, video, report=True)

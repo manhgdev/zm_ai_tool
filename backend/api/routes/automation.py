@@ -112,6 +112,9 @@ async def create_job(
     watermark: UploadFile | None = File(None),
     startNow: bool = Form(True),
 ):
+    if startNow:
+        from api.deps import require_task_access
+        await require_task_access()
     mode = inputMode.strip().lower()
     if mode not in _INPUT_MODES:
         raise HTTPException(422, detail={"code": "AUTOMATION_INPUT_MODE_INVALID", "message": _t("Chế độ đầu vào không hợp lệ", "Invalid input mode")})

@@ -3,6 +3,7 @@ import { cn } from '@/shared/lib/cn'
 
 import { localize, useLocale } from '@/app/i18n'
 import { copyText } from '@/shared/lib/clipboard'
+import { diskSpaceError, type DiskSpaceInfo } from '@/shared/lib/diskSpace'
 import { useStickToBottomScroll } from '@/shared/hooks/useStickToBottomScroll'
 import './ProgressPopup.css'
 
@@ -17,6 +18,7 @@ export type ProgressPopupProps = {
   /** 0–100 */
   progress: number
   error?: string | null
+  diskSpace?: DiskSpaceInfo
   /** Job còn chạy (khác lỗi đã xong) — bật đồng hồ / heartbeat */
   running?: boolean
   /** Log stream (pip output, v.v.) hiện terminal nhỏ trong popup */
@@ -90,6 +92,7 @@ export default function ProgressPopup({
   message,
   progress,
   error,
+  diskSpace,
   running = false,
   log,
   onMinimize,
@@ -105,7 +108,14 @@ export default function ProgressPopup({
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const [elapsed, setElapsed] = useState(0)
   const [copied, setCopied] = useState(false)
+  const [dismissedDiskError, setDismissedDiskError] = useState('')
+  const disk = diskSpaceError([error, message].filter(Boolean).join('\n'), diskSpace)
+  const diskKey = disk ? JSON.stringify([error, disk.diskPath, disk.diskDrive]) : ''
   const { ref: logRef, onScroll: onLogScroll, onWheel: onLogWheel, onPointerDown: onLogPointerDown, onPointerUp: onLogPointerUp } = useStickToBottomScroll(log)
+
+  useEffect(() => {
+    if (!active || !diskKey) setDismissedDiskError('')
+  }, [active, diskKey])
 
   useEffect(() => {
     if (!active || !running) {
@@ -122,7 +132,12 @@ export default function ProgressPopup({
   if (!active) return null
 
   const pct = clampPct(progress)
-  const failed = Boolean(error && error !== 'cancelled')
+  const failed = Boolean(disk || error && error !== 'cancelled')
+  const displayTitle = disk
+    ? disk.diskDrive ? t(`Ổ ${disk.diskDrive} không đủ dung lượng`, `Drive ${disk.diskDrive} is out of space`)
+      : t('Không đủ dung lượng ổ đĩa', 'Not enough disk space')
+    : title
+  const popupActions = disk ? undefined : actions
   // Ưu tiên message dài; error code ngắn (dub/export) không che message
   const errStr = error && error !== 'cancelled' ? String(error).trim() : ''
   const msgStr = (message || '').trim()
@@ -134,7 +149,7 @@ export default function ProgressPopup({
             : errStr || msgStr || title
         )
       : msgStr || title
-  const base = sanitizeJobMessage(rawBase)
+  const base = disk ? displayTitle : sanitizeJobMessage(rawBase)
   const compactLine =
     running && !failed
       ? locale === 'en' ? ` · ran ${fmtElapsed(elapsed)} · still processing` : ` · đã chạy ${fmtElapsed(elapsed)} · vẫn đang xử lý`
@@ -142,7 +157,7 @@ export default function ProgressPopup({
   const line = base
 
   async function copyError() {
-    const text = [title, base, rawBase && rawBase !== base ? rawBase : '']
+    const text = [displayTitle, base, disk?.diskPath, rawBase && rawBase !== base ? rawBase : '', disk ? log : '']
       .filter(Boolean)
       .join('\n')
     try {
@@ -154,7 +169,14 @@ export default function ProgressPopup({
     }
   }
 
-  if (minimized) {
+  function close() {
+    setDismissedDiskError(diskKey)
+    const dismiss = onCancel ?? onMinimize
+    dismiss()
+  }
+
+  // A disk failure must surface even when the operation was sent to the background.
+  if (minimized && (!disk || dismissedDiskError === diskKey)) {
     if (hideMinimized) return null
     return (
       <button
@@ -187,16 +209,37 @@ export default function ProgressPopup({
       )}
       role="dialog"
       aria-modal="true"
-      aria-label={title}
+      aria-label={displayTitle}
     >
-      <div className={cn('w-full rounded-lg border border-border bg-background shadow-xl', wide ? 'max-w-[720px]' : 'max-w-sm')}>
+      <div className={cn('w-full rounded-lg border border-border bg-background shadow-xl', wide ? 'max-w-[720px]' : 'max-w-sm', disk && 'max-h-[calc(100dvh-2rem)] overflow-y-auto')}>
         <div className="flex items-start gap-2 border-b border-border px-4 py-3">
           <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+            <h3 className="text-sm font-semibold text-foreground">{displayTitle}</h3>
             {!failed && line ? (
               <p className="mt-0.5 text-xs text-muted-foreground leading-snug break-words select-text">{line}</p>
             ) : null}
-            {failed && rawBase ? (
+            {disk ? (
+              <div role="alert" className="mt-2 space-y-2 text-xs leading-relaxed select-text">
+                <p>{t('Không thể tiếp tục ghi dữ liệu. Hãy giải phóng dung lượng rồi thử lại.', 'Cannot continue writing data. Free up space, then retry.')}</p>
+                {disk.diskPath ? <p className="break-all"><strong>{t('Đường dẫn đang ghi:', 'Write location:')}</strong> {disk.diskPath}</p>
+                  : <p>{t('Chưa xác định được đường dẫn đang ghi. Xem chi tiết lỗi để kiểm tra ổ đĩa.', 'The write location is unavailable. Check the error details to identify the disk.')}</p>}
+                {disk.freeDiskBytes != null && <p>{t('Còn trống:', 'Available:')} {(disk.freeDiskBytes / 1073741824).toFixed(2)} GiB</p>}
+                {Boolean(disk.requiredDiskBytes) && <p>{t('Cần tối thiểu:', 'Required:')} {((disk.requiredDiskBytes || 0) / 1073741824).toFixed(2)} GiB</p>}
+                <details>
+                  <summary className="cursor-pointer font-medium">{t('Cài hoặc lưu sang ổ khác', 'Install or save to another drive')}</summary>
+                  <ul className="mt-1 list-disc space-y-2 pl-4">
+                    <li>{t('File xuất: chọn Thư mục xuất trên ổ còn trống.', 'Output files: choose an Output folder on a drive with free space.')}</li>
+                    <li>{t('APP Windows: đóng APP, chạy Setup và chọn thư mục cài trên ổ khác. Model, runtime và cache sẽ lưu cùng thư mục cài APP.', 'Windows app: close the app, run Setup and choose a folder on another drive. Models, runtime and cache are stored with the app installation.')}</li>
+                    <li>{t('Trước khi đổi nơi cài, sao lưu thư mục user-data cũ. Bộ cài không tự chuyển dữ liệu sang thư mục mới.', 'Back up the existing user-data folder before changing the installation location. Setup does not move existing data to the new folder.')}</li>
+                    <li>{t('Web: nhờ quản trị viên giải phóng hoặc chuyển dữ liệu trên máy chủ.', 'Web: ask the administrator to free space or move storage on the server.')}</li>
+                  </ul>
+                </details>
+                <details>
+                  <summary className="cursor-pointer">{t('Chi tiết lỗi', 'Error details')}</summary>
+                  <pre className="mt-1 max-h-36 overflow-y-auto rounded bg-muted/60 p-2 text-[10px] font-mono whitespace-pre-wrap break-all">{[rawBase, log].filter(Boolean).join('\n')}</pre>
+                </details>
+              </div>
+            ) : failed && rawBase ? (
               <pre className="mt-2 max-h-36 overflow-y-auto rounded bg-muted/60 p-2 text-[10px] leading-relaxed font-mono whitespace-pre-wrap break-all select-text">{rawBase}</pre>
             ) : null}
           </div>
@@ -205,7 +248,8 @@ export default function ProgressPopup({
             className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
             title={onCancel ? t('Hủy', 'Cancel') : t('Đóng', 'Close')}
             aria-label={onCancel ? t('Hủy', 'Cancel') : t('Đóng', 'Close')}
-            onClick={onCancel ?? onMinimize}
+            autoFocus={Boolean(disk)}
+            onClick={close}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
               <path d="M18 6L6 18M6 6l12 12" />
@@ -213,7 +257,7 @@ export default function ProgressPopup({
           </button>
         </div>
 
-        <div className="px-4 py-4 space-y-2">
+        {!disk && <div className="px-4 py-4 space-y-2">
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-xs text-muted-foreground">
               {running && !failed ? (locale === 'en' ? `Ran ${fmtElapsed(elapsed)}` : `Đã chạy ${fmtElapsed(elapsed)}`) : t('Tiến độ', 'Progress')}
@@ -251,10 +295,10 @@ export default function ProgressPopup({
               <pre>{log}</pre>
             </div>
           ) : null}
-        </div>
+        </div>}
 
-        <div className={cn('flex items-center justify-end gap-2 border-t border-border px-4 py-3', actions && 'flex-wrap')}>
-          {actions ?? (failed ? (
+        <div className={cn('flex items-center justify-end gap-2 border-t border-border px-4 py-3', popupActions && 'flex-wrap')}>
+          {popupActions ?? (failed ? (
             <>
               <button
                 type="button"
@@ -266,7 +310,7 @@ export default function ProgressPopup({
               <button
                 type="button"
                 className="rounded-md border border-border bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
-                onClick={onCancel ?? onMinimize}
+                onClick={close}
               >
                 OK
               </button>

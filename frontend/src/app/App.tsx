@@ -40,7 +40,7 @@ import LicensePage from '@/features/license/LicensePage'
 import { licenseApi, type LicenseStatus } from '@/features/license/license.api'
 import { TASK_ACCESS_REQUIRED, watchTaskAccess } from '@/features/license/taskAccess'
 import { ExportSuccessModal } from '@/features/editor/ExportSuccessModal'
-import { api, prepareAiResources, recognitionResources, type ResourceInstallStatus } from '@/features/project/project.api'
+import { api, type ResourceInstallStatus } from '@/features/project/project.api'
 import { runtimeErrorText, runtimeStatusText } from '@/features/configuration/runtimeStatus'
 import { expandSegmentsForList } from '@/features/project/expandCompound'
 import type { HardwareInfo, JobStatus, ProjectSettings, Step, TextOverlay } from '@/features/project/project.types'
@@ -113,6 +113,7 @@ export default function App() {
   const voicesRequestRef = useRef<Promise<void> | null>(null)
   const [settings, setSettings] = useState(loadSettings)
   const [configOpen, setConfigOpen] = useState(false)
+  const [taskAccessRequired, setTaskAccessRequired] = useState(false)
   const [configSection, setConfigSection] = useState<Section>(() =>
     loadSetupGate() ? loadConfigSection() : 'setup',
   )
@@ -128,6 +129,7 @@ export default function App() {
     const originalFetch = window.fetch
     const watchedFetch = watchTaskAccess(originalFetch.bind(window))
     const activate = () => {
+      setTaskAccessRequired(true)
       setConfigSection('license')
       setConfigOpen(true)
     }
@@ -188,11 +190,9 @@ export default function App() {
     if (nextLocale === locale) return
     localeChangedRef.current = true
     setLocale(nextLocale)
-    if (licenseStatus?.valid) {
-      void api.saveLocalePreference(nextLocale).catch(() => {
-        /* localStorage remains a fallback when the API is unavailable. */
-      })
-    }
+    void api.saveLocalePreference(nextLocale).catch(() => {
+      /* localStorage remains a fallback when the API is unavailable. */
+    })
   }
 
   const {
@@ -413,7 +413,6 @@ export default function App() {
   }
 
   const refreshVoices = useCallback((_lang?: string, force = false) => {
-    if (!licenseStatus?.valid) return
     if (voicesRequestRef.current) return
     if (!force && voicesLoadedRef.current) return
     const request = api.voices('all')
@@ -424,7 +423,7 @@ export default function App() {
       })
     voicesRequestRef.current = request
     void request
-  }, [licenseStatus?.valid])
+  }, [])
 
   function passSetupGate() {
     persistSetupGate()
@@ -501,10 +500,9 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!licenseStatus?.valid) return
     // App owns the catalog request; TTS reuses it instead of polling per language.
     refreshVoices()
-  }, [licenseStatus?.valid, refreshVoices])
+  }, [refreshVoices])
 
   async function onUpload(file: File) {
     const switchVersion = ++projectSwitchRef.current
@@ -672,15 +670,16 @@ export default function App() {
 
   async function onTranslateAll(runWindowSec = 0, settingsOverride?: ProjectSettings) {
     if (!projectId || status.running) return
+    const wc = Math.max(0, runWindowSec)
     try {
-      await prepareAiResources(recognitionResources(settingsOverride ?? settings))
+      // Do not clear an existing timeline or result until the server accepts the action.
+      await api.run(projectId, { ...(settingsOverride ?? settings), runPreviewSec: wc }, appMode === 'live-preview')
     } catch (error) {
-      if (!resourceInstallRef.current) toast.error(localize(locale, 'Không kiểm tra được package: ', 'Could not check packages: ') + String(error))
+      if (!String(error).includes('ACCESS_REQUIRED') && !resourceInstallRef.current) toast.error(String(error))
       return
     }
     setExportUrl(null)
     // 0 = Dịch cả video (full); >0 = ▶ Preview Ns — tách khỏi ô settings.previewSec
-    const wc = Math.max(0, runWindowSec)
     workClipSecRef.current = wc
     setWorkClipSec(wc)
     // Full: xóa clip timeline local (đang kẹt độ dài preview cũ)
@@ -702,12 +701,6 @@ export default function App() {
       running: true,
       error: undefined,
     })
-    // previewSec = ô UI (giữ nguyên); runPreviewSec = cửa sổ lần này
-    await api.run(projectId, {
-      ...(settingsOverride ?? settings),
-      runPreviewSec: wc,
-    })
-    setStatus((s) => ({ ...s, running: true }))
   }
 
   function onSettings(next: ProjectSettings) {
@@ -907,15 +900,15 @@ export default function App() {
   // Chỉ sau Bắt đầu / đã lưu cổng — tránh Header+Modal+workspace cùng chiếm CSS grid → trắng.
   const firstRunBlocked = !setupGatePassed
   const appUsable = setupGatePassed
-  const licenseBlocked = appUsable && (!licenseStatus || !licenseStatus.valid)
   const configModalOpen = configOpen || firstRunBlocked
   const openActivation = () => {
+    setTaskAccessRequired(false)
     setConfigSection('license')
     setConfigOpen(true)
   }
 
   return (
-    <RealtimeProvider enabled={Boolean(appUsable && licenseStatus?.valid)}>
+    <RealtimeProvider enabled={appUsable}>
     <LocaleContext.Provider value={{ locale, setLocale: changeLocale }}>
     <LocaleTextSync />
     <div className="app">
@@ -961,6 +954,7 @@ export default function App() {
         onOpenLicense={openActivation}
         onOpenConfig={() => {
           setConfigOpen(true)
+          setTaskAccessRequired(false)
         }}
       />
       )}
@@ -972,12 +966,14 @@ export default function App() {
         onSetupReady={passSetupGate}
         onSaved={() => refreshVoices(undefined, true)}
         licenseStatus={licenseStatus || undefined}
+        taskAccessRequired={taskAccessRequired}
         onLicenseStatusChange={(next) => {
           setLicenseStatus(next)
           if (!licenseStatus?.valid && next.valid && configSection === 'license') setConfigOpen(false)
         }}
         onClose={() => {
           if (firstRunBlocked) return
+          setTaskAccessRequired(false)
           setConfigOpen(false)
           // đóng config cũng refresh voices (user có thể vừa lưu key)
           refreshVoices(undefined, true)
@@ -1279,7 +1275,7 @@ export default function App() {
       }</RetainedPages>
       ) : null}
       </Suspense>
-      {appUsable && !licenseBlocked && <BackgroundTasks currentMode={appMode} onOpen={navigateToMode}
+      {appUsable && <BackgroundTasks currentMode={appMode} onOpen={navigateToMode}
         project={projectId ? { id: projectId, running: status.running, progress: status.progress, message: status.message } : undefined} />}
       <Toaster position="bottom-right" theme={dark ? 'dark' : 'light'} richColors closeButton />
       <ExportSuccessModal
@@ -1307,6 +1303,7 @@ export default function App() {
           : resourceInstall?.error ? runtimeErrorText(resourceInstall, locale) : runtimeStatusText(resourceInstall || { running: false }, locale)}
         progress={resourceInstall?.progress || 0}
         error={resourceInstall?.error ? runtimeErrorText(resourceInstall, locale) : null}
+        diskSpace={resourceInstall || undefined}
         log={resourceInstall?.log}
         onMinimize={() => { setResourceInstallMinimized(true); if (!resourceInstall?.running && !resourceInstall?.needsRestart) setResourceInstall(null) }}
         onRestore={() => setResourceInstallMinimized(false)}

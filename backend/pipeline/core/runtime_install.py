@@ -434,7 +434,7 @@ def _prefetch_packages(wheels: list[Wheel], groups: list[dict[str, Any]], emit, 
                         required = 2 * unpacked + remaining + 1024**3  # installer extraction + copy + reserve
                         free = shutil.disk_usage(root).free
                         emit(30 + int(44 * len(installed) / len(groups)), 'install',
-                             currentPackage=name, requiredDiskBytes=required, freeDiskBytes=free, diskDrive=root.anchor)
+                             currentPackage=name, requiredDiskBytes=required, freeDiskBytes=free, diskDrive=root.anchor, diskPath=str(root))
                         if free < required:
                             raise RuntimeInstallError('DISK_FULL', f'Not enough disk space at {root}', retryable=False,
                                 diagnostics=json.dumps({'disk': str(root), 'requiredBytes': required, 'freeBytes': free}))
@@ -642,8 +642,11 @@ def _install_runtime(progress: Progress | None = None, *, demucs: bool = False, 
         if not uv:
             raise RuntimeInstallError('PYTHON_PREPARE_FAILED', 'Application is missing bundled uv', retryable=False)
         root.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(root).free < (10 if profile.startswith('nvidia-') else 4) * 1024**3:
-            raise RuntimeInstallError('DISK_FULL', 'Not enough free space for a parallel runtime', retryable=False)
+        required = (10 if profile.startswith('nvidia-') else 4) * 1024**3
+        free = shutil.disk_usage(root).free
+        if free < required:
+            raise RuntimeInstallError('DISK_FULL', f'Not enough free space at {root}', retryable=False,
+                                      diagnostics=json.dumps({'disk': str(root), 'requiredBytes': required, 'freeBytes': free}))
         candidate = Path(tempfile.mkdtemp(prefix='env-', dir=root))
         try:
             emit(15, 'prepare_python', currentPackage=f'Python {PYTHON_VERSION}')

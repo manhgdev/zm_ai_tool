@@ -1,20 +1,35 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { licenseApi, type LicenseStatus } from './license.api'
 import { localize, useLocale } from '@/app/i18n'
 import { accessText, deviceTypeText, useWebUser, webErrorText } from '@/app/WebSession'
 import { IconGoogle, IconKey, IconLogo, IconUser } from '@/shared/components/Icons'
 import './LicensePage.css'
 
-type Props = { status: LicenseStatus; gate?: boolean; embedded?: boolean; onStatusChange: (status: LicenseStatus) => void }
+type Props = { status: LicenseStatus; gate?: boolean; embedded?: boolean; accessRequired?: boolean; onStatusChange: (status: LicenseStatus) => void }
 
-export default function LicensePage({ status, gate = false, embedded = false, onStatusChange }: Props) {
+export default function LicensePage({ status, gate = false, embedded = false, accessRequired = false, onStatusChange }: Props) {
   const { locale } = useLocale()
   const user = useWebUser()
   const t = (vi: string, en: string) => localize(locale, vi, en)
   const [key, setKey] = useState('')
   const [busy, setBusy] = useState(false)
+  const [checking, setChecking] = useState(true)
   const [waiting, setWaiting] = useState(false)
   const [error, setError] = useState('')
+  const refreshContext = useRef({ locale, onStatusChange })
+  refreshContext.current = { locale, onStatusChange }
+  useEffect(() => {
+    let disposed = false
+    const failed = () => {
+      if (!disposed) setError(webErrorText('LICENSE_SERVER_UNAVAILABLE', refreshContext.current.locale))
+    }
+    void licenseApi.status(true).then(next => {
+      if (disposed) return
+      refreshContext.current.onStatusChange(next)
+      if (next.transient) failed()
+    }).catch(failed).finally(() => { if (!disposed) setChecking(false) })
+    return () => { disposed = true }
+  }, [])
   useEffect(() => { if (status.configured) setWaiting(false) }, [status.configured])
   useEffect(() => {
     if (waiting && status.loginError) { setWaiting(false); setError(webErrorText(status.loginError, locale)) }
@@ -40,10 +55,13 @@ export default function LicensePage({ status, gate = false, embedded = false, on
     catch (e) { setError(webErrorText(e instanceof Error ? e.message : '', locale)) }
     finally { setBusy(false) }
   }
+  const pending = busy || checking
+  const verified = !status.transient && !error
   const date = (value?: string | null) => value ? new Date(value).toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-US', { timeZone: 'Asia/Ho_Chi_Minh' }) : '—'
   return <main className={`license-page${gate ? ' license-gate' : ''}${embedded ? ' license-embedded' : ''}`}><section className="license-card">
     <div className="license-card-head"><span className="license-emblem" aria-hidden="true">{gate ? <IconLogo size={36} /> : status.mode === 'key' ? <IconKey size={22} /> : <IconUser size={22} />}</span><div className="license-brand"><strong>{gate ? 'ZM AI TOOL' : t('Quyền sử dụng', 'Access')}</strong><span>{t('Tài khoản và quyền sử dụng', 'Account and access')}</span></div></div>
-    <div className={`license-state${status.valid ? ' is-valid' : ' is-invalid'}`} role="status"><strong>{accessText(status.state || (status.valid ? 'active' : 'pending'), locale)}</strong>
+    {accessRequired && <p className="license-error" role="alert">{t('Thao tác này cần quyền sử dụng APP đang có hiệu lực. Hãy đăng nhập bằng tài khoản Google đã được cấp quyền hoặc kích hoạt bằng key. Bạn vẫn có thể đóng cửa sổ này để xem, chỉnh sửa và cấu hình.', 'This action requires active APP access. Sign in with an authorized Google account or activate with an application key. You can close this window to keep browsing, editing and configuring.')}</p>}
+    <div className={`license-state${!checking && verified && status.valid ? ' is-valid' : ' is-invalid'}`} role="status" aria-busy={checking}><strong>{checking ? t('Đang kết nối máy chủ để kiểm tra quyền…', 'Connecting to the server to verify access…') : accessText(!verified ? 'unverified' : status.state || (status.valid ? 'active' : 'pending'), locale)}</strong>
       {status.code && status.code !== 'ACCESS_' + status.state?.toUpperCase() && <span>{webErrorText(status.code, locale)}</span>}
     </div>
     {status.configured && <dl className="license-details">
@@ -61,8 +79,8 @@ export default function LicensePage({ status, gate = false, embedded = false, on
       {status.configured ? <>
         <p className="license-method-hint">{t('APP đang dùng quyền của phương thức trên. Muốn đổi tài khoản hoặc key, hãy đăng xuất hoặc hủy kích hoạt thiết bị trước.', 'The APP uses the access shown above. To switch accounts or keys, sign out or deactivate this device first.')}</p>
         <div className="license-actions">
-          <button className="license-deactivate" type="button" disabled={busy} onClick={() => void perform(async () => onStatusChange(await licenseApi.status(true)))}>{t('Kiểm tra lại quyền', 'Refresh access')}</button>
-          <button className="license-deactivate license-danger" type="button" disabled={busy} onClick={() => {
+          <button className="license-deactivate" type="button" disabled={pending} onClick={() => void perform(async () => onStatusChange(await licenseApi.status(true)))}>{t('Kiểm tra lại quyền', 'Refresh access')}</button>
+          <button className="license-deactivate license-danger" type="button" disabled={pending} onClick={() => {
             const question = status.mode === 'key'
               ? t('Hủy kích hoạt thiết bị này và trả lại lượt thiết bị cho key?', 'Deactivate this device and release its key device slot?')
               : t('Đăng xuất tài khoản khỏi APP trên thiết bị này?', 'Sign out of this account in the APP on this device?')
@@ -72,13 +90,13 @@ export default function LicensePage({ status, gate = false, embedded = false, on
       </> : <>
       <p className="license-method-hint">{t('Chọn một cách để kích hoạt APP: tài khoản Google đã được cấp quyền hoặc key ứng dụng. Hai phương thức không cộng dồn thời hạn.', 'Choose one way to activate the APP: an authorized Google account or an application key. Their access periods are not combined.')}</p>
       {status.installationId && <p className="license-machine" title={status.installationId}>{deviceTypeText(status.deviceType, locale)} · {t('Mã máy: ', 'Machine ID: ')}<code>{status.installationId.slice(0, 16).toUpperCase()}</code></p>}
-      <button type="button" className="license-google" disabled={busy || waiting || !status.installationId} onClick={() => void perform(async () => { await licenseApi.login(); onStatusChange(await licenseApi.status()); setWaiting(true) })}><IconGoogle />{waiting ? t('Đang chờ đăng nhập trên trình duyệt…', 'Waiting for browser sign-in…') : t('Đăng nhập bằng Google', 'Sign in with Google')}</button>
+      <button type="button" className="license-google" disabled={pending || waiting || !status.installationId} onClick={() => void perform(async () => { await licenseApi.login(); onStatusChange(await licenseApi.status()); setWaiting(true) })}><IconGoogle />{waiting ? t('Đang chờ đăng nhập trên trình duyệt…', 'Waiting for browser sign-in…') : t('Đăng nhập bằng Google', 'Sign in with Google')}</button>
       {waiting && <button type="button" className="license-deactivate" onClick={() => setWaiting(false)}>{t('Thử đăng nhập lại', 'Try sign-in again')}</button>}
       <p className="license-divider">{t('Hoặc kích hoạt bằng key mới được cấp cho ứng dụng.', 'Or activate with a new application key.')}</p>
       <form className="license-form" onSubmit={e => { e.preventDefault(); void perform(async () => { onStatusChange(await licenseApi.activate(key.trim())); setKey('') }) }}>
         <label className="license-input-label" htmlFor="license-key">{t('Key ứng dụng', 'Application key')}</label>
-        <input id="license-key" value={key} onChange={e => setKey(e.target.value)} placeholder="ZMAI-…" autoComplete="off" disabled={busy || waiting} required />
-        <button type="submit" disabled={busy || waiting || !key.trim() || !status.installationId}>{busy ? t('Đang kiểm tra…', 'Checking…') : t('Kích hoạt', 'Activate')}</button>
+        <input id="license-key" value={key} onChange={e => setKey(e.target.value)} placeholder="ZMAI-…" autoComplete="off" disabled={pending || waiting} required />
+        <button type="submit" disabled={pending || waiting || !key.trim() || !status.installationId}>{pending ? t('Đang kiểm tra…', 'Checking…') : t('Kích hoạt', 'Activate')}</button>
       </form>
       </>}
     </>}

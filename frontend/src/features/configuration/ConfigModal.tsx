@@ -46,6 +46,7 @@ type Props = {
   onSetupReady?: () => void
   onSaved?: () => void
   licenseStatus?: LicenseStatus
+  taskAccessRequired?: boolean
   onLicenseStatusChange?: (status: LicenseStatus) => void
 }
 
@@ -58,6 +59,7 @@ export default function ConfigModal({
   onSetupReady,
   onSaved,
   licenseStatus,
+  taskAccessRequired = false,
   onLicenseStatusChange,
 }: Props) {
   const { locale, setLocale } = useLocale()
@@ -438,7 +440,6 @@ export default function ConfigModal({
   useEffect(() => {
     if (!open) return
     // Load current outputRoot from /api/ui-preferences and resolved default from /api/config
-    if (!licenseStatus?.valid) return
     api.getLocalePreference().then((p) => {
       const saved = (p as unknown as { outputRoot?: string | null }).outputRoot || ''
       savedOutputRoot.current = saved
@@ -447,7 +448,7 @@ export default function ConfigModal({
     api.getConfig().then((cfg) => {
       setOutputRootDefault((cfg as unknown as { desktopOutputRoot?: string }).desktopOutputRoot || '')
     }).catch(() => { })
-  }, [open, licenseStatus?.valid])
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -1619,9 +1620,8 @@ export default function ConfigModal({
                 id="cfg-output-root-save"
                 type="button"
                 className="cfg-primary"
-                disabled={outputRootSaving || !licenseStatus?.valid}
+                disabled={outputRootSaving}
                 onClick={async () => {
-                  if (!licenseStatus?.valid) return
                   const raw = outputRoot.trim()
                   if (raw === savedOutputRoot.current) return
                   if (raw && !raw.match(/^([A-Za-z]:[/\\]|\/)/)) {
@@ -1648,10 +1648,9 @@ export default function ConfigModal({
                 <button
                   type="button"
                   className="cfg-secondary"
-                  disabled={outputRootSaving || !licenseStatus?.valid}
+                  disabled={outputRootSaving}
                   title={t('Đặt lại mặc định', 'Reset to default')}
                   onClick={async () => {
-                    if (!licenseStatus?.valid) return
                     if (savedOutputRoot.current === '') { setOutputRoot(''); return }
                     setOutputRootSaving(true)
                     try {
@@ -1732,7 +1731,7 @@ export default function ConfigModal({
             <button type="button" className="cfg-primary" disabled={!cleanupSelected.length || cleanupRunning} onClick={() => setCleanupConfirm(true)}>{cleanupRunning ? t('Đang dọn…', 'Cleaning…') : t('Dọn phần đã chọn', 'Clean selected')}</button>
           </div>
         ) : section === 'license' ? (
-          licenseStatus && onLicenseStatusChange ? <LicensePage status={licenseStatus} embedded onStatusChange={onLicenseStatusChange} /> : null
+          licenseStatus && onLicenseStatusChange ? <LicensePage status={licenseStatus} embedded accessRequired={taskAccessRequired} onStatusChange={onLicenseStatusChange} /> : null
         ) : section === 'computer' ? (
           <SystemInfoPanel />
         ) : section === 'logs' ? (
@@ -1874,6 +1873,7 @@ export default function ConfigModal({
           }
           progress={installProgress}
           error={installPopupError || null}
+          diskSpace={installPopupError ? driverStatus : undefined}
           log={installLog || undefined}
           onCancel={installing && !exclusiveInstall && !driverWaiting ? () => void cancelInstall() : undefined}
           details={<>

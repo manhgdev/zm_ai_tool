@@ -621,6 +621,9 @@ class FlowQueueMixin:
                 ).start()
                 continue
             self._release_media_ids(rows.get(row_id, {}).get("mediaIds"))
+            from pipeline.core.license import is_admitted, continue_job
+            if is_admitted():
+                continue_job('flow', row_id)
             threading.Thread(target=self._run_sync, args=(row_id,), daemon=True, name=f"flow-job-{row_id}").start()
         return {
             "operationId": operation_id, "status": "completed", "acceptedCount": len(changed),
@@ -848,5 +851,8 @@ class FlowQueueMixin:
                 except Exception as exc:
                     _log.debug("series.register_job on retry failed: %s", exc)
             self._log("info", "job_retry", job_id=job_id, account_id=str(job.get("accountId") or ""))
+            from pipeline.core.license import is_admitted, continue_job
+            if is_admitted():
+                continue_job('flow', job_id)
             threading.Thread(target=self._run_sync, args=(job_id,), daemon=True, name=f"flow-job-{job_id}").start()
         return job

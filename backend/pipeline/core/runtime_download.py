@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -37,7 +38,10 @@ def classify_error(error, default='DEPENDENCY_INSTALL_FAILED') -> tuple[str, boo
     status = getattr(error, 'code', None)
     text = str(error).lower()
     reason = getattr(error, 'reason', error)
-    if getattr(error, 'errno', None) == 28 or any(s in text for s in ('os error 112', 'winerror 112', 'no space left', 'not enough space on the disk', 'errno 28')):
+    if (status == 'DISK_FULL' or re.search(r'\bdisk_full\b', text)
+            or getattr(reason, 'errno', None) == 28 or getattr(reason, 'winerror', None) == 112
+            or any(s in text for s in ('os error 112', 'winerror 112', 'no space left',
+                                      'not enough space on the disk', 'errno 28', 'disk quota exceeded'))):
         return 'DISK_FULL', False
     if isinstance(reason, PermissionError) or any(s in text for s in ('winerror 32', 'os error 32', 'access is denied', 'permission denied')):
         return 'FILE_ACCESS_DENIED', False
@@ -61,6 +65,56 @@ def classify_error(error, default='DEPENDENCY_INSTALL_FAILED') -> tuple[str, boo
     if 'os error 448' in text:
         return default, False
     return default, False
+
+
+def disk_full_details(error) -> dict:
+    """Describe the failed write location, including errors returned by workers."""
+    causes = []
+    cause = error
+    while isinstance(cause, BaseException) and cause not in causes:
+        causes.append(cause)
+        cause = cause.__cause__ or cause.__context__
+    if not any(classify_error(cause)[0] == 'DISK_FULL' for cause in causes):
+        return {}
+    out = {'errorCode': 'DISK_FULL', 'retryable': False}
+    try:
+        diagnostic = json.loads(getattr(error, 'diagnostics', '') or '{}')
+        if not isinstance(diagnostic, dict):
+            diagnostic = {}
+    except (ValueError, TypeError):
+        diagnostic = {}
+    path = None
+    for cause in causes:
+        if getattr(cause, 'errno', None) == 28 or getattr(cause, 'winerror', None) == 112:
+            path = getattr(cause, 'filename', None)
+            if path:
+                break
+    path = path or diagnostic.get('partialPath') or diagnostic.get('disk')
+    if not path:
+        # Only the final exception line: traceback source files can be on a different drive.
+        line = str(error).strip().splitlines()[-1] if str(error).strip() else ''
+        match = re.search(r'''(['"])((?:[A-Za-z]:[\\/]|/|\\\\).*?)\1''', line)
+        path = match[2] if match else None
+    path = str(path or '')
+    if not path:
+        return out
+    out.update(diskPath=path, diskDrive=ntpath.splitdrive(path)[0] or Path(path).anchor)
+    if not ntpath.splitdrive(path)[0] or os.name == 'nt':
+        try:
+            probe = Path(path)
+            # A missing destination still belongs to its nearest existing parent volume.
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            out['freeDiskBytes'] = shutil.disk_usage(probe).free
+            if os.name != 'nt':
+                while not os.path.ismount(probe) and probe != probe.parent:
+                    probe = probe.parent
+                out['diskDrive'] = str(probe)
+        except (OSError, ValueError):
+            pass
+    if isinstance(diagnostic.get('requiredBytes'), (int, float)):
+        out['requiredDiskBytes'] = diagnostic['requiredBytes']
+    return out
 
 
 def sha256(path: Path) -> str:

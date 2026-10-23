@@ -53,6 +53,9 @@ async def drawing_create(image: UploadFile = File(...), options: str = Form("{}"
 
 @router.post("/api/drawing/jobs/batch")
 async def drawing_create_batch(images: list[UploadFile] = File(...), options: str = Form("{}"), start_now: bool = Form(True)):
+    if start_now:
+        from api.deps import require_task_access
+        await require_task_access()
     if not images:
         raise HTTPException(400, "No images supplied")
     if len(images) > 100:

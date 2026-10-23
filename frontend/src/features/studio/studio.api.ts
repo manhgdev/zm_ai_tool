@@ -78,6 +78,12 @@ export const studioApi = {
       body: JSON.stringify({ op }),
     })
   },
+  startJobs: async (jobs: QueueJob[]) => {
+    for (const job of jobs) await prepareJob(job.type, job.settings_snapshot || {})
+    return fetchJson<{ ok: boolean; ids: string[] }>('/api/queue/start', {
+      method: 'POST', headers: json, body: JSON.stringify({ ids: jobs.map(job => job.id) }),
+    })
+  },
   revealJob: (jobId: string) => fetchJson<{ ok: boolean; path: string }>(`/api/queue/${jobId}/reveal`, { method: 'POST' }),
   updateJobSettings: (jobId: string, settings: Record<string, unknown>) =>
     fetchJson<QueueSnapshot>(`/api/queue/${jobId}/settings`, {

@@ -316,8 +316,12 @@ def end_continuation(kind, uid):
         _continuations.discard((kind, uid))
 
 
-def can_start_job():
+def can_start_job(*, activation_required=True):
     if is_admitted():
+        return True
+    # Desktop checks activation at the explicit Run/Publish API action. Editor,
+    # previews and existing-job management stay open. Web still rechecks account access.
+    if not activation_required and os.environ.get('ZM_AI_TOOL_WEB_WORKER') != '1':
         return True
     # Standalone scripts/tests without a hosted runtime retain their normal behavior.
     if os.environ.get('ZM_AI_TOOL_WEB_WORKER') != '1' and os.environ.get('ZM_AI_TOOL_DESKTOP') != '1':

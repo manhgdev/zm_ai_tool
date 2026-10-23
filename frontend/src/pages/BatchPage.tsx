@@ -176,8 +176,8 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
     const snap = await studioApi.queue()
     setJobs(snap.jobs || [])
     setPauseAll(Boolean(snap.pauseAll))
-    const drawing = await fetchJson<DrawingJob[]>('/api/drawing/jobs').catch(() => [] as DrawingJob[])
-    setDrawingJobs(drawing)
+    const drawing = await fetchJson<DrawingJob[]>('/api/drawing/jobs').catch(() => null)
+    if (drawing) setDrawingJobs(drawing)
   }
 
   useEffect(() => {
@@ -306,7 +306,7 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
     if (!readyQueueJobs.length) return
     setError('')
     try {
-      await Promise.all(readyQueueJobs.map((job) => studioApi.jobAction(job.id, 'resume')))
+      await studioApi.startJobs(readyQueueJobs)
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -339,12 +339,12 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
       const err = await response.text()
       setError(err)
       toast.error(err)
-      await refresh()
-      return
+      return false
     }
     setDrawingPreview((current) => current?.id === jobId ? null : current)
     setDrawingJobs((current) => current.filter((item) => item.id !== jobId))
     toast.success(t('Đã xóa job vẽ tay khỏi hàng đợi.', 'Drawing job deleted from queue.'))
+    return true
   }
 
   async function deleteQueueJob(jobId: string) {
@@ -353,8 +353,10 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
       if (editingQueueJob?.id === jobId) setEditingQueueJob(null)
       await refresh()
       toast.success(t('Đã xóa job khỏi hàng đợi.', 'Job deleted from queue.'))
+      return true
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
+      return false
     }
   }
 
@@ -650,6 +652,7 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
           drawingPreview
             ? async () => {
                 const targetId = drawingPreview.id
+                if (!await deleteDrawingJob(targetId)) return
                 if (drawingJobs.length > 1) {
                   const idx = drawingJobs.findIndex((j) => j.id === targetId)
                   const next = (idx + 1) % drawingJobs.length
@@ -657,7 +660,6 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
                 } else {
                   setDrawingPreview(null)
                 }
-                await deleteDrawingJob(targetId)
               }
             : undefined
         }
@@ -710,6 +712,7 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
           queuePreview
             ? async () => {
                 const targetId = queuePreview.id
+                if (!await deleteQueueJob(targetId)) return
                 if (jobs.length > 1) {
                   const idx = jobs.findIndex((j) => j.id === targetId)
                   const next = (idx + 1) % jobs.length
@@ -717,7 +720,6 @@ export default function BatchPage({ onBack, onOpenEditor, onOpenReviewProjects }
                 } else {
                   setQueuePreview(null)
                 }
-                await deleteQueueJob(targetId)
               }
             : undefined
         }

@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 
 import anyio
@@ -220,32 +221,47 @@ def create_app(*, dependencies: list | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def require_license(request, call_next):
-        path = request.url.path
-        # ponytail: chỉ gate /api/* — static files (/, .js, .css) phải qua để FE tải
-        # và tự hiện LicensePage. Không gate → webview chỉ thấy 403 JSON.
-        if not path.startswith("/api/"):
+        path = request.url.path.rstrip("/")
+        # Activation belongs to explicit Run/Publish actions, never navigation or editing.
+        if request.method != "POST":
             return await call_next(request)
-        if path.startswith("/api/chat/") or path == "/api/renders" or path.startswith("/api/renders/"):
+        task = re.fullmatch(
+            r"/api/(?:tts/studio/synthesize|(?:cleaner|media-compose)/jobs"
+            r"|drawing/jobs(?:/start)?|queue(?:/start)?|review/generate"
+            r"|projects/[^/]+/(?:run|export)"
+            r"|flow/(?:jobs(?:/(?:[^/]+/retry|batch-retry))?"
+            r"|series/(?:draft|[^/]+/(?:draft-more|run|anchors/generate|episodes/[^/]+/scenes/[^/]+/generate))))",
+            path,
+        )
+        if not task:
+            # Multipart start flags are checked in their routes after FastAPI parses them.
             return await call_next(request)
-        if (request.method == "GET" and path == "/api/resources") or (
-            request.method == "POST" and len(path.split("/")) == 5
-            and path.startswith("/api/resources/") and path.endswith("/install")
-        ):
-            return await call_next(request)
-        if request.method == "GET" and (path == "/api/drawing/hands" or path.startswith("/api/drawing/hands/")):
-            return await call_next(request)
-        render_parts = path.split("/")
-        if request.method == "GET" and (
-            path in {"/api/voices", "/api/tts/status"}
-            or (len(render_parts) == 6 and render_parts[1:4] == ["api", "tts", "voices"]
-                and render_parts[4] and render_parts[5] == "preview")
-        ):
-            return await call_next(request)
-        setup_paths = ("/api/license", "/api/system", "/api/config", "/api/hardware")
-        if path.startswith("/api/auth/desktop/") or path == "/api/health" or (path in {"/api/ui-locale", "/api/auth/session"} and request.method == "GET") or path.startswith(setup_paths):
-            return await call_next(request)
-        if os.environ.get("ZM_AI_TOOL_WEB_WORKER") == "1" and path == "/api/ui-preferences":
-            return await call_next(request)
+        project_run = re.fullmatch(r"/api/projects/[^/]+/run", path)
+        flow_retry = re.fullmatch(r"/api/flow/jobs/(?:[^/]+/retry|batch-retry)", path)
+        if path in {"/api/queue", "/api/tts/studio/synthesize"} or project_run or flow_retry:
+            try:
+                body = await request.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                if path == "/api/queue" and body.get("start_now") is False:
+                    return await call_next(request)
+                if (path == "/api/tts/studio/synthesize" and body.get("publishOutput") is False
+                        and isinstance(body.get("text"), str) and 0 < len(body["text"].strip()) <= 200
+                        and not body.get("srtText") and not body.get("outputDir")):
+                    return await call_next(request)
+                if project_run:
+                    raw = body.get("runPreviewSec")
+                    try:
+                        if int(body.get("previewSec", 20) if raw is None else raw) > 0:
+                            return await call_next(request)
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+                if flow_retry:
+                    items = body.get("items") if path.endswith("/batch-retry") else [body]
+                    # Logo-only processing cannot fall back to generation if files are missing.
+                    if isinstance(items, list) and items and all(isinstance(item, dict) and item.get("logoOnly") is True for item in items):
+                        return await call_next(request)
         from pipeline.core.license import license_cached_valid
 
         if not await anyio.to_thread.run_sync(license_cached_valid):

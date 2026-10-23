@@ -350,10 +350,11 @@ def test_unactivated_key_renewal_and_future_last_owner_protection(store):
     denied('LAST_OWNER_REQUIRED', store.mutate, oid, 'accounts', oid, {'term': DAY})
 
 
-def test_running_automation_finishes_pending_pauses_and_requires_resume(tmp_path):
+def test_web_running_automation_finishes_pending_pauses_and_requires_resume(tmp_path, monkeypatch):
     from pipeline.automation.store import AutomationStore
     from pipeline.automation.service import AutomationService
     from pipeline.core import license as licensing
+    monkeypatch.setenv('ZM_AI_TOOL_WEB_WORKER', '1')
     import threading
     started, release = threading.Event(), threading.Event()
     calls = []
@@ -371,7 +372,8 @@ def test_running_automation_finishes_pending_pauses_and_requires_resume(tmp_path
             service.start_job(first['id'])
             assert started.wait(3)
             service.start_job(second['id'])
-            licensing.pause_pending_jobs()
+            with patch.object(licensing, 'can_start_job', return_value=False):
+                licensing.pause_pending_jobs()
             assert db.get_job(second['id'])['status'] == 'paused'
             release.set()
             service._futures[first['id']].result(timeout=3)

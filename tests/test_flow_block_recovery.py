@@ -14,6 +14,22 @@ BLOCK = "FLOW_AUTOMATION_BLOCKED: unusual activity"
 
 
 class FlowBlockRecoveryTest(unittest.TestCase):
+    def test_parent_admission_crosses_single_and_batch_retry_threads_only_when_present(self):
+        from pipeline.core import license as licensing
+
+        self.job(status="failed")
+        licensing.end_continuation("flow", "job")
+        self.addCleanup(licensing.end_continuation, "flow", "job")
+        self.service.retry("job")
+        self.assertFalse(licensing.continuation("flow", "job"))
+        with licensing.admitted_job():
+            self.service.retry("job")
+        self.assertTrue(licensing.continuation("flow", "job"))
+        licensing.end_continuation("flow", "job")
+        with licensing.admitted_job():
+            self.service.retry_many([{"jobId": "job"}])
+        self.assertTrue(licensing.continuation("flow", "job"))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

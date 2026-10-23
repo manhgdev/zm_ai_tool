@@ -351,7 +351,7 @@ class QueueEngine:
 
     def _schedule(self) -> None:
         from pipeline.core.license import can_start_job
-        if not can_start_job():
+        if not can_start_job(activation_required=False):
             for job in store.load_all():
                 if job.get('status') == 'queued':
                     store.mutate(job['id'], {'status': 'paused', 'error': 'ACCESS_REQUIRED', 'errorType': 'ACCESS_REQUIRED'})
@@ -400,7 +400,7 @@ class QueueEngine:
 
     def _run_job(self, job_id: str) -> None:
         from pipeline.core.license import can_start_job, run_admitted
-        if not can_start_job():
+        if not can_start_job(activation_required=False):
             store.mutate(job_id, {"status": "paused", "error": "ACCESS_REQUIRED", "errorType": "ACCESS_REQUIRED"})
             with self._guard:
                 self._active.pop(job_id, None)

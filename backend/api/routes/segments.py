@@ -91,7 +91,7 @@ def api_retranscribe_range(project_id: str, body: RetranscribeRangeIn):
     def _run() -> None:
         wav = cache_dir / f"retranscribe_{start:.3f}_{end:.3f}.wav"
         try:
-            if not can_start_job():
+            if not can_start_job(activation_required=False):
                 raise PermissionError("ACCESS_REQUIRED")
             with admitted_job():
                 run_cmd(project_id, [

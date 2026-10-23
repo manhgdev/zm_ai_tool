@@ -62,7 +62,7 @@ const errors: Record<string, [string, string]> = {
   PYTHON_PREPARE_FAILED: ['Không chuẩn bị được Python riêng. Xem log chi tiết.', 'Could not prepare managed Python. See the diagnostic log.'],
   DEPENDENCY_INSTALL_FAILED: ['Cài dependency thất bại. Xem package và lệnh trong log.', 'Dependency installation failed. See the package and command in the log.'],
   RUNTIME_PROBE_FAILED: ['Runtime chưa vượt qua kiểm tra. Bản đang dùng được giữ nguyên.', 'Runtime validation failed. The active runtime was preserved.'],
-  DISK_FULL: ['Không đủ dung lượng để cài song song runtime mới.', 'Not enough disk space for a parallel runtime installation.'],
+  DISK_FULL: ['Không đủ dung lượng ổ đĩa để tiếp tục.', 'Not enough disk space to continue.'],
   ACTIVATION_FAILED: ['Không chuyển được runtime. Xem log chi tiết.', 'Could not switch runtimes. See the diagnostic log.'],
   RUNTIME_BUSY: ['Đang có tác vụ cài hoặc khôi phục runtime.', 'Another runtime installation or rollback is running.'],
   INSTALL_CANCELLED: ['Đã hủy cài đặt.', 'Installation cancelled.'],

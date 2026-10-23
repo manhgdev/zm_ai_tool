@@ -63,6 +63,9 @@ class AutomationService:
         watch_pending_jobs(self._pause_unstarted)
 
     def _pause_unstarted(self):
+        from pipeline.core.license import can_start_job
+        if can_start_job(activation_required=False):
+            return
         with self._lock:
             for job_id, future in self._futures.items():
                 if not future.done() and future.cancel():
@@ -407,7 +410,9 @@ class AutomationService:
                 for child_id in child_job_ids:
                     child = snapshot.get(str(child_id)) or {}
                     if child.get("status") in {"failed", "action_required"}:
-                        flow_service.retry(str(child_id))
+                        from pipeline.core.license import can_start_job, run_admitted
+                        if can_start_job(activation_required=False):
+                            run_admitted(flow_service.retry, str(child_id))
             except Exception:
                 # The Flow module is optional for non-Flow automation jobs.
                 pass
@@ -513,7 +518,7 @@ class AutomationService:
     def _execute(self, job_id: str) -> None:
         try:
             from pipeline.core.license import can_start_job, run_admitted
-            if not can_start_job():
+            if not can_start_job(activation_required=False):
                 raise PermissionError('ACCESS_REQUIRED')
             run_admitted(self._runner, job_id)
             job = self.store.get_job(job_id)

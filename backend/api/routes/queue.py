@@ -32,6 +32,10 @@ class QueueActionIn(BaseModel):
     op: str
 
 
+class StartQueueJobsIn(BaseModel):
+    ids: list[str]
+
+
 class JobSettingsIn(BaseModel):
     settings: dict[str, Any]
 
@@ -152,6 +156,14 @@ def api_queue_enqueue(body: EnqueueIn):
         raise HTTPException(422, "Thiếu nguồn video")
     jobs = enqueue(body.type, body.sources, body.settings, recursive=body.recursive, start_now=body.start_now)
     return {"ok": True, "jobs": jobs}
+
+
+@router.post("/api/queue/start")
+def api_queue_start(body: StartQueueJobsIn):
+    ids = [uid for uid in dict.fromkeys(body.ids) if (get_job(uid) or {}).get("status") in {"paused", "interrupted"}]
+    for uid in ids:
+        job_action(uid, "resume")
+    return {"ok": True, "ids": ids}
 
 
 @router.post("/api/queue/action")

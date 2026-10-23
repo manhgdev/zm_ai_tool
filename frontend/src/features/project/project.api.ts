@@ -46,6 +46,7 @@ export type InstallStatus = {
   retryAttempt?: number
   retryAfterSeconds?: number | null
   diskDrive?: string
+  diskPath?: string
   freeDiskBytes?: number | null
   downloadItems?: Array<{ package: string; received: number; total: number | null; cache: boolean; attempt: number; activity: string }>
   requiredDiskBytes?: number
@@ -807,9 +808,9 @@ export const api = {
     )
   },
 
-  run: async (projectId: string, settings: ProjectSettings) => {
+  run: async (projectId: string, settings: ProjectSettings, editor = false) => {
     await prepareAiResources(recognitionResources(settings))
-    return fetchJson<{ ok: boolean; jobId?: string }>(`${base}/projects/${projectId}/run`, {
+    return fetchJson<{ ok: boolean; jobId?: string }>(`${base}/projects/${projectId}/${editor ? 'editor-run' : 'run'}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),

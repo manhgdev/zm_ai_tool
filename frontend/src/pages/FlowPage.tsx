@@ -364,6 +364,10 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
     const routePanel = flowRoutePanel() || (readText(ACTIVE_PANEL_KEY, "video") as FlowRoutePanel);
     return routePanel === "accounts" || routePanel === "help" || routePanel === "series" ? routePanel : null;
   });
+  const [seriesOpened, setSeriesOpened] = useState(utilityView === "series");
+  useEffect(() => {
+    if (utilityView === "series") setSeriesOpened(true);
+  }, [utilityView]);
   const [seriesDraft, setSeriesDraft] = useState<FlowSeriesSceneContext | null>(null);
   const [accounts, setAccounts] = useState<FlowAccount[]>(readAccounts);
   const [syncingAccountIds, setSyncingAccountIds] = useState<Set<string>>(new Set());
@@ -1630,11 +1634,14 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       setAccountDraft({ label: "", email: "", plan: "Free" });
       setAccountCookie("");
       setApiError("");
+      toast.success(t("Đã lưu tài khoản Flow.", "Flow account saved."));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setApiError(message.includes("FLOW_COOKIE_INVALID")
+      const detail = message.includes("FLOW_COOKIE_INVALID")
         ? t("Cookie không hợp lệ. Hãy dán giá trị Cookie trong Request Headers (tối đa 32 KB).", "Invalid cookie. Paste the Cookie value from Request Headers (up to 32 KB).")
-        : message);
+        : message;
+      setApiError(detail);
+      toast.error(t("Không thể lưu tài khoản", "Could not save account") + ": " + detail);
     } finally {
       setAccountSaving(false);
     }
@@ -1644,8 +1651,16 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
       message: t(`Xóa tài khoản ${account.label}?`, `Delete account ${account.label}?`),
       confirmLabel: t("Xóa tài khoản", "Delete account"),
       run: () => flowRequest(`/api/flow/accounts/${account.id}`, { method: "DELETE" })
-        .then(() => setAccounts((current) => current.filter((item) => item.id !== account.id)))
-        .catch((error) => setApiError(error instanceof Error ? error.message : String(error))),
+        .then(() => {
+          setAccounts((current) => current.filter((item) => item.id !== account.id));
+          setApiError("");
+          toast.success(t("Đã xóa tài khoản Flow.", "Flow account deleted."));
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          setApiError(message);
+          toast.error(t("Không thể xóa tài khoản", "Could not delete account") + ": " + message);
+        }),
     });
   };
   const updateJob = (raw: Record<string, unknown>) => {
@@ -2898,7 +2913,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
         {utilityView === "help" && (
           <FlowTemplatesPanel />
         )}
-        <div
+        {seriesOpened && <div
           style={{ display: utilityView === "series" ? "contents" : "none" }}
           aria-hidden={utilityView !== "series"}
         >
@@ -2942,7 +2957,7 @@ export default function FlowPage({ onBack, onOpenSrtImage }: { onBack: () => voi
               return added[0]?.id || "";
             }}
           />
-        </div>
+        </div>}
         {!utilityView && showCreate && (
           <div className="flow-create-grid">
             {seriesDraft && (

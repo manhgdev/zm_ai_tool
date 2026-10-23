@@ -619,6 +619,8 @@ def get_client(*, cpu_fallback: bool = False) -> Any:
 
 
 def status() -> dict[str, Any]:
+    from pipeline.core.runtime_download import disk_full_details
+
     installed = available()
     mode = current_mode()
     presets = list_preset_from_assets() if installed else []
@@ -630,6 +632,7 @@ def status() -> dict[str, Any]:
         "ready": installed and _load_state == "ready",
         "loaded": _load_state == "ready",
         "loadState": _load_state,
+        **(disk_full_details(RuntimeError(_client_err or '')) if _load_state == 'error' else {}),
         "error": _client_err if _load_state == "error" else None,
         "device": "—",
         "mode": mode,

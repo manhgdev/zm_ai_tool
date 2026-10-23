@@ -39,8 +39,8 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 UsePreviousAppDir=yes
 ; First install shows the language chooser; upgrades reuse the prior selection.
 ShowLanguageDialog=auto
-; First install asks for a directory; upgrades hide the directory step.
-DisableDirPage=auto
+; Manual installs and upgrades can select another drive when storage is low.
+DisableDirPage=no
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir={#MyAppOutputDir}

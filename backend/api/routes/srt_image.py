@@ -131,7 +131,9 @@ def jobs():
     return list_jobs()
 
 
+# Drawing's secondary timeline action reuses the renderer without gating its whole tab.
 @router.post("/api/media-compose/jobs")
+@router.post("/api/drawing/timeline-render")
 async def create(
     images: list[UploadFile] | None = File(None),
     media_folder: str = Form(""),

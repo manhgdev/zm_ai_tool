@@ -81,6 +81,7 @@ _install_state: dict[str, Any] = {
     "downloadItems": [],
     "freeDiskBytes": None,
     "diskDrive": "",
+    "diskPath": "",
     "retryAttempt": 0,
     "retryAfterSeconds": None,
 }
@@ -952,7 +953,7 @@ def _set_install_progress(
             _install_state["message"] = message
         for key in (
             "stage", "runtimeProfile", "currentPackage", "runtimePack", "downloadedBytes", "totalBytes",
-            "requiredDiskBytes", "diagnostics", "speedBytesPerSecond", "etaSeconds", "cacheHit", "downloadItems", "freeDiskBytes", "diskDrive", "retryAttempt", "retryAfterSeconds",
+            "requiredDiskBytes", "diagnostics", "speedBytesPerSecond", "etaSeconds", "cacheHit", "downloadItems", "freeDiskBytes", "diskDrive", "diskPath", "retryAttempt", "retryAfterSeconds",
             "operationId", "driverCheck", "rebootRequired", "resumeKind", "eula",
         ):
             if fields and key in fields:
@@ -1015,7 +1016,7 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
             runtimeProfile="",
             currentPackage="",
             speedBytesPerSecond=None, etaSeconds=None, cacheHit=0, downloadItems=[],
-            freeDiskBytes=None, diskDrive="", retryAttempt=0, retryAfterSeconds=None,
+            freeDiskBytes=None, diskDrive="", diskPath="", retryAttempt=0, retryAfterSeconds=None,
             downloadedBytes=0,
             totalBytes=0,
             requiredDiskBytes=0,
@@ -1030,7 +1031,7 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
 
     def work() -> None:
         import pipeline.core.system_check as _sc
-        from pipeline.core.runtime_download import RuntimeInstallError
+        from pipeline.core.runtime_download import RuntimeInstallError, disk_full_details
 
         _sc._install_log_fn = _append_install_log
         _sc._install_progress_fn = _set_install_progress
@@ -1056,6 +1057,7 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                 _install_state["updatedAt"] = time.time()
         except Exception as e:
             cancelled = isinstance(e, RuntimeInstallError) and e.code == 'INSTALL_CANCELLED'
+            disk_failure = disk_full_details(e)
             with _install_lock:
                 if cancelled:
                     _install_state["error"] = ""
@@ -1081,6 +1083,8 @@ def _start_install_job(kind: str, fn, *, needs_restart: bool = True) -> dict[str
                         _install_state["errorCode"] = "DRIVER_UPDATE_FAILED" if kind == 'nvidia_driver' else "RUNTIME_PROBE_FAILED"
                         _install_state["retryable"] = True
                         _install_state["diagnostics"] = repr(e)
+                    if disk_failure:
+                        _install_state.update(disk_failure)
                     _install_state["message"] = "Cài đặt thất bại / Installation failed"
                 _install_state["updatedAt"] = time.time()
             if not cancelled:
@@ -1857,7 +1861,7 @@ def api_install_status():
         out['cpuRuntimeAvailable'] = False
     for key in (
         "stage", "runtimeProfile", "currentPackage", "runtimePack", "downloadedBytes", "totalBytes",
-        "requiredDiskBytes", "errorCode", "retryable", "diagnostics", "speedBytesPerSecond", "etaSeconds", "cacheHit", "downloadItems", "freeDiskBytes", "diskDrive", "retryAttempt", "retryAfterSeconds",
+        "requiredDiskBytes", "errorCode", "retryable", "diagnostics", "speedBytesPerSecond", "etaSeconds", "cacheHit", "downloadItems", "freeDiskBytes", "diskDrive", "diskPath", "retryAttempt", "retryAfterSeconds",
         "operationId", "driverCheck", "rebootRequired", "resumeKind", "eula", "cancelRequested",
     ):
         out[key] = st.get(key)
